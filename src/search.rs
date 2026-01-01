@@ -1838,7 +1838,10 @@ fn print_detailed_output(
     let t_5_start = t_start.saturating_sub(ctx_len);
     let ctx_5 = String::from_utf8_lossy(&t_seq[t_5_start..t_start])
         .replace('T', "U")
-        .replace('t', "u");
+        .replace('t', "u")
+        .chars()
+        .rev()
+        .collect::<String>();
 
     // 3' Flank (Downstream): t_end + 1 .. t_end + 1 + 20
     let t_3_start = t_end + 1;
