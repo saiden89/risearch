@@ -1,0 +1,30 @@
+[package]
+name = "risearch"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# FM-Index backend (work in progress)
+fm-index = ["genedex"]
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5.53", features = ["derive"] }
+env_logger = "0.11"
+genedex = { version = "0.2.2", default-features = false, features = [
+    "savefile",
+], optional = true }
+libsais = { version = "0.2", default-features = false }
+log = "0.4"
+needletail = "0.6.3"
+serde = { version = "1.0.228", features = ["derive"] }
+bincode = "1.3.3"
+rayon = "1.11"
+savefile = "0.20.2"
+
+[dev-dependencies]
+assert_cmd = "2.1.1"
+flate2 = "1.1.0"
+predicates = "3.1.3"
+tempfile = "3.24.0"

@@ -1,0 +1,10 @@
+[tools]
+"cargo:rust-mcp-server" = "latest"
+# [tools]
+# rust = { version = "1.90", profile = "default" }
+
+# [env]
+# MISE_RUSTUP_HOME = "/tmp/{{env.USER}}/risearch/rustup"
+# MISE_CARGO_HOME = "/tmp/{{env.USER}}/risearch/cargo"
+# RUSTUP_HOME = "/tmp/{{env.USER}}/risearch/rustup"
+# CARGO_HOME = "/tmp/{{env.USER}}/risearch/cargo"

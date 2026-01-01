@@ -1,0 +1,974 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "description": "Analyze dependency licenses for compliance issues. Detects copyleft licenses, unknown licenses, and license compatibility problems.",
+        "inputSchema": {
+          "properties": {
+            "fail_on_copyleft": {
+              "description": "Treat copyleft licenses as issues (default: false)",
+              "type": "boolean"
+            },
+            "project_license": {
+              "description": "SPDX identifier for your project's license (e.g., MIT, Apache-2.0)",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "check_licenses"
+      },
+      {
+        "description": "Validate that a path is a valid repository and can be indexed",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "Path to validate as a repository",
+              "type": "string"
+            }
+          },
+          "required": ["path"],
+          "type": "object"
+        },
+        "name": "validate_repo"
+      },
+      {
+        "description": "Get detailed explanation of a security vulnerability type including examples, references, and remediation guidance.",
+        "inputSchema": {
+          "properties": {
+            "cwe": {
+              "description": "CWE ID to explain (e.g., CWE-89, CWE-79)",
+              "type": "string"
+            },
+            "rule_id": {
+              "description": "Rule ID to explain (e.g., OWASP-A03-001, CWE-89-001)",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "explain_vulnerability"
+      },
+      {
+        "description": "Auto-discover repositories in a directory by detecting VCS roots and project markers",
+        "inputSchema": {
+          "properties": {
+            "max_depth": {
+              "description": "Maximum directory depth to search (default: 3)",
+              "type": "integer"
+            },
+            "path": {
+              "description": "Base directory to search for repositories",
+              "type": "string"
+            }
+          },
+          "required": ["path"],
+          "type": "object"
+        },
+        "name": "discover_repos"
+      },
+      {
+        "description": "Find all usages of a symbol across files, including imports and re-exports. Cross-language aware for JS/TS projects.",
+        "inputSchema": {
+          "properties": {
+            "include_imports": {
+              "description": "Include import statements (default: true)",
+              "type": "boolean"
+            },
+            "repo": { "type": "string" },
+            "symbol": { "type": "string" }
+          },
+          "required": ["repo", "symbol"],
+          "type": "object"
+        },
+        "name": "find_symbol_usages"
+      },
+      {
+        "description": "Get a comprehensive security summary for a repository including vulnerability counts and risk assessment.",
+        "inputSchema": {
+          "properties": { "repo": { "type": "string" } },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "get_security_summary"
+      },
+      {
+        "description": "Enhanced taint analysis with type information. More precise than untyped taint tracking, combines data flow with type inference.",
+        "inputSchema": {
+          "properties": {
+            "path": { "type": "string" },
+            "repo": { "type": "string" },
+            "source_line": {
+              "description": "Line number to trace from",
+              "type": "integer"
+            }
+          },
+          "required": ["repo", "path", "source_line"],
+          "type": "object"
+        },
+        "name": "get_typed_taint_flow"
+      },
+      {
+        "description": "Check project dependencies for known vulnerabilities using the OSV (Open Source Vulnerabilities) database. Returns CVE/GHSA IDs and recommended upgrades.",
+        "inputSchema": {
+          "properties": {
+            "include_dev": {
+              "description": "Include dev dependencies (default: true)",
+              "type": "boolean"
+            },
+            "repo": { "type": "string" },
+            "severity_threshold": {
+              "description": "Minimum severity level to report (default: low)",
+              "enum": ["critical", "high", "medium", "low"],
+              "type": "string"
+            }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "check_dependencies"
+      },
+      {
+        "description": "Trigger re-indexing of a repository or all repositories",
+        "inputSchema": {
+          "properties": {
+            "repo": {
+              "description": "Repository to reindex (optional, reindexes all if omitted)",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "reindex"
+      },
+      {
+        "description": "Find variable assignments that are never read (dead stores).",
+        "inputSchema": {
+          "properties": {
+            "function": {
+              "description": "Optional: specific function to analyze",
+              "type": "string"
+            },
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "find_dead_stores"
+      },
+      {
+        "description": "Get reaching definitions analysis - which variable assignments reach each point in the code.",
+        "inputSchema": {
+          "properties": {
+            "function": { "type": "string" },
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "function"],
+          "type": "object"
+        },
+        "name": "get_reaching_definitions"
+      },
+      {
+        "description": "List all indexed repositories with metadata (path, language breakdown, file count)",
+        "inputSchema": { "properties": {}, "required": [], "type": "object" },
+        "name": "list_repos"
+      },
+      {
+        "description": "Scan repository for security issues using the security rules engine. Detects vulnerabilities, secrets, crypto issues, and more.",
+        "inputSchema": {
+          "properties": {
+            "exclude_tests": {
+              "description": "Exclude test files from scanning (default: true)",
+              "type": "boolean"
+            },
+            "max_findings": {
+              "description": "Maximum number of findings to return",
+              "type": "integer"
+            },
+            "offset": {
+              "description": "Skip this many findings before returning results",
+              "type": "integer"
+            },
+            "path": {
+              "description": "Optional specific file or directory path to scan",
+              "type": "string"
+            },
+            "repo": { "type": "string" },
+            "ruleset": {
+              "description": "Optional ruleset to use (owasp, cwe, crypto, secrets, or path to custom YAML)",
+              "type": "string"
+            },
+            "severity_threshold": {
+              "description": "Minimum severity level to report (default: low)",
+              "enum": ["critical", "high", "medium", "low", "info"],
+              "type": "string"
+            }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "scan_security"
+      },
+      {
+        "description": "Fuzzy search for symbols across the entire workspace. Uses trigram matching for typo-tolerant search.",
+        "inputSchema": {
+          "properties": {
+            "kind": {
+              "description": "Filter by symbol kind (default: all)",
+              "enum": [
+                "function",
+                "class",
+                "struct",
+                "interface",
+                "enum",
+                "variable",
+                "all"
+              ],
+              "type": "string"
+            },
+            "limit": {
+              "description": "Maximum results to return (default: 20)",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Symbol name or partial name to search for",
+              "type": "string"
+            }
+          },
+          "required": ["query"],
+          "type": "object"
+        },
+        "name": "workspace_symbol_search"
+      },
+      {
+        "description": "Get hover information (type info, documentation) for a symbol at a specific position. Enhanced with LSP when available.",
+        "inputSchema": {
+          "properties": {
+            "character": {
+              "description": "Character position (0-indexed)",
+              "type": "integer"
+            },
+            "line": {
+              "description": "Line number (1-indexed)",
+              "type": "integer"
+            },
+            "path": {
+              "description": "File path relative to repository root",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "line", "character"],
+          "type": "object"
+        },
+        "name": "get_hover_info"
+      },
+      {
+        "description": "Get status of the search index and enabled features. Shows which optional features are enabled (--git, --call-graph, --persist, --watch) and index statistics.",
+        "inputSchema": {
+          "properties": {
+            "repo": {
+              "description": "Repository name (optional, shows all if omitted)",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "get_index_status"
+      },
+      {
+        "description": "Find code similar to a given snippet using TF-IDF embeddings. Good for finding duplicate or related code patterns.",
+        "inputSchema": {
+          "properties": {
+            "max_results": {
+              "description": "Maximum results to return (default: 10)",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Code snippet to find similar code for",
+              "type": "string"
+            },
+            "repo": {
+              "description": "Repository to search in (optional, searches all if omitted)",
+              "type": "string"
+            }
+          },
+          "required": ["query"],
+          "type": "object"
+        },
+        "name": "find_similar_code"
+      },
+      {
+        "description": "Find data structures (structs, classes, enums, interfaces) and functions/methods in a repository. Supports filtering by type and name pattern.",
+        "inputSchema": {
+          "properties": {
+            "file_pattern": {
+              "description": "Glob pattern to filter files (e.g., '*.rs', 'src/**/*.py')",
+              "type": "string"
+            },
+            "pattern": {
+              "description": "Glob or regex pattern to filter symbol names",
+              "type": "string"
+            },
+            "repo": { "type": "string" },
+            "symbol_type": {
+              "description": "Type of symbol to find (default: all)",
+              "enum": [
+                "struct",
+                "class",
+                "enum",
+                "interface",
+                "function",
+                "method",
+                "trait",
+                "type",
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "find_symbols"
+      },
+      {
+        "description": "Get statistics about the embedding index.",
+        "inputSchema": { "properties": {}, "required": [], "type": "object" },
+        "name": "get_embedding_stats"
+      },
+      {
+        "description": "Infer types for variables in a Python/JavaScript/TypeScript function. Shows what types flow through the code without running external type checkers.",
+        "inputSchema": {
+          "properties": {
+            "function": { "type": "string" },
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "function"],
+          "type": "object"
+        },
+        "name": "infer_types"
+      },
+      {
+        "description": "Get statistics about code chunks in a repository.",
+        "inputSchema": {
+          "properties": { "repo": { "type": "string" } },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "get_chunk_stats"
+      },
+      {
+        "description": "Perform hybrid search combining BM25 keyword search with TF-IDF semantic similarity using Reciprocal Rank Fusion (RRF).",
+        "inputSchema": {
+          "properties": {
+            "max_results": {
+              "description": "Maximum results to return (default: 10)",
+              "type": "integer"
+            },
+            "mode": {
+              "description": "Search mode: hybrid (default), bm25 only, or tfidf only",
+              "enum": ["hybrid", "bm25", "tfidf"],
+              "type": "string"
+            },
+            "query": { "type": "string" },
+            "repo": {
+              "description": "Optional: limit to specific repository",
+              "type": "string"
+            }
+          },
+          "required": ["query"],
+          "type": "object"
+        },
+        "name": "hybrid_search"
+      },
+      {
+        "description": "Get the contents of a specific file with optional line range",
+        "inputSchema": {
+          "properties": {
+            "end_line": {
+              "description": "End line (inclusive, optional)",
+              "type": "integer"
+            },
+            "path": {
+              "description": "File path relative to repository root",
+              "type": "string"
+            },
+            "repo": { "type": "string" },
+            "start_line": {
+              "description": "Start line (1-indexed, optional)",
+              "type": "integer"
+            }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "get_file"
+      },
+      {
+        "description": "Get AST-aware code chunks for a file with symbol context.",
+        "inputSchema": {
+          "properties": {
+            "include_imports": {
+              "description": "Include import statements in context (default: true)",
+              "type": "boolean"
+            },
+            "path": { "description": "File path", "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "get_chunks"
+      },
+      {
+        "description": "Scan for CWE Top 25 Most Dangerous Software Weaknesses including buffer overflows, injection, improper input validation.",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "Optional specific file or directory path to scan",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "check_cwe_top25"
+      },
+      {
+        "description": "Find variables that may be used before being initialized.",
+        "inputSchema": {
+          "properties": {
+            "function": {
+              "description": "Optional: specific function to analyze",
+              "type": "string"
+            },
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "find_uninitialized"
+      },
+      {
+        "description": "BM25-ranked semantic search with code-aware tokenization. Better than simple text search for natural language queries.",
+        "inputSchema": {
+          "properties": {
+            "doc_type": {
+              "description": "Filter by document type",
+              "enum": ["file", "function", "class", "struct", "method"],
+              "type": "string"
+            },
+            "max_results": {
+              "description": "Maximum results to return (default: 10)",
+              "type": "integer"
+            },
+            "query": { "type": "string" },
+            "repo": {
+              "description": "Repository name (optional, searches all if omitted)",
+              "type": "string"
+            }
+          },
+          "required": ["query"],
+          "type": "object"
+        },
+        "name": "semantic_search"
+      },
+      {
+        "description": "Search over AST-aware code chunks with symbol context.",
+        "inputSchema": {
+          "properties": {
+            "chunk_type": {
+              "description": "Filter by chunk type",
+              "enum": ["function", "method", "class", "trait", "module", "all"],
+              "type": "string"
+            },
+            "max_results": {
+              "description": "Maximum results to return (default: 10)",
+              "type": "integer"
+            },
+            "query": { "type": "string" },
+            "repo": {
+              "description": "Optional: limit to specific repository",
+              "type": "string"
+            }
+          },
+          "required": ["query"],
+          "type": "object"
+        },
+        "name": "search_chunks"
+      },
+      {
+        "description": "Get graph visualization data (call graph, import graph, symbols). HTTP-only tool, not available via MCP.",
+        "inputSchema": {
+          "properties": {
+            "depth": {
+              "description": "Maximum depth (default: 3)",
+              "type": "integer"
+            },
+            "repo": { "type": "string" },
+            "view": {
+              "enum": ["call", "import", "symbol", "hybrid", "control_flow"],
+              "type": "string"
+            }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "get_code_graph"
+      },
+      {
+        "description": "Get suggested fixes for a specific security finding.",
+        "inputSchema": {
+          "properties": {
+            "line": {
+              "description": "Line number of the vulnerability",
+              "type": "integer"
+            },
+            "path": {
+              "description": "File path containing the vulnerability",
+              "type": "string"
+            },
+            "repo": { "type": "string" },
+            "rule_id": {
+              "description": "Rule ID that detected the issue",
+              "type": "string"
+            }
+          },
+          "required": ["repo", "path", "line"],
+          "type": "object"
+        },
+        "name": "suggest_fix"
+      },
+      {
+        "description": "Build and analyze the import/dependency graph for a codebase. Shows which files import which other files, helps identify circular dependencies.",
+        "inputSchema": {
+          "properties": {
+            "direction": {
+              "description": "Direction to show (default: both)",
+              "enum": ["imports", "importers", "both"],
+              "type": "string"
+            },
+            "file": {
+              "description": "Optional: focus on imports from/to a specific file",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "get_import_graph"
+      },
+      {
+        "description": "Find code similar to a specific symbol (function, class, etc.). Useful for finding related implementations or potential duplicates.",
+        "inputSchema": {
+          "properties": {
+            "max_results": {
+              "description": "Maximum results to return (default: 10)",
+              "type": "integer"
+            },
+            "repo": { "type": "string" },
+            "symbol": {
+              "description": "Symbol name to find similar code for",
+              "type": "string"
+            }
+          },
+          "required": ["repo", "symbol"],
+          "type": "object"
+        },
+        "name": "find_similar_to_symbol"
+      },
+      {
+        "description": "Get the control flow graph (CFG) for a function, showing basic blocks, branches, and loops.",
+        "inputSchema": {
+          "properties": {
+            "function": {
+              "description": "Function name to analyze",
+              "type": "string"
+            },
+            "path": {
+              "description": "File path containing the function",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "function"],
+          "type": "object"
+        },
+        "name": "get_control_flow"
+      },
+      {
+        "description": "Find injection vulnerabilities (SQL injection, XSS, command injection, path traversal) using taint analysis.",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "Optional: specific file to analyze",
+              "type": "string"
+            },
+            "repo": { "type": "string" },
+            "vulnerability_types": {
+              "description": "Types of vulnerabilities to find (default: all)",
+              "items": {
+                "enum": ["sql", "xss", "command", "path", "all"],
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "find_injection_vulnerabilities"
+      },
+      {
+        "description": "Get the directory structure and key files of a repository. Returns a tree view with file types and sizes.",
+        "inputSchema": {
+          "properties": {
+            "max_depth": {
+              "description": "Maximum directory depth (default: 4)",
+              "type": "integer"
+            },
+            "repo": {
+              "description": "Repository name or path",
+              "type": "string"
+            }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "get_project_structure"
+      },
+      {
+        "description": "Get the export map for a file or module showing all exported symbols and their types.",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "File path to get exports for",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "get_export_map"
+      },
+      {
+        "description": "Find unreachable code blocks in a function or file using control flow analysis.",
+        "inputSchema": {
+          "properties": {
+            "function": {
+              "description": "Optional: specific function to analyze",
+              "type": "string"
+            },
+            "path": { "description": "File path to analyze", "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "find_dead_code"
+      },
+      {
+        "description": "Scan specifically for OWASP Top 10 2021 vulnerabilities including injection, broken auth, XSS, SSRF, etc.",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "Optional specific file or directory path to scan",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "check_owasp_top10"
+      },
+      {
+        "description": "Trace how tainted data flows from a source location through the code.",
+        "inputSchema": {
+          "properties": {
+            "line": {
+              "description": "Line number of the taint source",
+              "type": "integer"
+            },
+            "path": {
+              "description": "File path containing the source",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "line"],
+          "type": "object"
+        },
+        "name": "trace_taint"
+      },
+      {
+        "description": "Extract code excerpts around specific lines with intelligent context expansion. Automatically expands to function/class boundaries when enabled.",
+        "inputSchema": {
+          "properties": {
+            "context_after": {
+              "description": "Lines of context after (default: 5)",
+              "type": "integer"
+            },
+            "context_before": {
+              "description": "Lines of context before (default: 5)",
+              "type": "integer"
+            },
+            "expand_to_scope": {
+              "description": "Expand to function/class boundaries (default: true)",
+              "type": "boolean"
+            },
+            "lines": {
+              "description": "Line numbers to extract around (1-indexed)",
+              "items": { "type": "integer" },
+              "type": "array"
+            },
+            "max_lines": {
+              "description": "Maximum lines per excerpt (default: 50)",
+              "type": "integer"
+            },
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "lines"],
+          "type": "object"
+        },
+        "name": "get_excerpt"
+      },
+      {
+        "description": "List all identified taint sources (user inputs, file reads, network data) in the codebase.",
+        "inputSchema": {
+          "properties": {
+            "path": {
+              "description": "Optional: specific file to analyze",
+              "type": "string"
+            },
+            "repo": { "type": "string" },
+            "source_types": {
+              "description": "Types of sources to find (default: all)",
+              "items": {
+                "enum": [
+                  "user_input",
+                  "file_read",
+                  "database",
+                  "environment",
+                  "network",
+                  "all"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "get_taint_sources"
+      },
+      {
+        "description": "Get performance metrics including tool execution times, indexing statistics, and server uptime",
+        "inputSchema": {
+          "properties": {
+            "format": {
+              "description": "Output format (default: markdown)",
+              "enum": ["markdown", "json"],
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "get_metrics"
+      },
+      {
+        "description": "Find potential type errors in Python/JavaScript/TypeScript code without running mypy/tsc. Detects type mismatches, undefined variables, etc.",
+        "inputSchema": {
+          "properties": {
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "check_type_errors"
+      },
+      {
+        "description": "Detect circular import dependencies in the codebase. Returns all cycles with the files involved.",
+        "inputSchema": {
+          "properties": { "repo": { "type": "string" } },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "find_circular_imports"
+      },
+      {
+        "description": "Find all references to a symbol across the codebase",
+        "inputSchema": {
+          "properties": {
+            "include_definition": {
+              "description": "Include the definition location (default: true)",
+              "type": "boolean"
+            },
+            "repo": { "type": "string" },
+            "symbol": {
+              "description": "Symbol name to find references for",
+              "type": "string"
+            }
+          },
+          "required": ["repo", "symbol"],
+          "type": "object"
+        },
+        "name": "find_references"
+      },
+      {
+        "description": "Find the definition location of a symbol at a specific position. Enhanced with LSP when available.",
+        "inputSchema": {
+          "properties": {
+            "character": { "type": "integer" },
+            "line": { "type": "integer" },
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "line", "character"],
+          "type": "object"
+        },
+        "name": "go_to_definition"
+      },
+      {
+        "description": "Analyze dependencies and imports for a file or module",
+        "inputSchema": {
+          "properties": {
+            "direction": {
+              "description": "Direction of dependency analysis (default: both)",
+              "enum": ["imports", "imported_by", "both"],
+              "type": "string"
+            },
+            "path": { "description": "File or module path", "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path"],
+          "type": "object"
+        },
+        "name": "get_dependencies"
+      },
+      {
+        "description": "Semantic and keyword search across code. Returns ranked excerpts with surrounding context.",
+        "inputSchema": {
+          "properties": {
+            "file_pattern": {
+              "description": "Glob pattern to filter files",
+              "type": "string"
+            },
+            "max_results": {
+              "description": "Maximum results to return (default: 10)",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Search query - can be natural language or code pattern",
+              "type": "string"
+            },
+            "repo": {
+              "description": "Repository name (optional, searches all if omitted)",
+              "type": "string"
+            }
+          },
+          "required": ["query"],
+          "type": "object"
+        },
+        "name": "search_code"
+      },
+      {
+        "description": "Generate a Software Bill of Materials (SBOM) for a project. Supports CycloneDX and SPDX formats. Parses Cargo.toml, package.json, requirements.txt, and go.mod.",
+        "inputSchema": {
+          "properties": {
+            "compact": {
+              "description": "Output minified JSON without whitespace (default: false)",
+              "type": "boolean"
+            },
+            "format": {
+              "description": "Output format (default: cyclonedx)",
+              "enum": ["cyclonedx", "spdx", "json"],
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "generate_sbom"
+      },
+      {
+        "description": "Get status of incremental indexing including Merkle tree root hash, file counts, and change statistics.",
+        "inputSchema": {
+          "properties": {
+            "repo": { "description": "Repository name", "type": "string" }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "get_incremental_status"
+      },
+      {
+        "description": "Find safe upgrade paths for vulnerable dependencies. Shows which versions fix known vulnerabilities and whether upgrades have breaking changes.",
+        "inputSchema": {
+          "properties": {
+            "dependency": {
+              "description": "Optional: specific dependency to check (checks all vulnerable deps if omitted)",
+              "type": "string"
+            },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo"],
+          "type": "object"
+        },
+        "name": "find_upgrade_path"
+      },
+      {
+        "description": "Get data flow analysis for a function, showing variable definitions and uses.",
+        "inputSchema": {
+          "properties": {
+            "function": { "type": "string" },
+            "path": { "type": "string" },
+            "repo": { "type": "string" }
+          },
+          "required": ["repo", "path", "function"],
+          "type": "object"
+        },
+        "name": "get_data_flow"
+      },
+      {
+        "description": "Get the full definition of a symbol with surrounding context. Returns the source code with line numbers.",
+        "inputSchema": {
+          "properties": {
+            "context_lines": {
+              "description": "Number of context lines before/after (default: 5)",
+              "type": "integer"
+            },
+            "repo": { "type": "string" },
+            "symbol": {
+              "description": "Fully qualified symbol name (e.g., 'MyStruct', 'module::function')",
+              "type": "string"
+            }
+          },
+          "required": ["repo", "symbol"],
+          "type": "object"
+        },
+        "name": "get_symbol_definition"
+      }
+    ]
+  }
+}
