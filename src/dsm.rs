@@ -1,6 +1,13 @@
+//! DSM (Dinucleotide Scoring Matrix) tables for RNA-RNA interaction energy calculations.
+//!
+//! These tables are used for scoring RNA base pairs and computing interaction energies.
+//! Not all tables are currently used - they are kept for future matrix support.
+
+#![allow(dead_code)]
+
 pub const GAP: i32 = 0; // DSM gap value
 pub const DSM_N: usize = 6; // DSM gap size
-pub type DsmTable = [[[[i32; 6]; 6]; 6]; 6]; // DSM type
+pub type DsmTable = [[[[i16; 6]; 6]; 6]; 6]; // DSM type
 
 pub const DSM_EXTEND_POS: DsmTable = [
     [
@@ -606,6 +613,26 @@ pub static DSM_EXTEND_NEG: DsmTable = [
             [1, 2, 2, 2, 2, 2],
         ],
     ],
+];
+
+// Pair validity matrices (1 = valid pair, 0 = invalid)
+// Indices: 0=Gap, 1=A, 2=G, 3=C, 4=U, 5=N
+pub const PAIR_MAT: [[u8; 6]; 6] = [
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0], // A-U
+    [0, 0, 0, 1, 1, 0], // G-C, G-U
+    [0, 0, 1, 0, 0, 0], // C-G
+    [0, 1, 1, 0, 0, 0], // U-A, U-G
+    [0, 0, 0, 0, 0, 0],
+];
+
+pub const PAIR_MAT_NO_GU: [[u8; 6]; 6] = [
+    [0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0], // A-U
+    [0, 0, 0, 1, 0, 0], // G-C
+    [0, 0, 1, 0, 0, 0], // C-G
+    [0, 1, 0, 0, 0, 0], // U-A
+    [0, 0, 0, 0, 0, 0],
 ];
 
 // #nt added, to be multiplied by extpen
@@ -1216,7 +1243,8 @@ pub const DSM_T04_POS: DsmTable = [
     ],
 ];
 
-pub const DSM_t04_NEG: DsmTable = [
+#[allow(dead_code)]
+pub const DSM_T04_NEG: DsmTable = [
     [
         [
             [-2000, -123, -123, -123, -123, -123],
@@ -2428,7 +2456,8 @@ pub const DSM_T99_NEG: DsmTable = [
     ],
 ];
 
-pub const DMS_T99: DsmTable = [
+#[allow(dead_code)]
+pub const DSM_T99: DsmTable = [
     // based on Turner 1999 parameters
     [
         [
