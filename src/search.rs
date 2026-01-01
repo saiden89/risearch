@@ -247,15 +247,19 @@ impl Grid {
 
 pub fn run_search(
     queries: &[(String, Vec<u8>)],
-    index: &dyn RisearchIndexTrait,
+    index: &impl RisearchIndexTrait,
     output: impl AsRef<Path>,
     opts: &SearchArgs,
 ) -> Result<()> {
+    // Create output writer
+    let mut writer: Box<dyn Write> = if output.as_ref() == Path::new("-") {
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
+    };
     let seed_spec = opts.seed.as_deref().unwrap_or("6");
     let parsed_spec = SeedSpec::from_str(seed_spec)
         .map_err(|e| anyhow!("Failed to parse seed specification: {}", e))?;
-    let mut writer =
-        std::fs::File::create(output.as_ref()).context("Failed to create output file")?;
 
     debug!("run_search called with {} queries", queries.len());
 
@@ -1763,7 +1767,7 @@ fn trace_right(
 
 #[allow(clippy::too_many_arguments)]
 fn print_detailed_output(
-    w: &mut std::fs::File,
+    w: &mut dyn std::io::Write,
     q_id: &str,
     q_seq: &[u8],
     q_start: usize,

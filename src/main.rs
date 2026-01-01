@@ -95,7 +95,7 @@ enum Commands {
         #[arg(short = 'i', long = "index", value_name = "INDEX")]
         index: PathBuf,
 
-        /// Output file for search results
+        /// Output file for search results (use '-' for stdout)
         #[arg(short = 'o', long = "output", value_name = "FILE")]
         output: PathBuf,
 
