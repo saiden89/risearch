@@ -335,6 +335,8 @@ pub fn run_search(
     // Let's assume max extension around 100-200.
     let mut ctx = DpContext::new(200, 200);
 
+    let mut all_hits = Vec::new();
+
     for (q_id, q_seq) in queries {
         debug!("Processing query: {} (len={})", q_id, q_seq.len());
 
@@ -342,21 +344,77 @@ pub fn run_search(
         let seeds = find_seeds_for_query(q_seq, index, &opts.seed)?;
         debug!("  Found {} seed candidates", seeds.len());
 
-        let mut hit_count = 0;
         for candidate in seeds {
             if let Some(hit) =
                 process_candidate(q_id, q_seq, index, &candidate, &opts.extend, &mut ctx)
             {
-                print_search_hit(&mut writer, &hit)?;
-                hit_count += 1;
+                // Defer printing; collect first
+                all_hits.push(hit);
             }
-        }
-        if hit_count > 0 {
-            debug!("  Reported {} hits", hit_count);
         }
     }
 
+    // Deduplicate logic
+    let deduped = deduplicate_hits(all_hits);
+
+    for hit in deduped {
+        print_search_hit(&mut writer, &hit)?;
+    }
+
     Ok(())
+}
+
+fn deduplicate_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    if hits.is_empty() {
+        return hits;
+    }
+
+    // Sort by Energy ascending (best first).
+    // If energy equal, use query_id, target_id, etc. for stability.
+    hits.sort_by(|a, b| {
+        a.energy
+            .partial_cmp(&b.energy)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Secondary sorts for deterministic behavior
+            .then_with(|| a.q_start.cmp(&b.q_start))
+    });
+
+    let mut kept: Vec<SearchHit> = Vec::new();
+
+    for h in hits {
+        let is_shadowed = kept.iter().any(|k| {
+            // Check if 'k' shadows 'h'.
+            // condition 1: Energy of k is better or equal (handled by sort)
+
+            // condition 2: h is contained in k
+            let q_contained = k.q_start <= h.q_start && k.q_end >= h.q_end;
+            let t_contained = k.t_start <= h.t_start && k.t_end >= h.t_end;
+
+            if !q_contained || !t_contained {
+                return false;
+            }
+
+            // condition 3: h starts STRICTLY after k
+            // This allows nested hits if they share the same start (e.g. q1-20 vs q1-15),
+            // but filters hits that are internal sub-segments starting later (e.g. q1-20 vs q3-20).
+            if h.q_start == k.q_start {
+                return false;
+            }
+
+            true
+        });
+
+        if !is_shadowed {
+            kept.push(h);
+        } else {
+            trace!(
+                "Filtered shadowed hit: q{}-{}:t{}-{} (E={}) by better hit",
+                h.q_start, h.q_end, h.t_start, h.t_end, h.energy
+            );
+        }
+    }
+
+    kept
 }
 
 //TODO: improve performance via better search strategies!
@@ -761,13 +819,31 @@ fn extend_seed(
 
     // MAXIMALITY CHECK
     // Skip non-maximal seeds: if the seed can be extended by a valid base pair
-    // on either end, it's a sub-seed of a longer match and will be found later.
+    // on either end, it's a sub-seed of a longer match and will    // MAXIMALITY CHECK
 
-    // 1. Left extendable? Check if q[q_pos-1] pairs with t[t_pos+len]
+    // DEBUG: Always print to verify execution and values
+    trace!(
+        "DEBUG_MAX: ENTERING extend_seed q_pos={} t_pos={} len={} delta_g={}",
+        q_pos, t_pos, len, opts.delta_g
+    );
+
+    // 1. Left extendable?
     if q_pos > 0 && t_pos + len < t_seq.len() {
         let q_prev = Base::from_byte(q_seq[q_pos - 1]).idx();
         let t_next = Base::from_byte(t_seq[t_pos + len]).idx();
-        if PAIR_MAT[q_prev][t_next] != 0 {
+        let p_class = PAIR_MAT[q_prev][t_next];
+
+        trace!(
+            "DEBUG_MAX: Left Check q_pos={} t_pos={} len={} q_prev={} t_next={} pair={}",
+            q_pos, t_pos, len, q_prev, t_next, p_class
+        );
+
+        if p_class != 0 {
+            // DEBUG: Log pruned seed
+            trace!(
+                "DEBUG_MAX: Pruned Left-Ext: q_pos={} t_pos={} len={} pair={}",
+                q_pos, t_pos, len, p_class
+            );
             return None;
         }
     }
@@ -776,10 +852,26 @@ fn extend_seed(
     if q_pos + len < q_seq.len() && t_pos > 0 {
         let q_next = Base::from_byte(q_seq[q_pos + len]).idx();
         let t_prev = Base::from_byte(t_seq[t_pos - 1]).idx();
-        if PAIR_MAT[q_next][t_prev] != 0 {
+        let p_class = PAIR_MAT[q_next][t_prev];
+
+        trace!(
+            "DEBUG_MAX: Right Check q_pos={} t_pos={} len={} q_next={} t_prev={} pair={}",
+            q_pos, t_pos, len, q_next, t_prev, p_class
+        );
+
+        if p_class != 0 {
+            trace!(
+                "DEBUG_MAX: Pruned Right-Ext: q_pos={} t_pos={} len={} pair={}",
+                q_pos, t_pos, len, p_class
+            );
             return None;
         }
     }
+
+    trace!(
+        "DEBUG_MAX: Accepted Seed: q_pos={} t_pos={} len={} delta_g={}",
+        q_pos, t_pos, len, opts.delta_g
+    );
 
     let mut seed_energy = 0.0;
 
@@ -807,24 +899,16 @@ fn extend_seed(
         seed_int_str.push(Base::from_byte(qc).pairing_class(Base::from_byte(tc)));
     }
 
-    // DEBUG: Trace internal_mismatch_20nt
+    // DEBUG: Trace internal_mismatch_20nt (removed/disabled)
+    /*
     if opts.max_extension == 20 && seed_int_str.starts_with('U') {
-        println!(
+        trace!(
             "DEBUG_TRACE: seed_int_str={} q_pos={} t_pos={}",
             seed_int_str, q_pos, t_pos
         );
-        for k in 0..len {
-            let q_idx = q_pos + k;
-            let t_idx = t_match_end - k;
-            let qc = q_seq[q_idx];
-            let tc = t_seq[t_idx];
-            let p = Base::from_byte(qc).pairing_class(Base::from_byte(tc));
-            println!(
-                "  k={} q[{}]={} t[{}]={} pair={}",
-                k, q_idx, qc as char, t_idx, tc as char, p
-            );
-        }
+        // ...
     }
+    */
     // Seed interaction string should match C output; omit any extra markers
 
     let max_ext = opts.max_extension as usize;

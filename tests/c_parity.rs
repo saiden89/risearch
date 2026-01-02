@@ -436,6 +436,18 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
         extra_count
     ));
 
+    // DEBUG: Write FULL LISTS to file to avoid truncation
+    let mut debug_out = String::new();
+    debug_out.push_str("RUST RECORDS:\n");
+    for r in &rust_recs {
+        debug_out.push_str(&format!("{:?}\n", r));
+    }
+    debug_out.push_str("\nC RECORDS:\n");
+    for c in &c_recs {
+        debug_out.push_str(&format!("{:?}\n", c));
+    }
+    let _ = std::fs::write("target/debug_parity_report.txt", debug_out);
+
     if mismatch_count > 0 || missing_count > 0 || extra_count > 0 {
         panic!("{}", report);
     }
@@ -572,4 +584,101 @@ fn parity_reproduce_alignment_mismatch() {
     // if rust_out.trim() != c_out.trim() { ... } -- REMOVED
 
     compare_results(&rust_out, &c_out, "alignment_mismatch_repro");
+}
+
+fn run_single_seq_parity(query_seq: &str, target_seq: &str, test_name: &str, args: &[&str]) {
+    let root = workspace_root();
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+
+    let query_path = tmpdir.path().join("query.fa");
+    let target_path = tmpdir.path().join("target.fa");
+
+    // Force uppercase for compatibility
+    let q_upper = query_seq.to_uppercase();
+    let t_upper = target_seq.to_uppercase();
+
+    fs::write(&query_path, format!(">query\n{}\n", q_upper)).expect("write query");
+    fs::write(&target_path, format!(">target\n{}\n", t_upper)).expect("write target");
+
+    let c_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
+    let c_index = tmpdir.path().join("target.pksuf");
+
+    // Index for C
+    let c_index_cmd = std::process::Command::new(&c_bin)
+        .arg("-c")
+        .arg(target_path.to_str().unwrap())
+        .arg("-o")
+        .arg(c_index.to_str().unwrap())
+        .output()
+        .expect("c index creation");
+
+    if !c_index_cmd.status.success() {
+        panic!("C indexing failed: {:?}", c_index_cmd.status);
+    }
+
+    let rust_idx = tmpdir.path().join("target.idx");
+
+    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, args);
+    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+    for line in rust_out.lines() {
+        if line.contains("DEBUG_TRACE") || line.contains("DEBUG_MAX") {
+            println!("{}", line);
+        }
+    }
+    let c_out = search_c(&query_path, &c_index, &c_bin, args);
+
+    compare_results(&rust_out, &c_out, test_name);
+}
+
+#[test]
+fn parity_single_sequence_suite() {
+    // Default args: use relaxed energy for debugging parity
+    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+
+    // 1. Exact Match (Perfect Complement) - Length 20
+    // Query:  UGCUGCUGCUGCUGCUGCUG (20 nt)
+    // Target: GCAGCAGCAGCAGCAGCAGC (20 nt)
+    let q_exact = "UGCUGCUGCUGCUGCUGCUG";
+    let t_exact = "GCAGCAGCAGCAGCAGCAGC";
+    /*
+    run_single_seq_parity(q_exact, t_exact, "exact_match_20nt", &args);
+    */
+
+    // 2. Short exact match (6nt) - Minimal length check
+    // Query: UGCUGC
+    // Target: GCAGCA
+    // Only 6 matches?
+    /*
+    run_single_seq_parity("UGCUGC", "GCAGCA", "short_match_6nt", &args);
+    */
+    // 2. Wobble Match - Length 20
+    // Query:  UGUUGUUGUUGUUGUUGUUG
+    // Target: GCGGCGGCGGCGGCGGCGGCG (allows G-U wobble)
+    /*
+    let q_wobble = "UGUUGUUGUUGUUGUUGUUG";
+    let t_wobble = "GCGGCGGCGGCGGCGGCGGC";
+    run_single_seq_parity(q_wobble, t_wobble, "wobble_match_20nt", &args);
+    */
+
+    let q_mis = "UGCUGCUGCCGCUGCUGCUG"; // 9th char 'C'
+    let t_mis = "GCAGCAGCAGCAGCAGCAGC"; // 9th char 'G' -> G-C match.
+    // Wait. Reverse?
+    // Q 5'..3': U...
+    // T 3'..5': A...
+    // If Q has C at pos 9.
+    // T has G at pos 9 (from 3' end?).
+    // Let's just run it and see.
+    run_single_seq_parity(q_mis, t_mis, "internal_mismatch_20nt", &args);
+
+    // 4. Longer sequence with structure
+    // Mirna let-7a: ugagguaguagguuguauaguu
+    // Target: AACTATACAACCTACTACCTCA (Perfect complement DNA)
+    /*
+    run_single_seq_parity(
+        "ugagguaguagguuguauaguu",
+        "AACTATACAACCTACTACCTCA",
+        "let7a_perfect",
+        &["-l", "20", "-e", "100.0", "-s", "6", "-p3"],
+    );
+     */
 }
