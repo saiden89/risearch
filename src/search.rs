@@ -982,8 +982,8 @@ fn extend_seed(
     // Debug for first few calls in a clean way
     static DEBUG_EXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let c = DEBUG_EXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if c < 5 {
-        trace!(
+    if c < 10 {
+        println!(
             "extend_seed: seed_energy={:.0}, l_score={}, r_score={}, raw_total={:.0}, final={:.2}",
             seed_energy,
             l_score,
@@ -1265,11 +1265,11 @@ fn dp_left(
             let mut val_m = s_mm;
             let mut step_m = TraceStep::Match;
 
-            if s_mq > val_m {
+            if s_mq >= val_m {
                 val_m = s_mq;
                 step_m = TraceStep::GapQ;
             }
-            if s_mt > val_m {
+            if s_mt >= val_m {
                 val_m = s_mt;
                 step_m = TraceStep::GapT;
             }
@@ -1353,7 +1353,7 @@ fn dp_left(
     // We strictly stop when we hit the boundaries (i=0 or j=0) because M is only defined for i,j >= 1
     // and valid paths start at M(1,1) or similar boundaries initialized from (0,0).
 
-    while i > 0 && j > 0 {
+    while i > 0 || j > 0 {
         let _qc = if i <= q_len { q_seq[q_start - i] } else { b'N' };
 
         let qc_byte = if i <= q_start {
@@ -1373,6 +1373,13 @@ fn dp_left(
                 // We emit the character pair corresponding to this match/mismatch
                 fp.push(get_fingerprint_char(qc_byte, tc_byte));
 
+                if i == 0 || j == 0 {
+                    // Should not happen for Match state unless logic is wrong
+                    // In rigorous check: if i=0, we can't be in Match.
+                    // But if we are, we break.
+                    break;
+                }
+
                 let step = tb_m.get(i, j);
                 i -= 1;
                 j -= 1;
@@ -1389,8 +1396,11 @@ fn dp_left(
                 fp.push('Q');
 
                 let step = tb_bq.get(i, j);
-                i -= 1;
-                // j stays same
+                if i > 0 {
+                    i -= 1;
+                } else {
+                    break;
+                }
 
                 match step {
                     TraceStep::Stop => break,
@@ -1408,8 +1418,11 @@ fn dp_left(
                 fp.push('T');
 
                 let step = tb_bt.get(i, j);
-                j -= 1;
-                // i stays same
+                if j > 0 {
+                    j -= 1;
+                } else {
+                    break;
+                }
 
                 match step {
                     TraceStep::Stop => break,
@@ -1465,6 +1478,7 @@ fn dp_right(
     };
 
     // Initial score from seed boundary
+    // C DP_right uses Q(0)->Gap, T(0)->Gap logic ([Q][Gap][T][Gap])
     let mut best_e = s_mat[q_char(0)][GAP_IDX][t_comp(0)][GAP_IDX] as i32;
     let mut best_i = 0;
     let mut best_j = 0;
@@ -1643,11 +1657,11 @@ fn dp_right(
             let mut val_m = s_mm;
             let mut step_m = TraceStep::Match;
 
-            if s_mq > val_m {
+            if s_mq >= val_m {
                 val_m = s_mq;
                 step_m = TraceStep::GapQ;
             }
-            if s_mt > val_m {
+            if s_mt >= val_m {
                 val_m = s_mt;
                 step_m = TraceStep::GapT;
             }
@@ -1656,9 +1670,9 @@ fn dp_right(
             tb_m.set(i, j, step_m);
 
             if val_m != NA_VAL {
-                let curr_e = val_m + s_mat[q_char(i)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
-                if curr_e > best_e {
-                    best_e = curr_e;
+                let term = s_mat[q_char(i)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
+                if val_m + term > best_e {
+                    best_e = val_m + term;
                     best_i = i;
                     best_j = j;
                 }
@@ -1726,7 +1740,7 @@ fn dp_right(
     // Since best_e always comes from M, we start in Match state.
     // We strictly stop when we hit the boundaries (i=0 or j=0).
 
-    while i > 0 && j > 0 {
+    while i > 0 || j > 0 {
         let qc_byte = if q_end + i < q_seq.len() {
             q_seq[q_end + i]
         } else {
@@ -1738,6 +1752,10 @@ fn dp_right(
             DpState::Match => {
                 // Current state is Match (M[i,j])
                 fp.push(get_fingerprint_char(qc_byte, tc_byte));
+
+                if i == 0 || j == 0 {
+                    break;
+                }
 
                 let step = tb_m.get(i, j);
                 i -= 1;
@@ -1755,7 +1773,11 @@ fn dp_right(
                 fp.push('Q');
 
                 let step = tb_bq.get(i, j);
-                i -= 1;
+                if i > 0 {
+                    i -= 1;
+                } else {
+                    break;
+                }
                 // j stays same
 
                 match step {
@@ -1773,7 +1795,11 @@ fn dp_right(
                 fp.push('T');
 
                 let step = tb_bt.get(i, j);
-                j -= 1;
+                if j > 0 {
+                    j -= 1;
+                } else {
+                    break;
+                }
                 // i stays same
 
                 match step {
