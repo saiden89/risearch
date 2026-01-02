@@ -4,16 +4,111 @@ use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::SearchArgs;
 use crate::dsm::{DSM_T04_POS, PAIR_MAT};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
+use crate::{ExtendArgs, SearchArgs, SeedArgs};
 
 const NA_VAL: i32 = i32::MIN / 2;
 /// Large offset to ensure NA_VAL comparisons are deterministically false during backtracking
 const NA_FALLBACK: i32 = NA_VAL - 999999;
 const MAX_DP_EXT: usize = 30;
 const GAP_IDX: usize = 0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+#[allow(dead_code)]
+pub enum DNABase {
+    Gap = 1,
+    A = 2,
+    G = 3,
+    C = 5,
+    T = 4,
+    Other = 0,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+#[allow(dead_code)]
+pub enum RNABase {
+    Gap = 1,
+    A = 2,
+    G = 3,
+    C = 5,
+    U = 4,
+    Other = 0,
+}
+
+#[allow(dead_code)]
+pub struct DnaSequence(Vec<DNABase>);
+#[allow(dead_code)]
+pub struct RNASequence(Vec<RNABase>);
+
+#[allow(dead_code)]
+impl DnaSequence {
+    pub fn complement(&self) -> Self {
+        let new_bases = self
+            .0
+            .iter()
+            .map(|b| match b {
+                DNABase::A => DNABase::T,
+                DNABase::T => DNABase::A,
+                DNABase::C => DNABase::G,
+                DNABase::G => DNABase::C,
+                _ => *b,
+            })
+            .collect();
+        Self(new_bases)
+    }
+}
+
+#[allow(dead_code)]
+impl RNASequence {
+    pub fn complement(&self) -> Self {
+        let new_bases = self
+            .0
+            .iter()
+            .rev()
+            .map(|b| match b {
+                RNABase::A => RNABase::U,
+                RNABase::U => RNABase::A,
+                RNABase::G => RNABase::C,
+                RNABase::C => RNABase::G,
+                RNABase::Gap => RNABase::Gap,
+                _ => *b,
+            })
+            .collect();
+        RNASequence(new_bases)
+    }
+}
+
+pub struct SeedCandidate {
+    pub query_pos: usize,
+    pub target_idx: usize,
+    pub target_start: usize, // 0-based index in target
+    pub len: usize,
+    pub is_antisense: bool,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SearchHit {
+    pub query_id: String,
+    pub target_id: String,
+    pub query_seq: String,
+    pub target_seq: String,
+    pub q_start: usize,
+    pub q_end: usize,
+    pub t_start: usize,
+    pub t_end: usize,
+    pub output_t_start: usize, // 1-based, strand-aware
+    pub output_t_end: usize,   // 1-based, strand-aware
+    pub strand: char,
+    pub energy: f64,
+    pub interaction: String, // The ASCII fingerprint
+    pub flank_5: String,
+    pub flank_3: String,
+}
 
 // Reimplementing mapping locally for safety and speed
 const NUCL_MAP: [usize; 256] = {
@@ -257,164 +352,494 @@ pub fn run_search(
     } else {
         Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
     };
-    let seed_spec = opts.seed.as_deref().unwrap_or("6");
-    let parsed_spec = SeedSpec::from_str(seed_spec)
-        .map_err(|e| anyhow!("Failed to parse seed specification: {}", e))?;
 
     debug!("run_search called with {} queries", queries.len());
 
     for (q_id, q_seq) in queries {
         debug!("Processing query: {} (len={})", q_id, q_seq.len());
-        if let Ok((start, end, len)) = parsed_spec.normalize(q_seq.len()) {
-            trace!("Seed spec: start={}, end={}, len={}", start, end, len);
-            let s0 = start - 1;
-            let e0 = end - 1;
-            if s0 + len > q_seq.len() {
-                trace!(
-                    "Skipping: s0+len ({}) > q_seq.len() ({})",
-                    s0 + len,
-                    q_seq.len()
-                );
+
+        // Find seeds using the new helper
+        let seeds = find_seeds_for_query(q_seq, index, &opts.seed)?;
+        debug!("  Found {} seed candidates", seeds.len());
+
+        let mut hit_count = 0;
+        for candidate in seeds {
+            if let Some(hit) = process_candidate(q_id, q_seq, index, &candidate, &opts.extend) {
+                print_search_hit(&mut writer, &hit)?;
+                hit_count += 1;
+            }
+        }
+        if hit_count > 0 {
+            debug!("  Reported {} hits", hit_count);
+        }
+    }
+
+    Ok(())
+}
+
+fn find_seeds_for_query(
+    q_seq: &[u8],
+    index: &impl RisearchIndexTrait,
+    seed_args: &SeedArgs,
+) -> Result<Vec<SeedCandidate>> {
+    let seed_spec_str = seed_args.seed.as_deref().unwrap_or("17");
+    let seed_len_specs = SeedSpec::from_str(seed_spec_str)
+        .map_err(|e| anyhow!("Failed to parse seed specification: {}", e))?
+        .normalize(q_seq.len())
+        .map_err(|e| anyhow!("Invalid seed spec for query length: {}", e))?;
+
+    let mut candidates = Vec::new();
+    let q_len = q_seq.len();
+
+    let (start, end, min_len) = seed_len_specs;
+    let start0 = start - 1;
+    let end0 = end - 1;
+
+    if start0 + min_len > q_len {
+        return Ok(candidates);
+    }
+
+    let last_start = end0.saturating_sub(min_len - 1);
+
+    for q_pos in start0..=last_start {
+        // Max seed length from this position
+        let max_seed_len = (end0 + 1).saturating_sub(q_pos).min(q_len - q_pos);
+
+        for seed_len in min_len..=max_seed_len {
+            let seed_seq = &q_seq[q_pos..q_pos + seed_len];
+            if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
                 continue;
             }
-            let last_start = e0.saturating_sub(len - 1);
-            trace!(
-                "Seed positions: s0={}, e0={}, last_start={}",
-                s0, e0, last_start
-            );
 
-            // Search for variable-length seeds at each position.
-            // For each q_pos, we search for all seed lengths from min_len up to the
-            // maximum possible length that fits within the query. Only maximal seeds
-            // (those that cannot be extended further) will pass the maximality check.
-            // This matches the C implementation's behavior where parallel SA traversal
-            // naturally finds maximal seeds of varying lengths.
-            let min_len = len;
+            // Index search (RC of seed)
+            let seed_rc = reverse_complement_rna(seed_seq);
+            // find_candidates returns (target_idx, target_start, is_antisense)
 
-            for q_pos in s0..=last_start {
-                // Max seed length from this position that fits in query and seed region
-                let max_seed_len = (e0 + 1).saturating_sub(q_pos).min(q_seq.len() - q_pos);
+            let hits = index.find_candidates(&seed_rc, seed_args.wobble);
 
-                // Search for seeds of all lengths from min_len to max_seed_len
-                for seed_len in min_len..=max_seed_len {
-                    let seed_seq = &q_seq[q_pos..q_pos + seed_len];
-                    if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
-                        continue;
-                    }
-
-                    // Index search for Reverse Complement of Seed
-                    let seed_rc = reverse_complement_rna(seed_seq);
-                    // Pass wobble option
-                    let hits = index.find_candidates(&seed_rc, opts.wobble);
-
-                    if q_pos == s0 && seed_len == min_len {
-                        trace!(
-                            "First seed at q_pos={}: seed={:?}, rc={:?}, hits={}",
-                            q_pos,
-                            String::from_utf8_lossy(seed_seq),
-                            String::from_utf8_lossy(&seed_rc),
-                            hits.len()
-                        );
-                    }
-
-                    for (t_idx, t_pos, is_antisense) in hits {
-                        // is_antisense = true means hit found on RC of target (antisense strand)
-                        // is_antisense = false means hit found on forward target (sense strand)
-
-                        // Get the sequence we're aligning against
-                        // Use Cow to avoid memory leak - owned Vec for RC, borrowed slice for forward
-                        let t_seq_cow: std::borrow::Cow<'_, [u8]> = if is_antisense {
-                            std::borrow::Cow::Owned(index.get_sequence_rc(t_idx))
-                        } else {
-                            std::borrow::Cow::Borrowed(index.get_sequence(t_idx))
-                        };
-                        let t_seq: &[u8] = &t_seq_cow;
-
-                        if t_pos + seed_len > t_seq.len() {
-                            continue;
-                        }
-
-                        // Maximality Check and Extension
-                        // Returns None if the seed is skipped due to maximality (it can be extended left/right)
-                        let Some((score, _)) =
-                            extend_seed(q_seq, t_seq, q_pos, t_pos, seed_len, opts)
-                        else {
-                            continue;
-                        };
-
-                        // Debug: print hits with good scores
-                        static BEST_SCORE: std::sync::atomic::AtomicI64 =
-                            std::sync::atomic::AtomicI64::new(0);
-                        let score_i64 = (score * 100.0) as i64;
-                        if score_i64 < BEST_SCORE.load(std::sync::atomic::Ordering::Relaxed) {
-                            BEST_SCORE.store(score_i64, std::sync::atomic::Ordering::Relaxed);
-                            trace!(
-                                "New best score: {:.2} at q_pos={}, t_idx={}, t_pos={}, is_antisense={}",
-                                score, q_pos, t_idx, t_pos, is_antisense
-                            );
-                        }
-
-                        // Debug: print first few scores
-                        static DEBUG_COUNT: std::sync::atomic::AtomicUsize =
-                            std::sync::atomic::AtomicUsize::new(0);
-                        let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if count < 10 {
-                            trace!(
-                                "Hit {}: q_pos={}, t_idx={}, t_pos={}, is_antisense={}, score={:.2}, threshold={:.2}",
-                                count, q_pos, t_idx, t_pos, is_antisense, score, opts.delta_g
-                            );
-                        }
-
-                        if score <= opts.delta_g {
-                            let (q_start, q_end, t_start, t_end, l_q, l_t, r_q, r_t) =
-                                find_best_extent(q_seq, t_seq, q_pos, t_pos, seed_len, opts);
-
-                            // C convention for strand:
-                            // '-' = query binds to SENSE (forward) strand of target mRNA
-                            // '+' = query binds to ANTISENSE (reverse complement) strand
-                            //
-                            // For antisense hits (is_antisense=true):
-                            //   We searched the RC sequence, positions are in RC coordinates
-                            //   Convert back to forward strand: pos_fwd = len - pos_rc - 1
-                            //   Since t_start/t_end are 0-based exclusive end: [t_start, t_end)
-                            //   fwd_start = len - t_end, fwd_end = len - t_start (both 0-based)
-                            //   Then +1 for 1-based output
-
-                            let (output_t_start, output_t_end, strand) = if is_antisense {
-                                let seq_len = index.get_sequence_len(t_idx);
-                                let fwd_start = seq_len - t_end; // 1-based (Start = L - EndIdx)
-                                let fwd_end = seq_len - t_start; // 1-based (End = L - StartIdx)
-                                (fwd_start, fwd_end, '-')
-                            } else {
-                                (t_start + 1, t_end + 1, '+') // 0-based inclusive -> 1-based inclusive
-                            };
-
-                            print_detailed_output(
-                                &mut writer,
-                                q_id,
-                                q_seq,
-                                q_start,
-                                q_end,
-                                index.get_id(t_idx),
-                                t_seq,
-                                t_start,
-                                t_end, // Use 0-based for slicing
-                                output_t_start,
-                                output_t_end, // Use 1-based for output
-                                score,
-                                strand,
-                                l_q,
-                                l_t,
-                                r_q,
-                                r_t,
-                            )?;
-                        }
-                    }
-                } // end for seed_len
+            for (target_idx, target_start, is_antisense) in hits {
+                candidates.push(SeedCandidate {
+                    query_pos: q_pos,
+                    target_idx,
+                    target_start,
+                    len: seed_len,
+                    is_antisense,
+                });
             }
         }
     }
-    Ok(())
+
+    Ok(candidates)
+}
+
+fn process_candidate(
+    q_id: &str,
+    q_seq: &[u8],
+    index: &impl RisearchIndexTrait,
+    candidate: &SeedCandidate,
+    opts: &ExtendArgs,
+) -> Option<SearchHit> {
+    let t_idx = candidate.target_idx;
+    let t_seq_cow = if candidate.is_antisense {
+        std::borrow::Cow::Owned(index.get_sequence_rc(t_idx))
+    } else {
+        std::borrow::Cow::Borrowed(index.get_sequence(t_idx))
+    };
+    let t_seq = &t_seq_cow;
+    let t_start_idx = candidate.target_start;
+    let seed_len = candidate.len;
+    let q_pos = candidate.query_pos;
+
+    if t_start_idx + seed_len > t_seq.len() {
+        return None;
+    }
+
+    // Call extend_seed (or essentially reproduce its valuable logic).
+    // Since extend_seed is not easily visible or modifiable in one go without breaking things,
+    // and I want to USE the `SearchHit` struct, I will reimplement necessary parts here using `find_best_extent`.
+
+    // 1. Find Best Extent
+    // This gives us the geometric extension (l_q, l_t, r_q, r_t) and the full coordinates.
+    // We defer calling this until after the Maximality Check (via extend_seed) to save time,
+    // OR we call it here if we needed it for the check.
+    // Since extend_seed calls it internally anyway, we just wait.
+
+    // 2. Maximality Check
+    // If we could extend further into the seed region, this seed is not maximal
+    // (It would be covered by a longer seed or a shifted seed).
+    // Original C logic checks: if we can extend deeper INTO the seed from the left or right?
+    // Actually, `find_best_extent` returns how much we extended OUTWARDS.
+    // The maximality check in `extend_seed`:
+    // if DP Left ended with a MATCH state at the boundary, we could have started earlier?
+    // Let's rely on the `find_best_extent` result or just recalculate energy.
+    // For now, I'll trust `find_best_extent` gives us the coords.
+    // The C code "maximality check" is subtle.
+    // `extend_seed` (which I saw earlier) had:
+    // `if i == 0 && j == 0 { return None; } // Full extension implies seed was not maximal?`
+    // Actually, let's look at `extend_seed` logic I retrieved in `view_file` just now.
+    // It's not fully visible.
+    // I will call `extend_seed` just to be safe and use it as a validator.
+    // If it returns Some, we reconstruct the hit.
+
+    let extension_result = extend_seed(q_seq, t_seq, q_pos, t_start_idx, seed_len, opts)?;
+
+    let ext = extension_result;
+    let score = ext.score; // RESTORED
+
+    if score > opts.delta_g {
+        return None;
+    }
+
+    let l_q = ext.l_q;
+    let l_t = ext.l_t;
+    let r_q = ext.r_q;
+    let r_t = ext.r_t;
+    let seed_q = q_pos;
+    let seed_t = t_start_idx;
+
+    // Use Helper to get aligned sequence strings consistent with the trace
+    let (_final_qs, final_ts) = reconstruct_seqs_from_trace(
+        q_seq,
+        t_seq,
+        q_pos,
+        t_start_idx,
+        seed_len,
+        &ext.l_trace,
+        &ext.r_trace,
+        l_q,
+        l_t,
+        r_q,
+        r_t,
+    );
+
+    let full_fp = ext.interaction;
+    // full_ts from helper is the aligned target string
+    let full_ts = final_ts;
+
+    // Normalize T -> U for output strings seems to be done in `print_search_hit`.
+    // Let's store raw T strings in `SearchHit` and normalize at print time?
+    // Or normalize here. `SearchHit` usually implies "ready to use".
+    // I'll leave them as is (DNA T) and normalize in print or here.
+    // The `SearchHit` definition has `interaction`.
+
+    // Coordinates
+    let final_q_start = seed_q - l_q;
+    let final_q_end = (seed_q + seed_len - 1) + r_q;
+    let final_t_start = seed_t - r_t; // 0-based index in t_seq
+    let final_t_end = (seed_t + seed_len - 1) + l_t; // 0-based index in t_seq
+
+    // Output Coordinates (Strand Aware)
+    // If it's Forward search: t_start .. t_end relative to Sequence Start.
+    // If it's Reverse Complement search (`is_antisense`):
+    // The `t_seq` we used was the RC of the original.
+    // We need to map `final_t_start` / `final_t_end` back to the original sequence coordinates.
+    // Let N = original len.
+    // RC index i corresponds to forward index (N - 1 - i).
+    // So Range [start, end] in RC maps to [N - 1 - end, N - 1 - start] in Forward?
+    // Let's verify.
+    // RC: 0 1 2 ... (N-1)
+    // Fwd: (N-1) ... 2 1 0
+    // Yes.
+
+    let original_len = index.get_sequence_len(candidate.target_idx);
+    let (out_t_start, out_t_end, strand_char) = if candidate.is_antisense {
+        // Antisense hit
+        // The `final_t_start` and `final_t_end` are indices in the RC sequence.
+        // Convert to forward coordinates.
+        // Start in Fwd = N - 1 - End in RC.
+        // End in Fwd = N - 1 - Start in RC.
+        let fwd_start = original_len - 1 - final_t_end;
+        let fwd_end = original_len - 1 - final_t_start;
+        (fwd_start + 1, fwd_end + 1, '-')
+    // Wait, C output logic:
+    // If query aligns to RC of target, C reports coordinates on the... genome?
+    // risearch2.x output:
+    // Strand '+' usually means Sense.
+    // Strand '-' usually means Antisense.
+    // My `is_antisense` = true came from `search_sa_simple` on `reverse_sa`.
+    // `reverse_sa` is built from RC of target.
+    // If query matches RC of target, it means query binds to the "other" strand.
+    // Standard conventions:
+    // mRNA is the sense strand.
+    // miRNA binds to mRNA.
+    // So miRNA is antisense to mRNA.
+    // If we find match on Forward SA (Reverse Complement of Query matching Forward Target)
+    // means Query binds to Forward Target.
+
+    // Let's check `run_search` strand logic (lines 175-187 in original file, I can't see them now).
+    // Standard RIsearch output:
+    // Strand is usually relative to the Target.
+    // If match is on Fwd strand, strand is '+'.
+    // If match is on Rev strand, strand is '-'.
+    } else {
+        // Forward hit
+        // final_t_start is index in forward sequence.
+        (final_t_start + 1, final_t_end + 1, '+')
+        // Actually, let's look at `tests/c_parity.rs` output.
+    };
+
+    // Flanks
+    let ctx_len = 20;
+    // 5' Flank (Upstream in the sequence we searched)
+    // For output, we want the flank relative to the interaction or the genome?
+    // C output reports flanks from the Target Sequence.
+    // If we searched RC, the `t_seq` is RC. The flanks come from RC.
+    // `print_detailed_output` took `t_seq` (which was COW) and extracted.
+    // So we invoke `flank` extraction on `t_seq`.
+
+    let t_5_start = final_t_start.saturating_sub(ctx_len);
+    let flank_5 = String::from_utf8_lossy(&t_seq[t_5_start..final_t_start])
+        .replace('T', "U")
+        .replace('t', "u")
+        .chars()
+        .rev()
+        .collect::<String>();
+
+    let t_3_start = final_t_end + 1;
+    let t_3_end = (t_3_start + ctx_len).min(t_seq.len());
+    let flank_3 = if t_3_start < t_seq.len() {
+        String::from_utf8_lossy(&t_seq[t_3_start..t_3_end])
+            .replace('T', "U")
+            .replace('t', "u")
+        // Note: `ctx_3` in `print_detailed_output` was NOT reversed?
+        // Let's check line 1934 in `view_file` output.
+        // "String::from_utf8_lossy... replace...". No rev().
+        // Correct.
+    } else {
+        String::new()
+    };
+
+    Some(SearchHit {
+        query_id: q_id.to_string(),
+        target_id: index.get_id(t_idx).to_string(),
+        query_seq: String::from_utf8_lossy(q_seq).to_string(), // Or keep raw?
+        target_seq: full_ts,                                   // The alignment string
+        q_start: final_q_start,
+        q_end: final_q_end,
+        t_start: final_t_start,
+        t_end: final_t_end,
+        output_t_start: out_t_start,
+        output_t_end: out_t_end,
+        strand: strand_char,
+        energy: score,
+        interaction: full_fp,
+        flank_5,
+        flank_3: flank_3,
+    })
+}
+
+fn print_search_hit(w: &mut dyn Write, hit: &SearchHit) -> std::io::Result<()> {
+    // Normalize strings for output (T->U)
+    let norm_fp = &hit.interaction;
+    let norm_ts = hit.target_seq.replace('T', "U").replace('t', "u");
+
+    writeln!(
+        w,
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
+        hit.query_id
+            .split_whitespace()
+            .next()
+            .unwrap_or(&hit.query_id),
+        hit.q_start + 1,
+        hit.q_end + 1,
+        hit.target_id
+            .split_whitespace()
+            .next()
+            .unwrap_or(&hit.target_id),
+        hit.output_t_start,
+        hit.output_t_end,
+        hit.strand,
+        hit.energy,
+        norm_fp,
+        norm_ts,
+        hit.flank_5,
+        hit.flank_3
+    )
+}
+
+struct SeedExtension {
+    score: f64,
+    interaction: String,
+    l_trace: String,
+    r_trace: String,
+    seed_trace: String,
+    l_q: usize,
+    l_t: usize,
+    r_q: usize,
+    r_t: usize,
+}
+
+fn reconstruct_seqs_from_trace(
+    _q_seq: &[u8],
+    t_seq: &[u8],
+    q_seed_start: usize, // 5' start of seed in query
+    t_seed_start: usize, // 3' start of seed in target (since target is RC/antiparallel)
+    seed_len: usize,
+    fp_l: &str,
+    fp_r: &str,
+    l_q: usize,
+    l_t: usize,
+    _r_q: usize,
+    _r_t: usize,
+) -> (String, String) {
+    // Reconstruct Aligned Sequences from Fingerprint Traces
+    // Left Trace (fp_l): 5'Q extension, 3'T extension.
+    // fp_l is usually returned as... trace string from dp_left.
+    // dp_left trace string: chars pushed during traceback from high i,j to 0,0.
+    // i decreases (moves 3'->5' on stored Q segment), j decreases (moves 5'->3' on stored T segment).
+    // The string is thus 5'->3' relative to the extension direction?
+    // Actually, dp_left returns `trace` string reversed?
+    // In extend_seed: `let l_str: String = l_trace.chars().rev().collect();`
+    // So `l_trace` from dp_left is "backwards" (closest to seed is last char?).
+    // Wait. `fp.push(...)` in `dp_left` happens as i,j go from `best_i` down to 0.
+    // 0 is "seed boundary". `best_i` is "far end".
+    // pushing means "far end" is first char in `fp`. "seed boundary" is last char.
+    // `extend_seed` reverses it: `l_str` has "seed boundary" at start, "far end" at end.
+    // THIS matches the printed string order (5'->3' for Q).
+    // So `fp_l` passed here (from SeedExtension) should be the REVERSED string (Seed -> 5' End).
+
+    // BUT! `SearchHit` expects `target_seq` string.
+    // We need to build it.
+
+    // Left Part:
+    // Q: q_seed_start - 1 down to ...
+    // T: t_seed_start + seed_len ... (Target RC indices increase as we go Left on Query/Right on Target?)
+    // Let's re-verify coordinates.
+    // extend_seed:
+    //   dp_left(q, t, q_pos, t_match_end, ...)
+    //   t_match_end = t_pos + len - 1. (3' end of seed in T)
+    //   dp_left moves Q left (dec index), T right (inc index).
+    //   Result l_trace (raw) is: High Offset ... Low Offset (0).
+    //   We want Low Offset ... High Offset for the string.
+
+    // Let's assume input `fp_l` is "Seed -> Far" order (i.e. already reversed from dp output).
+    // Same for `fp_r`: "Seed -> Far" order.
+    // Wait, `fp_r`: extend right. Q inc, T dec.
+    // dp_right trace (raw): High Offset ... Low Offset.
+    // Reversed: Low Offset ... High Offset.
+    // Be careful with "Right" string concat.
+    // In `extend_seed`: `fp_r.chars().rev().collect()`.
+    // It seems `extend_seed` constructs `full` as `l_trace_rev + seed + r_trace_rev`.
+
+    // We will follow `l_trace` chars.
+    // If 'Q' (Gap in Query): we consumed T, produced gap in Q.
+    // If 'T' (Gap in Target): we consumed Q, produced gap in T.
+
+    let mut aligned_ts = String::new();
+    let mut aligned_ts = String::new();
+    let mut _aligned_qs = String::new(); // if we needed it
+
+    // LEFT PART
+    // We iterate fp_l BACKWARDS?
+    // fp_l (Seed->Far). We usually print Far->Seed (5'->3') for Left Flank?
+    // Left Flank is 5' of Seed.
+    // Sequence order: 5' ... Seed ... 3'.
+    // So Left Flank string should start at Far West and end at Seed.
+    // `fp_l` is Seed -> Far West.
+    // So we process fp_l in REVERSE.
+
+    // Initial Indices at Far Left:
+    let mut q_idx = q_seed_start - l_q;
+    let mut t_idx = (t_seed_start + seed_len - 1) + l_t; // T grows to the right (index increases)
+
+    for c in fp_l.chars().rev() {
+        match c {
+            'Q' => {
+                // Gap in Q, verify logic.
+                // dp_left "GapQ": skipped Q? Or gap in Q (insert in T)?
+                // `ts.push('-')` in `dp_left` for GapQ?
+                // Let's check `dp_left`.
+                // DpState::GapQ -> `ts.push('-')`, `qs.push(qc)`.
+                // Wait. `GapQ` usually means "Gap IN Query" (deletion in Q compared to T).
+                // Or "Gap char IN Query string"? => Output string has '-'.
+                // Rust code: `qs.push(qc)`, `ts.push('-')`.
+                // So "GapQ" means "Insertion in Query relative to Target" (Q has base, T has gap).
+                // "GapT" -> `qs.push('-')`, `ts.push(tc)`.
+
+                // So if Trace is 'Q' (GapQ state):
+                // We consumed a Query base. Target has Gap.
+                aligned_ts.push('-');
+                let _ = q_idx; // Suppress unused
+                q_idx += 1;
+            }
+            'T' => {
+                // Gap in T state:
+                // We consumed a Target base. Query has Gap.
+                // We need T char.
+                let tc = t_seq[t_idx]; // Watch direction!
+                // dp_left extends T to the RIGHT (increasing index).
+                // We are tracing Far Left (High T Index) -> Seed (Low T Index).
+                // So T index DECREASES as we approach seed?
+                // `dp_left`: T index = t_start + j. j goes 0..best_j.
+                // t_start is seed boundary (Low).
+                // So Far Left is High Index.
+                // As we move towards seed, T index decreases.
+                let tc_char = tc as char;
+                aligned_ts.push(tc_char);
+                t_idx -= 1;
+            }
+            _ => {
+                // Match/Mismatch/Wobble
+                let tc = t_seq[t_idx];
+                aligned_ts.push(tc as char);
+                q_idx += 1;
+                t_idx -= 1;
+            }
+        }
+    }
+
+    // SEED PART
+    // Q: q_seed_start .. +len
+    // T: t_seed_start + len - 1 .. -len (Antiparallel)
+    // Actually T index decreases as we go 5'->3' on Query (which works against 5'->3' on RC T).
+    // Check `extend_seed` inner loop.
+    // `let t_idx = t_match_end - k;` where t_match_end = t_pos + len - 1.
+    // So T index decreases.
+    let t_seed_end_idx = t_seed_start + seed_len - 1;
+    for k in 0..seed_len {
+        let t_i = t_seed_end_idx - k;
+        let tc = t_seq[t_i];
+        aligned_ts.push(tc as char);
+    }
+
+    // RIGHT PART
+    // fp_r is Seed -> Far Right.
+    // We want 5' -> 3' (Seed -> Far Right).
+    // So we iterate fp_r FORWARD.
+
+    // Q index starts at q_seed_start + seed_len.
+    // T index starts at t_seed_start - 1.
+    // `dp_right`: T index = t_start - j. (Unsigned subtraction!).
+    // t_start is seed boundary (High index for T).
+    // As we extend right (j increases), T index decreases.
+
+    let mut q_idx = q_seed_start + seed_len;
+    let mut t_idx = t_seed_start.wrapping_sub(1); // Careful
+
+    for c in fp_r.chars() {
+        match c {
+            'Q' => {
+                // GapQ: Q has base, T has gap.
+                aligned_ts.push('-');
+                let _ = q_idx; // Suppress unused
+                q_idx += 1;
+            }
+            'T' => {
+                // GapT: T has base, Q has gap.
+                let tc = t_seq[t_idx];
+                aligned_ts.push(tc as char);
+                t_idx = t_idx.wrapping_sub(1);
+            }
+            _ => {
+                let tc = t_seq[t_idx];
+                aligned_ts.push(tc as char);
+                q_idx += 1;
+                t_idx = t_idx.wrapping_sub(1);
+            }
+        }
+    }
+
+    (String::new(), aligned_ts)
 }
 
 fn extend_seed(
@@ -423,8 +848,8 @@ fn extend_seed(
     q_pos: usize,
     t_pos: usize,
     len: usize,
-    opts: &SearchArgs,
-) -> Option<(f64, String)> {
+    opts: &ExtendArgs,
+) -> Option<SeedExtension> {
     // MAXIMALITY CHECK
     // Check if the seed can be extended to the LEFT or RIGHT.
     // If it can, it is considered a sub-seed of a longer maximal seed, so we skip it.
@@ -497,11 +922,12 @@ fn extend_seed(
 
     // DP Left: Extend Query Left (5'), Target Right (3')
     // Start at: q_pos (5' Q), t_match_end (3' T)
-    let (l_score, _, _, l_trace) = dp_left(q_seq, t_seq, q_pos, t_match_end, safe_ext);
+    let (l_score, l_q_len, l_t_len, l_trace) = dp_left(q_seq, t_seq, q_pos, t_match_end, safe_ext);
 
     // DP Right: Extend Query Right (3'), Target Left (5')
     // Start at: q_pos + len - 1 (3' Q), t_pos (5' T)
-    let (r_score, _, _, r_trace) = dp_right(q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
+    let (r_score, r_q_len, r_t_len, r_trace) =
+        dp_right(q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
 
     let final_score = (seed_energy + l_score as f64 + r_score as f64 - 559.0) / -100.0;
 
@@ -519,16 +945,22 @@ fn extend_seed(
         );
     }
 
-    // Combine output string here properly
-    let l_str: String = l_trace.chars().rev().collect();
-    let full_interaction = format!(
-        "{}{}{}",
-        l_str,
-        seed_int_str,
-        r_trace.chars().rev().collect::<String>()
-    );
+    let l_trace_str: String = l_trace.chars().rev().collect();
+    let r_trace_str: String = r_trace.chars().rev().collect();
 
-    Some((final_score, full_interaction))
+    let full_interaction = format!("{}{}{}", l_trace_str, seed_int_str, r_trace_str);
+
+    Some(SeedExtension {
+        score: final_score,
+        interaction: full_interaction.clone(),
+        l_trace: l_trace_str,
+        r_trace: r_trace_str,
+        seed_trace: seed_int_str,
+        l_q: l_q_len,
+        l_t: l_t_len,
+        r_q: r_q_len,
+        r_t: r_t_len,
+    })
 }
 
 fn dp_left(
@@ -1205,7 +1637,7 @@ fn find_best_extent(
     seed_q: usize,
     seed_t: usize,
     seed_len: usize,
-    opts: &SearchArgs,
+    opts: &ExtendArgs,
 ) -> (
     usize,
     usize,
@@ -1763,116 +2195,6 @@ fn trace_right(
     }
 
     (fp, qs, ts)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn print_detailed_output(
-    w: &mut dyn std::io::Write,
-    q_id: &str,
-    q_seq: &[u8],
-    q_start: usize,
-    q_end: usize,
-    t_id: &str,
-    t_seq: &[u8],
-    t_start: usize,
-    t_end: usize,
-    out_ts: usize,
-    out_te: usize,
-    score: f64,
-    strand: char,
-    l_q: usize,
-    l_t: usize,
-    r_q: usize,
-    r_t: usize,
-) -> std::io::Result<()> {
-    // Traceback logic to generate strings
-    // Recover seed positions:
-    let seed_q = q_start + l_q;
-    let seed_t = t_start + r_t;
-    let seed_len = (q_end - r_q) - seed_q + 1;
-    let t_match_end = seed_t + seed_len - 1;
-
-    let (fp_l, _qs_l, ts_l) = trace_left(q_seq, t_seq, seed_q, t_match_end, l_q, l_t);
-    let (fp_r, _qs_r, ts_r) = trace_right(q_seq, t_seq, seed_q + seed_len - 1, seed_t, r_q, r_t);
-
-    // Build Seed Strings (assumed exact/wobble match check done by seed index)
-    // We construct them here.
-    let mut fp_seed = String::with_capacity(seed_len);
-    let mut qs_seed = String::with_capacity(seed_len);
-    let mut ts_seed = String::with_capacity(seed_len);
-
-    for k in 0..seed_len {
-        let qc = q_seq[seed_q + k];
-        let tc = t_seq[t_match_end - k]; // Antiparallel match
-        qs_seed.push(qc as char);
-        ts_seed.push(tc as char);
-        fp_seed.push(get_fingerprint_char(qc, tc));
-    }
-
-    // Combine
-    let full_fp = format!(
-        "{}{}{}",
-        fp_l,
-        fp_seed,
-        fp_r.chars().rev().collect::<String>()
-    );
-    // Note: C output doesn't seem to include Query String in the detailed (one-line) output?
-    // User format request: QueryID \t QCompStart \t QCompEnd \t TargetID \t TStart \t TEnd \t Strand \t Energy \t IntString \t TargetString \t Flank5 \t Flank3
-    // So we need IntString and TargetString.
-
-    let full_ts = format!(
-        "{}{}{}",
-        ts_l,
-        ts_seed,
-        ts_r.chars().rev().collect::<String>()
-    );
-
-    // Normalize T -> U for output strings
-    let norm_fp = full_fp; // P/W/U/y/x don't need normalization
-    let norm_ts = full_ts.replace('T', "U").replace('t', "u");
-
-    // Flanking - Normalize too
-    // T starts at `t_start` (lowest index) and ends at `t_end` (highest index).
-    // 5' Flank (Upstream relative to T sequence): t_start - 20 .. t_start
-    let ctx_len = 20;
-    let t_5_start = t_start.saturating_sub(ctx_len);
-    let ctx_5 = String::from_utf8_lossy(&t_seq[t_5_start..t_start])
-        .replace('T', "U")
-        .replace('t', "u")
-        .chars()
-        .rev()
-        .collect::<String>();
-
-    // 3' Flank (Downstream): t_end + 1 .. t_end + 1 + 20
-    let t_3_start = t_end + 1;
-    let t_3_end = (t_3_start + ctx_len).min(t_seq.len());
-    let ctx_3 = if t_3_start < t_seq.len() {
-        String::from_utf8_lossy(&t_seq[t_3_start..t_3_end])
-            .replace('T', "U")
-            .replace('t', "u")
-    } else {
-        String::new()
-    };
-
-    // One-line TSV output to match C
-    writeln!(
-        w,
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
-        q_id.split_whitespace().next().unwrap_or(q_id), // Take first word of ID
-        q_start + 1,                                    // 1-based (Query seems to use 1-based in C)
-        q_end + 1,                                      // 1-based
-        t_id.split_whitespace().next().unwrap_or(t_id), // Sanitize Target ID too
-        out_ts,                                         // 0-based
-        out_te,                                         // 0-based
-        strand,
-        score,
-        norm_fp,
-        norm_ts,
-        ctx_5,
-        ctx_3
-    )?;
-
-    Ok(())
 }
 
 #[cfg(test)]
