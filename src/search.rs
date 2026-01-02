@@ -4,80 +4,13 @@ use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::dsm::{DSM_T04_POS, PAIR_MAT};
+use crate::dsm::{Base, DSM_T04_POS, PAIR_MAT};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
 use crate::{ExtendArgs, SearchArgs, SeedArgs};
 
 const MAX_DP_EXT: usize = 30;
-const GAP_IDX: usize = 0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(usize)]
-#[allow(dead_code)]
-pub enum DNABase {
-    Gap = 1,
-    A = 2,
-    G = 3,
-    C = 5,
-    T = 4,
-    Other = 0,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(usize)]
-#[allow(dead_code)]
-pub enum RNABase {
-    Gap = 1,
-    A = 2,
-    G = 3,
-    C = 5,
-    U = 4,
-    Other = 0,
-}
-
-#[allow(dead_code)]
-pub struct DnaSequence(Vec<DNABase>);
-#[allow(dead_code)]
-pub struct RNASequence(Vec<RNABase>);
-
-#[allow(dead_code)]
-impl DnaSequence {
-    pub fn complement(&self) -> Self {
-        let new_bases = self
-            .0
-            .iter()
-            .map(|b| match b {
-                DNABase::A => DNABase::T,
-                DNABase::T => DNABase::A,
-                DNABase::C => DNABase::G,
-                DNABase::G => DNABase::C,
-                _ => *b,
-            })
-            .collect();
-        Self(new_bases)
-    }
-}
-
-#[allow(dead_code)]
-impl RNASequence {
-    pub fn complement(&self) -> Self {
-        let new_bases = self
-            .0
-            .iter()
-            .rev()
-            .map(|b| match b {
-                RNABase::A => RNABase::U,
-                RNABase::U => RNABase::A,
-                RNABase::G => RNABase::C,
-                RNABase::C => RNABase::G,
-                RNABase::Gap => RNABase::Gap,
-                _ => *b,
-            })
-            .collect();
-        RNASequence(new_bases)
-    }
-}
+const GAP_IDX: usize = Base::Gap as usize;
 
 pub trait Sequence {
     fn reverse_complement_dna(&self) -> Vec<u8>;
@@ -90,7 +23,10 @@ impl Sequence for [u8] {
     }
 
     fn reverse_complement_rna(&self) -> Vec<u8> {
-        self.iter().rev().map(|&b| complement_rna(b)).collect()
+        self.iter()
+            .rev()
+            .map(|&b| Base::from_byte(b).complement().to_u8_upper())
+            .collect()
     }
 }
 
@@ -139,8 +75,9 @@ const NUCL_MAP: [usize; 256] = {
     table
 };
 
-/// Maps a nucleotide byte to its DSM index
-/// - 0 = gap, 1 = A, 2 = G, 3 = C, 4 = U/T, 5 = other
+/// Maps nucleotide byte to DSM index (equivalent to Base::from_byte().idx())
+/// Uses lookup table for performance. See Base enum for index values:
+/// Gap=0, A=1, G=2, C=3, U/T=4, N=5
 #[inline(always)]
 fn dsm_idx(b: u8) -> usize {
     NUCL_MAP[b as usize]
@@ -877,7 +814,7 @@ fn extend_seed(
         // Build interaction string
         let qc = q_seq[q_idx];
         let tc = t_seq[t_idx];
-        seed_int_str.push(get_fingerprint_char(qc, tc));
+        seed_int_str.push(Base::from_byte(qc).pairing_class(Base::from_byte(tc)));
     }
     // Seed interaction string should match C output; omit any extra markers
 
@@ -1235,7 +1172,7 @@ fn dp_left(
             DpState::Match => {
                 // Current state is Match (M[i,j])
                 // We emit the character pair corresponding to this match/mismatch
-                fp.push(get_fingerprint_char(qc_byte, tc_byte));
+                fp.push(Base::from_byte(qc_byte).pairing_class(Base::from_byte(tc_byte)));
 
                 if i == 0 || j == 0 {
                     // Should not happen for Match state unless logic is wrong
@@ -1595,7 +1532,7 @@ fn dp_right(
         match state {
             DpState::Match => {
                 // Current state is Match (M[i,j])
-                fp.push(get_fingerprint_char(qc_byte, tc_byte));
+                fp.push(Base::from_byte(qc_byte).pairing_class(Base::from_byte(tc_byte)));
 
                 if i == 0 || j == 0 {
                     break;
@@ -1654,32 +1591,6 @@ fn dp_right(
     }
 
     (best_e, best_i, best_j, fp)
-}
-
-/// RNA reverse complement helper
-#[inline]
-fn complement_rna(b: u8) -> u8 {
-    match b {
-        b'A' | b'a' => b'U',
-        b'C' | b'c' => b'G',
-        b'G' | b'g' => b'C',
-        b'U' | b'u' | b'T' | b't' => b'A',
-        _ => b'N',
-    }
-}
-
-#[inline]
-fn get_fingerprint_char(qc: u8, tc: u8) -> char {
-    const A: usize = 1;
-    const G: usize = 2;
-    const C: usize = 3;
-    const U: usize = 4;
-
-    match (dsm_idx(qc), dsm_idx(tc)) {
-        (A, U) | (U, A) | (G, C) | (C, G) => 'P', // Watson-Crick pair
-        (G, U) | (U, G) => 'W',                   // Wobble pair
-        _ => 'U',                                 // Unmatched
-    }
 }
 
 #[cfg(test)]
