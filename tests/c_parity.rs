@@ -456,12 +456,21 @@ fn parity_default_config() {
 
     // Debug: Print extend_seed traces captured from stdout
     for line in rust_out.lines() {
-        if line.starts_with("extend_seed:") {
-            println!("{}", line);
+        if line.contains("C_DEBUG:") {
+            if line.contains("final=-20.49") || line.contains("final=-21.50") {
+                println!("RUST: {}", line);
+            }
         }
     }
 
     let c_out = search_c(&query_path, &c_index, &c_bin, &args);
+    for line in c_out.lines() {
+        if line.contains("C_DEBUG:") {
+            if line.contains("final=-20.49") || line.contains("final=-21.50") {
+                println!("C   : {}", line);
+            }
+        }
+    }
 
     compare_results(&rust_out, &c_out, "default_config");
 }
