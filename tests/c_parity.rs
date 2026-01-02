@@ -110,7 +110,11 @@ fn index_and_search_rust(
     let output = cmd.args(&final_args).output().expect("run risearch");
 
     if !output.status.success() {
-        panic!("Rust search failed: {:?}", output.status);
+        panic!(
+            "Rust search failed: {:?}\nStderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     output
 }

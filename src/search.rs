@@ -872,13 +872,21 @@ fn reconstruct_seqs_from_trace(
             }
             'T' => {
                 // GapT: T has base, Q has gap.
-                let tc = t_seq[t_idx];
-                aligned_ts.push(tc as char);
+                let tc = if t_idx < t_seq.len() {
+                    t_seq[t_idx] as char
+                } else {
+                    '-'
+                };
+                aligned_ts.push(tc);
                 t_idx = t_idx.wrapping_sub(1);
             }
             _ => {
-                let tc = t_seq[t_idx];
-                aligned_ts.push(tc as char);
+                let tc = if t_idx < t_seq.len() {
+                    t_seq[t_idx] as char
+                } else {
+                    '-'
+                };
+                aligned_ts.push(tc);
                 q_idx += 1;
                 t_idx = t_idx.wrapping_sub(1);
             }
@@ -952,8 +960,8 @@ fn extend_seed(
         if k < len.saturating_sub(1) {
             let q_b1 = dsm_idx(q_seq[q_idx]);
             let q_b2 = dsm_idx(q_seq[q_idx + 1]);
-            let t_b1 = dsm_idx(t_seq[t_idx]);
-            let t_b2 = dsm_idx(t_seq[t_match_end - (k + 1)]);
+            let t_b1 = dsm_idx(complement_dna(t_seq[t_idx]));
+            let t_b2 = dsm_idx(complement_dna(t_seq[t_match_end - (k + 1)]));
             seed_energy += DSM_T04_POS[q_b1][q_b2][t_b1][t_b2] as f64;
         }
 
@@ -978,20 +986,6 @@ fn extend_seed(
         dp_right(ctx, q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
 
     let final_score = (seed_energy + l_score as f64 + r_score as f64 - 559.0) / -100.0;
-
-    // Debug for first few calls in a clean way
-    static DEBUG_EXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let c = DEBUG_EXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if c < 10 {
-        println!(
-            "extend_seed: seed_energy={:.0}, l_score={}, r_score={}, raw_total={:.0}, final={:.2}",
-            seed_energy,
-            l_score,
-            r_score,
-            seed_energy + l_score as f64 + r_score as f64,
-            final_score
-        );
-    }
 
     let l_trace_str: String = l_trace.chars().rev().collect();
     let r_trace_str: String = r_trace.chars().rev().collect();
@@ -1074,7 +1068,7 @@ fn dp_left(
         if t_start + j >= t_seq.len() {
             0
         } else {
-            dsm_idx(t_seq[t_start + j])
+            dsm_idx(complement_dna(t_seq[t_start + j]))
         }
     };
 
@@ -1262,17 +1256,22 @@ fn dp_left(
                 NA_VAL
             };
 
-            let mut val_m = s_mm;
-            let mut step_m = TraceStep::Match;
+            // max3 logic from C: (a > b) ? a : b; then (c > tmp) ? c : tmp
+            // a=M, b=Bq, c=Bt
+            // If M == Bq, Bq wins. If M/Bq == Bt, M/Bq wins.
+            // Priority: Bq > M > Bt on ties.
 
-            if s_mq >= val_m {
-                val_m = s_mq;
-                step_m = TraceStep::GapQ;
-            }
-            if s_mt >= val_m {
-                val_m = s_mt;
-                step_m = TraceStep::GapT;
-            }
+            let (tmp_val, tmp_step) = if s_mm > s_mq {
+                (s_mm, TraceStep::Match)
+            } else {
+                (s_mq, TraceStep::GapQ)
+            };
+
+            let (val_m, step_m) = if s_mt > tmp_val {
+                (s_mt, TraceStep::GapT)
+            } else {
+                (tmp_val, tmp_step)
+            };
 
             m.set(i, j, val_m);
             tb_m.set(i, j, step_m);
@@ -1292,7 +1291,7 @@ fn dp_left(
                 let bq_up = bq.get(i - 1, j);
 
                 let s_qm = if m_up != NA_VAL {
-                    m_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32
+                    m_up + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32
                 } else {
                     NA_VAL
                 };
@@ -1473,7 +1472,7 @@ fn dp_right(
         if j > t_end {
             0
         } else {
-            dsm_idx(t_seq[t_end - j])
+            dsm_idx(complement_dna(t_seq[t_end - j]))
         }
     };
 
@@ -1654,17 +1653,21 @@ fn dp_right(
                 NA_VAL
             };
 
-            let mut val_m = s_mm;
-            let mut step_m = TraceStep::Match;
+            // max3 logic from C: (a > b) ? a : b; then (c > tmp) ? c : tmp
+            // a=M, b=Bq, c=Bt
+            // Priority: Bq > M > Bt on ties.
 
-            if s_mq >= val_m {
-                val_m = s_mq;
-                step_m = TraceStep::GapQ;
-            }
-            if s_mt >= val_m {
-                val_m = s_mt;
-                step_m = TraceStep::GapT;
-            }
+            let (tmp_val, tmp_step) = if s_mm > s_mq {
+                (s_mm, TraceStep::Match)
+            } else {
+                (s_mq, TraceStep::GapQ)
+            };
+
+            let (val_m, step_m) = if s_mt > tmp_val {
+                (s_mt, TraceStep::GapT)
+            } else {
+                (tmp_val, tmp_step)
+            };
 
             m.set(i, j, val_m);
             tb_m.set(i, j, step_m);
@@ -1708,7 +1711,7 @@ fn dp_right(
                 let bt_left = bt.get(i, j - 1);
 
                 let s_tm = if m_left != NA_VAL {
-                    m_left + s_mat[q_char(i)][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32
+                    m_left + s_mat[GAP_IDX][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32
                 } else {
                     NA_VAL
                 };
