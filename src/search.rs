@@ -637,6 +637,13 @@ fn print_search_hit(w: &mut dyn Write, hit: &SearchHit) -> std::io::Result<()> {
     )
 }
 
+pub struct DpResult {
+    pub score: i32,
+    pub ext_q_len: usize,
+    pub ext_t_len: usize,
+    pub trace: String,
+}
+
 struct SeedExtension {
     score: f64,
     interaction: String,
@@ -826,15 +833,14 @@ fn extend_seed(
 
     // DP Left: Extend Query Left (5'), Target Right (3')
     // Start at: q_pos (5' Q), t_match_end (3' T)
-    let (l_score, l_q_len, l_t_len, l_trace) =
-        dp_left(ctx, q_seq, t_seq, q_pos, t_match_end, safe_ext);
+    let left_res = dp_left(ctx, q_seq, t_seq, q_pos, t_match_end, safe_ext);
 
     // DP Right: Extend Query Right (3'), Target Left (5')
     // Start at: q_pos + len - 1 (3' Q), t_pos (5' T)
-    let (r_score, r_q_len, r_t_len, r_trace) =
-        dp_right(ctx, q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
+    let right_res = dp_right(ctx, q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
 
-    let final_score = (seed_energy + l_score as f64 + r_score as f64 - 559.0) / -100.0;
+    let final_score =
+        (seed_energy + left_res.score as f64 + right_res.score as f64 - 559.0) / -100.0;
 
     // Debug for first few calls in a clean way
     static DEBUG_EXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -843,15 +849,15 @@ fn extend_seed(
         println!(
             "C_DEBUG: extend_seed: seed_energy={:.0}, l_score={}, r_score={}, raw_total={:.0}, final={:.2}",
             seed_energy,
-            l_score,
-            r_score,
-            seed_energy + l_score as f64 + r_score as f64,
+            left_res.score,
+            right_res.score,
+            seed_energy + left_res.score as f64 + right_res.score as f64,
             final_score
         );
     }
 
-    let l_trace_str: String = l_trace.chars().rev().collect();
-    let r_trace_str: String = r_trace.chars().rev().collect();
+    let l_trace_str: String = left_res.trace.chars().rev().collect();
+    let r_trace_str: String = right_res.trace.chars().rev().collect();
 
     let full_interaction = format!("{}{}{}", l_trace_str, seed_int_str, r_trace_str);
 
@@ -860,10 +866,10 @@ fn extend_seed(
         interaction: full_interaction.clone(),
         l_trace: l_trace_str,
         r_trace: r_trace_str,
-        l_q: l_q_len,
-        l_t: l_t_len,
-        r_q: r_q_len,
-        r_t: r_t_len,
+        l_q: left_res.ext_q_len,
+        l_t: left_res.ext_t_len,
+        r_q: right_res.ext_q_len,
+        r_t: right_res.ext_t_len,
     })
 }
 
@@ -874,7 +880,7 @@ fn dp_left(
     q_start: usize,
     t_start: usize,
     max_ext: usize,
-) -> (i32, usize, usize, String) {
+) -> DpResult {
     // DP Left: Extend Query toward 5' (decreasing index), Target toward 3' (increasing index).
     // q_start: index of first base in seed (query 5' end of seed)
     // t_start: index of last base in seed (target 3' end of seed, due to antiparallel binding)
@@ -913,7 +919,12 @@ fn dp_left(
 
     // C: if (lq <= 1 || lt <= 1) return best_e;
     if q_len <= 1 || t_len <= 1 {
-        return (best_e, best_i, best_j, String::new());
+        return DpResult {
+            score: best_e,
+            ext_q_len: best_i,
+            ext_t_len: best_j,
+            trace: String::new(),
+        };
     }
 
     // Resize context grids
@@ -1234,7 +1245,12 @@ fn dp_left(
         }
     }
 
-    (best_e, best_i, best_j, fp)
+    DpResult {
+        score: best_e,
+        ext_q_len: best_i,
+        ext_t_len: best_j,
+        trace: fp,
+    }
 }
 
 fn dp_right(
@@ -1244,7 +1260,7 @@ fn dp_right(
     q_end: usize,
     t_end: usize,
     max_ext: usize,
-) -> (i32, usize, usize, String) {
+) -> DpResult {
     // DP Right: Extend Query toward 3' (increasing index), Target toward 5' (decreasing index).
     // q_end: index of last base in seed (query 3' end of seed)
     // t_end: index of first base in seed (target 5' end of seed, due to antiparallel binding)
@@ -1283,7 +1299,12 @@ fn dp_right(
 
     // C: if (lq <= 1 || lt <= 1) return best_e;
     if q_len <= 1 || t_len <= 1 {
-        return (best_e, best_i, best_j, String::new());
+        return DpResult {
+            score: best_e,
+            ext_q_len: best_i,
+            ext_t_len: best_j,
+            trace: String::new(),
+        };
     }
 
     // Resize context grids
@@ -1593,7 +1614,12 @@ fn dp_right(
         }
     }
 
-    (best_e, best_i, best_j, fp)
+    DpResult {
+        score: best_e,
+        ext_q_len: best_i,
+        ext_t_len: best_j,
+        trace: fp,
+    }
 }
 
 #[cfg(test)]
@@ -1607,10 +1633,13 @@ mod tests {
         let mut ctx = DpContext::new(10, 10);
         let q = b"AAAA";
         let t = b"UUUU";
-        let (score, i, j, _) = dp_left(&mut ctx, q, t, 3, 3, 10);
+        let res = dp_left(&mut ctx, q, t, 3, 3, 10);
         // The actual score depends on the scoring matrix and sequence alignment
         // For now, just verify the function returns without panicking
-        println!("dp_left score: {}, i: {}, j: {}", score, i, j);
+        println!(
+            "dp_left score: {}, i: {}, j: {}",
+            res.score, res.ext_q_len, res.ext_t_len
+        );
     }
 
     #[test]
@@ -1619,7 +1648,10 @@ mod tests {
         let mut ctx = DpContext::new(10, 10);
         let q = b"AAAA";
         let t = b"UUUU";
-        let (score, i, j, _) = dp_right(&mut ctx, q, t, 0, 0, 10);
-        println!("dp_right score: {}, i: {}, j: {}", score, i, j);
+        let res = dp_right(&mut ctx, q, t, 0, 0, 10);
+        println!(
+            "dp_right score: {}, i: {}, j: {}",
+            res.score, res.ext_q_len, res.ext_t_len
+        );
     }
 }
