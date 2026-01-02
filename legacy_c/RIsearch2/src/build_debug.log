@@ -1,0 +1,325 @@
+main.c:24:9: warning: 'NO_OPENMP' macro redefined [-Wmacro-redefined]
+   24 | #define NO_OPENMP
+      |         ^
+<command line>:1:9: note: previous definition is here
+    1 | #define NO_OPENMP 1
+      |         ^
+1 warning generated.
+sa.c:244:42: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  244 |                 fprintf(stderr, "%.2li\t%.2u\t%.2u\t", XSA(sa[i]), XLCP(sa[i]), XIDX(sa[i]));
+      |                                  ~~~~~                 ^~~~~~~~~~
+      |                                  %.2lli
+./sa.h:29:17: note: expanded from macro 'XSA'
+   29 | #define XSA(_x) ((_x)&0x00000003ffffffff)
+      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~
+1 warning generated.
+search.c:24:9: warning: 'NO_OPENMP' macro redefined [-Wmacro-redefined]
+   24 | #define NO_OPENMP
+      |         ^
+<command line>:1:9: note: previous definition is here
+    1 | #define NO_OPENMP 1
+      |         ^
+search.c:226:13: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  225 |     fprintf(stderr, "dp_left, q_start: %lu t_start: %lu lq: %d lt: %d\n",
+      |                                        ~~~
+      |                                        %lld
+  226 |             q_start, t_start, lq, lt);
+      |             ^~~~~~~
+search.c:226:22: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  225 |     fprintf(stderr, "dp_left, q_start: %lu t_start: %lu lq: %d lt: %d\n",
+      |                                                     ~~~
+      |                                                     %lld
+  226 |             q_start, t_start, lq, lt);
+      |                      ^~~~~~~
+search.c:303:13: warning: format specifies type 'int' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  302 |     fprintf(stdout, "DEBUG_C_ARGS_22: Q(2)=%d, Q(1)=%d, T(2)=%d, T(1)=%d\n",
+      |                                            ~~
+      |                                            %lld
+  303 |             Q(2), Q(1), T(2), T(1));
+      |             ^~~~
+search.c:216:15: note: expanded from macro 'Q'
+  216 | #define Q(ix) (XRIS(qsa[q_start - (ix)]))
+      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+search.c:303:19: warning: format specifies type 'int' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  302 |     fprintf(stdout, "DEBUG_C_ARGS_22: Q(2)=%d, Q(1)=%d, T(2)=%d, T(1)=%d\n",
+      |                                                     ~~
+      |                                                     %lld
+  303 |             Q(2), Q(1), T(2), T(1));
+      |                   ^~~~
+search.c:216:15: note: expanded from macro 'Q'
+  216 | #define Q(ix) (XRIS(qsa[q_start - (ix)]))
+      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+search.c:374:25: warning: format specifies type 'int' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  372 |                   "DEBUG_C_ARGS: i=%d, j=%d, Q(i)=%d, Q(i-1)=%d, T(j)=%d, "
+      |                                                   ~~
+      |                                                   %lld
+  373 |                   "T(j-1)=%d\n",
+  374 |                   i, j, Q(i), Q(i - 1), T(j), T(j - 1));
+      |                         ^~~~
+search.c:216:15: note: expanded from macro 'Q'
+  216 | #define Q(ix) (XRIS(qsa[q_start - (ix)]))
+      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+search.c:374:31: warning: format specifies type 'int' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  372 |                   "DEBUG_C_ARGS: i=%d, j=%d, Q(i)=%d, Q(i-1)=%d, T(j)=%d, "
+      |                                                              ~~
+      |                                                              %lld
+  373 |                   "T(j-1)=%d\n",
+  374 |                   i, j, Q(i), Q(i - 1), T(j), T(j - 1));
+      |                               ^~~~~~~~
+search.c:216:15: note: expanded from macro 'Q'
+  216 | #define Q(ix) (XRIS(qsa[q_start - (ix)]))
+      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+search.c:481:51: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  481 |     fprintf(stderr, "best_i: %li, best_j: %li\n", *best_i, *best_j);
+      |                              ~~~                  ^~~~~~~
+      |                              %lli
+search.c:481:60: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  481 |     fprintf(stderr, "best_i: %li, best_j: %li\n", *best_i, *best_j);
+      |                                           ~~~              ^~~~~~~
+      |                                           %lli
+search.c:520:13: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  519 |     fprintf(stderr, "dp_right, q_start: %lu t_start: %lu lq: %d lt: %d\n",
+      |                                         ~~~
+      |                                         %lld
+  520 |             q_start, t_start, lq, lt);
+      |             ^~~~~~~
+search.c:520:22: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  519 |     fprintf(stderr, "dp_right, q_start: %lu t_start: %lu lq: %d lt: %d\n",
+      |                                                      ~~~
+      |                                                      %lld
+  520 |             q_start, t_start, lq, lt);
+      |                      ^~~~~~~
+search.c:748:51: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  748 |     fprintf(stderr, "best_i: %li, best_j: %li\n", *best_i, *best_j);
+      |                              ~~~                  ^~~~~~~
+      |                              %lli
+search.c:748:60: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  748 |     fprintf(stderr, "best_i: %li, best_j: %li\n", *best_i, *best_j);
+      |                                           ~~~              ^~~~~~~
+      |                                           %lli
+search.c:846:19: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  845 |     fprintf(stderr, "printing, backtrack left from i: %d j: %d t_start: %lu\n",
+      |                                                                         ~~~
+      |                                                                         %lld
+  846 |             i, j, t_start);
+      |                   ^~~~~~~
+search.c:983:13: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+  982 |             "printing, backtrack right from i: %d j: %d t_start: %lu \n", i, j,
+      |                                                                  ~~~
+      |                                                                  %lld
+  983 |             t_start);
+      |             ^~~~~~~
+search.c:1153:19: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1152 |     fprintf(stderr, "printing, backtrack left from i: %d j: %d t_start: %lu\n",
+      |                                                                         ~~~
+      |                                                                         %lld
+ 1153 |             i, j, t_start);
+      |                   ^~~~~~~
+search.c:1258:19: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1257 |     fprintf(stderr, "printing, backtrack right from i: %d j: %d t_start: %lu\n",
+      |                                                                          ~~~
+      |                                                                          %lld
+ 1258 |             i, j, t_start);
+      |                   ^~~~~~~
+search.c:1390:11: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1389 |   sprintf(result_str, "%s\t%lu\t%lu\t%s\t%lu\t%lu\t%c\t%.2f", qname,
+      |                            ~~~
+      |                            %lld
+ 1390 |           result->q_new_left + 1, result->q_new_right + 1, name[idx], lpos,
+      |           ^~~~~~~~~~~~~~~~~~~~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:107:55: note: expanded from macro 'sprintf'
+  107 | #define sprintf(str, ...) __sprintf_chk_func (str, 0, __VA_ARGS__)
+      |                                                       ^~~~~~~~~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:87:58: note: expanded from macro '__sprintf_chk_func'
+   87 |         __builtin___sprintf_chk (str, flag, __darwin_obsz(str), __VA_ARGS__)
+      |                                                                 ^~~~~~~~~~~
+search.c:1390:35: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1389 |   sprintf(result_str, "%s\t%lu\t%lu\t%s\t%lu\t%lu\t%c\t%.2f", qname,
+      |                                 ~~~
+      |                                 %lld
+ 1390 |           result->q_new_left + 1, result->q_new_right + 1, name[idx], lpos,
+      |                                   ^~~~~~~~~~~~~~~~~~~~~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:107:55: note: expanded from macro 'sprintf'
+  107 | #define sprintf(str, ...) __sprintf_chk_func (str, 0, __VA_ARGS__)
+      |                                                       ^~~~~~~~~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:87:58: note: expanded from macro '__sprintf_chk_func'
+   87 |         __builtin___sprintf_chk (str, flag, __darwin_obsz(str), __VA_ARGS__)
+      |                                                                 ^~~~~~~~~~~
+search.c:1390:71: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1389 |   sprintf(result_str, "%s\t%lu\t%lu\t%s\t%lu\t%lu\t%c\t%.2f", qname,
+      |                                          ~~~
+      |                                          %lld
+ 1390 |           result->q_new_left + 1, result->q_new_right + 1, name[idx], lpos,
+      |                                                                       ^~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:107:55: note: expanded from macro 'sprintf'
+  107 | #define sprintf(str, ...) __sprintf_chk_func (str, 0, __VA_ARGS__)
+      |                                                       ^~~~~~~~~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:87:58: note: expanded from macro '__sprintf_chk_func'
+   87 |         __builtin___sprintf_chk (str, flag, __darwin_obsz(str), __VA_ARGS__)
+      |                                                                 ^~~~~~~~~~~
+search.c:1391:11: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1389 |   sprintf(result_str, "%s\t%lu\t%lu\t%s\t%lu\t%lu\t%c\t%.2f", qname,
+      |                                               ~~~
+      |                                               %lld
+ 1390 |           result->q_new_left + 1, result->q_new_right + 1, name[idx], lpos,
+ 1391 |           rpos, strand, result->energy);
+      |           ^~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:107:55: note: expanded from macro 'sprintf'
+  107 | #define sprintf(str, ...) __sprintf_chk_func (str, 0, __VA_ARGS__)
+      |                                                       ^~~~~~~~~~~
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_stdio.h:87:58: note: expanded from macro '__sprintf_chk_func'
+   87 |         __builtin___sprintf_chk (str, flag, __darwin_obsz(str), __VA_ARGS__)
+      |                                                                 ^~~~~~~~~~~
+search.c:1470:67: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1470 |     fprintf(stderr, "analyzing q_seed:%lu-%lu, t_start: %lu \n ", q_start + 1,
+      |                                       ~~~                         ^~~~~~~~~~~
+      |                                       %lld
+search.c:1471:13: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1470 |     fprintf(stderr, "analyzing q_seed:%lu-%lu, t_start: %lu \n ", q_start + 1,
+      |                                           ~~~
+      |                                           %lld
+ 1471 |             q_start + q_seed_len, t_start);
+      |             ^~~~~~~~~~~~~~~~~~~~
+search.c:1471:35: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1470 |     fprintf(stderr, "analyzing q_seed:%lu-%lu, t_start: %lu \n ", q_start + 1,
+      |                                                         ~~~
+      |                                                         %lld
+ 1471 |             q_start + q_seed_len, t_start);
+      |                                   ^~~~~~~
+search.c:1488:15: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1485 |               "extension stopped due to start/end position for q_seed:%lu-%lu, "
+      |                                                                       ~~~
+      |                                                                       %lld
+ 1486 |               " rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1487 |               "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1488 |               q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |               ^~~~~~~~~~~
+search.c:1488:28: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1485 |               "extension stopped due to start/end position for q_seed:%lu-%lu, "
+      |                                                                           ~~~
+      |                                                                           %lld
+ 1486 |               " rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1487 |               "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1488 |               q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |                            ^~~~~~~~~~~~~~~~~~~~
+search.c:1506:19: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1503 |                   "extension stopped due to maximality for q_seed:%lu-%lu,  "
+      |                                                                   ~~~
+      |                                                                   %lld
+ 1504 |                   "rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1505 |                   "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1506 |                   q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |                   ^~~~~~~~~~~
+search.c:1506:32: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1503 |                   "extension stopped due to maximality for q_seed:%lu-%lu,  "
+      |                                                                       ~~~
+      |                                                                       %lld
+ 1504 |                   "rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1505 |                   "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1506 |                   q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |                                ^~~~~~~~~~~~~~~~~~~~
+search.c:1522:17: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1520 |                 "stop extension whether maximality or str/end position! %lu "
+      |                                                                         ~~~
+      |                                                                         %lld
+ 1521 |                 "%lu %d %d\n",
+ 1522 |                 q_start, t_start, q_seed_len, t_seed_len);
+      |                 ^~~~~~~
+search.c:1522:26: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1521 |                 "%lu %d %d\n",
+      |                  ~~~
+      |                  %lld
+ 1522 |                 q_start, t_start, q_seed_len, t_seed_len);
+      |                          ^~~~~~~
+search.c:1536:15: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1533 |               "extension stopped due to start/end position for q_seed:%lu-%lu, "
+      |                                                                       ~~~
+      |                                                                       %lld
+ 1534 |               " rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1535 |               "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1536 |               q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |               ^~~~~~~~~~~
+search.c:1536:28: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1533 |               "extension stopped due to start/end position for q_seed:%lu-%lu, "
+      |                                                                           ~~~
+      |                                                                           %lld
+ 1534 |               " rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1535 |               "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1536 |               q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |                            ^~~~~~~~~~~~~~~~~~~~
+search.c:1553:19: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1550 |                   "extension stopped due to maximality for q_seed:%lu-%lu,  "
+      |                                                                   ~~~
+      |                                                                   %lld
+ 1551 |                   "rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1552 |                   "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1553 |                   q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |                   ^~~~~~~~~~~
+search.c:1553:32: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1550 |                   "extension stopped due to maximality for q_seed:%lu-%lu,  "
+      |                                                                       ~~~
+      |                                                                       %lld
+ 1551 |                   "rem_query_len_left: %d, rem_query_len_right: %d, "
+ 1552 |                   "rem_target_len_left: %d, rem_target_len_right: %d \n",
+ 1553 |                   q_start + 1, q_start + q_seed_len, rem_query_len_left,
+      |                                ^~~~~~~~~~~~~~~~~~~~
+search.c:1569:17: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1567 |                 "stop extension whether maximality or str/end position! %lu "
+      |                                                                         ~~~
+      |                                                                         %lld
+ 1568 |                 "%lu %d %d\n",
+ 1569 |                 q_start, t_start, q_seed_len, t_seed_len);
+      |                 ^~~~~~~
+search.c:1569:26: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1568 |                 "%lu %d %d\n",
+      |                  ~~~
+      |                  %lld
+ 1569 |                 q_start, t_start, q_seed_len, t_seed_len);
+      |                          ^~~~~~~
+search.c:1637:23: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1635 |             "nt_count is %d, using blj %li, bli %li, bri %li, brj %li, "
+      |                                        ~~~
+      |                                        %lli
+ 1636 |             "q_seedlen: %d, t_seedlen: %d \n",
+ 1637 |             nt_count, best_left_j, best_left_i, best_right_i, best_right_j,
+      |                       ^~~~~~~~~~~
+search.c:1637:36: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1635 |             "nt_count is %d, using blj %li, bli %li, bri %li, brj %li, "
+      |                                                 ~~~
+      |                                                 %lli
+ 1636 |             "q_seedlen: %d, t_seedlen: %d \n",
+ 1637 |             nt_count, best_left_j, best_left_i, best_right_i, best_right_j,
+      |                                    ^~~~~~~~~~~
+search.c:1637:49: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1635 |             "nt_count is %d, using blj %li, bli %li, bri %li, brj %li, "
+      |                                                          ~~~
+      |                                                          %lli
+ 1636 |             "q_seedlen: %d, t_seedlen: %d \n",
+ 1637 |             nt_count, best_left_j, best_left_i, best_right_i, best_right_j,
+      |                                                 ^~~~~~~~~~~~
+search.c:1637:63: warning: format specifies type 'long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1635 |             "nt_count is %d, using blj %li, bli %li, bri %li, brj %li, "
+      |                                                                   ~~~
+      |                                                                   %lli
+ 1636 |             "q_seedlen: %d, t_seedlen: %d \n",
+ 1637 |             nt_count, best_left_j, best_left_i, best_right_i, best_right_j,
+      |                                                               ^~~~~~~~~~~~
+search.c:1928:52: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1927 |                   "= %lu, q_start = %lu \n",
+      |                      ~~~
+      |                      %lld
+ 1928 |                   seed_len, query_len, seed_score, XSA(sa[j]), XSA(qsa[k]));
+      |                                                    ^~~~~~~~~~
+./sa.h:29:17: note: expanded from macro 'XSA'
+   29 | #define XSA(_x) ((_x)&0x00000003ffffffff)
+      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~
+search.c:1928:64: warning: format specifies type 'unsigned long' but the argument has type 'saidx64_t' (aka 'long long') [-Wformat]
+ 1927 |                   "= %lu, q_start = %lu \n",
+      |                                     ~~~
+      |                                     %lld
+ 1928 |                   seed_len, query_len, seed_score, XSA(sa[j]), XSA(qsa[k]));
+      |                                                                ^~~~~~~~~~~
+./sa.h:29:17: note: expanded from macro 'XSA'
+   29 | #define XSA(_x) ((_x)&0x00000003ffffffff)
+      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~
+42 warnings generated.
