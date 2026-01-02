@@ -9,9 +9,6 @@ use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
 use crate::{ExtendArgs, SearchArgs, SeedArgs};
 
-const NA_VAL: i32 = i32::MIN / 2;
-/// Large offset to ensure NA_VAL comparisons are deterministically false during backtracking
-const NA_FALLBACK: i32 = NA_VAL - 999999;
 const MAX_DP_EXT: usize = 30;
 const GAP_IDX: usize = 0;
 
@@ -309,9 +306,9 @@ fn get_sa_interval(
 /// DP alignment state - replaces magic integers (0=M, 1=Bq, 2=Bt)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DpState {
-    Match, // M - Match/Mismatch
-    GapQ,  // Bq - Bulge in Query
-    GapT,  // Bt - Bulge in Target
+    Match, // M - Match/Mismatch state (paired bases)
+    GapQ,  // Bq - Query Bulge state (gap in target, query base unpaired)
+    GapT,  // Bt - Target Bulge state (gap in query, target base unpaired)
 }
 
 #[derive(Clone, Debug)]
@@ -321,10 +318,10 @@ struct Grid<T> {
     height: usize,
 }
 
-impl<T: Clone + Copy> Grid<T> {
-    fn new(width: usize, height: usize, default: T) -> Self {
+impl<T: Clone + Copy + Default> Grid<T> {
+    fn new(width: usize, height: usize) -> Self {
         Self {
-            data: vec![default; width * height],
+            data: vec![T::default(); width * height],
             width,
             height,
         }
@@ -340,21 +337,17 @@ impl<T: Clone + Copy> Grid<T> {
         self.data[r * self.width + c] = val;
     }
 
-    #[allow(dead_code)]
-    fn resize(&mut self, width: usize, height: usize, default: T) {
+    fn resize(&mut self, width: usize, height: usize) {
         let new_len = width * height;
-        if self.data.capacity() < new_len {
-            self.data.resize(new_len, default);
-        } else {
-            // Reuse existing capacity, just clear and resize logic effectively handled by use usage pattern usually
-            // But for safety let's just resize.
-            // Actually, for DpContext we often want to just ensure size.
-            self.data.resize(new_len, default);
-        }
+        self.data.clear();
+        self.data.resize(new_len, T::default());
         self.width = width;
         self.height = height;
     }
 }
+
+/// Type alias for score grids - uses Option<i32> instead of sentinel value
+type ScoreGrid = Grid<Option<i32>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TraceStep {
@@ -371,10 +364,10 @@ impl Default for TraceStep {
 }
 
 struct DpContext {
-    // Score matrices
-    m: Grid<i32>,
-    bq: Grid<i32>,
-    bt: Grid<i32>,
+    // Score matrices (None = not reachable, Some(score) = reachable with score)
+    m: ScoreGrid,
+    bq: ScoreGrid,
+    bt: ScoreGrid,
 
     // Traceback matrices
     tb_m: Grid<TraceStep>,
@@ -385,22 +378,22 @@ struct DpContext {
 impl DpContext {
     fn new(width: usize, height: usize) -> Self {
         Self {
-            m: Grid::new(width, height, NA_VAL),
-            bq: Grid::new(width, height, NA_VAL),
-            bt: Grid::new(width, height, NA_VAL),
-            tb_m: Grid::new(width, height, TraceStep::Stop),
-            tb_bq: Grid::new(width, height, TraceStep::Stop),
-            tb_bt: Grid::new(width, height, TraceStep::Stop),
+            m: ScoreGrid::new(width, height),
+            bq: ScoreGrid::new(width, height),
+            bt: ScoreGrid::new(width, height),
+            tb_m: Grid::new(width, height),
+            tb_bq: Grid::new(width, height),
+            tb_bt: Grid::new(width, height),
         }
     }
 
     fn resize(&mut self, width: usize, height: usize) {
-        self.m.resize(width, height, NA_VAL);
-        self.bq.resize(width, height, NA_VAL);
-        self.bt.resize(width, height, NA_VAL);
-        self.tb_m.resize(width, height, TraceStep::Stop);
-        self.tb_bq.resize(width, height, TraceStep::Stop);
-        self.tb_bt.resize(width, height, TraceStep::Stop);
+        self.m.resize(width, height);
+        self.bq.resize(width, height);
+        self.bt.resize(width, height);
+        self.tb_m.resize(width, height);
+        self.tb_bq.resize(width, height);
+        self.tb_bt.resize(width, height);
     }
 }
 
@@ -720,8 +713,8 @@ struct SeedExtension {
 fn reconstruct_seqs_from_trace(
     _q_seq: &[u8],
     t_seq: &[u8],
-    q_seed_start: usize, // 5' start of seed in query
-    t_seed_start: usize, // 3' start of seed in target (since target is RC/antiparallel)
+    q_seed_start: usize, // 0-based index of 5' end of seed in query
+    t_seed_start: usize, // 0-based index of 5' end of seed in target (low index; target is antiparallel to query)
     seed_len: usize,
     fp_l: &str,
     fp_r: &str,
@@ -730,96 +723,50 @@ fn reconstruct_seqs_from_trace(
     _r_q: usize,
     _r_t: usize,
 ) -> (String, String) {
-    // Reconstruct Aligned Sequences from Fingerprint Traces
-    // Left Trace (fp_l): 5'Q extension, 3'T extension.
-    // fp_l is usually returned as... trace string from dp_left.
-    // dp_left trace string: chars pushed during traceback from high i,j to 0,0.
-    // i decreases (moves 3'->5' on stored Q segment), j decreases (moves 5'->3' on stored T segment).
-    // The string is thus 5'->3' relative to the extension direction?
-    // Actually, dp_left returns `trace` string reversed?
-    // In extend_seed: `let l_str: String = l_trace.chars().rev().collect();`
-    // So `l_trace` from dp_left is "backwards" (closest to seed is last char?).
-    // Wait. `fp.push(...)` in `dp_left` happens as i,j go from `best_i` down to 0.
-    // 0 is "seed boundary". `best_i` is "far end".
-    // pushing means "far end" is first char in `fp`. "seed boundary" is last char.
-    // `extend_seed` reverses it: `l_str` has "seed boundary" at start, "far end" at end.
-    // THIS matches the printed string order (5'->3' for Q).
-    // So `fp_l` passed here (from SeedExtension) should be the REVERSED string (Seed -> 5' End).
-
-    // BUT! `SearchHit` expects `target_seq` string.
-    // We need to build it.
-
-    // Left Part:
-    // Q: q_seed_start - 1 down to ...
-    // T: t_seed_start + seed_len ... (Target RC indices increase as we go Left on Query/Right on Target?)
-    // Let's re-verify coordinates.
-    // extend_seed:
-    //   dp_left(q, t, q_pos, t_match_end, ...)
-    //   t_match_end = t_pos + len - 1. (3' end of seed in T)
-    //   dp_left moves Q left (dec index), T right (inc index).
-    //   Result l_trace (raw) is: High Offset ... Low Offset (0).
-    //   We want Low Offset ... High Offset for the string.
-
-    // Let's assume input `fp_l` is "Seed -> Far" order (i.e. already reversed from dp output).
-    // Same for `fp_r`: "Seed -> Far" order.
-    // Wait, `fp_r`: extend right. Q inc, T dec.
-    // dp_right trace (raw): High Offset ... Low Offset.
-    // Reversed: Low Offset ... High Offset.
-    // Be careful with "Right" string concat.
-    // In `extend_seed`: `fp_r.chars().rev().collect()`.
-    // It seems `extend_seed` constructs `full` as `l_trace_rev + seed + r_trace_rev`.
-
-    // We will follow `l_trace` chars.
-    // If 'Q' (Gap in Query): we consumed T, produced gap in Q.
-    // If 'T' (Gap in Target): we consumed Q, produced gap in T.
+    // Reconstruct aligned target sequence from fingerprint traces.
+    //
+    // Coordinate system (antiparallel RNA binding):
+    //   Query:  5' ----[seed]----- 3'   (indices increase left to right)
+    //   Target: 3' ----[seed]----- 5'   (indices increase left to right, but binding is antiparallel)
+    //
+    // In the target array:
+    //   - t_seed_start is the LOW index (left side of seed in array)
+    //   - t_seed_start + seed_len - 1 is the HIGH index (right side of seed in array)
+    //   - Due to antiparallel binding:
+    //     * Query 5' (q_seed_start) pairs with Target 3' (t_seed_start + seed_len - 1)
+    //     * Query 3' (q_seed_start + seed_len - 1) pairs with Target 5' (t_seed_start)
+    //
+    // DP extension directions:
+    //   - dp_left:  Query moves 5' (index decreases), Target moves 3' (index increases)
+    //   - dp_right: Query moves 3' (index increases), Target moves 5' (index decreases)
+    //
+    // Trace characters:
+    //   - 'Q' = GapQ state: query has unpaired base, target has gap in alignment
+    //   - 'T' = GapT state: target has unpaired base, query has gap in alignment
+    //   - 'P'/'W'/'U' = paired/wobble/unpaired match state
 
     let mut aligned_ts = String::new();
 
-    // LEFT PART
-    // We iterate fp_l BACKWARDS?
-    // fp_l (Seed->Far). We usually print Far->Seed (5'->3') for Left Flank?
-    // Left Flank is 5' of Seed.
-    // Sequence order: 5' ... Seed ... 3'.
-    // So Left Flank string should start at Far West and end at Seed.
-    // `fp_l` is Seed -> Far West.
-    // So we process fp_l in REVERSE.
-
-    // Initial Indices at Far Left:
+    // LEFT PART (5' extension of query, 3' extension of target)
+    // fp_l is ordered seed-to-far (after reversal in extend_seed).
+    // We iterate REVERSE to build output in 5'->3' order (far-to-seed).
+    // Start at the far-left indices and move toward the seed.
     let mut q_idx = q_seed_start - l_q;
-    let mut t_idx = (t_seed_start + seed_len - 1) + l_t; // T grows to the right (index increases)
+    let mut t_idx = (t_seed_start + seed_len - 1) + l_t;
 
     for c in fp_l.chars().rev() {
         match c {
             'Q' => {
-                // Gap in Q, verify logic.
-                // dp_left "GapQ": skipped Q? Or gap in Q (insert in T)?
-                // `ts.push('-')` in `dp_left` for GapQ?
-                // Let's check `dp_left`.
-                // DpState::GapQ -> `ts.push('-')`, `qs.push(qc)`.
-                // Wait. `GapQ` usually means "Gap IN Query" (deletion in Q compared to T).
-                // Or "Gap char IN Query string"? => Output string has '-'.
-                // Rust code: `qs.push(qc)`, `ts.push('-')`.
-                // So "GapQ" means "Insertion in Query relative to Target" (Q has base, T has gap).
-                // "GapT" -> `qs.push('-')`, `ts.push(tc)`.
-
-                // So if Trace is 'Q' (GapQ state):
-                // We consumed a Query base. Target has Gap.
+                // GapQ state: Query has an unpaired base (bulge in query).
+                // In the aligned target string, this appears as a gap.
                 aligned_ts.push('-');
                 let _ = q_idx; // Suppress unused
                 q_idx += 1;
             }
             'T' => {
-                // Gap in T state:
-                // We consumed a Target base. Query has Gap.
-                // We need T char.
-                let tc = t_seq[t_idx]; // Watch direction!
-                // dp_left extends T to the RIGHT (increasing index).
-                // We are tracing Far Left (High T Index) -> Seed (Low T Index).
-                // So T index DECREASES as we approach seed?
-                // `dp_left`: T index = t_start + j. j goes 0..best_j.
-                // t_start is seed boundary (Low).
-                // So Far Left is High Index.
-                // As we move towards seed, T index decreases.
+                // GapT state: Target has an unpaired base (bulge in target).
+                // In the aligned target string, we emit the target base.
+                let tc = t_seq[t_idx];
                 let tc_char = tc as char;
                 aligned_ts.push(tc_char);
                 t_idx -= 1;
@@ -835,12 +782,8 @@ fn reconstruct_seqs_from_trace(
     }
 
     // SEED PART
-    // Q: q_seed_start .. +len
-    // T: t_seed_start + len - 1 .. -len (Antiparallel)
-    // Actually T index decreases as we go 5'->3' on Query (which works against 5'->3' on RC T).
-    // Check `extend_seed` inner loop.
-    // `let t_idx = t_match_end - k;` where t_match_end = t_pos + len - 1.
-    // So T index decreases.
+    // Iterate through seed bases. Due to antiparallel binding, target index decreases
+    // as query index increases (from 5' to 3').
     let t_seed_end_idx = t_seed_start + seed_len - 1;
     for k in 0..seed_len {
         let t_i = t_seed_end_idx - k;
@@ -848,19 +791,11 @@ fn reconstruct_seqs_from_trace(
         aligned_ts.push(tc as char);
     }
 
-    // RIGHT PART
-    // fp_r is Seed -> Far Right.
-    // We want 5' -> 3' (Seed -> Far Right).
-    // So we iterate fp_r FORWARD.
-
-    // Q index starts at q_seed_start + seed_len.
-    // T index starts at t_seed_start - 1.
-    // `dp_right`: T index = t_start - j. (Unsigned subtraction!).
-    // t_start is seed boundary (High index for T).
-    // As we extend right (j increases), T index decreases.
-
+    // RIGHT PART (3' extension of query, 5' extension of target)
+    // fp_r is ordered seed-to-far. We iterate FORWARD (seed toward 3' end).
+    // Target index decreases as we move right on query.
     let mut q_idx = q_seed_start + seed_len;
-    let mut t_idx = t_seed_start.wrapping_sub(1); // Careful
+    let mut t_idx = t_seed_start.wrapping_sub(1);
 
     for c in fp_r.chars() {
         match c {
@@ -898,48 +833,30 @@ fn extend_seed(
     opts: &ExtendArgs,
 ) -> Option<SeedExtension> {
     // MAXIMALITY CHECK
-    // Check if the seed can be extended to the LEFT or RIGHT.
-    // If it can, it is considered a sub-seed of a longer maximal seed, so we skip it.
-    // This matches the logic in RIsearch2 (legacy C) `search.c`.
+    // Skip non-maximal seeds: if the seed can be extended by a valid base pair
+    // on either end, it's a sub-seed of a longer match and will be found later.
 
-    // 1. Is Left Extendable?
-    // Query extends Left (index -1). Target extends Right (index +len in T).
-    // T is RC(Target), so increasing index moves 5'->3' on RC (which corresponds to 3'<-5' on Target).
-    // Antiparallel binding: Q(Left) pairs with T(Right).
-    // Check pair q[q_pos-1] vs t[t_pos+len].
+    // 1. Left extendable? Check if q[q_pos-1] pairs with t[t_pos+len]
     if q_pos > 0 && t_pos + len < t_seq.len() {
         let q_prev = dsm_idx(q_seq[q_pos - 1]);
         let t_next = dsm_idx(t_seq[t_pos + len]);
         if PAIR_MAT[q_prev][t_next] != 0 {
-            // Extendable Left -> Skip
             return None;
         }
     }
 
-    // 2. Is Right Extendable?
-    // Query extends Right (index +len). Target extends Left (index -1).
-    // Check pair q[q_pos+len] vs t[t_pos-1].
-    // NOTE: C code logic skips if EITHER is extendable.
+    // 2. Right extendable? Check if q[q_pos+len] pairs with t[t_pos-1]
     if q_pos + len < q_seq.len() && t_pos > 0 {
         let q_next = dsm_idx(q_seq[q_pos + len]);
         let t_prev = dsm_idx(t_seq[t_pos - 1]);
         if PAIR_MAT[q_next][t_prev] != 0 {
-            // Extendable Right -> Skip
             return None;
         }
     }
 
     let mut seed_energy = 0.0;
 
-    // Seed energy - Antiparallel RNA Binding
-    // Query goes 5'->3'. Target (RC) goes 5'->3'.
-    // Binding is antiparallel: 5' Q pairs with 3' T.
-    //
-    // Q: q_pos (5') ... q_pos + len - 1 (3')
-    // T: t_pos (5') ... t_pos + len - 1 (3')
-    //
-    // Pairing:
-    // q[q_pos] (5') pairs with t[t_pos + len - 1] (3')
+    // Seed energy calculation (antiparallel binding).
     // q[q_pos + k] pairs with t[t_pos + len - 1 - k]
 
     let t_match_end = t_pos + len - 1;
@@ -982,9 +899,9 @@ fn extend_seed(
     // Debug for first few calls in a clean way
     static DEBUG_EXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let c = DEBUG_EXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if c < 10 {
+    if final_score < -20.0 {
         println!(
-            "extend_seed: seed_energy={:.0}, l_score={}, r_score={}, raw_total={:.0}, final={:.2}",
+            "C_DEBUG: extend_seed: seed_energy={:.0}, l_score={}, r_score={}, raw_total={:.0}, final={:.2}",
             seed_energy,
             l_score,
             r_score,
@@ -1018,51 +935,20 @@ fn dp_left(
     t_start: usize,
     max_ext: usize,
 ) -> (i32, usize, usize, String) {
-    // C code: rem_query_len_left = min(max_ext_len, q_start + 1)
-    // The +1 includes the seed boundary position in the DP
-    // q_len/t_len represent how many positions we can access (indices 0..q_len-1)
-    // DP Left: Extend Query Left (towards 5'), Target Right (towards 3')
-    // q_start: 5' end of seed (index decr)
-    // t_start: 3' end of seed (index incr)
-
-    // C: rem_query_len_left = min(max_ext_len, q_start + 1)
+    // DP Left: Extend Query toward 5' (decreasing index), Target toward 3' (increasing index).
+    // q_start: index of first base in seed (query 5' end of seed)
+    // t_start: index of last base in seed (target 3' end of seed, due to antiparallel binding)
+    //
+    // q_len: number of query positions available for extension (indices q_start down to 0)
+    // t_len: number of target positions available for extension (indices t_start+1 to end)
     let q_len = (q_start + 1).min(max_ext);
-    // C: rem_target_len_left targets: t_start - sum_l[idx] + 1 ?
-    // Target moves towards end of sequence.
     let t_len = (t_seq.len() - t_start - 1).min(max_ext);
-
-    // ...
 
     let s_mat = &DSM_T04_POS;
 
-    // Q uses q_start - i (Moving 3' -> 5' relative to q_seq 5'-3' storage?)
-    // q_start is index. q_start - i.
-    // If q_start is 5' end (lowest index).
-    // Wait. If q_seq is 5'->3'.
-    // q_start (lowest index).
-    // q_start - i will be < 0 immediately if i >= 1.
-    // So q_start must be HIGH index for q_start - i to work?
-    //
-    // Re-evaluating q_start.
-    // `extend_seed` used `q_pos` (low index) to `q_pos + len - 1` (high index).
-    // `dp_left`: extend query 5'.
-    // We want to access `q_pos - 1`, `q_pos - 2`.
-    // So `q_start` should be `q_pos`.
-    // And `i` goes 1..len.
-    // `q_start - i`.
-    // q_len = (q_start + 1).min(max).
-    // If q_start = 5. q_len = 6.
-    // i=0 -> q[5]. i=1 -> q[4].
-    //
-    // YES. q_start - i.
-    // So q_start MUST be passed as `q_pos` (index matching first char of seed).
-    //
-    // Target:
-    // We want to extend Target Right (towards 3').
-    // Access `t_3_end + 1`, `t_3_end + 2`.
-    // So `t_start + j`.
-    // So `t_start` MUST be passed as `t_pos + len - 1` (index matching last char of seed).
-
+    // Index mapping functions for the DP:
+    // q_char(i) -> nucleotide at q_start - i (query extends left, index decreases)
+    // t_comp(j) -> nucleotide at t_start + j (target extends right, index increases)
     let q_char = |i: usize| {
         if i > q_start {
             0
@@ -1078,12 +964,8 @@ fn dp_left(
         }
     };
 
-    // Initial score
-    // C: best_e = (*S)[GAP][Q (0)][GAP][T (0)]
-    // Q(0) = q[q_start].
-    // T(0) = t[t_start].
-    //
-    // Note: T(0) is included.
+    // Initial score: terminal penalty for the seed boundary base pair.
+    // This matches C code: best_e = (*S)[GAP][Q(0)][GAP][T(0)]
 
     let mut best_e = s_mat[GAP_IDX][q_char(0)][GAP_IDX][t_comp(0)] as i32;
     let mut best_i = 0;
@@ -1108,125 +990,123 @@ fn dp_left(
         tb_bt,
     } = ctx;
 
-    m.set(0, 0, 0);
+    m.set(0, 0, Some(0));
 
     // Init (0,1), (1,0), (1,1)
-    bt.set(0, 1, s_mat[GAP_IDX][q_char(0)][t_comp(1)][t_comp(0)] as i32);
-    bq.set(1, 0, s_mat[q_char(1)][q_char(0)][GAP_IDX][t_comp(0)] as i32);
+    bt.set(
+        0,
+        1,
+        Some(s_mat[GAP_IDX][q_char(0)][t_comp(1)][t_comp(0)] as i32),
+    );
+    bq.set(
+        1,
+        0,
+        Some(s_mat[q_char(1)][q_char(0)][GAP_IDX][t_comp(0)] as i32),
+    );
     m.set(
         1,
         1,
-        s_mat[q_char(1)][q_char(0)][t_comp(1)][t_comp(0)] as i32,
+        Some(s_mat[q_char(1)][q_char(0)][t_comp(1)][t_comp(0)] as i32),
     );
 
-    let val = m.get(1, 1) + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(1)] as i32;
-    if val > best_e {
-        best_e = val;
-        best_i = 1;
-        best_j = 1;
+    if let Some(m11) = m.get(1, 1) {
+        let val = m11 + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(1)] as i32;
+        if val > best_e {
+            best_e = val;
+            best_i = 1;
+            best_j = 1;
+        }
     }
 
     // Row 0 (j from 2 to t_len-1)
     for j in 2..t_len {
-        let prev_bt = bt.get(0, j - 1);
-        if prev_bt != NA_VAL {
+        if let Some(prev_bt) = bt.get(0, j - 1) {
             bt.set(
                 0,
                 j,
-                prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
+                Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32),
             );
             tb_bt.set(0, j, TraceStep::GapT);
-        }
-        if q_len >= 1 && prev_bt != NA_VAL {
-            m.set(
-                1,
-                j,
-                prev_bt + s_mat[q_char(1)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
-            );
-            tb_m.set(1, j, TraceStep::GapT);
-            let val = m.get(1, j) + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(j)] as i32;
-            if val > best_e {
-                best_e = val;
-                best_i = 1;
-                best_j = j;
+
+            if q_len >= 1 {
+                let new_m = prev_bt + s_mat[q_char(1)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32;
+                m.set(1, j, Some(new_m));
+                tb_m.set(1, j, TraceStep::GapT);
+                let val = new_m + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(j)] as i32;
+                if val > best_e {
+                    best_e = val;
+                    best_i = 1;
+                    best_j = j;
+                }
             }
         }
     }
 
     // Col 0 (i from 2 to q_len-1)
     for i in 2..q_len {
-        let prev_bq = bq.get(i - 1, 0);
-        if prev_bq != NA_VAL {
+        if let Some(prev_bq) = bq.get(i - 1, 0) {
             bq.set(
                 i,
                 0,
-                prev_bq + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32,
+                Some(prev_bq + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32),
             );
             tb_bq.set(i, 0, TraceStep::GapQ);
-        }
-        if t_len >= 1 && prev_bq != NA_VAL {
-            m.set(
-                i,
-                1,
-                prev_bq + s_mat[q_char(i)][q_char(i - 1)][t_comp(1)][GAP_IDX] as i32,
-            );
-            tb_m.set(i, 1, TraceStep::GapQ);
-            let val = m.get(i, 1) + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(1)] as i32;
-            if val > best_e {
-                best_e = val;
-                best_i = i;
-                best_j = 1;
+
+            if t_len >= 1 {
+                let new_m = prev_bq + s_mat[q_char(i)][q_char(i - 1)][t_comp(1)][GAP_IDX] as i32;
+                m.set(i, 1, Some(new_m));
+                tb_m.set(i, 1, TraceStep::GapQ);
+                let val = new_m + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(1)] as i32;
+                if val > best_e {
+                    best_e = val;
+                    best_i = i;
+                    best_j = 1;
+                }
             }
         }
     }
 
     // 2,2 Init (needs at least length 3 to have index 2)
     if q_len >= 3 && t_len >= 3 {
-        let m11 = m.get(1, 1);
-        if m11 != NA_VAL {
+        if let Some(m11) = m.get(1, 1) {
             bt.set(
                 1,
                 2,
-                m11 + s_mat[GAP_IDX][q_char(1)][t_comp(2)][t_comp(1)] as i32,
+                Some(m11 + s_mat[GAP_IDX][q_char(1)][t_comp(2)][t_comp(1)] as i32),
             );
             tb_bt.set(1, 2, TraceStep::Match);
 
             bq.set(
                 2,
                 1,
-                m11 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(1)] as i32,
+                Some(m11 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(1)] as i32),
             );
             tb_bq.set(2, 1, TraceStep::Match);
 
-            m.set(
-                2,
-                2,
-                m11 + s_mat[q_char(2)][q_char(1)][t_comp(2)][t_comp(1)] as i32,
-            );
+            let m22 = m11 + s_mat[q_char(2)][q_char(1)][t_comp(2)][t_comp(1)] as i32;
+            m.set(2, 2, Some(m22));
             tb_m.set(2, 2, TraceStep::Match);
 
-            let val = m.get(2, 2) + s_mat[GAP_IDX][q_char(2)][GAP_IDX][t_comp(2)] as i32;
+            let val = m22 + s_mat[GAP_IDX][q_char(2)][GAP_IDX][t_comp(2)] as i32;
             if val > best_e {
                 best_e = val;
                 best_i = 2;
                 best_j = 2;
             }
         }
-        let m12 = m.get(1, 2);
-        if m12 != NA_VAL {
+        if let Some(m12) = m.get(1, 2) {
             bq.set(
                 2,
                 2,
-                m12 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(2)] as i32,
+                Some(m12 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(2)] as i32),
             );
             tb_bq.set(2, 2, TraceStep::Match);
         }
-        let m21 = m.get(2, 1);
-        if m21 != NA_VAL {
+        if let Some(m21) = m.get(2, 1) {
             bt.set(
                 2,
                 2,
-                m21 + s_mat[GAP_IDX][q_char(2)][t_comp(2)][t_comp(1)] as i32,
+                Some(m21 + s_mat[GAP_IDX][q_char(2)][t_comp(2)][t_comp(1)] as i32),
             );
             tb_bt.set(2, 2, TraceStep::Match);
         }
@@ -1237,48 +1117,36 @@ fn dp_left(
         for j in 2..t_len {
             if i == 2 && j == 2 {
                 continue;
-            } // Already done
-
-            // Calc M[i,j]
-            let m_diag = m.get(i - 1, j - 1);
-            let bq_diag = bq.get(i - 1, j - 1);
-            let bt_diag = bt.get(i - 1, j - 1);
-
-            let s_mm = if m_diag != NA_VAL {
-                m_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32
-            } else {
-                NA_VAL
-            };
-
-            let s_mq = if bq_diag != NA_VAL {
-                bq_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32
-            } else {
-                NA_VAL
-            };
-
-            let s_mt = if bt_diag != NA_VAL {
-                bt_diag + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
-            } else {
-                NA_VAL
-            };
-
-            let mut val_m = s_mm;
-            let mut step_m = TraceStep::Match;
-
-            if s_mq >= val_m {
-                val_m = s_mq;
-                step_m = TraceStep::GapQ;
-            }
-            if s_mt >= val_m {
-                val_m = s_mt;
-                step_m = TraceStep::GapT;
             }
 
+            // Calc M[i,j] - pick best of three sources
+            let s_mm = m
+                .get(i - 1, j - 1)
+                .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32);
+            let s_mq = bq
+                .get(i - 1, j - 1)
+                .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32);
+            let s_mt = bt
+                .get(i - 1, j - 1)
+                .map(|v| v + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
+
+            // Find best value and corresponding traceback step
+            let (val_m, step_m) = [
+                (s_mm, TraceStep::Match),
+                (s_mq, TraceStep::GapQ),
+                (s_mt, TraceStep::GapT),
+            ]
+            .into_iter()
+            .filter_map(|(opt, step)| opt.map(|v| (v, step)))
+            .max_by_key(|(v, _)| *v)
+            .unwrap_or((i32::MIN, TraceStep::Stop));
+
+            let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
             m.set(i, j, val_m);
             tb_m.set(i, j, step_m);
 
-            if val_m != NA_VAL {
-                let curr_e = val_m + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(j)] as i32;
+            if let Some(v) = val_m {
+                let curr_e = v + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(j)] as i32;
                 if curr_e > best_e {
                     best_e = curr_e;
                     best_i = i;
@@ -1288,70 +1156,66 @@ fn dp_left(
 
             // Calc Bq[i,j]
             if i > 2 || (i == 2 && j > 2) {
-                let m_up = m.get(i - 1, j);
-                let bq_up = bq.get(i - 1, j);
+                let s_qm = m
+                    .get(i - 1, j)
+                    .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32);
+                let s_qq = bq
+                    .get(i - 1, j)
+                    .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32);
 
-                let s_qm = if m_up != NA_VAL {
-                    m_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32
-                } else {
-                    NA_VAL
-                };
-
-                let s_qq = if bq_up != NA_VAL {
-                    bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32
-                } else {
-                    NA_VAL
-                };
-
-                // Priority to Extension (GapQ) if tie
-                if s_qq >= s_qm {
-                    bq.set(i, j, s_qq);
-                    tb_bq.set(i, j, TraceStep::GapQ);
-                } else {
-                    bq.set(i, j, s_qm);
-                    tb_bq.set(i, j, TraceStep::Match);
+                // Priority to Match (opening) if tie
+                match (s_qq, s_qm) {
+                    (Some(qq), Some(qm)) if qq > qm => {
+                        bq.set(i, j, Some(qq));
+                        tb_bq.set(i, j, TraceStep::GapQ);
+                    }
+                    (_, Some(qm)) => {
+                        bq.set(i, j, Some(qm));
+                        tb_bq.set(i, j, TraceStep::Match);
+                    }
+                    (Some(qq), None) => {
+                        bq.set(i, j, Some(qq));
+                        tb_bq.set(i, j, TraceStep::GapQ);
+                    }
+                    _ => {}
                 }
             }
 
             // Calc Bt[i,j]
             if j > 2 || (j == 2 && i > 2) {
-                let m_left = m.get(i, j - 1);
-                let bt_left = bt.get(i, j - 1);
+                let s_tm = m
+                    .get(i, j - 1)
+                    .map(|v| v + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32);
+                let s_tt = bt
+                    .get(i, j - 1)
+                    .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
 
-                let s_tm = if m_left != NA_VAL {
-                    m_left + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_VAL
-                };
-
-                let s_tt = if bt_left != NA_VAL {
-                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_VAL
-                };
-
-                // Priority to Extension (GapT) if tie
-                if s_tt >= s_tm {
-                    bt.set(i, j, s_tt);
-                    tb_bt.set(i, j, TraceStep::GapT);
-                } else {
-                    bt.set(i, j, s_tm);
-                    tb_bt.set(i, j, TraceStep::Match);
+                // Priority to Match (opening) if tie
+                match (s_tt, s_tm) {
+                    (Some(tt), Some(tm)) if tt > tm => {
+                        bt.set(i, j, Some(tt));
+                        tb_bt.set(i, j, TraceStep::GapT);
+                    }
+                    (_, Some(tm)) => {
+                        bt.set(i, j, Some(tm));
+                        tb_bt.set(i, j, TraceStep::Match);
+                    }
+                    (Some(tt), None) => {
+                        bt.set(i, j, Some(tt));
+                        tb_bt.set(i, j, TraceStep::GapT);
+                    }
+                    _ => {}
                 }
             }
         }
     }
 
-    // Backtracking Logic for dp_left
+    // Backtracking: trace from best position back to seed boundary.
+    // Start in Match state since best_e is always computed from M matrix.
     let mut i = best_i;
     let mut j = best_j;
     let mut fp = String::new();
     let mut state = DpState::Match;
-
-    // Use explicit traceback matrices
-    // Since best_e always comes from M, we start in Match state.
-    // We strictly stop when we hit the boundaries (i=0 or j=0) because M is only defined for i,j >= 1
-    // and valid paths start at M(1,1) or similar boundaries initialized from (0,0).
 
     while i > 0 || j > 0 {
         let _qc = if i <= q_len { q_seq[q_start - i] } else { b'N' };
@@ -1406,11 +1270,7 @@ fn dp_left(
                     TraceStep::Stop => break,
                     TraceStep::Match => state = DpState::Match,
                     TraceStep::GapQ => state = DpState::GapQ,
-                    TraceStep::GapT => {
-                        // This case should be impossible for GapQ?
-                        // Bq comes from Bq(i-1,j) or M(i-1,j). Never GapT.
-                        state = DpState::GapT
-                    }
+                    TraceStep::GapT => state = DpState::GapT, // Should not occur
                 }
             }
             DpState::GapT => {
@@ -1428,10 +1288,7 @@ fn dp_left(
                     TraceStep::Stop => break,
                     TraceStep::Match => state = DpState::Match,
                     TraceStep::GapT => state = DpState::GapT,
-                    TraceStep::GapQ => {
-                        // Impossible
-                        state = DpState::GapQ
-                    }
+                    TraceStep::GapQ => state = DpState::GapQ, // Should not occur
                 }
             }
         }
@@ -1448,19 +1305,20 @@ fn dp_right(
     t_end: usize,
     max_ext: usize,
 ) -> (i32, usize, usize, String) {
-    // DP Right: Extend Query Right (towards 3'), Target Left (towards 5')
-    // q_end: 3' end of seed (index incr)
-    // t_end: 5' end of seed (index decr)
-
-    // Query moves towards end.
+    // DP Right: Extend Query toward 3' (increasing index), Target toward 5' (decreasing index).
+    // q_end: index of last base in seed (query 3' end of seed)
+    // t_end: index of first base in seed (target 5' end of seed, due to antiparallel binding)
+    //
+    // q_len: number of query positions available (indices q_end to end of sequence)
+    // t_len: number of target positions available (indices t_end down to 0)
     let q_len = (q_seq.len() - q_end).min(max_ext);
-    // Target moves towards start (0).
     let t_len = (t_end + 1).min(max_ext);
 
     let s_mat = &DSM_T04_POS;
 
-    // Q uses q_end + i (Moving 5' -> 3')
-    // T uses t_end - j (Moving 3' -> 5' / Left)
+    // Index mapping functions for the DP:
+    // q_char(i) -> nucleotide at q_end + i (query extends right, index increases)
+    // t_comp(j) -> nucleotide at t_end - j (target extends left, index decreases)
 
     let q_char = |i: usize| {
         if q_end + i >= q_seq.len() {
@@ -1501,125 +1359,123 @@ fn dp_right(
         tb_bt,
     } = ctx;
 
-    m.set(0, 0, 0);
+    m.set(0, 0, Some(0));
 
     // Init (0,1) Bt, (1,0) Bq, (1,1) M
-    bt.set(0, 1, s_mat[q_char(0)][GAP_IDX][t_comp(0)][t_comp(1)] as i32);
-    bq.set(1, 0, s_mat[q_char(0)][q_char(1)][t_comp(0)][GAP_IDX] as i32);
+    bt.set(
+        0,
+        1,
+        Some(s_mat[q_char(0)][GAP_IDX][t_comp(0)][t_comp(1)] as i32),
+    );
+    bq.set(
+        1,
+        0,
+        Some(s_mat[q_char(0)][q_char(1)][t_comp(0)][GAP_IDX] as i32),
+    );
     m.set(
         1,
         1,
-        s_mat[q_char(0)][q_char(1)][t_comp(0)][t_comp(1)] as i32,
+        Some(s_mat[q_char(0)][q_char(1)][t_comp(0)][t_comp(1)] as i32),
     );
 
-    let val = m.get(1, 1) + s_mat[q_char(1)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
-    if val > best_e {
-        best_e = val;
-        best_i = 1;
-        best_j = 1;
+    if let Some(m11) = m.get(1, 1) {
+        let val = m11 + s_mat[q_char(1)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
+        if val > best_e {
+            best_e = val;
+            best_i = 1;
+            best_j = 1;
+        }
     }
 
     // Row 0 (j from 2 to t_len-1)
     for j in 2..t_len {
-        let prev_bt = bt.get(0, j - 1);
-        if prev_bt != NA_VAL {
+        if let Some(prev_bt) = bt.get(0, j - 1) {
             bt.set(
                 0,
                 j,
-                prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32,
+                Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32),
             );
             tb_bt.set(0, j, TraceStep::GapT);
-        }
-        if q_len >= 1 && prev_bt != NA_VAL {
-            m.set(
-                1,
-                j,
-                prev_bt + s_mat[GAP_IDX][q_char(1)][t_comp(j - 1)][t_comp(j)] as i32,
-            );
-            tb_m.set(1, j, TraceStep::GapT);
-            let val = m.get(1, j) + s_mat[q_char(1)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
-            if val > best_e {
-                best_e = val;
-                best_i = 1;
-                best_j = j;
+
+            if q_len >= 1 {
+                let new_m = prev_bt + s_mat[GAP_IDX][q_char(1)][t_comp(j - 1)][t_comp(j)] as i32;
+                m.set(1, j, Some(new_m));
+                tb_m.set(1, j, TraceStep::GapT);
+                let val = new_m + s_mat[q_char(1)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
+                if val > best_e {
+                    best_e = val;
+                    best_i = 1;
+                    best_j = j;
+                }
             }
         }
     }
 
     // Col 0 (i from 2 to q_len-1)
     for i in 2..q_len {
-        let prev_bq = bq.get(i - 1, 0);
-        if prev_bq != NA_VAL {
+        if let Some(prev_bq) = bq.get(i - 1, 0) {
             bq.set(
                 i,
                 0,
-                prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32,
+                Some(prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32),
             );
             tb_bq.set(i, 0, TraceStep::GapQ);
-        }
-        if t_len >= 1 && prev_bq != NA_VAL {
-            m.set(
-                i,
-                1,
-                prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(1)] as i32,
-            );
-            tb_m.set(i, 1, TraceStep::GapQ);
-            let val = m.get(i, 1) + s_mat[q_char(i)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
-            if val > best_e {
-                best_e = val;
-                best_i = i;
-                best_j = 1;
+
+            if t_len >= 1 {
+                let new_m = prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(1)] as i32;
+                m.set(i, 1, Some(new_m));
+                tb_m.set(i, 1, TraceStep::GapQ);
+                let val = new_m + s_mat[q_char(i)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
+                if val > best_e {
+                    best_e = val;
+                    best_i = i;
+                    best_j = 1;
+                }
             }
         }
     }
 
     // 2,2 Init (needs at least length 3 to have index 2)
     if q_len >= 3 && t_len >= 3 {
-        let m11 = m.get(1, 1);
-        if m11 != NA_VAL {
+        if let Some(m11) = m.get(1, 1) {
             bt.set(
                 1,
                 2,
-                m11 + s_mat[q_char(1)][GAP_IDX][t_comp(1)][t_comp(2)] as i32,
+                Some(m11 + s_mat[q_char(1)][GAP_IDX][t_comp(1)][t_comp(2)] as i32),
             );
             tb_bt.set(1, 2, TraceStep::Match);
 
             bq.set(
                 2,
                 1,
-                m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][GAP_IDX] as i32,
+                Some(m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][GAP_IDX] as i32),
             );
             tb_bq.set(2, 1, TraceStep::Match);
 
-            m.set(
-                2,
-                2,
-                m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][t_comp(2)] as i32,
-            );
+            let m22 = m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][t_comp(2)] as i32;
+            m.set(2, 2, Some(m22));
             tb_m.set(2, 2, TraceStep::Match);
 
-            let val = m.get(2, 2) + s_mat[q_char(2)][GAP_IDX][t_comp(2)][GAP_IDX] as i32;
+            let val = m22 + s_mat[q_char(2)][GAP_IDX][t_comp(2)][GAP_IDX] as i32;
             if val > best_e {
                 best_e = val;
                 best_i = 2;
                 best_j = 2;
             }
         }
-        let m12 = m.get(1, 2);
-        if m12 != NA_VAL {
+        if let Some(m12) = m.get(1, 2) {
             bq.set(
                 2,
                 2,
-                m12 + s_mat[q_char(1)][q_char(2)][t_comp(2)][GAP_IDX] as i32,
+                Some(m12 + s_mat[q_char(1)][q_char(2)][t_comp(2)][GAP_IDX] as i32),
             );
             tb_bq.set(2, 2, TraceStep::Match);
         }
-        let m21 = m.get(2, 1);
-        if m21 != NA_VAL {
+        if let Some(m21) = m.get(2, 1) {
             bt.set(
                 2,
                 2,
-                m21 + s_mat[q_char(2)][GAP_IDX][t_comp(1)][t_comp(2)] as i32,
+                Some(m21 + s_mat[q_char(2)][GAP_IDX][t_comp(1)][t_comp(2)] as i32),
             );
             tb_bt.set(2, 2, TraceStep::Match);
         }
@@ -1632,113 +1488,101 @@ fn dp_right(
                 continue;
             }
 
-            let m_diag = m.get(i - 1, j - 1);
-            let bq_diag = bq.get(i - 1, j - 1);
-            let bt_diag = bt.get(i - 1, j - 1);
+            // Calc M[i,j] - pick best of three sources
+            let s_mm = m
+                .get(i - 1, j - 1)
+                .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
+            let s_mq = bq
+                .get(i - 1, j - 1)
+                .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(j)] as i32);
+            let s_mt = bt
+                .get(i - 1, j - 1)
+                .map(|v| v + s_mat[GAP_IDX][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
 
-            let s_mm = if m_diag != NA_VAL {
-                m_diag + s_mat[q_char(i - 1)][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32
-            } else {
-                NA_VAL
-            };
+            // Find best value and corresponding traceback step
+            let (val_m, step_m) = [
+                (s_mm, TraceStep::Match),
+                (s_mq, TraceStep::GapQ),
+                (s_mt, TraceStep::GapT),
+            ]
+            .into_iter()
+            .filter_map(|(opt, step)| opt.map(|v| (v, step)))
+            .max_by_key(|(v, _)| *v)
+            .unwrap_or((i32::MIN, TraceStep::Stop));
 
-            let s_mq = if bq_diag != NA_VAL {
-                bq_diag + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(j)] as i32
-            } else {
-                NA_VAL
-            };
-
-            let s_mt = if bt_diag != NA_VAL {
-                bt_diag + s_mat[GAP_IDX][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32
-            } else {
-                NA_VAL
-            };
-
-            let mut val_m = s_mm;
-            let mut step_m = TraceStep::Match;
-
-            if s_mq >= val_m {
-                val_m = s_mq;
-                step_m = TraceStep::GapQ;
-            }
-            if s_mt >= val_m {
-                val_m = s_mt;
-                step_m = TraceStep::GapT;
-            }
-
+            let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
             m.set(i, j, val_m);
             tb_m.set(i, j, step_m);
 
-            if val_m != NA_VAL {
+            if let Some(v) = val_m {
                 let term = s_mat[q_char(i)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
-                if val_m + term > best_e {
-                    best_e = val_m + term;
+                if v + term > best_e {
+                    best_e = v + term;
                     best_i = i;
                     best_j = j;
                 }
             }
 
+            // Calc Bq[i,j]
             if i > 2 || (i == 2 && j > 2) {
-                let m_up = m.get(i - 1, j);
-                let bq_up = bq.get(i - 1, j);
+                let s_qm = m
+                    .get(i - 1, j)
+                    .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][t_comp(j)][GAP_IDX] as i32);
+                let s_qq = bq
+                    .get(i - 1, j)
+                    .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32);
 
-                let s_qm = if m_up != NA_VAL {
-                    m_up + s_mat[q_char(i - 1)][q_char(i)][t_comp(j)][GAP_IDX] as i32
-                } else {
-                    NA_VAL
-                };
-
-                let s_qq = if bq_up != NA_VAL {
-                    bq_up + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32
-                } else {
-                    NA_VAL
-                };
-
-                if s_qq >= s_qm {
-                    bq.set(i, j, s_qq);
-                    tb_bq.set(i, j, TraceStep::GapQ);
-                } else {
-                    bq.set(i, j, s_qm);
-                    tb_bq.set(i, j, TraceStep::Match);
+                match (s_qq, s_qm) {
+                    (Some(qq), Some(qm)) if qq > qm => {
+                        bq.set(i, j, Some(qq));
+                        tb_bq.set(i, j, TraceStep::GapQ);
+                    }
+                    (_, Some(qm)) => {
+                        bq.set(i, j, Some(qm));
+                        tb_bq.set(i, j, TraceStep::Match);
+                    }
+                    (Some(qq), None) => {
+                        bq.set(i, j, Some(qq));
+                        tb_bq.set(i, j, TraceStep::GapQ);
+                    }
+                    _ => {}
                 }
             }
 
+            // Calc Bt[i,j]
             if j > 2 || (j == 2 && i > 2) {
-                let m_left = m.get(i, j - 1);
-                let bt_left = bt.get(i, j - 1);
+                let s_tm = m
+                    .get(i, j - 1)
+                    .map(|v| v + s_mat[q_char(i)][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
+                let s_tt = bt
+                    .get(i, j - 1)
+                    .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
 
-                let s_tm = if m_left != NA_VAL {
-                    m_left + s_mat[q_char(i)][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32
-                } else {
-                    NA_VAL
-                };
-
-                let s_tt = if bt_left != NA_VAL {
-                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32
-                } else {
-                    NA_VAL
-                };
-
-                if s_tt >= s_tm {
-                    bt.set(i, j, s_tt);
-                    tb_bt.set(i, j, TraceStep::GapT);
-                } else {
-                    bt.set(i, j, s_tm);
-                    tb_bt.set(i, j, TraceStep::Match);
+                match (s_tt, s_tm) {
+                    (Some(tt), Some(tm)) if tt > tm => {
+                        bt.set(i, j, Some(tt));
+                        tb_bt.set(i, j, TraceStep::GapT);
+                    }
+                    (_, Some(tm)) => {
+                        bt.set(i, j, Some(tm));
+                        tb_bt.set(i, j, TraceStep::Match);
+                    }
+                    (Some(tt), None) => {
+                        bt.set(i, j, Some(tt));
+                        tb_bt.set(i, j, TraceStep::GapT);
+                    }
+                    _ => {}
                 }
             }
         }
     }
 
-    // Backtracking Logic for dp_right
+    // Backtracking: trace from best position back to seed boundary.
+    // Start in Match state since best_e is always computed from M matrix.
     let mut i = best_i;
     let mut j = best_j;
     let mut fp = String::new();
     let mut state = DpState::Match;
-
-    // Use explicit traceback matrices
-    // Since best_e always comes from M, we start in Match state.
-    // We strictly stop when we hit the boundaries (i=0 or j=0).
 
     while i > 0 || j > 0 {
         let qc_byte = if q_end + i < q_seq.len() {
@@ -1784,10 +1628,7 @@ fn dp_right(
                     TraceStep::Stop => break,
                     TraceStep::Match => state = DpState::Match,
                     TraceStep::GapQ => state = DpState::GapQ,
-                    TraceStep::GapT => {
-                        // Impossible
-                        state = DpState::GapT
-                    }
+                    TraceStep::GapT => state = DpState::GapT, // Should not occur
                 }
             }
             DpState::GapT => {
@@ -1806,10 +1647,7 @@ fn dp_right(
                     TraceStep::Stop => break,
                     TraceStep::Match => state = DpState::Match,
                     TraceStep::GapT => state = DpState::GapT,
-                    TraceStep::GapQ => {
-                        // Impossible
-                        state = DpState::GapQ
-                    }
+                    TraceStep::GapQ => state = DpState::GapQ, // Should not occur
                 }
             }
         }
