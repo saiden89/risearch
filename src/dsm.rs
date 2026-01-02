@@ -33,6 +33,7 @@ impl Base {
             b'G' | b'g' => Base::G,
             b'C' | b'c' => Base::C,
             b'U' | b'u' | b'T' | b't' => Base::U,
+            b'-' | b'.' => Base::Gap,
             _ => Base::N,
         }
     }
@@ -41,6 +42,19 @@ impl Base {
     #[inline]
     pub const fn idx(self) -> usize {
         self as usize
+    }
+
+    /// Convert from usize index to Base
+    #[inline]
+    pub fn from_idx(i: usize) -> Self {
+        match i {
+            1 => Base::A,
+            2 => Base::G,
+            3 => Base::C,
+            4 => Base::U,
+            0 => Base::Gap,
+            _ => Base::N,
+        }
     }
 
     /// Get standard uppercase ASCII byte (A, G, C, U, N)
@@ -54,6 +68,12 @@ impl Base {
             Base::Gap => b'-',
             Base::N => b'N',
         }
+    }
+
+    /// Get char representation
+    #[inline]
+    pub fn as_char(self) -> char {
+        self.to_u8_upper() as char
     }
 
     /// Watson-Crick complement (A <-> U/T, G <-> C)

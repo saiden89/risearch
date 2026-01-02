@@ -19,7 +19,20 @@ pub trait Sequence {
 
 impl Sequence for [u8] {
     fn reverse_complement_dna(&self) -> Vec<u8> {
-        self.iter().rev().map(|&b| complement_dna(b)).collect()
+        self.iter()
+            .rev()
+            .map(|&b| {
+                // Return lowercase T for A (mimicking old complement_dna behavior)
+                // Base::from_byte(b).complement().to_u8_upper().to_ascii_lowercase()
+                // But wait, Base::U -> b'U'. to_ascii_lowercase -> b'u'.
+                // Index stores DNA T. So we need to map U -> T if it's U.
+                let c = Base::from_byte(b).complement();
+                match c {
+                    Base::U => b't',
+                    _ => c.to_u8_upper().to_ascii_lowercase(),
+                }
+            })
+            .collect()
     }
 
     fn reverse_complement_rna(&self) -> Vec<u8> {
@@ -59,29 +72,6 @@ pub struct SearchHit {
 }
 
 // Reimplementing mapping locally for safety and speed
-const NUCL_MAP: [usize; 256] = {
-    let mut table = [5; 256];
-    table[b'A' as usize] = 1;
-    table[b'a' as usize] = 1;
-    table[b'G' as usize] = 2;
-    table[b'g' as usize] = 2;
-    table[b'C' as usize] = 3;
-    table[b'c' as usize] = 3;
-    table[b'U' as usize] = 4;
-    table[b'u' as usize] = 4;
-    table[b'T' as usize] = 4;
-    table[b't' as usize] = 4; // T handled as U
-    table[b'-' as usize] = 0; // gap
-    table
-};
-
-/// Maps nucleotide byte to DSM index (equivalent to Base::from_byte().idx())
-/// Uses lookup table for performance. See Base enum for index values:
-/// Gap=0, A=1, G=2, C=3, U/T=4, N=5
-#[inline(always)]
-fn dsm_idx(b: u8) -> usize {
-    NUCL_MAP[b as usize]
-}
 
 pub struct SaIndex<'a> {
     pub index: &'a IndexFile,
@@ -199,16 +189,6 @@ impl<'a> SaIndex<'a> {
 }
 
 /// DNA reverse complement (for target sequences stored as DNA with T not U)
-#[inline]
-fn complement_dna(b: u8) -> u8 {
-    match b {
-        b'A' | b'a' => b't',
-        b'T' | b't' => b'a',
-        b'C' | b'c' => b'g',
-        b'G' | b'g' => b'c',
-        _ => b'n',
-    }
-}
 
 /// Helper to find range in SA for a specific character at offset
 fn get_sa_interval(
@@ -785,8 +765,8 @@ fn extend_seed(
 
     // 1. Left extendable? Check if q[q_pos-1] pairs with t[t_pos+len]
     if q_pos > 0 && t_pos + len < t_seq.len() {
-        let q_prev = dsm_idx(q_seq[q_pos - 1]);
-        let t_next = dsm_idx(t_seq[t_pos + len]);
+        let q_prev = Base::from_byte(q_seq[q_pos - 1]).idx();
+        let t_next = Base::from_byte(t_seq[t_pos + len]).idx();
         if PAIR_MAT[q_prev][t_next] != 0 {
             return None;
         }
@@ -794,8 +774,8 @@ fn extend_seed(
 
     // 2. Right extendable? Check if q[q_pos+len] pairs with t[t_pos-1]
     if q_pos + len < q_seq.len() && t_pos > 0 {
-        let q_next = dsm_idx(q_seq[q_pos + len]);
-        let t_prev = dsm_idx(t_seq[t_pos - 1]);
+        let q_next = Base::from_byte(q_seq[q_pos + len]).idx();
+        let t_prev = Base::from_byte(t_seq[t_pos - 1]).idx();
         if PAIR_MAT[q_next][t_prev] != 0 {
             return None;
         }
@@ -814,10 +794,10 @@ fn extend_seed(
         let t_idx = t_match_end - k;
 
         if k < len.saturating_sub(1) {
-            let q_b1 = dsm_idx(q_seq[q_idx]);
-            let q_b2 = dsm_idx(q_seq[q_idx + 1]);
-            let t_b1 = dsm_idx(t_seq[t_idx]);
-            let t_b2 = dsm_idx(t_seq[t_match_end - (k + 1)]);
+            let q_b1 = Base::from_byte(q_seq[q_idx]).idx();
+            let q_b2 = Base::from_byte(q_seq[q_idx + 1]).idx();
+            let t_b1 = Base::from_byte(t_seq[t_idx]).idx();
+            let t_b2 = Base::from_byte(t_seq[t_match_end - (k + 1)]).idx();
             seed_energy += DSM_T04_POS[q_b1][q_b2][t_b1][t_b2] as f64;
         }
 
@@ -825,6 +805,25 @@ fn extend_seed(
         let qc = q_seq[q_idx];
         let tc = t_seq[t_idx];
         seed_int_str.push(Base::from_byte(qc).pairing_class(Base::from_byte(tc)));
+    }
+
+    // DEBUG: Trace internal_mismatch_20nt
+    if opts.max_extension == 20 && seed_int_str.starts_with('U') {
+        println!(
+            "DEBUG_TRACE: seed_int_str={} q_pos={} t_pos={}",
+            seed_int_str, q_pos, t_pos
+        );
+        for k in 0..len {
+            let q_idx = q_pos + k;
+            let t_idx = t_match_end - k;
+            let qc = q_seq[q_idx];
+            let tc = t_seq[t_idx];
+            let p = Base::from_byte(qc).pairing_class(Base::from_byte(tc));
+            println!(
+                "  k={} q[{}]={} t[{}]={} pair={}",
+                k, q_idx, qc as char, t_idx, tc as char, p
+            );
+        }
     }
     // Seed interaction string should match C output; omit any extra markers
 
@@ -845,6 +844,54 @@ fn extend_seed(
     // Debug for first few calls in a clean way
     static DEBUG_EXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let c = DEBUG_EXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    // DEBUG: Trace internal_mismatch_20nt
+    if opts.max_extension == 20 {
+        let l_trace_str: String = left_res.trace.chars().rev().collect();
+        let r_trace_str: String = right_res.trace.chars().rev().collect();
+        let full_int = format!("{}{}{}", l_trace_str, seed_int_str, r_trace_str);
+
+        println!(
+            "DEBUG_TRACE: full={} seed={} l_trace={} r_trace={} score={:.2}",
+            full_int, seed_int_str, left_res.trace, right_res.trace, final_score
+        );
+
+        // If we have a U at start, dump the sequences
+        if full_int.starts_with('U') {
+            println!("DEBUG_TRACE:   -> HIT INTERESTING CASE: U at start");
+            println!(
+                "DEBUG_TRACE:   -> q_pos={} t_pos={} seed_len={}",
+                q_pos, t_pos, len
+            );
+            println!(
+                "DEBUG_TRACE:   -> LENGTHS: full={} seed={} l_trace={} r_trace={}",
+                full_int.len(),
+                seed_int_str.len(),
+                left_res.trace.len(),
+                right_res.trace.len()
+            );
+
+            // Analyze l_trace bases (length 1 for now)
+            let q_idx = q_pos.wrapping_sub(1);
+            let t_idx = t_pos + len;
+            let qc = if q_idx < q_seq.len() {
+                q_seq[q_idx] as char
+            } else {
+                '?'
+            };
+            let tc = if t_idx < t_seq.len() {
+                t_seq[t_idx] as char
+            } else {
+                '?'
+            };
+            let p_char = Base::from_byte(qc as u8).pairing_class(Base::from_byte(tc as u8));
+            println!(
+                "DEBUG_TRACE:   -> L_EXT check: q[{}]={} vs t[{}]={} -> PairClass={}",
+                q_idx, qc, t_idx, tc, p_char
+            );
+        }
+    }
+
     if final_score < -20.0 {
         println!(
             "C_DEBUG: extend_seed: seed_energy={:.0}, l_score={}, r_score={}, raw_total={:.0}, final={:.2}",
@@ -856,7 +903,7 @@ fn extend_seed(
         );
     }
 
-    let l_trace_str: String = left_res.trace.chars().rev().collect();
+    let l_trace_str: String = left_res.trace.chars().collect();
     let r_trace_str: String = right_res.trace.chars().rev().collect();
 
     let full_interaction = format!("{}{}{}", l_trace_str, seed_int_str, r_trace_str);
@@ -899,14 +946,14 @@ fn dp_left(
         if i > q_start {
             0
         } else {
-            dsm_idx(q_seq[q_start - i])
+            Base::from_byte(q_seq[q_start - i]).idx()
         }
     };
     let t_comp = |j: usize| {
         if t_start + j >= t_seq.len() {
             0
         } else {
-            dsm_idx(t_seq[t_start + j])
+            Base::from_byte(t_seq[t_start + j]).idx()
         }
     };
 
@@ -1172,21 +1219,33 @@ fn dp_left(
         let _qc = if i <= q_len { q_seq[q_start - i] } else { b'N' };
 
         let qc_byte = if i <= q_start {
-            q_seq[q_start - i]
+            Base::from_byte(q_seq[q_start - i]).idx()
         } else {
-            b'N'
+            GAP_IDX
         };
-        let tc_byte = if t_start + j < t_seq.len() {
-            t_seq[t_start + j]
+        let t_char_idx = if t_start + j < t_seq.len() {
+            Base::from_byte(t_seq[t_start + j]).idx()
         } else {
-            b'N'
+            GAP_IDX
         };
 
         match state {
             DpState::Match => {
                 // Current state is Match (M[i,j])
                 // We emit the character pair corresponding to this match/mismatch
-                fp.push(Base::from_byte(qc_byte).pairing_class(Base::from_byte(tc_byte)));
+                let p_char = Base::from_idx(qc_byte).pairing_class(Base::from_idx(t_char_idx));
+                if p_char == 'U' && i == 1 {
+                    // Trace the specific U mismatch at boundary
+                    println!(
+                        "DEBUG_TRACE: DEBUG_DP_LEFT: i={} j={} qc={} tc={} pair={}",
+                        i,
+                        j,
+                        Base::from_idx(qc_byte).as_char(),
+                        Base::from_idx(t_char_idx).as_char(),
+                        p_char
+                    );
+                }
+                fp.push(p_char);
 
                 if i == 0 || j == 0 {
                     // Should not happen for Match state unless logic is wrong
@@ -1280,14 +1339,14 @@ fn dp_right(
         if q_end + i >= q_seq.len() {
             0
         } else {
-            dsm_idx(q_seq[q_end + i])
+            Base::from_byte(q_seq[q_end + i]).idx()
         }
     };
     let t_comp = |j: usize| {
         if j > t_end {
             0
         } else {
-            dsm_idx(t_seq[t_end - j])
+            Base::from_byte(t_seq[t_end - j]).idx()
         }
     };
 
@@ -1547,16 +1606,20 @@ fn dp_right(
 
     while i > 0 || j > 0 {
         let qc_byte = if q_end + i < q_seq.len() {
-            q_seq[q_end + i]
+            Base::from_byte(q_seq[q_end + i]).idx()
         } else {
-            b'N'
+            GAP_IDX
         };
-        let tc_byte = if t_end >= j { t_seq[t_end - j] } else { b'N' };
+        let t_char_idx = if t_end >= j {
+            Base::from_byte(t_seq[t_end - j]).idx()
+        } else {
+            GAP_IDX
+        };
 
         match state {
             DpState::Match => {
                 // Current state is Match (M[i,j])
-                fp.push(Base::from_byte(qc_byte).pairing_class(Base::from_byte(tc_byte)));
+                fp.push(Base::from_idx(qc_byte).pairing_class(Base::from_idx(t_char_idx)));
 
                 if i == 0 || j == 0 {
                     break;
