@@ -105,9 +105,9 @@ enum Commands {
     },
 }
 
-/// Options that apply to the `search` subcommand
+/// Arguments for seed generation
 #[derive(clap::Args, Debug, Clone)]
-struct SearchArgs {
+pub struct SeedArgs {
     /// Set seed length (-s l = length only; -s n:m = full interval)
     #[arg(
         short = 's',
@@ -117,6 +117,25 @@ struct SearchArgs {
     )]
     seed: Option<String>,
 
+    /// Consider G-U wobble pairs as mismatch within the seed (only for locating seeds, energy model is not affected)
+    #[arg(short = 'w', long = "wobble", action = clap::ArgAction::SetTrue)]
+    wobble: bool,
+
+    /// Introduce mismatched seeds
+    /// Set the max num of mismatches (c) allowed in the seed and min num of consecutive matches required at seed start/end (p)
+    ///These seeds will not overlap with perfect complementary seeds.
+    #[arg(
+        short = 'm',
+        long = "mismatch",
+        value_name = "c:p",
+        default_value = "0:0"
+    )]
+    mismatch_seed: Option<String>,
+}
+
+/// Arguments for seed extension and scoring
+#[derive(clap::Args, Debug, Clone)]
+pub struct ExtendArgs {
     /// Max extension length on the seed (do DP for max this length up- and downstream of seed)
     #[arg(
         short = 'l',
@@ -149,6 +168,25 @@ struct SearchArgs {
     )]
     penalty: f64,
 
+    /// Energy per length threshold that filters seeds
+    #[arg(
+        short = 'x',
+        long = "seed-energy",
+        value_name = "THRESHOLD",
+        default_value_t = 0.0
+    )]
+    seed_energy: f64,
+}
+
+/// Options that apply to the `search` subcommand
+#[derive(clap::Args, Debug, Clone)]
+pub struct SearchArgs {
+    #[command(flatten)]
+    seed: SeedArgs,
+
+    #[command(flatten)]
+    extend: ExtendArgs,
+
     /// Output format
     #[arg(
         short = 'f',
@@ -160,30 +198,6 @@ struct SearchArgs {
         value_enum
     )]
     report_format: Option<OutputFormat>,
-
-    /// Consider G-U wobble pairs as mismatch within the seed (only for locating seeds, energy model is not affected)
-    #[arg(short = 'w', long = "wobble", action = clap::ArgAction::SetTrue)]
-    wobble: bool,
-
-    /// Introduce mismatched seeds
-    /// Set the max num of mismatches (c) allowed in the seed and min num of consecutive matches required at seed start/end (p)
-    ///These seeds will not overlap with perfect complementary seeds.
-    #[arg(
-        short = 'm',
-        long = "mismatch",
-        value_name = "c:p",
-        default_value = "0:0"
-    )]
-    mismatch_seed: Option<String>,
-
-    /// Energy per length threshold that filters seeds
-    #[arg(
-        short = 'x',
-        long = "seed-energy",
-        value_name = "THRESHOLD",
-        default_value_t = 0.0
-    )]
-    seed_energy: f64,
 }
 
 fn main() -> Result<()> {
