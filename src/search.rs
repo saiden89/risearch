@@ -314,15 +314,15 @@ enum DpState {
     GapT,  // Bt - Bulge in Target
 }
 
-struct Grid {
-    data: Vec<i32>,
+#[derive(Clone, Debug)]
+struct Grid<T> {
+    data: Vec<T>,
     width: usize,
-    #[allow(dead_code)]
     height: usize,
 }
 
-impl Grid {
-    fn new(width: usize, height: usize, default: i32) -> Self {
+impl<T: Clone + Copy> Grid<T> {
+    fn new(width: usize, height: usize, default: T) -> Self {
         Self {
             data: vec![default; width * height],
             width,
@@ -331,13 +331,76 @@ impl Grid {
     }
 
     #[inline(always)]
-    fn get(&self, r: usize, c: usize) -> i32 {
+    fn get(&self, r: usize, c: usize) -> T {
         self.data[r * self.width + c]
     }
 
     #[inline(always)]
-    fn set(&mut self, r: usize, c: usize, val: i32) {
+    fn set(&mut self, r: usize, c: usize, val: T) {
         self.data[r * self.width + c] = val;
+    }
+
+    #[allow(dead_code)]
+    fn resize(&mut self, width: usize, height: usize, default: T) {
+        let new_len = width * height;
+        if self.data.capacity() < new_len {
+            self.data.resize(new_len, default);
+        } else {
+            // Reuse existing capacity, just clear and resize logic effectively handled by use usage pattern usually
+            // But for safety let's just resize.
+            // Actually, for DpContext we often want to just ensure size.
+            self.data.resize(new_len, default);
+        }
+        self.width = width;
+        self.height = height;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TraceStep {
+    Stop,
+    Match, // From M(i-1, j-1)
+    GapQ,  // From Bq(i, j)
+    GapT,  // From Bt(i, j)
+}
+
+impl Default for TraceStep {
+    fn default() -> Self {
+        Self::Stop
+    }
+}
+
+struct DpContext {
+    // Score matrices
+    m: Grid<i32>,
+    bq: Grid<i32>,
+    bt: Grid<i32>,
+
+    // Traceback matrices
+    tb_m: Grid<TraceStep>,
+    tb_bq: Grid<TraceStep>,
+    tb_bt: Grid<TraceStep>,
+}
+
+impl DpContext {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            m: Grid::new(width, height, NA_VAL),
+            bq: Grid::new(width, height, NA_VAL),
+            bt: Grid::new(width, height, NA_VAL),
+            tb_m: Grid::new(width, height, TraceStep::Stop),
+            tb_bq: Grid::new(width, height, TraceStep::Stop),
+            tb_bt: Grid::new(width, height, TraceStep::Stop),
+        }
+    }
+
+    fn resize(&mut self, width: usize, height: usize) {
+        self.m.resize(width, height, NA_VAL);
+        self.bq.resize(width, height, NA_VAL);
+        self.bt.resize(width, height, NA_VAL);
+        self.tb_m.resize(width, height, TraceStep::Stop);
+        self.tb_bq.resize(width, height, TraceStep::Stop);
+        self.tb_bt.resize(width, height, TraceStep::Stop);
     }
 }
 
@@ -356,6 +419,12 @@ pub fn run_search(
 
     debug!("run_search called with {} queries", queries.len());
 
+    // Create DP Context (reused buffers)
+    // Max extension length is roughly max_ext * 2 + seed_len?
+    // Actually we resize dynamically, but initial size helps.
+    // Let's assume max extension around 100-200.
+    let mut ctx = DpContext::new(200, 200);
+
     for (q_id, q_seq) in queries {
         debug!("Processing query: {} (len={})", q_id, q_seq.len());
 
@@ -365,7 +434,9 @@ pub fn run_search(
 
         let mut hit_count = 0;
         for candidate in seeds {
-            if let Some(hit) = process_candidate(q_id, q_seq, index, &candidate, &opts.extend) {
+            if let Some(hit) =
+                process_candidate(q_id, q_seq, index, &candidate, &opts.extend, &mut ctx)
+            {
                 print_search_hit(&mut writer, &hit)?;
                 hit_count += 1;
             }
@@ -441,6 +512,7 @@ fn process_candidate(
     index: &SaIndex<'_>,
     candidate: &SeedCandidate,
     opts: &ExtendArgs,
+    ctx: &mut DpContext,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
     let t_seq_cow = if candidate.is_antisense {
@@ -458,33 +530,7 @@ fn process_candidate(
     }
 
     // Call extend_seed (or essentially reproduce its valuable logic).
-    // Since extend_seed is not easily visible or modifiable in one go without breaking things,
-    // and I want to USE the `SearchHit` struct, I will reimplement necessary parts here using `find_best_extent`.
-
-    // 1. Find Best Extent
-    // This gives us the geometric extension (l_q, l_t, r_q, r_t) and the full coordinates.
-    // We defer calling this until after the Maximality Check (via extend_seed) to save time,
-    // OR we call it here if we needed it for the check.
-    // Since extend_seed calls it internally anyway, we just wait.
-
-    // 2. Maximality Check
-    // If we could extend further into the seed region, this seed is not maximal
-    // (It would be covered by a longer seed or a shifted seed).
-    // Original C logic checks: if we can extend deeper INTO the seed from the left or right?
-    // Actually, `find_best_extent` returns how much we extended OUTWARDS.
-    // The maximality check in `extend_seed`:
-    // if DP Left ended with a MATCH state at the boundary, we could have started earlier?
-    // Let's rely on the `find_best_extent` result or just recalculate energy.
-    // For now, I'll trust `find_best_extent` gives us the coords.
-    // The C code "maximality check" is subtle.
-    // `extend_seed` (which I saw earlier) had:
-    // `if i == 0 && j == 0 { return None; } // Full extension implies seed was not maximal?`
-    // Actually, let's look at `extend_seed` logic I retrieved in `view_file` just now.
-    // It's not fully visible.
-    // I will call `extend_seed` just to be safe and use it as a validator.
-    // If it returns Some, we reconstruct the hit.
-
-    let extension_result = extend_seed(q_seq, t_seq, q_pos, t_start_idx, seed_len, opts)?;
+    let extension_result = extend_seed(ctx, q_seq, t_seq, q_pos, t_start_idx, seed_len, opts)?;
 
     let ext = extension_result;
     let score = ext.score; // RESTORED
@@ -843,6 +889,7 @@ fn reconstruct_seqs_from_trace(
 }
 
 fn extend_seed(
+    ctx: &mut DpContext,
     q_seq: &[u8],
     t_seq: &[u8],
     q_pos: usize,
@@ -922,12 +969,13 @@ fn extend_seed(
 
     // DP Left: Extend Query Left (5'), Target Right (3')
     // Start at: q_pos (5' Q), t_match_end (3' T)
-    let (l_score, l_q_len, l_t_len, l_trace) = dp_left(q_seq, t_seq, q_pos, t_match_end, safe_ext);
+    let (l_score, l_q_len, l_t_len, l_trace) =
+        dp_left(ctx, q_seq, t_seq, q_pos, t_match_end, safe_ext);
 
     // DP Right: Extend Query Right (3'), Target Left (5')
     // Start at: q_pos + len - 1 (3' Q), t_pos (5' T)
     let (r_score, r_q_len, r_t_len, r_trace) =
-        dp_right(q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
+        dp_right(ctx, q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
 
     let final_score = (seed_energy + l_score as f64 + r_score as f64 - 559.0) / -100.0;
 
@@ -963,6 +1011,7 @@ fn extend_seed(
 }
 
 fn dp_left(
+    ctx: &mut DpContext,
     q_seq: &[u8],
     t_seq: &[u8],
     q_start: usize,
@@ -1045,9 +1094,19 @@ fn dp_left(
         return (best_e, best_i, best_j, String::new());
     }
 
-    let mut m = Grid::new(t_len + 1, q_len + 1, NA_VAL);
-    let mut bq = Grid::new(t_len + 1, q_len + 1, NA_VAL);
-    let mut bt = Grid::new(t_len + 1, q_len + 1, NA_VAL);
+    // Resize context grids
+    ctx.resize(t_len + 1, q_len + 1);
+
+    // Create mutable aliases for easier access
+    // Rust allows borrowing disjoint fields mutably
+    let DpContext {
+        m,
+        bq,
+        bt,
+        tb_m,
+        tb_bq,
+        tb_bt,
+    } = ctx;
 
     m.set(0, 0, 0);
 
@@ -1076,6 +1135,7 @@ fn dp_left(
                 j,
                 prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
             );
+            tb_bt.set(0, j, TraceStep::GapT);
         }
         if q_len >= 1 && prev_bt != NA_VAL {
             m.set(
@@ -1083,6 +1143,7 @@ fn dp_left(
                 j,
                 prev_bt + s_mat[q_char(1)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
             );
+            tb_m.set(1, j, TraceStep::GapT);
             let val = m.get(1, j) + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(j)] as i32;
             if val > best_e {
                 best_e = val;
@@ -1101,6 +1162,7 @@ fn dp_left(
                 0,
                 prev_bq + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32,
             );
+            tb_bq.set(i, 0, TraceStep::GapQ);
         }
         if t_len >= 1 && prev_bq != NA_VAL {
             m.set(
@@ -1108,6 +1170,7 @@ fn dp_left(
                 1,
                 prev_bq + s_mat[q_char(i)][q_char(i - 1)][t_comp(1)][GAP_IDX] as i32,
             );
+            tb_m.set(i, 1, TraceStep::GapQ);
             let val = m.get(i, 1) + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(1)] as i32;
             if val > best_e {
                 best_e = val;
@@ -1126,16 +1189,22 @@ fn dp_left(
                 2,
                 m11 + s_mat[GAP_IDX][q_char(1)][t_comp(2)][t_comp(1)] as i32,
             );
+            tb_bt.set(1, 2, TraceStep::Match);
+
             bq.set(
                 2,
                 1,
                 m11 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(1)] as i32,
             );
+            tb_bq.set(2, 1, TraceStep::Match);
+
             m.set(
                 2,
                 2,
                 m11 + s_mat[q_char(2)][q_char(1)][t_comp(2)][t_comp(1)] as i32,
             );
+            tb_m.set(2, 2, TraceStep::Match);
+
             let val = m.get(2, 2) + s_mat[GAP_IDX][q_char(2)][GAP_IDX][t_comp(2)] as i32;
             if val > best_e {
                 best_e = val;
@@ -1150,6 +1219,7 @@ fn dp_left(
                 2,
                 m12 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(2)] as i32,
             );
+            tb_bq.set(2, 2, TraceStep::Match);
         }
         let m21 = m.get(2, 1);
         if m21 != NA_VAL {
@@ -1158,6 +1228,7 @@ fn dp_left(
                 2,
                 m21 + s_mat[GAP_IDX][q_char(2)][t_comp(2)][t_comp(1)] as i32,
             );
+            tb_bt.set(2, 2, TraceStep::Match);
         }
     }
 
@@ -1172,20 +1243,39 @@ fn dp_left(
             let m_diag = m.get(i - 1, j - 1);
             let bq_diag = bq.get(i - 1, j - 1);
             let bt_diag = bt.get(i - 1, j - 1);
-            let mut val_m = NA_VAL;
-            if m_diag != NA_VAL {
-                val_m = val_m
-                    .max(m_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32);
+
+            let s_mm = if m_diag != NA_VAL {
+                m_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32
+            } else {
+                NA_VAL
+            };
+
+            let s_mq = if bq_diag != NA_VAL {
+                bq_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32
+            } else {
+                NA_VAL
+            };
+
+            let s_mt = if bt_diag != NA_VAL {
+                bt_diag + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
+            } else {
+                NA_VAL
+            };
+
+            let mut val_m = s_mm;
+            let mut step_m = TraceStep::Match;
+
+            if s_mq > val_m {
+                val_m = s_mq;
+                step_m = TraceStep::GapQ;
             }
-            if bq_diag != NA_VAL {
-                val_m =
-                    val_m.max(bq_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32);
+            if s_mt > val_m {
+                val_m = s_mt;
+                step_m = TraceStep::GapT;
             }
-            if bt_diag != NA_VAL {
-                val_m =
-                    val_m.max(bt_diag + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
-            }
+
             m.set(i, j, val_m);
+            tb_m.set(i, j, step_m);
 
             if val_m != NA_VAL {
                 let curr_e = val_m + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(j)] as i32;
@@ -1198,35 +1288,56 @@ fn dp_left(
 
             // Calc Bq[i,j]
             if i > 2 || (i == 2 && j > 2) {
-                // check bounds logic
                 let m_up = m.get(i - 1, j);
                 let bq_up = bq.get(i - 1, j);
-                let mut val_bq = NA_VAL;
-                if m_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(m_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32);
+
+                let s_qm = if m_up != NA_VAL {
+                    m_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32
+                } else {
+                    NA_VAL
+                };
+
+                let s_qq = if bq_up != NA_VAL {
+                    bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32
+                } else {
+                    NA_VAL
+                };
+
+                // Priority to Extension (GapQ) if tie
+                if s_qq >= s_qm {
+                    bq.set(i, j, s_qq);
+                    tb_bq.set(i, j, TraceStep::GapQ);
+                } else {
+                    bq.set(i, j, s_qm);
+                    tb_bq.set(i, j, TraceStep::Match);
                 }
-                if bq_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32);
-                }
-                bq.set(i, j, val_bq);
             }
 
             // Calc Bt[i,j]
             if j > 2 || (j == 2 && i > 2) {
                 let m_left = m.get(i, j - 1);
                 let bt_left = bt.get(i, j - 1);
-                let mut val_bt = NA_VAL;
-                if m_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(m_left + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32);
+
+                let s_tm = if m_left != NA_VAL {
+                    m_left + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32
+                } else {
+                    NA_VAL
+                };
+
+                let s_tt = if bt_left != NA_VAL {
+                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
+                } else {
+                    NA_VAL
+                };
+
+                // Priority to Extension (GapT) if tie
+                if s_tt >= s_tm {
+                    bt.set(i, j, s_tt);
+                    tb_bt.set(i, j, TraceStep::GapT);
+                } else {
+                    bt.set(i, j, s_tm);
+                    tb_bt.set(i, j, TraceStep::Match);
                 }
-                if bt_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
-                }
-                bt.set(i, j, val_bt);
             }
         }
     }
@@ -1236,6 +1347,11 @@ fn dp_left(
     let mut j = best_j;
     let mut fp = String::new();
     let mut state = DpState::Match;
+
+    // Use explicit traceback matrices
+    // Since best_e always comes from M, we start in Match state.
+    // We strictly stop when we hit the boundaries (i=0 or j=0) because M is only defined for i,j >= 1
+    // and valid paths start at M(1,1) or similar boundaries initialized from (0,0).
 
     while i > 0 && j > 0 {
         let _qc = if i <= q_len { q_seq[q_start - i] } else { b'N' };
@@ -1253,65 +1369,57 @@ fn dp_left(
 
         match state {
             DpState::Match => {
-                let m_sc = m.get(i - 1, j - 1);
-                let bq_sc = bq.get(i - 1, j - 1);
-                let score = m.get(i, j);
-
-                let val_m = if m_sc != NA_VAL {
-                    m_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_FALLBACK
-                };
-                let val_bq = if bq_sc != NA_VAL {
-                    bq_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32
-                } else {
-                    NA_FALLBACK
-                };
-
-                state = if score == val_m {
-                    DpState::Match
-                } else if score == val_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::GapT
-                };
+                // Current state is Match (M[i,j])
+                // We emit the character pair corresponding to this match/mismatch
                 fp.push(get_fingerprint_char(qc_byte, tc_byte));
+
+                let step = tb_m.get(i, j);
                 i -= 1;
                 j -= 1;
+
+                match step {
+                    TraceStep::Stop => break,
+                    TraceStep::Match => state = DpState::Match,
+                    TraceStep::GapQ => state = DpState::GapQ,
+                    TraceStep::GapT => state = DpState::GapT,
+                }
             }
             DpState::GapQ => {
-                let bq_up = bq.get(i - 1, j);
-                let score = bq.get(i, j);
-                let val_bq = if bq_up != NA_VAL {
-                    bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32
-                } else {
-                    NA_VAL
-                };
-
+                // Current state is GapQ (Bq[i,j])
                 fp.push('Q');
-                state = if score == val_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::Match
-                };
+
+                let step = tb_bq.get(i, j);
                 i -= 1;
+                // j stays same
+
+                match step {
+                    TraceStep::Stop => break,
+                    TraceStep::Match => state = DpState::Match,
+                    TraceStep::GapQ => state = DpState::GapQ,
+                    TraceStep::GapT => {
+                        // This case should be impossible for GapQ?
+                        // Bq comes from Bq(i-1,j) or M(i-1,j). Never GapT.
+                        state = DpState::GapT
+                    }
+                }
             }
             DpState::GapT => {
-                let bt_left = bt.get(i, j - 1);
-                let score = bt.get(i, j);
-                let val_bt = if bt_left != NA_VAL {
-                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_VAL
-                };
-
+                // Current state is GapT (Bt[i,j])
                 fp.push('T');
-                state = if score == val_bt {
-                    DpState::GapT
-                } else {
-                    DpState::Match
-                };
+
+                let step = tb_bt.get(i, j);
                 j -= 1;
+                // i stays same
+
+                match step {
+                    TraceStep::Stop => break,
+                    TraceStep::Match => state = DpState::Match,
+                    TraceStep::GapT => state = DpState::GapT,
+                    TraceStep::GapQ => {
+                        // Impossible
+                        state = DpState::GapQ
+                    }
+                }
             }
         }
     }
@@ -1320,6 +1428,7 @@ fn dp_left(
 }
 
 fn dp_right(
+    ctx: &mut DpContext,
     q_seq: &[u8],
     t_seq: &[u8],
     q_end: usize,
@@ -1365,9 +1474,18 @@ fn dp_right(
         return (best_e, best_i, best_j, String::new());
     }
 
-    let mut m = Grid::new(t_len + 1, q_len + 1, NA_VAL);
-    let mut bq = Grid::new(t_len + 1, q_len + 1, NA_VAL);
-    let mut bt = Grid::new(t_len + 1, q_len + 1, NA_VAL);
+    // Resize context grids
+    ctx.resize(t_len + 1, q_len + 1);
+
+    // Create mutable aliases
+    let DpContext {
+        m,
+        bq,
+        bt,
+        tb_m,
+        tb_bq,
+        tb_bt,
+    } = ctx;
 
     m.set(0, 0, 0);
 
@@ -1396,6 +1514,7 @@ fn dp_right(
                 j,
                 prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32,
             );
+            tb_bt.set(0, j, TraceStep::GapT);
         }
         if q_len >= 1 && prev_bt != NA_VAL {
             m.set(
@@ -1403,6 +1522,7 @@ fn dp_right(
                 j,
                 prev_bt + s_mat[GAP_IDX][q_char(1)][t_comp(j - 1)][t_comp(j)] as i32,
             );
+            tb_m.set(1, j, TraceStep::GapT);
             let val = m.get(1, j) + s_mat[q_char(1)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
             if val > best_e {
                 best_e = val;
@@ -1421,6 +1541,7 @@ fn dp_right(
                 0,
                 prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32,
             );
+            tb_bq.set(i, 0, TraceStep::GapQ);
         }
         if t_len >= 1 && prev_bq != NA_VAL {
             m.set(
@@ -1428,6 +1549,7 @@ fn dp_right(
                 1,
                 prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(1)] as i32,
             );
+            tb_m.set(i, 1, TraceStep::GapQ);
             let val = m.get(i, 1) + s_mat[q_char(i)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
             if val > best_e {
                 best_e = val;
@@ -1446,16 +1568,22 @@ fn dp_right(
                 2,
                 m11 + s_mat[q_char(1)][GAP_IDX][t_comp(1)][t_comp(2)] as i32,
             );
+            tb_bt.set(1, 2, TraceStep::Match);
+
             bq.set(
                 2,
                 1,
                 m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][GAP_IDX] as i32,
             );
+            tb_bq.set(2, 1, TraceStep::Match);
+
             m.set(
                 2,
                 2,
                 m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][t_comp(2)] as i32,
             );
+            tb_m.set(2, 2, TraceStep::Match);
+
             let val = m.get(2, 2) + s_mat[q_char(2)][GAP_IDX][t_comp(2)][GAP_IDX] as i32;
             if val > best_e {
                 best_e = val;
@@ -1470,6 +1598,7 @@ fn dp_right(
                 2,
                 m12 + s_mat[q_char(1)][q_char(2)][t_comp(2)][GAP_IDX] as i32,
             );
+            tb_bq.set(2, 2, TraceStep::Match);
         }
         let m21 = m.get(2, 1);
         if m21 != NA_VAL {
@@ -1478,6 +1607,7 @@ fn dp_right(
                 2,
                 m21 + s_mat[q_char(2)][GAP_IDX][t_comp(1)][t_comp(2)] as i32,
             );
+            tb_bt.set(2, 2, TraceStep::Match);
         }
     }
 
@@ -1492,20 +1622,38 @@ fn dp_right(
             let bq_diag = bq.get(i - 1, j - 1);
             let bt_diag = bt.get(i - 1, j - 1);
 
-            let mut val_m = NA_VAL;
-            if m_diag != NA_VAL {
-                val_m = val_m
-                    .max(m_diag + s_mat[q_char(i - 1)][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
+            let s_mm = if m_diag != NA_VAL {
+                m_diag + s_mat[q_char(i - 1)][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32
+            } else {
+                NA_VAL
+            };
+
+            let s_mq = if bq_diag != NA_VAL {
+                bq_diag + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(j)] as i32
+            } else {
+                NA_VAL
+            };
+
+            let s_mt = if bt_diag != NA_VAL {
+                bt_diag + s_mat[GAP_IDX][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32
+            } else {
+                NA_VAL
+            };
+
+            let mut val_m = s_mm;
+            let mut step_m = TraceStep::Match;
+
+            if s_mq > val_m {
+                val_m = s_mq;
+                step_m = TraceStep::GapQ;
             }
-            if bq_diag != NA_VAL {
-                val_m =
-                    val_m.max(bq_diag + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(j)] as i32);
+            if s_mt > val_m {
+                val_m = s_mt;
+                step_m = TraceStep::GapT;
             }
-            if bt_diag != NA_VAL {
-                val_m =
-                    val_m.max(bt_diag + s_mat[GAP_IDX][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
-            }
+
             m.set(i, j, val_m);
+            tb_m.set(i, j, step_m);
 
             if val_m != NA_VAL {
                 let curr_e = val_m + s_mat[q_char(i)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
@@ -1519,31 +1667,51 @@ fn dp_right(
             if i > 2 || (i == 2 && j > 2) {
                 let m_up = m.get(i - 1, j);
                 let bq_up = bq.get(i - 1, j);
-                let mut val_bq = NA_VAL;
-                if m_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(m_up + s_mat[q_char(i - 1)][q_char(i)][t_comp(j)][GAP_IDX] as i32);
+
+                let s_qm = if m_up != NA_VAL {
+                    m_up + s_mat[q_char(i - 1)][q_char(i)][t_comp(j)][GAP_IDX] as i32
+                } else {
+                    NA_VAL
+                };
+
+                let s_qq = if bq_up != NA_VAL {
+                    bq_up + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32
+                } else {
+                    NA_VAL
+                };
+
+                if s_qq >= s_qm {
+                    bq.set(i, j, s_qq);
+                    tb_bq.set(i, j, TraceStep::GapQ);
+                } else {
+                    bq.set(i, j, s_qm);
+                    tb_bq.set(i, j, TraceStep::Match);
                 }
-                if bq_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(bq_up + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32);
-                }
-                bq.set(i, j, val_bq);
             }
 
             if j > 2 || (j == 2 && i > 2) {
                 let m_left = m.get(i, j - 1);
                 let bt_left = bt.get(i, j - 1);
-                let mut val_bt = NA_VAL;
-                if m_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(m_left + s_mat[q_char(i)][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
+
+                let s_tm = if m_left != NA_VAL {
+                    m_left + s_mat[q_char(i)][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32
+                } else {
+                    NA_VAL
+                };
+
+                let s_tt = if bt_left != NA_VAL {
+                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32
+                } else {
+                    NA_VAL
+                };
+
+                if s_tt >= s_tm {
+                    bt.set(i, j, s_tt);
+                    tb_bt.set(i, j, TraceStep::GapT);
+                } else {
+                    bt.set(i, j, s_tm);
+                    tb_bt.set(i, j, TraceStep::Match);
                 }
-                if bt_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
-                }
-                bt.set(i, j, val_bt);
             }
         }
     }
@@ -1553,6 +1721,10 @@ fn dp_right(
     let mut j = best_j;
     let mut fp = String::new();
     let mut state = DpState::Match;
+
+    // Use explicit traceback matrices
+    // Since best_e always comes from M, we start in Match state.
+    // We strictly stop when we hit the boundaries (i=0 or j=0).
 
     while i > 0 && j > 0 {
         let qc_byte = if q_end + i < q_seq.len() {
@@ -1564,65 +1736,55 @@ fn dp_right(
 
         match state {
             DpState::Match => {
-                let m_sc = m.get(i - 1, j - 1);
-                let bq_sc = bq.get(i - 1, j - 1);
-                let score = m.get(i, j);
-
-                let val_m = if m_sc != NA_VAL {
-                    m_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_FALLBACK
-                };
-                let val_bq = if bq_sc != NA_VAL {
-                    bq_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32
-                } else {
-                    NA_FALLBACK
-                };
-
-                state = if score == val_m {
-                    DpState::Match
-                } else if score == val_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::GapT
-                };
+                // Current state is Match (M[i,j])
                 fp.push(get_fingerprint_char(qc_byte, tc_byte));
+
+                let step = tb_m.get(i, j);
                 i -= 1;
                 j -= 1;
+
+                match step {
+                    TraceStep::Stop => break,
+                    TraceStep::Match => state = DpState::Match,
+                    TraceStep::GapQ => state = DpState::GapQ,
+                    TraceStep::GapT => state = DpState::GapT,
+                }
             }
             DpState::GapQ => {
-                let bq_up = bq.get(i - 1, j);
-                let score = bq.get(i, j);
-                let val_bq = if bq_up != NA_VAL {
-                    bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32
-                } else {
-                    NA_VAL
-                };
-
+                // Current state is GapQ (Bq[i,j])
                 fp.push('Q');
-                state = if score == val_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::Match
-                };
+
+                let step = tb_bq.get(i, j);
                 i -= 1;
+                // j stays same
+
+                match step {
+                    TraceStep::Stop => break,
+                    TraceStep::Match => state = DpState::Match,
+                    TraceStep::GapQ => state = DpState::GapQ,
+                    TraceStep::GapT => {
+                        // Impossible
+                        state = DpState::GapT
+                    }
+                }
             }
             DpState::GapT => {
-                let bt_left = bt.get(i, j - 1);
-                let score = bt.get(i, j);
-                let val_bt = if bt_left != NA_VAL {
-                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_VAL
-                };
-
+                // Current state is GapT (Bt[i,j])
                 fp.push('T');
-                state = if score == val_bt {
-                    DpState::GapT
-                } else {
-                    DpState::Match
-                };
+
+                let step = tb_bt.get(i, j);
                 j -= 1;
+                // i stays same
+
+                match step {
+                    TraceStep::Stop => break,
+                    TraceStep::Match => state = DpState::Match,
+                    TraceStep::GapT => state = DpState::GapT,
+                    TraceStep::GapQ => {
+                        // Impossible
+                        state = DpState::GapQ
+                    }
+                }
             }
         }
     }
@@ -1664,9 +1826,10 @@ mod tests {
 
     fn test_dp_left_returns_score() {
         // Verifies dp_left runs without panicking and returns a score tuple
+        let mut ctx = DpContext::new(10, 10);
         let q = b"AAAA";
         let t = b"UUUU";
-        let (score, i, j, _) = dp_left(q, t, 3, 3, 10);
+        let (score, i, j, _) = dp_left(&mut ctx, q, t, 3, 3, 10);
         // The actual score depends on the scoring matrix and sequence alignment
         // For now, just verify the function returns without panicking
         println!("dp_left score: {}, i: {}, j: {}", score, i, j);
@@ -1675,9 +1838,10 @@ mod tests {
     #[test]
     fn test_dp_right_returns_score() {
         // Verifies dp_right runs without panicking and returns a score tuple
+        let mut ctx = DpContext::new(10, 10);
         let q = b"AAAA";
         let t = b"UUUU";
-        let (score, i, j, _) = dp_right(q, t, 0, 0, 10);
+        let (score, i, j, _) = dp_right(&mut ctx, q, t, 0, 0, 10);
         println!("dp_right score: {}, i: {}, j: {}", score, i, j);
     }
 }
