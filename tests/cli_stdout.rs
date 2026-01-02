@@ -1,6 +1,6 @@
-use assert_cmd::Command;
 use std::io::Write;
 use tempfile::NamedTempFile;
+use assert_cmd::cargo::cargo_bin_cmd;
 
 #[test]
 fn test_search_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,7 +14,7 @@ fn test_search_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
     let index_file = NamedTempFile::new()?;
 
     // 2. Build Index
-    let mut cmd_index = Command::cargo_bin("risearch")?;
+    let mut cmd_index = cargo_bin_cmd!("risearch");
     cmd_index
         .arg("index")
         .arg(target_file.path())
@@ -24,7 +24,7 @@ fn test_search_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Run Search with output to stdout ('-')
     // Debugging with -vvv to see internals
-    let mut cmd_search = Command::cargo_bin("risearch")?;
+    let mut cmd_search = cargo_bin_cmd!("risearch");
     let assert = cmd_search
         .arg("-vvv")
         .arg("search")

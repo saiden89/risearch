@@ -82,6 +82,21 @@ impl RNASequence {
     }
 }
 
+pub trait Sequence {
+    fn reverse_complement_dna(&self) -> Vec<u8>;
+    fn reverse_complement_rna(&self) -> Vec<u8>;
+}
+
+impl Sequence for [u8] {
+    fn reverse_complement_dna(&self) -> Vec<u8> {
+        self.iter().rev().map(|&b| complement_dna(b)).collect()
+    }
+
+    fn reverse_complement_rna(&self) -> Vec<u8> {
+        self.iter().rev().map(|&b| complement_rna(b)).collect()
+    }
+}
+
 pub struct SeedCandidate {
     pub query_pos: usize,
     pub target_idx: usize,
@@ -134,22 +149,12 @@ fn dsm_idx(b: u8) -> usize {
     NUCL_MAP[b as usize]
 }
 
-/// Trait to abstract over different index types (Suffix Array)
-pub trait RisearchIndexTrait {
-    /// Returns (seq_idx, position, is_reverse_complement)
-    fn find_candidates(&self, seed: &[u8], wobble: bool) -> Vec<(usize, usize, bool)>;
-    fn get_sequence(&self, seq_idx: usize) -> &[u8];
-    fn get_sequence_rc(&self, seq_idx: usize) -> Vec<u8>; // RC of sequence
-    fn get_id(&self, seq_idx: usize) -> &str;
-    fn get_sequence_len(&self, seq_idx: usize) -> usize;
-}
-
 pub struct SaIndex<'a> {
     pub index: &'a IndexFile,
 }
 
-impl<'a> RisearchIndexTrait for SaIndex<'a> {
-    fn find_candidates(&self, seed: &[u8], wobble: bool) -> Vec<(usize, usize, bool)> {
+impl<'a> SaIndex<'a> {
+    pub fn find_candidates(&self, seed: &[u8], wobble: bool) -> Vec<(usize, usize, bool)> {
         let mut candidates = Vec::new();
         // Normalize seed to lowercase for matching (since index uses lowercase)
         // Also normalize U -> T since the index stores DNA (T) not RNA (U)
@@ -177,7 +182,7 @@ impl<'a> RisearchIndexTrait for SaIndex<'a> {
             // 2. Search REVERSE COMPLEMENT: query binds to antisense strand of target
             //    Reported as '+' strand in C convention (sense transcript)
             //    Need to build RC sequence to search against
-            let rc_seq = reverse_complement_dna(&seq_idx.sequence);
+            let rc_seq = seq_idx.sequence.reverse_complement_dna();
             self.search_sa_simple(
                 &seq_idx.reverse_sa,
                 &rc_seq,
@@ -191,40 +196,24 @@ impl<'a> RisearchIndexTrait for SaIndex<'a> {
         candidates
     }
 
-    fn get_sequence(&self, seq_idx: usize) -> &[u8] {
+    pub fn get_sequence(&self, seq_idx: usize) -> &[u8] {
         &self.index.sequences[seq_idx].sequence
     }
 
-    fn get_sequence_rc(&self, seq_idx: usize) -> Vec<u8> {
-        reverse_complement_dna(&self.index.sequences[seq_idx].sequence)
+    pub fn get_sequence_rc(&self, seq_idx: usize) -> Vec<u8> {
+        self.index.sequences[seq_idx]
+            .sequence
+            .reverse_complement_dna()
     }
 
-    fn get_id(&self, seq_idx: usize) -> &str {
+    pub fn get_id(&self, seq_idx: usize) -> &str {
         &self.index.sequences[seq_idx].name
     }
 
-    fn get_sequence_len(&self, seq_idx: usize) -> usize {
+    pub fn get_sequence_len(&self, seq_idx: usize) -> usize {
         self.index.sequences[seq_idx].sequence.len()
     }
-}
 
-/// DNA reverse complement (for target sequences stored as DNA with T not U)
-#[inline]
-fn complement_dna(b: u8) -> u8 {
-    match b {
-        b'A' | b'a' => b't',
-        b'T' | b't' => b'a',
-        b'C' | b'c' => b'g',
-        b'G' | b'g' => b'c',
-        _ => b'n',
-    }
-}
-
-fn reverse_complement_dna(seq: &[u8]) -> Vec<u8> {
-    seq.iter().rev().map(|&b| complement_dna(b)).collect()
-}
-
-impl<'a> SaIndex<'a> {
     /// Simple SA search - returns positions where seed matches
     #[allow(clippy::too_many_arguments)]
     fn search_sa_simple(
@@ -272,6 +261,18 @@ impl<'a> SaIndex<'a> {
                 }
             }
         }
+    }
+}
+
+/// DNA reverse complement (for target sequences stored as DNA with T not U)
+#[inline]
+fn complement_dna(b: u8) -> u8 {
+    match b {
+        b'A' | b'a' => b't',
+        b'T' | b't' => b'a',
+        b'C' | b'c' => b'g',
+        b'G' | b'g' => b'c',
+        _ => b'n',
     }
 }
 
@@ -342,7 +343,7 @@ impl Grid {
 
 pub fn run_search(
     queries: &[(String, Vec<u8>)],
-    index: &impl RisearchIndexTrait,
+    index: &SaIndex<'_>,
     output: impl AsRef<Path>,
     opts: &SearchArgs,
 ) -> Result<()> {
@@ -377,9 +378,11 @@ pub fn run_search(
     Ok(())
 }
 
+//TODO: improve performance via better search strategies!
+
 fn find_seeds_for_query(
     q_seq: &[u8],
-    index: &impl RisearchIndexTrait,
+    index: &SaIndex<'_>,
     seed_args: &SeedArgs,
 ) -> Result<Vec<SeedCandidate>> {
     let seed_spec_str = seed_args.seed.as_deref().unwrap_or("17");
@@ -391,28 +394,28 @@ fn find_seeds_for_query(
     let mut candidates = Vec::new();
     let q_len = q_seq.len();
 
-    let (start, end, min_len) = seed_len_specs;
+    let (start, end, mi_len) = seed_len_specs;
     let start0 = start - 1;
     let end0 = end - 1;
 
-    if start0 + min_len > q_len {
+    if start0 + mi_len > q_len {
         return Ok(candidates);
     }
 
-    let last_start = end0.saturating_sub(min_len - 1);
+    let last_start = end0.saturating_sub(mi_len - 1);
 
     for q_pos in start0..=last_start {
         // Max seed length from this position
         let max_seed_len = (end0 + 1).saturating_sub(q_pos).min(q_len - q_pos);
 
-        for seed_len in min_len..=max_seed_len {
+        for seed_len in mi_len..=max_seed_len {
             let seed_seq = &q_seq[q_pos..q_pos + seed_len];
             if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
                 continue;
             }
 
             // Index search (RC of seed)
-            let seed_rc = reverse_complement_rna(seed_seq);
+            let seed_rc = seed_seq.reverse_complement_rna();
             // find_candidates returns (target_idx, target_start, is_antisense)
 
             let hits = index.find_candidates(&seed_rc, seed_args.wobble);
@@ -435,7 +438,7 @@ fn find_seeds_for_query(
 fn process_candidate(
     q_id: &str,
     q_seq: &[u8],
-    index: &impl RisearchIndexTrait,
+    index: &SaIndex<'_>,
     candidate: &SeedCandidate,
     opts: &ExtendArgs,
 ) -> Option<SearchHit> {
@@ -662,7 +665,6 @@ struct SeedExtension {
     interaction: String,
     l_trace: String,
     r_trace: String,
-    seed_trace: String,
     l_q: usize,
     l_t: usize,
     r_q: usize,
@@ -726,8 +728,6 @@ fn reconstruct_seqs_from_trace(
     // If 'T' (Gap in Target): we consumed Q, produced gap in T.
 
     let mut aligned_ts = String::new();
-    let mut aligned_ts = String::new();
-    let mut _aligned_qs = String::new(); // if we needed it
 
     // LEFT PART
     // We iterate fp_l BACKWARDS?
@@ -955,7 +955,6 @@ fn extend_seed(
         interaction: full_interaction.clone(),
         l_trace: l_trace_str,
         r_trace: r_trace_str,
-        seed_trace: seed_int_str,
         l_q: l_q_len,
         l_t: l_t_len,
         r_q: r_q_len,
@@ -1631,55 +1630,6 @@ fn dp_right(
     (best_e, best_i, best_j, fp)
 }
 
-fn find_best_extent(
-    q_seq: &[u8],
-    t_seq: &[u8],
-    seed_q: usize,
-    seed_t: usize,
-    seed_len: usize,
-    opts: &ExtendArgs,
-) -> (
-    usize,
-    usize,
-    usize,
-    usize,
-    usize, // l_q
-    usize, // l_t
-    usize, // r_q
-    usize, // r_t
-) {
-    let max_ext = opts.max_extension as usize;
-    let safe_ext = max_ext.min(MAX_DP_EXT);
-
-    // Correct calls matching extend_seed
-    let t_match_end = seed_t + seed_len - 1;
-
-    // dp_left: Extend Q Left (5'), T Right (3')
-    // Access T from t_match_end moving Right
-    let (_, l_q, l_t, _) = dp_left(q_seq, t_seq, seed_q, t_match_end, safe_ext);
-
-    // dp_right: Extend Q Right (3'), T Left (5')
-    // Access T from seed_t moving Left
-    let (_, r_q, r_t, _) = dp_right(q_seq, t_seq, seed_q + seed_len - 1, seed_t, safe_ext);
-
-    // Coordinates:
-    // Q Start: seed_q - l_q
-    // Q End:   (seed_q + seed_len - 1) + r_q
-    // T Start: seed_t - r_t (Extending Left means subtracting index)
-    // T End:   (seed_t + seed_len - 1) + l_t (Extending Right means adding index)
-
-    (
-        seed_q - l_q,
-        seed_q + seed_len - 1 + r_q,
-        seed_t - r_t,
-        seed_t + seed_len - 1 + l_t,
-        l_q,
-        l_t,
-        r_q,
-        r_t,
-    )
-}
-
 /// RNA reverse complement helper
 #[inline]
 fn complement_rna(b: u8) -> u8 {
@@ -1692,14 +1642,6 @@ fn complement_rna(b: u8) -> u8 {
     }
 }
 
-fn reverse_complement_rna(seq: &[u8]) -> Vec<u8> {
-    seq.iter().rev().map(|&b| complement_rna(b)).collect()
-}
-
-/// Determines the fingerprint character for a query-target nucleotide pair
-/// - 'P' = Watson-Crick pair (A-U or G-C)
-/// - 'W' = Wobble pair (G-U)
-/// - 'U' = Unmatched/mismatch
 #[inline]
 fn get_fingerprint_char(qc: u8, tc: u8) -> char {
     const A: usize = 1;
@@ -1712,489 +1654,6 @@ fn get_fingerprint_char(qc: u8, tc: u8) -> char {
         (G, U) | (U, G) => 'W',                   // Wobble pair
         _ => 'U',                                 // Unmatched
     }
-}
-
-// Re-implement DP with traceback for printing
-fn trace_left(
-    q_seq: &[u8],
-    t_seq: &[u8],
-    q_start: usize,
-    t_start: usize,
-    best_i: usize,
-    best_j: usize,
-) -> (String, String, String) {
-    let q_len = best_i;
-    let t_len = best_j;
-
-    let s_mat = &DSM_T04_POS;
-
-    let q_char = |i: usize| {
-        if i > q_start {
-            0
-        } else {
-            dsm_idx(q_seq[q_start - i])
-        }
-    };
-    let t_comp = |j: usize| {
-        if t_start + j >= t_seq.len() {
-            0
-        } else {
-            dsm_idx(t_seq[t_start + j])
-        }
-    };
-
-    let rows = t_len + 1;
-    let cols = q_len + 1;
-    let mut m = Grid::new(rows, cols, NA_VAL);
-    let mut bq = Grid::new(rows, cols, NA_VAL);
-    let mut bt = Grid::new(rows, cols, NA_VAL);
-
-    m.set(0, 0, 0);
-
-    // Initial Scoring Logic
-    if cols > 1 {
-        bq.set(0, 1, s_mat[GAP_IDX][q_char(0)][t_comp(1)][t_comp(0)] as i32);
-    }
-
-    // Fill Matrix
-    for j in 2..t_len {
-        let prev_bt = bt.get(0, j - 1);
-        if prev_bt != NA_VAL {
-            bt.set(
-                0,
-                j,
-                prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
-            );
-        }
-        if q_len >= 1 && prev_bt != NA_VAL {
-            m.set(
-                1,
-                j,
-                prev_bt + s_mat[q_char(1)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
-            );
-        }
-    }
-    for i in 2..q_len {
-        let prev_bq = bq.get(i - 1, 0);
-        if prev_bq != NA_VAL {
-            bq.set(
-                i,
-                0,
-                prev_bq + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32,
-            );
-        }
-        if t_len >= 1 && prev_bq != NA_VAL {
-            m.set(
-                i,
-                1,
-                prev_bq + s_mat[q_char(i)][q_char(i - 1)][t_comp(1)][GAP_IDX] as i32,
-            );
-        }
-    }
-
-    if q_len >= 2 && t_len >= 2 {
-        let m11 = m.get(1, 1);
-        if m11 != NA_VAL {
-            bt.set(
-                1,
-                2,
-                m11 + s_mat[GAP_IDX][q_char(1)][t_comp(2)][t_comp(1)] as i32,
-            );
-            bq.set(
-                2,
-                1,
-                m11 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(1)] as i32,
-            );
-            m.set(
-                2,
-                2,
-                m11 + s_mat[q_char(2)][q_char(1)][t_comp(2)][t_comp(1)] as i32,
-            );
-        }
-    }
-
-    for i in 2..q_len {
-        for j in 2..t_len {
-            if i == 2 && j == 2 {
-                continue;
-            }
-            let m_diag = m.get(i - 1, j - 1);
-            let bq_diag = bq.get(i - 1, j - 1);
-            let bt_diag = bt.get(i - 1, j - 1);
-            let mut val_m = NA_VAL;
-            if m_diag != NA_VAL {
-                val_m = val_m
-                    .max(m_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32);
-            }
-            if bq_diag != NA_VAL {
-                val_m =
-                    val_m.max(bq_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32);
-            }
-            if bt_diag != NA_VAL {
-                val_m =
-                    val_m.max(bt_diag + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
-            }
-            m.set(i, j, val_m);
-
-            if i > 2 || (i == 2 && j > 2) {
-                let m_up = m.get(i - 1, j);
-                let bq_up = bq.get(i - 1, j);
-                let mut val_bq = NA_VAL;
-                if m_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(m_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32);
-                }
-                if bq_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32);
-                }
-                bq.set(i, j, val_bq);
-            }
-            if j > 2 || (j == 2 && i > 2) {
-                let m_left = m.get(i, j - 1);
-                let bt_left = bt.get(i, j - 1);
-                let mut val_bt = NA_VAL;
-                if m_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(m_left + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32);
-                }
-                if bt_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
-                }
-                bt.set(i, j, val_bt);
-            }
-        }
-    }
-
-    let mut i = best_i;
-    let mut j = best_j;
-    let mut fp = String::new();
-    let mut qs = String::new();
-    let mut ts = String::new();
-    let mut state = DpState::Match;
-
-    while i > 0 && j > 0 {
-        let qc = if i <= q_start {
-            q_seq[q_start - i]
-        } else {
-            b'N'
-        };
-        let tc = if t_start + j < t_seq.len() {
-            t_seq[t_start + j]
-        } else {
-            b'N'
-        };
-
-        match state {
-            DpState::Match => {
-                let m_sc = m.get(i - 1, j - 1);
-                let bq_sc = bq.get(i - 1, j - 1);
-                let score = m.get(i, j);
-
-                let from_m = if m_sc != NA_VAL {
-                    m_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_FALLBACK
-                };
-                let from_bq = if bq_sc != NA_VAL {
-                    bq_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32
-                } else {
-                    NA_FALLBACK
-                };
-
-                state = if score == from_m {
-                    DpState::Match
-                } else if score == from_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::GapT
-                };
-                fp.push(get_fingerprint_char(qc, tc));
-                qs.push(qc as char);
-                ts.push(tc as char);
-                i -= 1;
-                j -= 1;
-            }
-            DpState::GapQ => {
-                let bq_up = bq.get(i - 1, j);
-                let score = bq.get(i, j);
-                let from_bq = if bq_up != NA_VAL {
-                    bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32
-                } else {
-                    NA_VAL
-                };
-
-                fp.push('Q');
-                qs.push(qc as char);
-                ts.push('-');
-                state = if score == from_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::Match
-                };
-                i -= 1;
-            }
-            DpState::GapT => {
-                let bt_left = bt.get(i, j - 1);
-                let score = bt.get(i, j);
-                let from_bt = if bt_left != NA_VAL {
-                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_VAL
-                };
-
-                fp.push('T');
-                qs.push('-');
-                ts.push(tc as char);
-                state = if score == from_bt {
-                    DpState::GapT
-                } else {
-                    DpState::Match
-                };
-                j -= 1;
-            }
-        }
-    }
-
-    (fp, qs, ts)
-}
-
-fn trace_right(
-    q_seq: &[u8],
-    t_seq: &[u8],
-    q_end: usize,
-    t_end: usize,
-    best_i: usize,
-    best_j: usize,
-) -> (String, String, String) {
-    let q_len = best_i;
-    let t_len = best_j;
-    let s_mat = &DSM_T04_POS;
-    let q_char = |i: usize| {
-        if q_end + i >= q_seq.len() {
-            0
-        } else {
-            dsm_idx(q_seq[q_end + i])
-        }
-    };
-    let t_comp = |j: usize| {
-        if j > t_end + 1 {
-            0
-        } else {
-            dsm_idx(t_seq[t_end - j])
-        }
-    };
-
-    let rows = t_len + 1;
-    let cols = q_len + 1;
-    let mut m = Grid::new(rows, cols, NA_VAL);
-    let mut bq = Grid::new(rows, cols, NA_VAL);
-    let mut bt = Grid::new(rows, cols, NA_VAL);
-
-    m.set(0, 0, 0);
-
-    if cols > 1 {
-        bq.set(0, 1, s_mat[GAP_IDX][q_char(0)][t_comp(1)][t_comp(0)] as i32);
-    }
-
-    for j in 2..t_len {
-        let prev_bt = bt.get(0, j - 1);
-        if prev_bt != NA_VAL {
-            bt.set(
-                0,
-                j,
-                prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
-            );
-        }
-        if q_len >= 1 && prev_bt != NA_VAL {
-            m.set(
-                1,
-                j,
-                prev_bt + s_mat[q_char(1)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32,
-            );
-        }
-    }
-    for i in 2..q_len {
-        let prev_bq = bq.get(i - 1, 0);
-        if prev_bq != NA_VAL {
-            bq.set(
-                i,
-                0,
-                prev_bq + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32,
-            );
-        }
-        if t_len >= 1 && prev_bq != NA_VAL {
-            m.set(
-                i,
-                1,
-                prev_bq + s_mat[q_char(i)][q_char(i - 1)][t_comp(1)][GAP_IDX] as i32,
-            );
-        }
-    }
-
-    if q_len >= 2 && t_len >= 2 {
-        let m11 = m.get(1, 1);
-        if m11 != NA_VAL {
-            bt.set(
-                1,
-                2,
-                m11 + s_mat[GAP_IDX][q_char(1)][t_comp(2)][t_comp(1)] as i32,
-            );
-            bq.set(
-                2,
-                1,
-                m11 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(1)] as i32,
-            );
-            m.set(
-                2,
-                2,
-                m11 + s_mat[q_char(2)][q_char(1)][t_comp(2)][t_comp(1)] as i32,
-            );
-        }
-    }
-
-    for i in 2..q_len {
-        for j in 2..t_len {
-            if i == 2 && j == 2 {
-                continue;
-            }
-            let m_diag = m.get(i - 1, j - 1);
-            let bq_diag = bq.get(i - 1, j - 1);
-            let bt_diag = bt.get(i - 1, j - 1);
-            let mut val_m = NA_VAL;
-            if m_diag != NA_VAL {
-                val_m = val_m
-                    .max(m_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32);
-            }
-            if bq_diag != NA_VAL {
-                val_m =
-                    val_m.max(bq_diag + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32);
-            }
-            if bt_diag != NA_VAL {
-                val_m =
-                    val_m.max(bt_diag + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
-            }
-            m.set(i, j, val_m);
-
-            if i > 2 || (i == 2 && j > 2) {
-                let m_up = m.get(i - 1, j);
-                let bq_up = bq.get(i - 1, j);
-                let mut val_bq = NA_VAL;
-                if m_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(m_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32);
-                }
-                if bq_up != NA_VAL {
-                    val_bq = val_bq
-                        .max(bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32);
-                }
-                bq.set(i, j, val_bq);
-            }
-            if j > 2 || (j == 2 && i > 2) {
-                let m_left = m.get(i, j - 1);
-                let bt_left = bt.get(i, j - 1);
-                let mut val_bt = NA_VAL;
-                if m_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(m_left + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32);
-                }
-                if bt_left != NA_VAL {
-                    val_bt = val_bt
-                        .max(bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
-                }
-                bt.set(i, j, val_bt);
-            }
-        }
-    }
-
-    let mut i = best_i;
-    let mut j = best_j;
-    let mut fp = String::new();
-    let mut qs = String::new();
-    let mut ts = String::new();
-    let mut state = DpState::Match;
-
-    while i > 0 && j > 0 {
-        let qc = if q_end + i < q_seq.len() {
-            q_seq[q_end + i]
-        } else {
-            b'N'
-        };
-        let tc = if t_end >= j { t_seq[t_end - j] } else { b'N' };
-
-        match state {
-            DpState::Match => {
-                let m_sc = m.get(i - 1, j - 1);
-                let bq_sc = bq.get(i - 1, j - 1);
-                let score = m.get(i, j);
-
-                let from_m = if m_sc != NA_VAL {
-                    m_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_FALLBACK
-                };
-                let from_bq = if bq_sc != NA_VAL {
-                    bq_sc + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32
-                } else {
-                    NA_FALLBACK
-                };
-
-                state = if score == from_m {
-                    DpState::Match
-                } else if score == from_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::GapT
-                };
-                fp.push(get_fingerprint_char(qc, tc));
-                qs.push(qc as char);
-                ts.push(tc as char);
-                i -= 1;
-                j -= 1;
-            }
-            DpState::GapQ => {
-                let bq_up = bq.get(i - 1, j);
-                let score = bq.get(i, j);
-                let from_bq = if bq_up != NA_VAL {
-                    bq_up + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32
-                } else {
-                    NA_VAL
-                };
-
-                fp.push('Q');
-                qs.push(qc as char);
-                ts.push('-');
-                state = if score == from_bq {
-                    DpState::GapQ
-                } else {
-                    DpState::Match
-                };
-                i -= 1;
-            }
-            DpState::GapT => {
-                let bt_left = bt.get(i, j - 1);
-                let score = bt.get(i, j);
-                let from_bt = if bt_left != NA_VAL {
-                    bt_left + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32
-                } else {
-                    NA_VAL
-                };
-
-                fp.push('T');
-                qs.push('-');
-                ts.push(tc as char);
-                state = if score == from_bt {
-                    DpState::GapT
-                } else {
-                    DpState::Match
-                };
-                j -= 1;
-            }
-        }
-    }
-
-    (fp, qs, ts)
 }
 
 #[cfg(test)]
