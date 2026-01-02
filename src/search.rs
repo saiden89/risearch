@@ -460,7 +460,8 @@ fn process_candidate(
     }
 
     // Call extend_seed (or essentially reproduce its valuable logic).
-    let extension_result = extend_seed(ctx, q_seq, t_seq, q_pos, t_start_idx, seed_len, opts)?;
+    // Call extend_seed (or essentially reproduce its valuable logic).
+    let extension_result = extend_seed(ctx, q_seq, t_seq, candidate, opts)?;
 
     let ext = extension_result;
     let score = ext.score; // RESTORED
@@ -764,11 +765,13 @@ fn extend_seed(
     ctx: &mut DpContext,
     q_seq: &[u8],
     t_seq: &[u8],
-    q_pos: usize,
-    t_pos: usize,
-    len: usize,
+    candidate: &SeedCandidate,
     opts: &ExtendArgs,
 ) -> Option<SeedExtension> {
+    let q_pos = candidate.query_pos;
+    let t_pos = candidate.target_start;
+    let len = candidate.len;
+
     // MAXIMALITY CHECK
     // Skip non-maximal seeds: if the seed can be extended by a valid base pair
     // on either end, it's a sub-seed of a longer match and will be found later.

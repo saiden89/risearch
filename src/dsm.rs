@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! RNA dinucleotide stacking energy matrices (DSM)
 //!
 //! Tables encode nearest-neighbor thermodynamic parameters for RNA-RNA interactions.
