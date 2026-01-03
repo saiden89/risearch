@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::dsm::{Base, DSM_T04_POS, PAIR_MAT};
+use crate::dsm::{Base, DSM_T04_POS, DsmAccessor, PAIR_MAT};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
 use crate::{SearchArgs, SeedPairing, Strand};
@@ -37,31 +37,31 @@ pub enum FilterReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pairing {
-    Match(u8, u8),    // e.g. (b'G', b'C')
-    Wobble(u8, u8),   // e.g. (b'G', b'U')
-    Mismatch(u8, u8), // e.g. (b'A', b'A')
-    GapQuery(u8),     // Gap in Query, Base in Target (stored as u8)
-    GapTarget(u8),    // Gap in Target, Base in Query (stored as u8)
+    Match(Base, Base),    // e.g. (G, C)
+    Wobble(Base, Base),   // e.g. (G, U)
+    Mismatch(Base, Base), // e.g. (A, A)
+    GapQuery(Base),       // Gap in Query, Base in Target
+    GapTarget(Base),      // Gap in Target, Base in Query
 }
 
 impl Pairing {
-    pub fn from_bases(q_byte: u8, t_byte: u8) -> Self {
-        let q = Base::from_byte(q_byte);
-        let t = Base::from_byte(t_byte);
-        // Base::pairing_class logic check:
-        // G-C -> |, G-U -> :, G-A -> ' ', A-U -> |
-        // We match logic of Base::pairing_class but return Enum
+    /// Construct from raw bytes (convenience for callsites that have bytes)
+    pub fn from_bytes(q_byte: u8, t_byte: u8) -> Self {
+        Self::from_bases(Base::from_byte(q_byte), Base::from_byte(t_byte))
+    }
+
+    /// Construct from Base enums (preferred)
+    pub fn from_bases(q: Base, t: Base) -> Self {
         match (q, t) {
             (Base::G, Base::C) | (Base::C, Base::G) | (Base::A, Base::U) | (Base::U, Base::A) => {
-                Pairing::Match(q_byte, t_byte)
+                Pairing::Match(q, t)
             }
-
-            (Base::G, Base::U) | (Base::U, Base::G) => Pairing::Wobble(q_byte, t_byte),
-
-            _ => Pairing::Mismatch(q_byte, t_byte),
+            (Base::G, Base::U) | (Base::U, Base::G) => Pairing::Wobble(q, t),
+            _ => Pairing::Mismatch(q, t),
         }
     }
 
+    /// Get the fingerprint character for this pairing
     pub fn to_char(&self) -> char {
         match self {
             Pairing::Match(_, _) => 'P',
@@ -72,13 +72,36 @@ impl Pairing {
         }
     }
 
+    /// Get the target base character for alignment display
     pub fn target_char(&self) -> char {
         match self {
             Pairing::Match(_, t)
             | Pairing::Wobble(_, t)
             | Pairing::Mismatch(_, t)
-            | Pairing::GapQuery(t) => *t as char,
+            | Pairing::GapQuery(t) => t.as_char().to_ascii_lowercase(),
             Pairing::GapTarget(_) => '-',
+        }
+    }
+
+    /// Get query base (if present)
+    pub fn query_base(&self) -> Option<Base> {
+        match self {
+            Pairing::Match(q, _)
+            | Pairing::Wobble(q, _)
+            | Pairing::Mismatch(q, _)
+            | Pairing::GapTarget(q) => Some(*q),
+            Pairing::GapQuery(_) => None,
+        }
+    }
+
+    /// Get target base (if present)
+    pub fn target_base(&self) -> Option<Base> {
+        match self {
+            Pairing::Match(_, t)
+            | Pairing::Wobble(_, t)
+            | Pairing::Mismatch(_, t)
+            | Pairing::GapQuery(t) => Some(*t),
+            Pairing::GapTarget(_) => None,
         }
     }
 }
@@ -1119,7 +1142,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    left_alignment.push(Pairing::from_bases(q_b, t_b));
+                    left_alignment.push(Pairing::from_bytes(q_b, t_b));
                     if i > 0 {
                         i -= 1;
                     }
@@ -1139,7 +1162,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    left_alignment.push(Pairing::GapTarget(q_b));
+                    left_alignment.push(Pairing::GapTarget(Base::from_byte(q_b)));
                     if i > 0 {
                         i -= 1;
                     }
@@ -1153,7 +1176,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    left_alignment.push(Pairing::GapQuery(t_b));
+                    left_alignment.push(Pairing::GapQuery(Base::from_byte(t_b)));
                     if j > 0 {
                         j -= 1;
                     }
@@ -1177,7 +1200,7 @@ fn extend_seed(
 
         let q_b = q_seq[q_idx];
         let t_b = t_seq[t_idx];
-        seed_alignment.push(Pairing::from_bases(q_b, t_b));
+        seed_alignment.push(Pairing::from_bytes(q_b, t_b));
     }
 
     // 3. Right Trace (Query 3' -> end)
@@ -1208,7 +1231,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    right_alignment.push(Pairing::from_bases(q_b, t_b));
+                    right_alignment.push(Pairing::from_bytes(q_b, t_b));
                 }
                 DpMove::GapQ => {
                     // DpMove::GapQ in dp_right.
@@ -1221,7 +1244,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    right_alignment.push(Pairing::GapTarget(q_b));
+                    right_alignment.push(Pairing::GapTarget(Base::from_byte(q_b)));
                 }
                 DpMove::GapT => {
                     // DpMove::GapT in dp_right.
@@ -1233,7 +1256,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    right_alignment.push(Pairing::GapQuery(t_b));
+                    right_alignment.push(Pairing::GapQuery(Base::from_byte(t_b)));
                 }
             }
         }
@@ -1271,28 +1294,34 @@ fn dp_left(
 
     let s_mat = &DSM_T04_POS;
 
-    // Index mapping functions for the DP:
-    // q_char(i) -> nucleotide at q_start - i (query extends left, index decreases)
-    // t_comp(j) -> nucleotide at t_start + j (target extends right, index increases)
-    let q_char = |i: usize| {
+    // Index mapping functions for the DP using DsmAccessor trait:
+    // q_idx(i) -> DSM index at q_start - i (query extends left, index decreases)
+    // t_idx(j) -> DSM index at t_start + j (target extends right, index increases)
+    //
+    // NOTE: We do NOT apply complement transform here because:
+    // - For Forward strand: target is original sequence
+    // - For Reverse strand: target was pre-transformed via reverse_complement_dna()
+    // The antiparallel binding semantics are handled by the index directions, not comp[].
+    // This differs from C which stores original sequence and applies comp[] in DP.
+    let q_idx = |i: usize| -> usize {
         if i > q_start {
-            0
+            0 // Gap
         } else {
-            Base::from_byte(q_seq[q_start - i]).idx()
+            q_seq.dsm_at(q_start - i)
         }
     };
-    let t_comp = |j: usize| {
+    let t_idx = |j: usize| -> usize {
         if t_start + j >= t_seq.len() {
-            0
+            0 // Gap
         } else {
-            Base::from_byte(t_seq[t_start + j]).idx()
+            t_seq.dsm_at(t_start + j)
         }
     };
 
     // Initial score: terminal penalty for the seed boundary base pair.
     // This matches C code: best_e = (*S)[GAP][Q(0)][GAP][T(0)]
 
-    let mut best_e = s_mat[GAP_IDX][q_char(0)][GAP_IDX][t_comp(0)] as i32;
+    let mut best_e = s_mat[GAP_IDX][q_idx(0)][GAP_IDX][t_idx(0)] as i32;
     let mut best_i = 0;
     let mut best_j = 0;
 
@@ -1331,21 +1360,21 @@ fn dp_left(
     bt.set(
         0,
         1,
-        Some(s_mat[GAP_IDX][q_char(0)][t_comp(1)][t_comp(0)] as i32),
+        Some(s_mat[GAP_IDX][q_idx(0)][t_idx(1)][t_idx(0)] as i32),
     );
     bq.set(
         1,
         0,
-        Some(s_mat[q_char(1)][q_char(0)][GAP_IDX][t_comp(0)] as i32),
+        Some(s_mat[q_idx(1)][q_idx(0)][GAP_IDX][t_idx(0)] as i32),
     );
     m.set(
         1,
         1,
-        Some(s_mat[q_char(1)][q_char(0)][t_comp(1)][t_comp(0)] as i32),
+        Some(s_mat[q_idx(1)][q_idx(0)][t_idx(1)][t_idx(0)] as i32),
     );
 
     if let Some(m11) = m.get(1, 1) {
-        let val = m11 + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(1)] as i32;
+        let val = m11 + s_mat[GAP_IDX][q_idx(1)][GAP_IDX][t_idx(1)] as i32;
         if val > best_e {
             best_e = val;
             best_i = 1;
@@ -1359,15 +1388,15 @@ fn dp_left(
             bt.set(
                 0,
                 j,
-                Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32),
+                Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_idx(j)][t_idx(j - 1)] as i32),
             );
             tb_bt.set(0, j, DpMove::GapT);
 
             if q_len >= 1 {
-                let new_m = prev_bt + s_mat[q_char(1)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32;
+                let new_m = prev_bt + s_mat[q_idx(1)][GAP_IDX][t_idx(j)][t_idx(j - 1)] as i32;
                 m.set(1, j, Some(new_m));
                 tb_m.set(1, j, DpMove::GapT);
-                let val = new_m + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(j)] as i32;
+                let val = new_m + s_mat[GAP_IDX][q_idx(1)][GAP_IDX][t_idx(j)] as i32;
                 if val > best_e {
                     best_e = val;
                     best_i = 1;
@@ -1383,15 +1412,15 @@ fn dp_left(
             bq.set(
                 i,
                 0,
-                Some(prev_bq + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32),
+                Some(prev_bq + s_mat[q_idx(i)][q_idx(i - 1)][GAP_IDX][GAP_IDX] as i32),
             );
             tb_bq.set(i, 0, DpMove::GapQ);
 
             if t_len >= 1 {
-                let new_m = prev_bq + s_mat[q_char(i)][q_char(i - 1)][t_comp(1)][GAP_IDX] as i32;
+                let new_m = prev_bq + s_mat[q_idx(i)][q_idx(i - 1)][t_idx(1)][GAP_IDX] as i32;
                 m.set(i, 1, Some(new_m));
                 tb_m.set(i, 1, DpMove::GapQ);
-                let val = new_m + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(1)] as i32;
+                let val = new_m + s_mat[GAP_IDX][q_idx(i)][GAP_IDX][t_idx(1)] as i32;
                 if val > best_e {
                     best_e = val;
                     best_i = i;
@@ -1407,22 +1436,22 @@ fn dp_left(
             bt.set(
                 1,
                 2,
-                Some(m11 + s_mat[GAP_IDX][q_char(1)][t_comp(2)][t_comp(1)] as i32),
+                Some(m11 + s_mat[GAP_IDX][q_idx(1)][t_idx(2)][t_idx(1)] as i32),
             );
             tb_bt.set(1, 2, DpMove::Match);
 
             bq.set(
                 2,
                 1,
-                Some(m11 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(1)] as i32),
+                Some(m11 + s_mat[q_idx(2)][q_idx(1)][GAP_IDX][t_idx(1)] as i32),
             );
             tb_bq.set(2, 1, DpMove::Match);
 
-            let m22 = m11 + s_mat[q_char(2)][q_char(1)][t_comp(2)][t_comp(1)] as i32;
+            let m22 = m11 + s_mat[q_idx(2)][q_idx(1)][t_idx(2)][t_idx(1)] as i32;
             m.set(2, 2, Some(m22));
             tb_m.set(2, 2, DpMove::Match);
 
-            let val = m22 + s_mat[GAP_IDX][q_char(2)][GAP_IDX][t_comp(2)] as i32;
+            let val = m22 + s_mat[GAP_IDX][q_idx(2)][GAP_IDX][t_idx(2)] as i32;
             if val > best_e {
                 best_e = val;
                 best_i = 2;
@@ -1433,7 +1462,7 @@ fn dp_left(
             bq.set(
                 2,
                 2,
-                Some(m12 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(2)] as i32),
+                Some(m12 + s_mat[q_idx(2)][q_idx(1)][GAP_IDX][t_idx(2)] as i32),
             );
             tb_bq.set(2, 2, DpMove::Match);
         }
@@ -1441,7 +1470,7 @@ fn dp_left(
             bt.set(
                 2,
                 2,
-                Some(m21 + s_mat[GAP_IDX][q_char(2)][t_comp(2)][t_comp(1)] as i32),
+                Some(m21 + s_mat[GAP_IDX][q_idx(2)][t_idx(2)][t_idx(1)] as i32),
             );
             tb_bt.set(2, 2, DpMove::Match);
         }
@@ -1457,13 +1486,13 @@ fn dp_left(
             // Calc M[i,j] - pick best of three sources
             let s_mm = m
                 .diag(i, j)
-                .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32);
+                .map(|v| v + s_mat[q_idx(i)][q_idx(i - 1)][t_idx(j)][t_idx(j - 1)] as i32);
             let s_mq = bq
                 .diag(i, j)
-                .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32);
+                .map(|v| v + s_mat[q_idx(i)][q_idx(i - 1)][t_idx(j)][GAP_IDX] as i32);
             let s_mt = bt
                 .diag(i, j)
-                .map(|v| v + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
+                .map(|v| v + s_mat[q_idx(i)][GAP_IDX][t_idx(j)][t_idx(j - 1)] as i32);
 
             // Find best value and corresponding traceback step
             let (val_m, step_m) = [
@@ -1492,7 +1521,7 @@ fn dp_left(
             );
 
             if let Some(v) = val_m {
-                let curr_e = v + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(j)] as i32;
+                let curr_e = v + s_mat[GAP_IDX][q_idx(i)][GAP_IDX][t_idx(j)] as i32;
                 if curr_e > best_e {
                     trace!(
                         "DP_LEFT: UPDATE best: i={} j={} curr_e={} (was {})",
@@ -1508,10 +1537,10 @@ fn dp_left(
             if i > 2 || (i == 2 && j > 2) {
                 let s_qm = m
                     .up(i, j)
-                    .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32);
+                    .map(|v| v + s_mat[q_idx(i)][q_idx(i - 1)][GAP_IDX][t_idx(j)] as i32);
                 let s_qq = bq
                     .up(i, j)
-                    .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32);
+                    .map(|v| v + s_mat[q_idx(i)][q_idx(i - 1)][GAP_IDX][GAP_IDX] as i32);
 
                 // Priority to Match (opening) if tie
                 match (s_qq, s_qm) {
@@ -1538,10 +1567,10 @@ fn dp_left(
             if j > 2 || (j == 2 && i > 2) {
                 let s_tm = m
                     .left(i, j)
-                    .map(|v| v + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32);
+                    .map(|v| v + s_mat[GAP_IDX][q_idx(i)][t_idx(j)][t_idx(j - 1)] as i32);
                 let s_tt = bt
                     .left(i, j)
-                    .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
+                    .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_idx(j)][t_idx(j - 1)] as i32);
 
                 // Priority to Match (opening) if tie
                 match (s_tt, s_tm) {
@@ -1666,28 +1695,35 @@ fn dp_right(
 
     let s_mat = &DSM_T04_POS;
 
-    // Index mapping functions for the DP:
-    // q_char(i) -> nucleotide at q_end + i (query extends right, index increases)
-    // t_comp(j) -> nucleotide at t_end - j (target extends left, index decreases)
-
-    let q_char = |i: usize| {
+    // Index mapping functions for the DP using DsmAccessor trait:
+    // q_idx(i) -> DSM index at q_end + i (query extends right, index increases)
+    // t_idx(j) -> DSM complement index at t_end - j (target extends left, index decreases)
+    //
+    // NOTE: We do NOT apply complement transform here because:
+    // - For Forward strand: target is original sequence
+    // - For Reverse strand: target was pre-transformed via reverse_complement_dna()
+    // The antiparallel binding semantics are handled by the index directions, not comp[].
+    // This differs from C which stores original sequence and applies comp[] in DP.
+    let q_idx = |i: usize| -> usize {
         if q_end + i >= q_seq.len() {
-            0
+            0 // Gap
         } else {
-            Base::from_byte(q_seq[q_end + i]).idx()
+            q_seq.dsm_at(q_end + i)
         }
     };
-    let t_comp = |j: usize| {
+    let t_idx = |j: usize| -> usize {
         if j > t_end {
-            0
+            0 // Gap
         } else {
-            Base::from_byte(t_seq[t_end - j]).idx()
+            // Note: NOT applying COMP_TABLE here - Rust handles complement
+            // during sequence preparation, unlike C which uses comp[] in DP
+            t_seq.dsm_at(t_end - j)
         }
     };
 
     // Initial score from seed boundary
     // C DP_right uses Q(0)->Gap, T(0)->Gap logic ([Q][Gap][T][Gap])
-    let mut best_e = s_mat[q_char(0)][GAP_IDX][t_comp(0)][GAP_IDX] as i32;
+    let mut best_e = s_mat[q_idx(0)][GAP_IDX][t_idx(0)][GAP_IDX] as i32;
     let mut best_i = 0;
     let mut best_j = 0;
 
@@ -1720,21 +1756,21 @@ fn dp_right(
     bt.set(
         0,
         1,
-        Some(s_mat[q_char(0)][GAP_IDX][t_comp(0)][t_comp(1)] as i32),
+        Some(s_mat[q_idx(0)][GAP_IDX][t_idx(0)][t_idx(1)] as i32),
     );
     bq.set(
         1,
         0,
-        Some(s_mat[q_char(0)][q_char(1)][t_comp(0)][GAP_IDX] as i32),
+        Some(s_mat[q_idx(0)][q_idx(1)][t_idx(0)][GAP_IDX] as i32),
     );
     m.set(
         1,
         1,
-        Some(s_mat[q_char(0)][q_char(1)][t_comp(0)][t_comp(1)] as i32),
+        Some(s_mat[q_idx(0)][q_idx(1)][t_idx(0)][t_idx(1)] as i32),
     );
 
     if let Some(m11) = m.get(1, 1) {
-        let val = m11 + s_mat[q_char(1)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
+        let val = m11 + s_mat[q_idx(1)][GAP_IDX][t_idx(1)][GAP_IDX] as i32;
         if val > best_e {
             best_e = val;
             best_i = 1;
@@ -1748,15 +1784,15 @@ fn dp_right(
             bt.set(
                 0,
                 j,
-                Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32),
+                Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_idx(j - 1)][t_idx(j)] as i32),
             );
             tb_bt.set(0, j, DpMove::GapT);
 
             if q_len >= 1 {
-                let new_m = prev_bt + s_mat[GAP_IDX][q_char(1)][t_comp(j - 1)][t_comp(j)] as i32;
+                let new_m = prev_bt + s_mat[GAP_IDX][q_idx(1)][t_idx(j - 1)][t_idx(j)] as i32;
                 m.set(1, j, Some(new_m));
                 tb_m.set(1, j, DpMove::GapT);
-                let val = new_m + s_mat[q_char(1)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
+                let val = new_m + s_mat[q_idx(1)][GAP_IDX][t_idx(j)][GAP_IDX] as i32;
                 if val > best_e {
                     best_e = val;
                     best_i = 1;
@@ -1772,15 +1808,15 @@ fn dp_right(
             bq.set(
                 i,
                 0,
-                Some(prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32),
+                Some(prev_bq + s_mat[q_idx(i - 1)][q_idx(i)][GAP_IDX][GAP_IDX] as i32),
             );
             tb_bq.set(i, 0, DpMove::GapQ);
 
             if t_len >= 1 {
-                let new_m = prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(1)] as i32;
+                let new_m = prev_bq + s_mat[q_idx(i - 1)][q_idx(i)][GAP_IDX][t_idx(1)] as i32;
                 m.set(i, 1, Some(new_m));
                 tb_m.set(i, 1, DpMove::GapQ);
-                let val = new_m + s_mat[q_char(i)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
+                let val = new_m + s_mat[q_idx(i)][GAP_IDX][t_idx(1)][GAP_IDX] as i32;
                 if val > best_e {
                     best_e = val;
                     best_i = i;
@@ -1796,22 +1832,22 @@ fn dp_right(
             bt.set(
                 1,
                 2,
-                Some(m11 + s_mat[q_char(1)][GAP_IDX][t_comp(1)][t_comp(2)] as i32),
+                Some(m11 + s_mat[q_idx(1)][GAP_IDX][t_idx(1)][t_idx(2)] as i32),
             );
             tb_bt.set(1, 2, DpMove::Match);
 
             bq.set(
                 2,
                 1,
-                Some(m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][GAP_IDX] as i32),
+                Some(m11 + s_mat[q_idx(1)][q_idx(2)][t_idx(1)][GAP_IDX] as i32),
             );
             tb_bq.set(2, 1, DpMove::Match);
 
-            let m22 = m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][t_comp(2)] as i32;
+            let m22 = m11 + s_mat[q_idx(1)][q_idx(2)][t_idx(1)][t_idx(2)] as i32;
             m.set(2, 2, Some(m22));
             tb_m.set(2, 2, DpMove::Match);
 
-            let val = m22 + s_mat[q_char(2)][GAP_IDX][t_comp(2)][GAP_IDX] as i32;
+            let val = m22 + s_mat[q_idx(2)][GAP_IDX][t_idx(2)][GAP_IDX] as i32;
             if val > best_e {
                 best_e = val;
                 best_i = 2;
@@ -1822,7 +1858,7 @@ fn dp_right(
             bq.set(
                 2,
                 2,
-                Some(m12 + s_mat[q_char(1)][q_char(2)][t_comp(2)][GAP_IDX] as i32),
+                Some(m12 + s_mat[q_idx(1)][q_idx(2)][t_idx(2)][GAP_IDX] as i32),
             );
             tb_bq.set(2, 2, DpMove::Match);
         }
@@ -1830,7 +1866,7 @@ fn dp_right(
             bt.set(
                 2,
                 2,
-                Some(m21 + s_mat[q_char(2)][GAP_IDX][t_comp(1)][t_comp(2)] as i32),
+                Some(m21 + s_mat[q_idx(2)][GAP_IDX][t_idx(1)][t_idx(2)] as i32),
             );
             tb_bt.set(2, 2, DpMove::Match);
         }
@@ -1846,13 +1882,13 @@ fn dp_right(
             // Calc M[i,j] - pick best of three sources
             let s_mm = m
                 .diag(i, j)
-                .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
+                .map(|v| v + s_mat[q_idx(i - 1)][q_idx(i)][t_idx(j - 1)][t_idx(j)] as i32);
             let s_mq = bq
                 .diag(i, j)
-                .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(j)] as i32);
+                .map(|v| v + s_mat[q_idx(i - 1)][q_idx(i)][GAP_IDX][t_idx(j)] as i32);
             let s_mt = bt
                 .diag(i, j)
-                .map(|v| v + s_mat[GAP_IDX][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
+                .map(|v| v + s_mat[GAP_IDX][q_idx(i)][t_idx(j - 1)][t_idx(j)] as i32);
 
             // Find best value and corresponding traceback step
             let (val_m, step_m) = [
@@ -1881,7 +1917,7 @@ fn dp_right(
             );
 
             if let Some(v) = val_m {
-                let term = s_mat[q_char(i)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
+                let term = s_mat[q_idx(i)][GAP_IDX][t_idx(j)][GAP_IDX] as i32;
                 if v + term > best_e {
                     trace!(
                         "DP_RIGHT: UPDATE best: i={} j={} curr_e={} (was {})",
@@ -1900,10 +1936,10 @@ fn dp_right(
             if i > 2 || (i == 2 && j > 2) {
                 let s_qm = m
                     .up(i, j)
-                    .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][t_comp(j)][GAP_IDX] as i32);
+                    .map(|v| v + s_mat[q_idx(i - 1)][q_idx(i)][t_idx(j)][GAP_IDX] as i32);
                 let s_qq = bq
                     .up(i, j)
-                    .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32);
+                    .map(|v| v + s_mat[q_idx(i - 1)][q_idx(i)][GAP_IDX][GAP_IDX] as i32);
 
                 match (s_qq, s_qm) {
                     (Some(qq), Some(qm)) if qq > qm => {
@@ -1926,10 +1962,10 @@ fn dp_right(
             if j > 2 || (j == 2 && i > 2) {
                 let s_tm = m
                     .left(i, j)
-                    .map(|v| v + s_mat[q_char(i)][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
+                    .map(|v| v + s_mat[q_idx(i)][GAP_IDX][t_idx(j - 1)][t_idx(j)] as i32);
                 let s_tt = bt
                     .left(i, j)
-                    .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
+                    .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_idx(j - 1)][t_idx(j)] as i32);
 
                 match (s_tt, s_tm) {
                     (Some(tt), Some(tm)) if tt > tm => {

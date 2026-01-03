@@ -1353,3 +1353,80 @@ pub const PAIR_MAT_NO_GU: [[u8; 6]; 6] = [
     [0, 1, 0, 0, 0, 0], // U-A
     [0, 0, 0, 0, 0, 0],
 ];
+
+/// Complement table for antiparallel target access (matches C's `comp[]`)
+/// Maps DSM index to complement's DSM index:
+/// Gap(0)->Gap(0), A(1)->U(4), G(2)->C(3), C(3)->G(2), U(4)->A(1), N(5)->N(5)
+pub const COMP_TABLE: [usize; 6] = [0, 4, 3, 2, 1, 5];
+
+/// 256-entry LUT for O(1) byte→DSM index conversion
+/// This replaces match statements in hot paths with single array lookup
+const fn build_dsm_lookup() -> [usize; 256] {
+    let mut table = [5usize; 256]; // Default to N(5)
+    table[b'A' as usize] = 1;
+    table[b'a' as usize] = 1;
+    table[b'G' as usize] = 2;
+    table[b'g' as usize] = 2;
+    table[b'C' as usize] = 3;
+    table[b'c' as usize] = 3;
+    table[b'U' as usize] = 4;
+    table[b'u' as usize] = 4;
+    table[b'T' as usize] = 4; // T treated as U
+    table[b't' as usize] = 4;
+    table[b'-' as usize] = 0;
+    table[b'.' as usize] = 0;
+    table
+}
+
+pub const DSM_LOOKUP: [usize; 256] = build_dsm_lookup();
+
+// ============================================================================
+// DsmAccessor Trait - Uniform sequence access for DP operations
+// ============================================================================
+
+/// Trait for efficient DSM index access on byte sequences
+/// Provides zero-overhead abstractions matching C's XRIS() macro semantics
+pub trait DsmAccessor {
+    /// Get DSM index at position (equivalent to C's XRIS())
+    fn dsm_at(&self, pos: usize) -> usize;
+
+    /// Get complement's DSM index at position (equivalent to C's comp[XRIS()])
+    fn dsm_comp_at(&self, pos: usize) -> usize;
+
+    /// Get Base enum at position
+    fn base_at(&self, pos: usize) -> Base;
+}
+
+impl DsmAccessor for [u8] {
+    #[inline(always)]
+    fn dsm_at(&self, pos: usize) -> usize {
+        DSM_LOOKUP[self[pos] as usize]
+    }
+
+    #[inline(always)]
+    fn dsm_comp_at(&self, pos: usize) -> usize {
+        COMP_TABLE[DSM_LOOKUP[self[pos] as usize]]
+    }
+
+    #[inline(always)]
+    fn base_at(&self, pos: usize) -> Base {
+        Base::from_idx(DSM_LOOKUP[self[pos] as usize])
+    }
+}
+
+impl DsmAccessor for Vec<u8> {
+    #[inline(always)]
+    fn dsm_at(&self, pos: usize) -> usize {
+        self.as_slice().dsm_at(pos)
+    }
+
+    #[inline(always)]
+    fn dsm_comp_at(&self, pos: usize) -> usize {
+        self.as_slice().dsm_comp_at(pos)
+    }
+
+    #[inline(always)]
+    fn base_at(&self, pos: usize) -> Base {
+        self.as_slice().base_at(pos)
+    }
+}
