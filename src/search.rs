@@ -83,6 +83,68 @@ impl Pairing {
     }
 }
 
+use std::ops::Range;
+
+/// Represents a full biological alignment between Query and Target.
+/// Stores the sequence of interactions and metadata about the seed location.
+#[derive(Debug, Clone)]
+pub struct Alignment {
+    /// The complete sequence of pairing steps (5' -> 3' of Query).
+    steps: Vec<Pairing>,
+
+    /// The range of indices in `steps` that corresponds to the initial Seed match.
+    /// This allows easy extraction of the "core" interaction vs extensions.
+    seed_range: Range<usize>,
+}
+
+impl Alignment {
+    /// Constructor from the three phases of extension.
+    /// This fits naturally into `extend_seed` which generates these 3 parts.
+    pub fn new(left: Vec<Pairing>, seed: Vec<Pairing>, right: Vec<Pairing>) -> Self {
+        let left_len = left.len();
+        let seed_len = seed.len();
+
+        let mut steps = Vec::with_capacity(left_len + seed_len + right.len());
+        steps.extend(left);
+        steps.extend(seed);
+        steps.extend(right);
+
+        Self {
+            steps,
+            seed_range: left_len..(left_len + seed_len),
+        }
+    }
+
+    /// Returns the full alignment steps
+    pub fn steps(&self) -> &[Pairing] {
+        &self.steps
+    }
+
+    /// Returns only the seed region steps
+    pub fn seed(&self) -> &[Pairing] {
+        &self.steps[self.seed_range.clone()]
+    }
+
+    /// Returns the 5' extension (Left of seed)
+    pub fn left_extension(&self) -> &[Pairing] {
+        &self.steps[..self.seed_range.start]
+    }
+
+    /// Returns the 3' extension (Right of seed)
+    pub fn right_extension(&self) -> &[Pairing] {
+        &self.steps[self.seed_range.end..]
+    }
+
+    /// Generates the interaction string (e.g. "||| :::")
+    pub fn fingerprint(&self) -> String {
+        self.steps.iter().map(|p| p.to_char()).collect()
+    }
+
+    /// Generates the target sequence string (e.g. "accu--cg")
+    pub fn target_sequence(&self) -> String {
+        self.steps.iter().map(|p| p.target_char()).collect()
+    }
+}
 /// Statistics for search filtering
 #[derive(Debug, Default)]
 pub struct SearchStats {
@@ -109,10 +171,6 @@ impl Sequence for [u8] {
         self.iter()
             .rev()
             .map(|&b| {
-                // Return lowercase T for A (mimicking old complement_dna behavior)
-                // Base::from_byte(b).complement().to_u8_upper().to_ascii_lowercase()
-                // But wait, Base::U -> b'U'. to_ascii_lowercase -> b'u'.
-                // Index stores DNA T. So we need to map U -> T if it's U.
                 let c = Base::from_byte(b).complement();
                 match c {
                     Base::U => b't',
@@ -152,9 +210,45 @@ pub struct SearchHit {
     pub output_t_end: usize,   // 1-based, strand-aware
     pub strand: char,
     pub energy: f64,
-    pub alignment: Vec<Pairing>,
+    pub alignment: Alignment,
     pub flank_5: String,
     pub flank_3: String,
+}
+
+impl SearchHit {
+    pub fn write(&self, w: &mut dyn Write) -> std::io::Result<()> {
+        // Normalize strings for output (T->U)
+        // Derive from alignment
+        let norm_fp = self.alignment.fingerprint();
+        let norm_ts = self
+            .alignment
+            .target_sequence()
+            .replace('T', "U")
+            .replace('t', "u");
+
+        writeln!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
+            self.query_id
+                .split_whitespace()
+                .next()
+                .unwrap_or(&self.query_id),
+            self.q_start + 1,
+            self.q_end + 1,
+            self.target_id
+                .split_whitespace()
+                .next()
+                .unwrap_or(&self.target_id),
+            self.output_t_start,
+            self.output_t_end,
+            self.strand,
+            self.energy,
+            norm_fp,
+            norm_ts,
+            self.flank_5,
+            self.flank_3
+        )
+    }
 }
 
 // Reimplementing mapping locally for safety and speed
@@ -281,7 +375,7 @@ impl<'a> SaIndex<'a> {
             let target_char = seed[offset];
 
             // Canonical Match
-            let (s, e) = get_sa_interval(sa, text, start, end, offset, target_char);
+            let (s, e) = self.get_sa_interval(sa, text, start, end, offset, target_char);
             if s < e {
                 stack.push((s, e, offset + 1));
             }
@@ -300,7 +394,7 @@ impl<'a> SaIndex<'a> {
                 );
 
                 if let Some(wc) = wobble_char {
-                    let (ws, we) = get_sa_interval(sa, text, start, end, offset, wc);
+                    let (ws, we) = self.get_sa_interval(sa, text, start, end, offset, wc);
                     if ws < we {
                         trace!(
                             "SA_SEARCH: Wobble Found! offset={} range={}-{}",
@@ -312,36 +406,35 @@ impl<'a> SaIndex<'a> {
             }
         }
     }
-}
 
-/// DNA reverse complement (for target sequences stored as DNA with T not U)
+    /// Helper to find range in SA for a specific character at offset
+    fn get_sa_interval(
+        &self,
+        sa: &[i64],
+        text: &[u8],
+        start: usize,
+        end: usize,
+        offset: usize,
+        target: u8,
+    ) -> (usize, usize) {
+        // Find lower bound
+        // We want the first index where text[sa[i] + offset] >= target
+        let lower = sa[start..end].partition_point(|&idx| {
+            let pos = (idx as usize) + offset;
+            let c = if pos < text.len() { text[pos] } else { 0 };
+            c < target
+        });
 
-/// Helper to find range in SA for a specific character at offset
-fn get_sa_interval(
-    sa: &[i64],
-    text: &[u8],
-    start: usize,
-    end: usize,
-    offset: usize,
-    target: u8,
-) -> (usize, usize) {
-    // Find lower bound
-    // We want the first index where text[sa[i] + offset] >= target
-    let lower = sa[start..end].partition_point(|&idx| {
-        let pos = (idx as usize) + offset;
-        let c = if pos < text.len() { text[pos] } else { 0 };
-        c < target
-    });
+        // Find upper bound
+        // We want the first index where text[sa[i] + offset] > target
+        let upper = sa[start..end].partition_point(|&idx| {
+            let pos = (idx as usize) + offset;
+            let c = if pos < text.len() { text[pos] } else { 0 };
+            c <= target
+        });
 
-    // Find upper bound
-    // We want the first index where text[sa[i] + offset] > target
-    let upper = sa[start..end].partition_point(|&idx| {
-        let pos = (idx as usize) + offset;
-        let c = if pos < text.len() { text[pos] } else { 0 };
-        c <= target
-    });
-
-    (start + lower, start + upper)
+        (start + lower, start + upper)
+    }
 }
 
 // --- DP Structure ---
@@ -373,6 +466,24 @@ impl<T: Clone + Copy + Default> Grid<T> {
     #[inline(always)]
     fn get(&self, r: usize, c: usize) -> T {
         self.data[r * self.width + c]
+    }
+
+    /// Access the diagonal neighbor (i-1, j-1)
+    #[inline(always)]
+    pub fn diag(&self, i: usize, j: usize) -> T {
+        self.get(i - 1, j - 1)
+    }
+
+    /// Access the upper neighbor (i-1, j) - Gap in Target
+    #[inline(always)]
+    pub fn up(&self, i: usize, j: usize) -> T {
+        self.get(i - 1, j)
+    }
+
+    /// Access the left neighbor (i, j-1) - Gap in Query
+    #[inline(always)]
+    pub fn left(&self, i: usize, j: usize) -> T {
+        self.get(i, j - 1)
     }
 
     #[inline(always)]
@@ -535,7 +646,7 @@ pub fn run_search(
     }
 
     for hit in deduped {
-        print_search_hit(&mut writer, &hit)?;
+        hit.write(&mut writer)?;
     }
 
     Ok(())
@@ -757,11 +868,6 @@ fn process_candidate(
     // We need to map `final_t_start` / `final_t_end` back to the original sequence coordinates.
     // Let N = original len.
     // RC index i corresponds to forward index (N - 1 - i).
-    // So Range [start, end] in RC maps to [N - 1 - end, N - 1 - start] in Forward?
-    // Let's verify.
-    // RC: 0 1 2 ... (N-1)
-    // Fwd: (N-1) ... 2 1 0
-    // Yes.
 
     let original_len = ctx.index.get_sequence_len(candidate.target_idx);
     let (out_t_start, out_t_end, strand_char) = match candidate.strand {
@@ -826,42 +932,6 @@ fn process_candidate(
     })
 }
 
-fn print_search_hit(w: &mut dyn Write, hit: &SearchHit) -> std::io::Result<()> {
-    // Normalize strings for output (T->U)
-    // Derive from alignment
-    let norm_fp: String = hit.alignment.iter().map(|p| p.to_char()).collect();
-    let norm_ts: String = hit
-        .alignment
-        .iter()
-        .map(|p| p.target_char())
-        .collect::<String>()
-        .replace('T', "U")
-        .replace('t', "u");
-
-    writeln!(
-        w,
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
-        hit.query_id
-            .split_whitespace()
-            .next()
-            .unwrap_or(&hit.query_id),
-        hit.q_start + 1,
-        hit.q_end + 1,
-        hit.target_id
-            .split_whitespace()
-            .next()
-            .unwrap_or(&hit.target_id),
-        hit.output_t_start,
-        hit.output_t_end,
-        hit.strand,
-        hit.energy,
-        norm_fp,
-        norm_ts,
-        hit.flank_5,
-        hit.flank_3
-    )
-}
-
 pub struct DpResult {
     pub score: i32,
     pub ext_q_len: usize,
@@ -872,25 +942,12 @@ pub struct DpResult {
 #[derive(Debug, Clone)]
 pub struct ExtensionResult {
     pub score: f64,
-    pub alignment: Vec<Pairing>,
-    pub l_trace: Vec<DpMove>,
-    pub r_trace: Vec<DpMove>,
+    pub alignment: Alignment,
+
     pub l_q: usize,
     pub l_t: usize,
     pub r_q: usize,
     pub r_t: usize,
-}
-
-impl ExtensionResult {
-    /// Reconstructs the interaction fingerprint string (e.g. "||| :: |")
-    pub fn to_string(&self) -> String {
-        self.alignment.iter().map(|p| p.to_char()).collect()
-    }
-
-    /// Reconstructs the aligned target sequence string (including gaps as '-')
-    pub fn target_string(&self) -> String {
-        self.alignment.iter().map(|p| p.target_char()).collect()
-    }
 }
 
 fn extend_seed(
@@ -1033,7 +1090,7 @@ fn extend_seed(
         right_res.ext_t_len
     );
 
-    let mut alignment = Vec::new();
+    let mut left_alignment = Vec::new();
 
     // 1. Left Trace (Query 5' -> Seed)
     // l_trace is 5'->3' (from far left to seed start)
@@ -1062,7 +1119,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    alignment.push(Pairing::from_bases(q_b, t_b));
+                    left_alignment.push(Pairing::from_bases(q_b, t_b));
                     if i > 0 {
                         i -= 1;
                     }
@@ -1082,7 +1139,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    alignment.push(Pairing::GapTarget(q_b));
+                    left_alignment.push(Pairing::GapTarget(q_b));
                     if i > 0 {
                         i -= 1;
                     }
@@ -1096,7 +1153,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    alignment.push(Pairing::GapQuery(t_b));
+                    left_alignment.push(Pairing::GapQuery(t_b));
                     if j > 0 {
                         j -= 1;
                     }
@@ -1106,6 +1163,7 @@ fn extend_seed(
     }
 
     // 2. Seed itself
+    let mut seed_alignment = Vec::new();
     for n in 0..len {
         let q_idx = candidate.query_pos + n;
         // candidate.target_start is start (lowest index).
@@ -1119,10 +1177,11 @@ fn extend_seed(
 
         let q_b = q_seq[q_idx];
         let t_b = t_seq[t_idx];
-        alignment.push(Pairing::from_bases(q_b, t_b));
+        seed_alignment.push(Pairing::from_bases(q_b, t_b));
     }
 
     // 3. Right Trace (Query 3' -> end)
+    let mut right_alignment = Vec::new();
     {
         let mut curr_i = 0;
         let mut curr_j = 0;
@@ -1149,7 +1208,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    alignment.push(Pairing::from_bases(q_b, t_b));
+                    right_alignment.push(Pairing::from_bases(q_b, t_b));
                 }
                 DpMove::GapQ => {
                     // DpMove::GapQ in dp_right.
@@ -1162,7 +1221,7 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    alignment.push(Pairing::GapTarget(q_b));
+                    right_alignment.push(Pairing::GapTarget(q_b));
                 }
                 DpMove::GapT => {
                     // DpMove::GapT in dp_right.
@@ -1174,17 +1233,18 @@ fn extend_seed(
                     } else {
                         b'N'
                     };
-                    alignment.push(Pairing::GapQuery(t_b));
+                    right_alignment.push(Pairing::GapQuery(t_b));
                 }
             }
         }
     }
 
+    let alignment = Alignment::new(left_alignment, seed_alignment, right_alignment);
+
     Some(ExtensionResult {
         score: final_score,
         alignment,
-        l_trace: left_res.trace,
-        r_trace: right_res.trace,
+
         l_q: left_res.ext_q_len,
         l_t: left_res.ext_t_len,
         r_q: right_res.ext_q_len,
@@ -1295,7 +1355,7 @@ fn dp_left(
 
     // Row 0 (j from 2 to t_len-1)
     for j in 2..t_len {
-        if let Some(prev_bt) = bt.get(0, j - 1) {
+        if let Some(prev_bt) = bt.left(0, j) {
             bt.set(
                 0,
                 j,
@@ -1319,7 +1379,7 @@ fn dp_left(
 
     // Col 0 (i from 2 to q_len-1)
     for i in 2..q_len {
-        if let Some(prev_bq) = bq.get(i - 1, 0) {
+        if let Some(prev_bq) = bq.up(i, 0) {
             bq.set(
                 i,
                 0,
@@ -1343,7 +1403,7 @@ fn dp_left(
 
     // 2,2 Init (needs at least length 3 to have index 2)
     if q_len >= 3 && t_len >= 3 {
-        if let Some(m11) = m.get(1, 1) {
+        if let Some(m11) = m.diag(2, 2) {
             bt.set(
                 1,
                 2,
@@ -1369,7 +1429,7 @@ fn dp_left(
                 best_j = 2;
             }
         }
-        if let Some(m12) = m.get(1, 2) {
+        if let Some(m12) = m.up(2, 2) {
             bq.set(
                 2,
                 2,
@@ -1377,7 +1437,7 @@ fn dp_left(
             );
             tb_bq.set(2, 2, DpMove::Match);
         }
-        if let Some(m21) = m.get(2, 1) {
+        if let Some(m21) = m.left(2, 2) {
             bt.set(
                 2,
                 2,
@@ -1396,13 +1456,13 @@ fn dp_left(
 
             // Calc M[i,j] - pick best of three sources
             let s_mm = m
-                .get(i - 1, j - 1)
+                .diag(i, j)
                 .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][t_comp(j - 1)] as i32);
             let s_mq = bq
-                .get(i - 1, j - 1)
+                .diag(i, j)
                 .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][t_comp(j)][GAP_IDX] as i32);
             let s_mt = bt
-                .get(i - 1, j - 1)
+                .diag(i, j)
                 .map(|v| v + s_mat[q_char(i)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
 
             // Find best value and corresponding traceback step
@@ -1447,10 +1507,10 @@ fn dp_left(
             // Calc Bq[i,j]
             if i > 2 || (i == 2 && j > 2) {
                 let s_qm = m
-                    .get(i - 1, j)
+                    .up(i, j)
                     .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][t_comp(j)] as i32);
                 let s_qq = bq
-                    .get(i - 1, j)
+                    .up(i, j)
                     .map(|v| v + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32);
 
                 // Priority to Match (opening) if tie
@@ -1477,10 +1537,10 @@ fn dp_left(
             // Calc Bt[i,j]
             if j > 2 || (j == 2 && i > 2) {
                 let s_tm = m
-                    .get(i, j - 1)
+                    .left(i, j)
                     .map(|v| v + s_mat[GAP_IDX][q_char(i)][t_comp(j)][t_comp(j - 1)] as i32);
                 let s_tt = bt
-                    .get(i, j - 1)
+                    .left(i, j)
                     .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32);
 
                 // Priority to Match (opening) if tie
@@ -1510,23 +1570,14 @@ fn dp_left(
     // Start in Match state since best_e is always computed from M matrix.
     let mut i = best_i;
     let mut j = best_j;
-    // let mut fp = String::new(); // NO LONGER USED
-    let mut trace_vec = Vec::new(); // Changed to Vec
+    let mut trace_vec = Vec::new();
     let mut state = DpState::Match;
 
     while i > 0 || j > 0 {
         match state {
             DpState::Match => {
-                // ... (logic for trace logging) ...
-                // trace!("DP_LEFT_TB: ..."); // Keeping trace logic requires access to seqs which we have
-
-                // IMPORTANT: We do NOT push to fp string anymore.
-                // We assume reconstruction happens later or DpMove is enough.
-                // Wait, the original code pushed chars to 'fp' string based on PAIRING.
-                // But DpResult.trace is just DpMoves!
-                // So we don't care about bases here for the 'trace' vector.
-
                 if i == 0 || j == 0 {
+                    // End of traceback
                     break;
                 }
 
@@ -1534,11 +1585,6 @@ fn dp_left(
                 i -= 1;
                 j -= 1;
 
-                // We record the step that GOT us here? Or strictly the move?
-                // Step is "Where we came FROM".
-                // So if step is Match, we came from M.
-                // We push this step.
-                // Wait, if step is TraceStep::Match, it simply means diagonal move.
                 trace_vec.push(step); // Push DpMove
 
                 match step {
@@ -1550,7 +1596,7 @@ fn dp_left(
             }
             DpState::GapQ => {
                 let step = tb_bq.get(i, j);
-                trace_vec.push(step); // Push DpMove? 
+                trace_vec.push(step);
 
                 if i > 0 {
                     i -= 1;
@@ -1698,7 +1744,7 @@ fn dp_right(
 
     // Row 0 (j from 2 to t_len-1)
     for j in 2..t_len {
-        if let Some(prev_bt) = bt.get(0, j - 1) {
+        if let Some(prev_bt) = bt.left(0, j) {
             bt.set(
                 0,
                 j,
@@ -1722,7 +1768,7 @@ fn dp_right(
 
     // Col 0 (i from 2 to q_len-1)
     for i in 2..q_len {
-        if let Some(prev_bq) = bq.get(i - 1, 0) {
+        if let Some(prev_bq) = bq.up(i, 0) {
             bq.set(
                 i,
                 0,
@@ -1746,7 +1792,7 @@ fn dp_right(
 
     // 2,2 Init (needs at least length 3 to have index 2)
     if q_len >= 3 && t_len >= 3 {
-        if let Some(m11) = m.get(1, 1) {
+        if let Some(m11) = m.diag(2, 2) {
             bt.set(
                 1,
                 2,
@@ -1772,7 +1818,7 @@ fn dp_right(
                 best_j = 2;
             }
         }
-        if let Some(m12) = m.get(1, 2) {
+        if let Some(m12) = m.up(2, 2) {
             bq.set(
                 2,
                 2,
@@ -1780,7 +1826,7 @@ fn dp_right(
             );
             tb_bq.set(2, 2, DpMove::Match);
         }
-        if let Some(m21) = m.get(2, 1) {
+        if let Some(m21) = m.left(2, 2) {
             bt.set(
                 2,
                 2,
@@ -1799,13 +1845,13 @@ fn dp_right(
 
             // Calc M[i,j] - pick best of three sources
             let s_mm = m
-                .get(i - 1, j - 1)
+                .diag(i, j)
                 .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
             let s_mq = bq
-                .get(i - 1, j - 1)
+                .diag(i, j)
                 .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(j)] as i32);
             let s_mt = bt
-                .get(i - 1, j - 1)
+                .diag(i, j)
                 .map(|v| v + s_mat[GAP_IDX][q_char(i)][t_comp(j - 1)][t_comp(j)] as i32);
 
             // Find best value and corresponding traceback step
@@ -1853,10 +1899,10 @@ fn dp_right(
             // Calc Bq[i,j]
             if i > 2 || (i == 2 && j > 2) {
                 let s_qm = m
-                    .get(i - 1, j)
+                    .up(i, j)
                     .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][t_comp(j)][GAP_IDX] as i32);
                 let s_qq = bq
-                    .get(i - 1, j)
+                    .up(i, j)
                     .map(|v| v + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32);
 
                 match (s_qq, s_qm) {
@@ -1879,10 +1925,10 @@ fn dp_right(
             // Calc Bt[i,j]
             if j > 2 || (j == 2 && i > 2) {
                 let s_tm = m
-                    .get(i, j - 1)
+                    .left(i, j)
                     .map(|v| v + s_mat[q_char(i)][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
                 let s_tt = bt
-                    .get(i, j - 1)
+                    .left(i, j)
                     .map(|v| v + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32);
 
                 match (s_tt, s_tm) {
