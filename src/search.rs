@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use log::{debug, trace};
+use log::{debug, info, trace, warn};
 use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
@@ -90,7 +90,15 @@ impl<'a> SaIndex<'a> {
             })
             .collect();
 
+        debug!(
+            "FIND_CAND: seed={} wobble={}",
+            String::from_utf8_lossy(&seed_normalized),
+            wobble
+        );
+
         for (i, seq_idx) in self.index.sequences.iter().enumerate() {
+            let fwd_count_before = candidates.len();
+
             // 1. Search FORWARD strand: query binds to sense strand of target
             //    Reported as '-' strand in C convention (antisense of transcript)
             self.search_sa_simple(
@@ -103,10 +111,14 @@ impl<'a> SaIndex<'a> {
                 &mut candidates,
             );
 
+            let fwd_count = candidates.len() - fwd_count_before;
+
             // 2. Search REVERSE COMPLEMENT: query binds to antisense strand of target
             //    Reported as '+' strand in C convention (sense transcript)
             //    Need to build RC sequence to search against
             let rc_seq = seq_idx.sequence.reverse_complement_dna();
+            let rc_count_before = candidates.len();
+
             self.search_sa_simple(
                 &seq_idx.reverse_sa,
                 &rc_seq,
@@ -116,7 +128,16 @@ impl<'a> SaIndex<'a> {
                 true,
                 &mut candidates,
             );
+
+            let rc_count = candidates.len() - rc_count_before;
+
+            trace!(
+                "FIND_CAND: seq_idx={} name={} fwd_hits={} rc_hits={}",
+                i, &seq_idx.name, fwd_count, rc_count
+            );
         }
+
+        debug!("FIND_CAND: total_candidates={}", candidates.len());
         candidates
     }
 
@@ -150,6 +171,13 @@ impl<'a> SaIndex<'a> {
         is_antisense: bool,
         candidates: &mut Vec<(usize, usize, bool)>,
     ) {
+        trace!(
+            "SA_SEARCH: START seed={} wobble_arg={} idx={} is_rc={}",
+            String::from_utf8_lossy(seed),
+            wobble,
+            seq_idx,
+            is_antisense
+        );
         let mut stack = vec![(0, sa.len(), 0)];
 
         while let Some((start, end, offset)) = stack.pop() {
@@ -172,14 +200,33 @@ impl<'a> SaIndex<'a> {
             // Wobble Match (when wobble=false, we ALLOW G-U pairing)
             if !wobble {
                 let wobble_char = match target_char {
-                    b'c' => Some(b't'), // Query G binds to target U (stored as T)
-                    b'a' => Some(b'g'), // Query U binds to target G
+                    b'c' => Some(b't'), // Query G (compl C) in seed? No seed is normalized.
+                    // Wait: index stores DNA Target.
+                    // If query=G. Seed stores query? No.
+                    // find_candidates: seed is normalized query substring?
+                    // Line 85: seed element converted to lower.
+                    // If Query=G. seed[i] = g.
+                    // Target=T (RNA U). G-U pair.
+                    // If seed[i]=g. target needs to be t.
+                    // My code: match target_char (seed[offset]) { 'c' => 't' } ??
+                    // If seed='g'. We need target='t'.
+                    // Code says: b'c' => b't'. WHY?
+                    b'a' => Some(b'g'), // Query U (a?) -> Target G.
                     _ => None,
                 };
+
+                trace!(
+                    "SA_SEARCH: Wobble Check offset={} char={} wobble_arg={} wobble_char={:?}",
+                    offset, target_char as char, wobble, wobble_char
+                );
 
                 if let Some(wc) = wobble_char {
                     let (ws, we) = get_sa_interval(sa, text, start, end, offset, wc);
                     if ws < we {
+                        trace!(
+                            "SA_SEARCH: Wobble Found! offset={} range={}-{}",
+                            offset, ws, we
+                        );
                         stack.push((ws, we, offset + 1));
                     }
                 }
@@ -320,6 +367,14 @@ pub fn run_search(
     output: impl AsRef<Path>,
     opts: &SearchArgs,
 ) -> Result<()> {
+    info!(
+        "Starting search: {} queries, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.extend.delta_g
+    );
+
     // Create output writer
     let mut writer: Box<dyn Write> = if output.as_ref() == Path::new("-") {
         Box::new(std::io::stdout())
@@ -327,35 +382,54 @@ pub fn run_search(
         Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
     };
 
-    debug!("run_search called with {} queries", queries.len());
+    debug!("SEARCH: output={:?}", output.as_ref());
 
     // Create DP Context (reused buffers)
-    // Max extension length is roughly max_ext * 2 + seed_len?
-    // Actually we resize dynamically, but initial size helps.
-    // Let's assume max extension around 100-200.
     let mut ctx = DpContext::new(200, 200);
 
     let mut all_hits = Vec::new();
+    let mut total_candidates = 0usize;
 
     for (q_id, q_seq) in queries {
-        debug!("Processing query: {} (len={})", q_id, q_seq.len());
+        debug!("QUERY: id={} len={}", q_id, q_seq.len());
+        trace!("QUERY_SEQ: {}", String::from_utf8_lossy(q_seq));
 
         // Find seeds using the new helper
         let seeds = find_seeds_for_query(q_seq, index, &opts.seed)?;
-        debug!("  Found {} seed candidates", seeds.len());
+        debug!("QUERY: {} candidates found", seeds.len());
+        total_candidates += seeds.len();
 
-        for candidate in seeds {
+        for candidate in &seeds {
+            trace!(
+                "CANDIDATE: q_pos={} t_idx={} t_start={} len={} antisense={}",
+                candidate.query_pos,
+                candidate.target_idx,
+                candidate.target_start,
+                candidate.len,
+                candidate.is_antisense
+            );
             if let Some(hit) =
-                process_candidate(q_id, q_seq, index, &candidate, &opts.extend, &mut ctx)
+                process_candidate(q_id, q_seq, index, candidate, &opts.extend, &mut ctx)
             {
-                // Defer printing; collect first
+                trace!(
+                    "HIT_ACCEPTED: q={}-{} t={}-{} E={:.2}",
+                    hit.q_start, hit.q_end, hit.t_start, hit.t_end, hit.energy
+                );
                 all_hits.push(hit);
             }
         }
     }
 
     // Deduplicate logic
+    let pre_dedup_count = all_hits.len();
     let deduped = deduplicate_hits(all_hits);
+
+    info!(
+        "Search complete: {} hits ({} before dedup, {} candidates processed)",
+        deduped.len(),
+        pre_dedup_count,
+        total_candidates
+    );
 
     for hit in deduped {
         print_search_hit(&mut writer, &hit)?;
@@ -365,6 +439,8 @@ pub fn run_search(
 }
 
 fn deduplicate_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    debug!("DEDUP: input_count={}", hits.len());
+
     if hits.is_empty() {
         return hits;
     }
@@ -380,6 +456,7 @@ fn deduplicate_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
     });
 
     let mut kept: Vec<SearchHit> = Vec::new();
+    let mut filtered_count = 0usize;
 
     for h in hits {
         let is_shadowed = kept.iter().any(|k| {
@@ -412,19 +489,38 @@ fn deduplicate_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
                 return false;
             }
 
+            trace!(
+                "DEDUP: k shadows h. k=q{}-{}:t{}-{} (E={}) vs h=q{}-{}:t{}-{} (E={})",
+                k.q_start,
+                k.q_end,
+                k.t_start,
+                k.t_end,
+                k.energy,
+                h.q_start,
+                h.q_end,
+                h.t_start,
+                h.t_end,
+                h.energy
+            );
             true
         });
 
         if !is_shadowed {
             kept.push(h);
         } else {
+            filtered_count += 1;
             trace!(
-                "Filtered shadowed hit: q{}-{}:t{}-{} (E={}) by better hit",
+                "DEDUP: filtered q{}-{}:t{}-{} (E={:.2})",
                 h.q_start, h.q_end, h.t_start, h.t_end, h.energy
             );
         }
     }
 
+    debug!(
+        "DEDUP: output_count={} filtered={}",
+        kept.len(),
+        filtered_count
+    );
     kept
 }
 
@@ -448,11 +544,21 @@ fn find_seeds_for_query(
     let start0 = start - 1;
     let end0 = end - 1;
 
+    debug!(
+        "SEEDS: spec={} q_len={} range=({},{}) mi_len={} wobble={}",
+        seed_spec_str, q_len, start, end, mi_len, seed_args.wobble
+    );
+
     if start0 + mi_len > q_len {
+        warn!(
+            "SEEDS: seed range too long for query: start0={} mi_len={} q_len={}",
+            start0, mi_len, q_len
+        );
         return Ok(candidates);
     }
 
     let last_start = end0.saturating_sub(mi_len - 1);
+    let mut n_skipped = 0usize;
 
     for q_pos in start0..=last_start {
         // Max seed length from this position
@@ -461,6 +567,11 @@ fn find_seeds_for_query(
         for seed_len in mi_len..=max_seed_len {
             let seed_seq = &q_seq[q_pos..q_pos + seed_len];
             if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
+                n_skipped += 1;
+                trace!(
+                    "SEEDS: skipping N-containing seed at q_pos={} len={}",
+                    q_pos, seed_len
+                );
                 continue;
             }
 
@@ -469,6 +580,15 @@ fn find_seeds_for_query(
             // find_candidates returns (target_idx, target_start, is_antisense)
 
             let hits = index.find_candidates(&seed_rc, seed_args.wobble);
+
+            trace!(
+                "SEEDS: q_pos={} len={} seed={} rc={} hits={}",
+                q_pos,
+                seed_len,
+                String::from_utf8_lossy(seed_seq),
+                String::from_utf8_lossy(&seed_rc),
+                hits.len()
+            );
 
             for (target_idx, target_start, is_antisense) in hits {
                 candidates.push(SeedCandidate {
@@ -481,6 +601,12 @@ fn find_seeds_for_query(
             }
         }
     }
+
+    debug!(
+        "SEEDS: generated {} candidates ({} skipped for N)",
+        candidates.len(),
+        n_skipped
+    );
 
     Ok(candidates)
 }
@@ -504,7 +630,18 @@ fn process_candidate(
     let seed_len = candidate.len;
     let q_pos = candidate.query_pos;
 
+    trace!(
+        "PROC_CAND: q_id={} t_idx={} q_pos={} t_start={} seed_len={} antisense={}",
+        q_id, t_idx, q_pos, t_start_idx, seed_len, candidate.is_antisense
+    );
+
     if t_start_idx + seed_len > t_seq.len() {
+        warn!(
+            "PROC_CAND: seed extends past target end: t_start={} seed_len={} t_len={}",
+            t_start_idx,
+            seed_len,
+            t_seq.len()
+        );
         return None;
     }
 
@@ -516,6 +653,10 @@ fn process_candidate(
     let score = ext.score; // RESTORED
 
     if score > opts.delta_g {
+        trace!(
+            "PROC_CAND: rejected by energy: score={:.2} > delta_g={}",
+            score, opts.delta_g
+        );
         return None;
     }
 
@@ -834,7 +975,7 @@ fn extend_seed(
 
     // DEBUG: Always print to verify execution and values
     trace!(
-        "DEBUG_MAX: ENTERING extend_seed q_pos={} t_pos={} len={} delta_g={}",
+        "MAXIMALITY: ENTERING extend_seed q_pos={} t_pos={} len={} delta_g={}",
         q_pos, t_pos, len, opts.delta_g
     );
 
@@ -845,7 +986,7 @@ fn extend_seed(
         let p_class = PAIR_MAT[q_prev][t_next];
 
         trace!(
-            "DEBUG_MAX: Left Check q_pos={} t_pos={} len={} q_prev={} t_next={} pair={}",
+            "MAXIMALITY: Left Check q_pos={} t_pos={} len={} q_prev={} t_next={} pair={}",
             q_pos, t_pos, len, q_prev, t_next, p_class
         );
 
@@ -872,7 +1013,7 @@ fn extend_seed(
         let p_class = PAIR_MAT[q_next][t_prev];
 
         trace!(
-            "DEBUG_MAX: Right Check q_pos={} t_pos={} len={} q_next={} t_prev={} pair={}",
+            "MAXIMALITY: Right Check q_pos={} t_pos={} len={} q_next={} t_prev={} pair={}",
             q_pos, t_pos, len, q_next, t_prev, p_class
         );
 
@@ -893,7 +1034,7 @@ fn extend_seed(
     }
 
     trace!(
-        "DEBUG_MAX: Accepted Seed: q_pos={} t_pos={} len={} delta_g={}",
+        "MAXIMALITY: Accepted Seed: q_pos={} t_pos={} len={} delta_g={}",
         q_pos, t_pos, len, opts.delta_g
     );
 
@@ -927,7 +1068,7 @@ fn extend_seed(
     /*
     if opts.max_extension == 20 && seed_int_str.starts_with('U') {
         trace!(
-            "DEBUG_TRACE: seed_int_str={} q_pos={} t_pos={}",
+            "EXTEND_TRACE: seed_int_str={} q_pos={} t_pos={}",
             seed_int_str, q_pos, t_pos
         );
         // ...
@@ -949,67 +1090,21 @@ fn extend_seed(
     let final_score =
         (seed_energy + left_res.score as f64 + right_res.score as f64 - 559.0) / -100.0;
 
-    // Debug for first few calls in a clean way
-    static DEBUG_EXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let c = DEBUG_EXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    // DEBUG: Trace internal_mismatch_20nt
-    if opts.max_extension == 20 {
-        let l_trace_str: String = left_res.trace.chars().rev().collect();
-        let r_trace_str: String = right_res.trace.chars().rev().collect();
-        let full_int = format!("{}{}{}", l_trace_str, seed_int_str, r_trace_str);
-
-        println!(
-            "DEBUG_TRACE: full={} seed={} l_trace={} r_trace={} score={:.2}",
-            full_int, seed_int_str, left_res.trace, right_res.trace, final_score
-        );
-
-        // If we have a U at start, dump the sequences
-        if full_int.starts_with('U') {
-            println!("DEBUG_TRACE:   -> HIT INTERESTING CASE: U at start");
-            println!(
-                "DEBUG_TRACE:   -> q_pos={} t_pos={} seed_len={}",
-                q_pos, t_pos, len
-            );
-            println!(
-                "DEBUG_TRACE:   -> LENGTHS: full={} seed={} l_trace={} r_trace={}",
-                full_int.len(),
-                seed_int_str.len(),
-                left_res.trace.len(),
-                right_res.trace.len()
-            );
-
-            // Analyze l_trace bases (length 1 for now)
-            let q_idx = q_pos.wrapping_sub(1);
-            let t_idx = t_pos + len;
-            let qc = if q_idx < q_seq.len() {
-                q_seq[q_idx] as char
-            } else {
-                '?'
-            };
-            let tc = if t_idx < t_seq.len() {
-                t_seq[t_idx] as char
-            } else {
-                '?'
-            };
-            let p_char = Base::from_byte(qc as u8).pairing_class(Base::from_byte(tc as u8));
-            println!(
-                "DEBUG_TRACE:   -> L_EXT check: q[{}]={} vs t[{}]={} -> PairClass={}",
-                q_idx, qc, t_idx, tc, p_char
-            );
-        }
-    }
-
-    if final_score < -20.0 {
-        println!(
-            "C_DEBUG: extend_seed: seed_energy={:.0}, l_score={}, r_score={}, raw_total={:.0}, final={:.2}",
-            seed_energy,
-            left_res.score,
-            right_res.score,
-            seed_energy + left_res.score as f64 + right_res.score as f64,
-            final_score
-        );
-    }
+    // Exhaustive extension logging
+    debug!(
+        "EXTEND: q_pos={} t_pos={} seed_len={} seed_energy={:.1} l_score={} r_score={} final_score={:.2}",
+        q_pos, t_pos, len, seed_energy, left_res.score, right_res.score, final_score
+    );
+    trace!(
+        "EXTEND_DETAIL: seed_int={} l_trace={} r_trace={} l_ext=({},{}) r_ext=({},{})",
+        seed_int_str,
+        left_res.trace,
+        right_res.trace,
+        left_res.ext_q_len,
+        left_res.ext_t_len,
+        right_res.ext_q_len,
+        right_res.ext_t_len
+    );
 
     let l_trace_str: String = left_res.trace.chars().collect();
     let r_trace_str: String = right_res.trace.chars().rev().collect();
@@ -1073,7 +1168,7 @@ fn dp_left(
     let mut best_j = 0;
 
     trace!(
-        "DP_L: START q_len={} t_len={} initial_best_e={}",
+        "DP_LEFT: START q_len={} t_len={} initial_best_e={}",
         q_len, t_len, best_e
     );
 
@@ -1256,10 +1351,24 @@ fn dp_left(
             m.set(i, j, val_m);
             tb_m.set(i, j, step_m);
 
+            trace!(
+                "DP_LEFT_CELL: i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
+                i,
+                j,
+                val_m.map_or("-".to_string(), |v| v.to_string()),
+                s_mm.map_or("-".to_string(), |v| v.to_string()),
+                s_mq.map_or("-".to_string(), |v| v.to_string()),
+                s_mt.map_or("-".to_string(), |v| v.to_string()),
+                step_m
+            );
+
             if let Some(v) = val_m {
                 let curr_e = v + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(j)] as i32;
                 if curr_e > best_e {
-                    trace!("DP_L: UPDATE i={} j={} curr_e={}", i, j, curr_e);
+                    trace!(
+                        "DP_LEFT: UPDATE best: i={} j={} curr_e={} (was {})",
+                        i, j, curr_e, best_e
+                    );
                     best_e = curr_e;
                     best_i = i;
                     best_j = j;
@@ -1280,14 +1389,17 @@ fn dp_left(
                     (Some(qq), Some(qm)) if qq > qm => {
                         bq.set(i, j, Some(qq));
                         tb_bq.set(i, j, TraceStep::GapQ);
+                        trace!("DP_LEFT_CELL: i={} j={} Bq={} (from GapQ)", i, j, qq);
                     }
                     (_, Some(qm)) => {
                         bq.set(i, j, Some(qm));
                         tb_bq.set(i, j, TraceStep::Match);
+                        trace!("DP_LEFT_CELL: i={} j={} Bq={} (from Match)", i, j, qm);
                     }
                     (Some(qq), None) => {
                         bq.set(i, j, Some(qq));
                         tb_bq.set(i, j, TraceStep::GapQ);
+                        trace!("DP_LEFT_CELL: i={} j={} Bq={} (from GapQ, no M)", i, j, qq);
                     }
                     _ => {}
                 }
@@ -1307,14 +1419,17 @@ fn dp_left(
                     (Some(tt), Some(tm)) if tt > tm => {
                         bt.set(i, j, Some(tt));
                         tb_bt.set(i, j, TraceStep::GapT);
+                        trace!("DP_LEFT_CELL: i={} j={} Bt={} (from GapT)", i, j, tt);
                     }
                     (_, Some(tm)) => {
                         bt.set(i, j, Some(tm));
                         tb_bt.set(i, j, TraceStep::Match);
+                        trace!("DP_LEFT_CELL: i={} j={} Bt={} (from Match)", i, j, tm);
                     }
                     (Some(tt), None) => {
                         bt.set(i, j, Some(tt));
                         tb_bt.set(i, j, TraceStep::GapT);
+                        trace!("DP_LEFT_CELL: i={} j={} Bt={} (from GapT, no M)", i, j, tt);
                     }
                     _ => {}
                 }
@@ -1348,17 +1463,14 @@ fn dp_left(
                 // Current state is Match (M[i,j])
                 // We emit the character pair corresponding to this match/mismatch
                 let p_char = Base::from_idx(qc_byte).pairing_class(Base::from_idx(t_char_idx));
-                if p_char == 'U' && i == 1 {
-                    // Trace the specific U mismatch at boundary
-                    println!(
-                        "DEBUG_TRACE: DEBUG_DP_LEFT: i={} j={} qc={} tc={} pair={}",
-                        i,
-                        j,
-                        Base::from_idx(qc_byte).as_char(),
-                        Base::from_idx(t_char_idx).as_char(),
-                        p_char
-                    );
-                }
+                trace!(
+                    "DP_LEFT_TB: step=Match i={} j={} q={} t={} pair={}",
+                    i,
+                    j,
+                    Base::from_idx(qc_byte).as_char(),
+                    Base::from_idx(t_char_idx).as_char(),
+                    p_char
+                );
                 fp.push(p_char);
 
                 if i == 0 || j == 0 {
@@ -1419,7 +1531,7 @@ fn dp_left(
     }
 
     trace!(
-        "DP_L: RESULT q_len={} t_len={} best_i={} best_j={} best_e={} trace_len={}",
+        "DP_LEFT: RESULT q_len={} t_len={} best_i={} best_j={} best_e={} trace_len={}",
         q_len,
         t_len,
         best_i,
@@ -1658,9 +1770,27 @@ fn dp_right(
             m.set(i, j, val_m);
             tb_m.set(i, j, step_m);
 
+            trace!(
+                "DP_RIGHT_CELL: i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
+                i,
+                j,
+                val_m.map_or("-".to_string(), |v| v.to_string()),
+                s_mm.map_or("-".to_string(), |v| v.to_string()),
+                s_mq.map_or("-".to_string(), |v| v.to_string()),
+                s_mt.map_or("-".to_string(), |v| v.to_string()),
+                step_m
+            );
+
             if let Some(v) = val_m {
                 let term = s_mat[q_char(i)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
                 if v + term > best_e {
+                    trace!(
+                        "DP_RIGHT: UPDATE best: i={} j={} curr_e={} (was {})",
+                        i,
+                        j,
+                        v + term,
+                        best_e
+                    );
                     best_e = v + term;
                     best_i = i;
                     best_j = j;

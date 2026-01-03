@@ -11,17 +11,79 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use log::{debug, info, trace};
 use std::path::PathBuf;
 
-/// Initialize logging based on verbosity level
+/// Initialize logging based on verbosity level with colored output
 fn init_logging(verbosity: u8) {
+    use std::io::Write;
+
     let level = match verbosity {
         0 => log::LevelFilter::Warn,
         1 => log::LevelFilter::Info,
         2 => log::LevelFilter::Debug,
         _ => log::LevelFilter::Trace,
     };
+
+    // ANSI color codes (matching tracing palette)
+    const RESET: &str = "\x1b[0m";
+    const BOLD: &str = "\x1b[1m";
+    const RED: &str = "\x1b[31m";
+    const GREEN: &str = "\x1b[32m";
+    const YELLOW: &str = "\x1b[33m";
+    const BLUE: &str = "\x1b[34m";
+    const MAGENTA: &str = "\x1b[35m";
+    const CYAN: &str = "\x1b[36m";
+
     env_logger::Builder::new()
         .filter_level(level)
         .format_timestamp(None)
+        .format(move |buf, record| {
+            let msg = record.args().to_string();
+
+            // Color code for log level (matching tracing: trace=purple)
+            let level_color = match record.level() {
+                log::Level::Error => RED,
+                log::Level::Warn => YELLOW,
+                log::Level::Info => GREEN,
+                log::Level::Debug => BLUE,
+                log::Level::Trace => MAGENTA, // Purple like tracing
+            };
+
+            // Color code for message based on component prefix
+            // Messages without recognized prefix use level color for consistency
+            let msg_color = if msg.starts_with("DP_LEFT") || msg.starts_with("DP_RIGHT") {
+                CYAN
+            } else if msg.starts_with("SA_SEARCH") || msg.starts_with("FIND_CAND") {
+                YELLOW
+            } else if msg.starts_with("SEED") {
+                GREEN
+            } else if msg.starts_with("EXTEND") || msg.starts_with("MAXIMALITY") {
+                MAGENTA
+            } else if msg.starts_with("DEDUP")
+                || msg.starts_with("HIT")
+                || msg.starts_with("PROC_CAND")
+            {
+                BLUE
+            } else if msg.starts_with("QUERY")
+                || msg.starts_with("Starting")
+                || msg.starts_with("Search")
+            {
+                GREEN
+            } else {
+                // Fallback: use level color for consistent appearance
+                level_color
+            };
+
+            writeln!(
+                buf,
+                "[{}{}{:<5}{}] {}{}{}",
+                BOLD,
+                level_color,
+                record.level(),
+                RESET,
+                msg_color,
+                msg,
+                RESET
+            )
+        })
         .init();
 }
 
