@@ -9,8 +9,47 @@ use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
 use crate::{ExtendArgs, SearchArgs, SeedArgs};
 
+use std::collections::HashMap;
+
 const MAX_DP_EXT: usize = 30;
 const GAP_IDX: usize = Base::Gap as usize;
+
+/// Reasons why a seed, candidate, or hit was filtered out
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FilterReason {
+    // Seed generation (find_seeds_for_query)
+    SeedContainsN,
+
+    // Candidate validation (process_candidate)
+    SeedOutOfBounds,
+
+    // Maximality check (extend_seed)
+    MaximalityLeft,
+    MaximalityRight,
+
+    // Energy filtering (process_candidate)
+    EnergyAboveThreshold,
+
+    // Deduplication (deduplicate_hits)
+    DedupExactMatch,
+    DedupContainedByShadow,
+}
+
+/// Statistics for search filtering
+#[derive(Debug, Default)]
+pub struct SearchStats {
+    pub seeds_tried: usize,
+    pub candidates_processed: usize,
+    pub hits_before_dedup: usize,
+    pub hits_final: usize,
+    pub filtered: HashMap<FilterReason, usize>,
+}
+
+impl SearchStats {
+    pub fn record_filter(&mut self, reason: FilterReason) {
+        *self.filtered.entry(reason).or_insert(0) += 1;
+    }
+}
 
 pub trait Sequence {
     fn reverse_complement_dna(&self) -> Vec<u8>;
@@ -386,18 +425,18 @@ pub fn run_search(
 
     // Create DP Context (reused buffers)
     let mut ctx = DpContext::new(200, 200);
+    let mut stats = SearchStats::default();
 
     let mut all_hits = Vec::new();
-    let mut total_candidates = 0usize;
 
     for (q_id, q_seq) in queries {
         debug!("QUERY: id={} len={}", q_id, q_seq.len());
         trace!("QUERY_SEQ: {}", String::from_utf8_lossy(q_seq));
 
         // Find seeds using the new helper
-        let seeds = find_seeds_for_query(q_seq, index, &opts.seed)?;
+        let seeds = find_seeds_for_query(q_seq, index, &opts.seed, &mut stats)?;
         debug!("QUERY: {} candidates found", seeds.len());
-        total_candidates += seeds.len();
+        stats.candidates_processed += seeds.len();
 
         for candidate in &seeds {
             trace!(
@@ -408,9 +447,15 @@ pub fn run_search(
                 candidate.len,
                 candidate.is_antisense
             );
-            if let Some(hit) =
-                process_candidate(q_id, q_seq, index, candidate, &opts.extend, &mut ctx)
-            {
+            if let Some(hit) = process_candidate(
+                q_id,
+                q_seq,
+                index,
+                candidate,
+                &opts.extend,
+                &mut ctx,
+                &mut stats,
+            ) {
                 trace!(
                     "HIT_ACCEPTED: q={}-{} t={}-{} E={:.2}",
                     hit.q_start, hit.q_end, hit.t_start, hit.t_end, hit.energy
@@ -421,15 +466,23 @@ pub fn run_search(
     }
 
     // Deduplicate logic
-    let pre_dedup_count = all_hits.len();
-    let deduped = deduplicate_hits(all_hits);
+    stats.hits_before_dedup = all_hits.len();
+    let deduped = deduplicate_hits(all_hits, &mut stats);
+    stats.hits_final = deduped.len();
 
+    // Log filter stats
     info!(
-        "Search complete: {} hits ({} before dedup, {} candidates processed)",
-        deduped.len(),
-        pre_dedup_count,
-        total_candidates
+        "Search complete: {} hits ({} before dedup)",
+        stats.hits_final, stats.hits_before_dedup
     );
+    if !stats.filtered.is_empty() {
+        let filter_summary: Vec<String> = stats
+            .filtered
+            .iter()
+            .map(|(r, c)| format!("{:?}={}", r, c))
+            .collect();
+        info!("Filtered: {}", filter_summary.join(", "));
+    }
 
     for hit in deduped {
         print_search_hit(&mut writer, &hit)?;
@@ -438,89 +491,60 @@ pub fn run_search(
     Ok(())
 }
 
-fn deduplicate_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
+/// Check if hit `k` shadows hit `h` (k is better and contains h)
+fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
+    // Exact match - identical coordinates
+    if k.q_start == h.q_start && k.q_end == h.q_end && k.t_start == h.t_start && k.t_end == h.t_end
+    {
+        return Some(FilterReason::DedupExactMatch);
+    }
+
+    // Check containment
+    let q_contained = k.q_start <= h.q_start && k.q_end >= h.q_end;
+    let t_contained = k.t_start <= h.t_start && k.t_end >= h.t_end;
+
+    if !q_contained || !t_contained {
+        return None;
+    }
+
+    // h must start strictly after k (not share same start)
+    if h.q_start == k.q_start {
+        return None;
+    }
+
+    Some(FilterReason::DedupContainedByShadow)
+}
+
+fn deduplicate_hits(mut hits: Vec<SearchHit>, stats: &mut SearchStats) -> Vec<SearchHit> {
     debug!("DEDUP: input_count={}", hits.len());
 
     if hits.is_empty() {
         return hits;
     }
 
-    // Sort by Energy ascending (best first).
-    // If energy equal, use query_id, target_id, etc. for stability.
+    // Sort by Energy ascending (best first)
     hits.sort_by(|a, b| {
         a.energy
             .partial_cmp(&b.energy)
             .unwrap_or(std::cmp::Ordering::Equal)
-            // Secondary sorts for deterministic behavior
             .then_with(|| a.q_start.cmp(&b.q_start))
     });
 
     let mut kept: Vec<SearchHit> = Vec::new();
-    let mut filtered_count = 0usize;
 
     for h in hits {
-        let is_shadowed = kept.iter().any(|k| {
-            // Check if 'k' shadows 'h'.
-            // condition 1: Energy of k is better or equal (handled by sort)
-
-            // CONDITION 0: Exact Match (Identical coordinates)
-            // Always filter identical hits (e.g. from redundant seeds when maximality is disabled)
-            let exact_match = k.q_start == h.q_start
-                && k.q_end == h.q_end
-                && k.t_start == h.t_start
-                && k.t_end == h.t_end;
-
-            if exact_match {
-                return true;
-            }
-
-            // condition 2: h is contained in k
-            let q_contained = k.q_start <= h.q_start && k.q_end >= h.q_end;
-            let t_contained = k.t_start <= h.t_start && k.t_end >= h.t_end;
-
-            if !q_contained || !t_contained {
-                return false;
-            }
-
-            // condition 3: h starts STRICTLY after k
-            // This allows nested hits if they share the same start (e.g. q1-20 vs q1-15),
-            // but filters hits that are internal sub-segments starting later (e.g. q1-20 vs q3-20).
-            if h.q_start == k.q_start {
-                return false;
-            }
-
+        if let Some(reason) = kept.iter().find_map(|k| shadows(k, &h)) {
+            stats.record_filter(reason);
             trace!(
-                "DEDUP: k shadows h. k=q{}-{}:t{}-{} (E={}) vs h=q{}-{}:t{}-{} (E={})",
-                k.q_start,
-                k.q_end,
-                k.t_start,
-                k.t_end,
-                k.energy,
-                h.q_start,
-                h.q_end,
-                h.t_start,
-                h.t_end,
-                h.energy
+                "DEDUP: FILTERED q{}-{}:t{}-{} reason={:?}",
+                h.q_start, h.q_end, h.t_start, h.t_end, reason
             );
-            true
-        });
-
-        if !is_shadowed {
-            kept.push(h);
         } else {
-            filtered_count += 1;
-            trace!(
-                "DEDUP: filtered q{}-{}:t{}-{} (E={:.2})",
-                h.q_start, h.q_end, h.t_start, h.t_end, h.energy
-            );
+            kept.push(h);
         }
     }
 
-    debug!(
-        "DEDUP: output_count={} filtered={}",
-        kept.len(),
-        filtered_count
-    );
+    debug!("DEDUP: output_count={}", kept.len());
     kept
 }
 
@@ -530,6 +554,7 @@ fn find_seeds_for_query(
     q_seq: &[u8],
     index: &SaIndex<'_>,
     seed_args: &SeedArgs,
+    stats: &mut SearchStats,
 ) -> Result<Vec<SeedCandidate>> {
     let seed_spec_str = seed_args.seed.as_deref().unwrap_or("17");
     let seed_len_specs = SeedSpec::from_str(seed_spec_str)
@@ -567,9 +592,9 @@ fn find_seeds_for_query(
         for seed_len in mi_len..=max_seed_len {
             let seed_seq = &q_seq[q_pos..q_pos + seed_len];
             if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
-                n_skipped += 1;
+                stats.record_filter(FilterReason::SeedContainsN);
                 trace!(
-                    "SEEDS: skipping N-containing seed at q_pos={} len={}",
+                    "SEEDS: FILTERED q_pos={} len={} reason=SeedContainsN",
                     q_pos, seed_len
                 );
                 continue;
@@ -618,6 +643,7 @@ fn process_candidate(
     candidate: &SeedCandidate,
     opts: &ExtendArgs,
     ctx: &mut DpContext,
+    stats: &mut SearchStats,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
     let t_seq_cow = if candidate.is_antisense {
@@ -636,8 +662,9 @@ fn process_candidate(
     );
 
     if t_start_idx + seed_len > t_seq.len() {
+        stats.record_filter(FilterReason::SeedOutOfBounds);
         warn!(
-            "PROC_CAND: seed extends past target end: t_start={} seed_len={} t_len={}",
+            "PROC_CAND: FILTERED reason=SeedOutOfBounds t_start={} seed_len={} t_len={}",
             t_start_idx,
             seed_len,
             t_seq.len()
@@ -647,14 +674,15 @@ fn process_candidate(
 
     // Call extend_seed (or essentially reproduce its valuable logic).
     // Call extend_seed (or essentially reproduce its valuable logic).
-    let extension_result = extend_seed(ctx, q_seq, t_seq, candidate, opts)?;
+    let extension_result = extend_seed(ctx, q_seq, t_seq, candidate, opts, stats)?;
 
     let ext = extension_result;
     let score = ext.score; // RESTORED
 
     if score > opts.delta_g {
+        stats.record_filter(FilterReason::EnergyAboveThreshold);
         trace!(
-            "PROC_CAND: rejected by energy: score={:.2} > delta_g={}",
+            "PROC_CAND: FILTERED reason=EnergyAboveThreshold score={:.2} > delta_g={}",
             score, opts.delta_g
         );
         return None;
@@ -964,6 +992,7 @@ fn extend_seed(
     t_seq: &[u8],
     candidate: &SeedCandidate,
     opts: &ExtendArgs,
+    stats: &mut SearchStats,
 ) -> Option<SeedExtension> {
     let q_pos = candidate.query_pos;
     let t_pos = candidate.target_start;
@@ -971,9 +1000,8 @@ fn extend_seed(
 
     // MAXIMALITY CHECK
     // Skip non-maximal seeds: if the seed can be extended by a valid base pair
-    // on either end, it's a sub-seed of a longer match and will    // MAXIMALITY CHECK
+    // on either end, it's a sub-seed of a longer match and will
 
-    // DEBUG: Always print to verify execution and values
     trace!(
         "MAXIMALITY: ENTERING extend_seed q_pos={} t_pos={} len={} delta_g={}",
         q_pos, t_pos, len, opts.delta_g
@@ -997,9 +1025,10 @@ fn extend_seed(
                     q_pos, t_pos, len, p_class
                 );
             } else {
+                stats.record_filter(FilterReason::MaximalityLeft);
                 trace!(
-                    "SEED: PRUNING Left-Ext: q_pos={} t_pos={} len={} pair={} q_base={} t_base={}",
-                    q_pos, t_pos, len, p_class, q_prev, t_next
+                    "MAXIMALITY: FILTERED reason=MaximalityLeft q_pos={} t_pos={} len={} pair={}",
+                    q_pos, t_pos, len, p_class
                 );
                 return None;
             }
@@ -1024,9 +1053,10 @@ fn extend_seed(
                     q_pos, t_pos, len, p_class
                 );
             } else {
+                stats.record_filter(FilterReason::MaximalityRight);
                 trace!(
-                    "SEED: PRUNING Right-Ext: q_pos={} t_pos={} len={} pair={} q_base={} t_base={}",
-                    q_pos, t_pos, len, p_class, q_next, t_prev
+                    "MAXIMALITY: FILTERED reason=MaximalityRight q_pos={} t_pos={} len={} pair={}",
+                    q_pos, t_pos, len, p_class
                 );
                 return None;
             }
@@ -1063,18 +1093,6 @@ fn extend_seed(
         let tc = t_seq[t_idx];
         seed_int_str.push(Base::from_byte(qc).pairing_class(Base::from_byte(tc)));
     }
-
-    // DEBUG: Trace internal_mismatch_20nt (removed/disabled)
-    /*
-    if opts.max_extension == 20 && seed_int_str.starts_with('U') {
-        trace!(
-            "EXTEND_TRACE: seed_int_str={} q_pos={} t_pos={}",
-            seed_int_str, q_pos, t_pos
-        );
-        // ...
-    }
-    */
-    // Seed interaction string should match C output; omit any extra markers
 
     let max_ext = opts.max_extension as usize;
     let safe_ext = max_ext.min(MAX_DP_EXT);
