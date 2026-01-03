@@ -386,6 +386,17 @@ fn deduplicate_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
             // Check if 'k' shadows 'h'.
             // condition 1: Energy of k is better or equal (handled by sort)
 
+            // CONDITION 0: Exact Match (Identical coordinates)
+            // Always filter identical hits (e.g. from redundant seeds when maximality is disabled)
+            let exact_match = k.q_start == h.q_start
+                && k.q_end == h.q_end
+                && k.t_start == h.t_start
+                && k.t_end == h.t_end;
+
+            if exact_match {
+                return true;
+            }
+
             // condition 2: h is contained in k
             let q_contained = k.q_start <= h.q_start && k.q_end >= h.q_end;
             let t_contained = k.t_start <= h.t_start && k.t_end >= h.t_end;
@@ -839,12 +850,18 @@ fn extend_seed(
         );
 
         if p_class != 0 {
-            // DEBUG: Log pruned seed
-            trace!(
-                "DEBUG_MAX: Pruned Left-Ext: q_pos={} t_pos={} len={} pair={}",
-                q_pos, t_pos, len, p_class
-            );
-            return None;
+            if opts.no_max_prune {
+                trace!(
+                    "SEED: Non-maximal Left-Ext: q_pos={} t_pos={} len={} pair={} (not pruning due to --no-max-prune)",
+                    q_pos, t_pos, len, p_class
+                );
+            } else {
+                trace!(
+                    "SEED: PRUNING Left-Ext: q_pos={} t_pos={} len={} pair={} q_base={} t_base={}",
+                    q_pos, t_pos, len, p_class, q_prev, t_next
+                );
+                return None;
+            }
         }
     }
 
@@ -860,11 +877,18 @@ fn extend_seed(
         );
 
         if p_class != 0 {
-            trace!(
-                "DEBUG_MAX: Pruned Right-Ext: q_pos={} t_pos={} len={} pair={}",
-                q_pos, t_pos, len, p_class
-            );
-            return None;
+            if opts.no_max_prune {
+                trace!(
+                    "SEED: Non-maximal Right-Ext: q_pos={} t_pos={} len={} pair={} (not pruning due to --no-max-prune)",
+                    q_pos, t_pos, len, p_class
+                );
+            } else {
+                trace!(
+                    "SEED: PRUNING Right-Ext: q_pos={} t_pos={} len={} pair={} q_base={} t_base={}",
+                    q_pos, t_pos, len, p_class, q_next, t_prev
+                );
+                return None;
+            }
         }
     }
 
@@ -1048,6 +1072,11 @@ fn dp_left(
     let mut best_i = 0;
     let mut best_j = 0;
 
+    trace!(
+        "DP_L: START q_len={} t_len={} initial_best_e={}",
+        q_len, t_len, best_e
+    );
+
     // C: if (lq <= 1 || lt <= 1) return best_e;
     if q_len <= 1 || t_len <= 1 {
         return DpResult {
@@ -1230,6 +1259,7 @@ fn dp_left(
             if let Some(v) = val_m {
                 let curr_e = v + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(j)] as i32;
                 if curr_e > best_e {
+                    trace!("DP_L: UPDATE i={} j={} curr_e={}", i, j, curr_e);
                     best_e = curr_e;
                     best_i = i;
                     best_j = j;
@@ -1387,6 +1417,16 @@ fn dp_left(
             }
         }
     }
+
+    trace!(
+        "DP_L: RESULT q_len={} t_len={} best_i={} best_j={} best_e={} trace_len={}",
+        q_len,
+        t_len,
+        best_i,
+        best_j,
+        best_e,
+        fp.len()
+    );
 
     DpResult {
         score: best_e,

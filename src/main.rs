@@ -169,13 +169,12 @@ pub struct ExtendArgs {
     penalty: f64,
 
     /// Energy per length threshold that filters seeds
-    #[arg(
-        short = 'x',
-        long = "seed-energy",
-        value_name = "THRESHOLD",
-        default_value_t = 0.0
-    )]
+    #[arg(long = "seed-energy", value_name = "THRESHOLD", default_value_t = 0.0)]
     seed_energy: f64,
+
+    /// Disable maximality check (allows redundant seeds, for compatibility/debugging)
+    #[arg(long = "no-max-prune", action = clap::ArgAction::SetTrue)]
+    pub no_max_prune: bool,
 }
 
 /// Options that apply to the `search` subcommand
