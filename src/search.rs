@@ -7,7 +7,7 @@ use std::str::FromStr;
 use crate::dsm::{Base, DSM_T04_POS, PAIR_MAT};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
-use crate::{ExtendArgs, SearchArgs, SeedArgs};
+use crate::{SearchArgs, SeedPairing, Strand};
 
 use std::collections::HashMap;
 
@@ -33,6 +33,54 @@ pub enum FilterReason {
     // Deduplication (deduplicate_hits)
     DedupExactMatch,
     DedupContainedByShadow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pairing {
+    Match(u8, u8),    // e.g. (b'G', b'C')
+    Wobble(u8, u8),   // e.g. (b'G', b'U')
+    Mismatch(u8, u8), // e.g. (b'A', b'A')
+    GapQuery(u8),     // Gap in Query, Base in Target (stored as u8)
+    GapTarget(u8),    // Gap in Target, Base in Query (stored as u8)
+}
+
+impl Pairing {
+    pub fn from_bases(q_byte: u8, t_byte: u8) -> Self {
+        let q = Base::from_byte(q_byte);
+        let t = Base::from_byte(t_byte);
+        // Base::pairing_class logic check:
+        // G-C -> |, G-U -> :, G-A -> ' ', A-U -> |
+        // We match logic of Base::pairing_class but return Enum
+        match (q, t) {
+            (Base::G, Base::C) | (Base::C, Base::G) | (Base::A, Base::U) | (Base::U, Base::A) => {
+                Pairing::Match(q_byte, t_byte)
+            }
+
+            (Base::G, Base::U) | (Base::U, Base::G) => Pairing::Wobble(q_byte, t_byte),
+
+            _ => Pairing::Mismatch(q_byte, t_byte),
+        }
+    }
+
+    pub fn to_char(&self) -> char {
+        match self {
+            Pairing::Match(_, _) => 'P',
+            Pairing::Wobble(_, _) => 'W',
+            Pairing::Mismatch(_, _) => 'U',
+            Pairing::GapQuery(_) => 'T', // Gap in Query = Target Bulge ('T')
+            Pairing::GapTarget(_) => 'Q', // Gap in Target = Query Bulge ('Q')
+        }
+    }
+
+    pub fn target_char(&self) -> char {
+        match self {
+            Pairing::Match(_, t)
+            | Pairing::Wobble(_, t)
+            | Pairing::Mismatch(_, t)
+            | Pairing::GapQuery(t) => *t as char,
+            Pairing::GapTarget(_) => '-',
+        }
+    }
 }
 
 /// Statistics for search filtering
@@ -87,7 +135,7 @@ pub struct SeedCandidate {
     pub target_idx: usize,
     pub target_start: usize, // 0-based index in target
     pub len: usize,
-    pub is_antisense: bool,
+    pub strand: Strand,
 }
 
 #[derive(Debug, Clone)]
@@ -95,8 +143,7 @@ pub struct SeedCandidate {
 pub struct SearchHit {
     pub query_id: String,
     pub target_id: String,
-    pub query_seq: String,
-    pub target_seq: String,
+
     pub q_start: usize,
     pub q_end: usize,
     pub t_start: usize,
@@ -105,7 +152,7 @@ pub struct SearchHit {
     pub output_t_end: usize,   // 1-based, strand-aware
     pub strand: char,
     pub energy: f64,
-    pub interaction: String, // The ASCII fingerprint
+    pub alignment: Vec<Pairing>,
     pub flank_5: String,
     pub flank_3: String,
 }
@@ -117,7 +164,7 @@ pub struct SaIndex<'a> {
 }
 
 impl<'a> SaIndex<'a> {
-    pub fn find_candidates(&self, seed: &[u8], wobble: bool) -> Vec<(usize, usize, bool)> {
+    pub fn find_candidates(&self, seed: &[u8], pairing: SeedPairing) -> Vec<SeedCandidate> {
         let mut candidates = Vec::new();
         // Normalize seed to lowercase for matching (since index uses lowercase)
         // Also normalize U -> T since the index stores DNA (T) not RNA (U)
@@ -130,31 +177,28 @@ impl<'a> SaIndex<'a> {
             .collect();
 
         debug!(
-            "FIND_CAND: seed={} wobble={}",
+            "FIND_CAND: seed={} pairing={:?}",
             String::from_utf8_lossy(&seed_normalized),
-            wobble
+            pairing
         );
 
         for (i, seq_idx) in self.index.sequences.iter().enumerate() {
             let fwd_count_before = candidates.len();
 
-            // 1. Search FORWARD strand: query binds to sense strand of target
-            //    Reported as '-' strand in C convention (antisense of transcript)
+            // 1. Search FORWARD strand
             self.search_sa_simple(
                 &seq_idx.forward_sa,
                 &seq_idx.sequence,
                 &seed_normalized,
-                wobble,
+                pairing,
                 i,
-                false,
+                Strand::Forward,
                 &mut candidates,
             );
 
             let fwd_count = candidates.len() - fwd_count_before;
 
-            // 2. Search REVERSE COMPLEMENT: query binds to antisense strand of target
-            //    Reported as '+' strand in C convention (sense transcript)
-            //    Need to build RC sequence to search against
+            // 2. Search REVERSE COMPLEMENT
             let rc_seq = seq_idx.sequence.reverse_complement_dna();
             let rc_count_before = candidates.len();
 
@@ -162,9 +206,9 @@ impl<'a> SaIndex<'a> {
                 &seq_idx.reverse_sa,
                 &rc_seq,
                 &seed_normalized,
-                wobble,
+                pairing,
                 i,
-                true,
+                Strand::Reverse,
                 &mut candidates,
             );
 
@@ -205,17 +249,17 @@ impl<'a> SaIndex<'a> {
         sa: &[i64],
         text: &[u8],
         seed: &[u8],
-        wobble: bool,
+        pairing: SeedPairing,
         seq_idx: usize,
-        is_antisense: bool,
-        candidates: &mut Vec<(usize, usize, bool)>,
+        strand: Strand,
+        candidates: &mut Vec<SeedCandidate>,
     ) {
         trace!(
-            "SA_SEARCH: START seed={} wobble_arg={} idx={} is_rc={}",
+            "SA_SEARCH: START seed={} pairing={:?} idx={} strand={:?}",
             String::from_utf8_lossy(seed),
-            wobble,
+            pairing,
             seq_idx,
-            is_antisense
+            strand
         );
         let mut stack = vec![(0, sa.len(), 0)];
 
@@ -223,7 +267,13 @@ impl<'a> SaIndex<'a> {
             if offset == seed.len() {
                 // Match found - add all positions in this SA range
                 for &sa_pos in &sa[start..end] {
-                    candidates.push((seq_idx, sa_pos as usize, is_antisense));
+                    candidates.push(SeedCandidate {
+                        query_pos: 0, // Set by caller
+                        target_idx: seq_idx,
+                        target_start: sa_pos as usize,
+                        len: seed.len(),
+                        strand,
+                    });
                 }
                 continue;
             }
@@ -236,27 +286,17 @@ impl<'a> SaIndex<'a> {
                 stack.push((s, e, offset + 1));
             }
 
-            // Wobble Match (when wobble=false, we ALLOW G-U pairing)
-            if !wobble {
+            // Wobble Match (if Allowed)
+            if matches!(pairing, SeedPairing::AllowWobble) {
                 let wobble_char = match target_char {
-                    b'c' => Some(b't'), // Query G (compl C) in seed? No seed is normalized.
-                    // Wait: index stores DNA Target.
-                    // If query=G. Seed stores query? No.
-                    // find_candidates: seed is normalized query substring?
-                    // Line 85: seed element converted to lower.
-                    // If Query=G. seed[i] = g.
-                    // Target=T (RNA U). G-U pair.
-                    // If seed[i]=g. target needs to be t.
-                    // My code: match target_char (seed[offset]) { 'c' => 't' } ??
-                    // If seed='g'. We need target='t'.
-                    // Code says: b'c' => b't'. WHY?
-                    b'a' => Some(b'g'), // Query U (a?) -> Target G.
+                    b'c' => Some(b't'),
+                    b'a' => Some(b'g'),
                     _ => None,
                 };
 
                 trace!(
-                    "SA_SEARCH: Wobble Check offset={} char={} wobble_arg={} wobble_char={:?}",
-                    offset, target_char as char, wobble, wobble_char
+                    "SA_SEARCH: Wobble Check offset={} char={} pairing={:?} wobble_char={:?}",
+                    offset, target_char as char, pairing, wobble_char
                 );
 
                 if let Some(wc) = wobble_char {
@@ -308,14 +348,14 @@ fn get_sa_interval(
 
 /// DP alignment state - replaces magic integers (0=M, 1=Bq, 2=Bt)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DpState {
+pub enum DpState {
     Match, // M - Match/Mismatch state (paired bases)
     GapQ,  // Bq - Query Bulge state (gap in target, query base unpaired)
     GapT,  // Bt - Target Bulge state (gap in query, target base unpaired)
 }
 
 #[derive(Clone, Debug)]
-struct Grid<T> {
+pub struct Grid<T> {
     data: Vec<T>,
     width: usize,
     height: usize,
@@ -353,29 +393,29 @@ impl<T: Clone + Copy + Default> Grid<T> {
 type ScoreGrid = Grid<Option<i32>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TraceStep {
+pub enum DpMove {
     Stop,
     Match, // From M(i-1, j-1)
     GapQ,  // From Bq(i, j)
     GapT,  // From Bt(i, j)
 }
 
-impl Default for TraceStep {
+impl Default for DpMove {
     fn default() -> Self {
         Self::Stop
     }
 }
 
-struct DpContext {
+pub struct DpContext {
     // Score matrices (None = not reachable, Some(score) = reachable with score)
     m: ScoreGrid,
     bq: ScoreGrid,
     bt: ScoreGrid,
 
     // Traceback matrices
-    tb_m: Grid<TraceStep>,
-    tb_bq: Grid<TraceStep>,
-    tb_bt: Grid<TraceStep>,
+    tb_m: Grid<DpMove>,
+    tb_bq: Grid<DpMove>,
+    tb_bt: Grid<DpMove>,
 }
 
 impl DpContext {
@@ -397,6 +437,24 @@ impl DpContext {
         self.tb_m.resize(width, height);
         self.tb_bq.resize(width, height);
         self.tb_bt.resize(width, height);
+    }
+}
+
+pub struct SearchContext<'a> {
+    pub index: &'a SaIndex<'a>,
+    pub args: &'a SearchArgs,
+    pub dp_ctx: DpContext,
+    pub stats: SearchStats,
+}
+
+impl<'a> SearchContext<'a> {
+    pub fn new(index: &'a SaIndex<'a>, args: &'a SearchArgs) -> Self {
+        Self {
+            index,
+            args,
+            dp_ctx: DpContext::new(200, 200),
+            stats: SearchStats::default(),
+        }
     }
 }
 
@@ -423,9 +481,8 @@ pub fn run_search(
 
     debug!("SEARCH: output={:?}", output.as_ref());
 
-    // Create DP Context (reused buffers)
-    let mut ctx = DpContext::new(200, 200);
-    let mut stats = SearchStats::default();
+    // Create Search Context
+    let mut ctx = SearchContext::new(index, opts);
 
     let mut all_hits = Vec::new();
 
@@ -433,29 +490,21 @@ pub fn run_search(
         debug!("QUERY: id={} len={}", q_id, q_seq.len());
         trace!("QUERY_SEQ: {}", String::from_utf8_lossy(q_seq));
 
-        // Find seeds using the new helper
-        let seeds = find_seeds_for_query(q_seq, index, &opts.seed, &mut stats)?;
+        // Find seeds
+        let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
         debug!("QUERY: {} candidates found", seeds.len());
-        stats.candidates_processed += seeds.len();
+        ctx.stats.candidates_processed += seeds.len();
 
         for candidate in &seeds {
             trace!(
-                "CANDIDATE: q_pos={} t_idx={} t_start={} len={} antisense={}",
+                "CANDIDATE: q_pos={} t_idx={} t_start={} len={} strand={:?}",
                 candidate.query_pos,
                 candidate.target_idx,
                 candidate.target_start,
                 candidate.len,
-                candidate.is_antisense
+                candidate.strand
             );
-            if let Some(hit) = process_candidate(
-                q_id,
-                q_seq,
-                index,
-                candidate,
-                &opts.extend,
-                &mut ctx,
-                &mut stats,
-            ) {
+            if let Some(hit) = process_candidate(q_id, q_seq, candidate, &mut ctx) {
                 trace!(
                     "HIT_ACCEPTED: q={}-{} t={}-{} E={:.2}",
                     hit.q_start, hit.q_end, hit.t_start, hit.t_end, hit.energy
@@ -466,17 +515,18 @@ pub fn run_search(
     }
 
     // Deduplicate logic
-    stats.hits_before_dedup = all_hits.len();
-    let deduped = deduplicate_hits(all_hits, &mut stats);
-    stats.hits_final = deduped.len();
+    ctx.stats.hits_before_dedup = all_hits.len();
+    let deduped = deduplicate_hits(all_hits, &mut ctx.stats);
+    ctx.stats.hits_final = deduped.len();
 
     // Log filter stats
     info!(
         "Search complete: {} hits ({} before dedup)",
-        stats.hits_final, stats.hits_before_dedup
+        ctx.stats.hits_final, ctx.stats.hits_before_dedup
     );
-    if !stats.filtered.is_empty() {
-        let filter_summary: Vec<String> = stats
+    if !ctx.stats.filtered.is_empty() {
+        let filter_summary: Vec<String> = ctx
+            .stats
             .filtered
             .iter()
             .map(|(r, c)| format!("{:?}={}", r, c))
@@ -550,13 +600,8 @@ fn deduplicate_hits(mut hits: Vec<SearchHit>, stats: &mut SearchStats) -> Vec<Se
 
 //TODO: improve performance via better search strategies!
 
-fn find_seeds_for_query(
-    q_seq: &[u8],
-    index: &SaIndex<'_>,
-    seed_args: &SeedArgs,
-    stats: &mut SearchStats,
-) -> Result<Vec<SeedCandidate>> {
-    let seed_spec_str = seed_args.seed.as_deref().unwrap_or("17");
+fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec<SeedCandidate>> {
+    let seed_spec_str = ctx.args.seed.seed.as_deref().unwrap_or("17");
     let seed_len_specs = SeedSpec::from_str(seed_spec_str)
         .map_err(|e| anyhow!("Failed to parse seed specification: {}", e))?
         .normalize(q_seq.len())
@@ -570,8 +615,8 @@ fn find_seeds_for_query(
     let end0 = end - 1;
 
     debug!(
-        "SEEDS: spec={} q_len={} range=({},{}) mi_len={} wobble={}",
-        seed_spec_str, q_len, start, end, mi_len, seed_args.wobble
+        "SEEDS: spec={} q_len={} range=({},{}) mi_len={} pairing={:?}",
+        seed_spec_str, q_len, start, end, mi_len, ctx.args.seed.pairing
     );
 
     if start0 + mi_len > q_len {
@@ -583,7 +628,8 @@ fn find_seeds_for_query(
     }
 
     let last_start = end0.saturating_sub(mi_len - 1);
-    let mut n_skipped = 0usize;
+    let n_skipped = 0usize;
+    let pairing = ctx.args.seed.pairing;
 
     for q_pos in start0..=last_start {
         // Max seed length from this position
@@ -592,7 +638,7 @@ fn find_seeds_for_query(
         for seed_len in mi_len..=max_seed_len {
             let seed_seq = &q_seq[q_pos..q_pos + seed_len];
             if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
-                stats.record_filter(FilterReason::SeedContainsN);
+                ctx.stats.record_filter(FilterReason::SeedContainsN);
                 trace!(
                     "SEEDS: FILTERED q_pos={} len={} reason=SeedContainsN",
                     q_pos, seed_len
@@ -602,9 +648,9 @@ fn find_seeds_for_query(
 
             // Index search (RC of seed)
             let seed_rc = seed_seq.reverse_complement_rna();
-            // find_candidates returns (target_idx, target_start, is_antisense)
+            // find_candidates returns Vec<SeedCandidate> now
 
-            let hits = index.find_candidates(&seed_rc, seed_args.wobble);
+            let mut hits = ctx.index.find_candidates(&seed_rc, pairing);
 
             trace!(
                 "SEEDS: q_pos={} len={} seed={} rc={} hits={}",
@@ -615,13 +661,15 @@ fn find_seeds_for_query(
                 hits.len()
             );
 
-            for (target_idx, target_start, is_antisense) in hits {
+            for h in &mut hits {
+                h.query_pos = q_pos;
+                h.len = seed_len;
                 candidates.push(SeedCandidate {
                     query_pos: q_pos,
-                    target_idx,
-                    target_start,
+                    target_idx: h.target_idx,
+                    target_start: h.target_start,
                     len: seed_len,
-                    is_antisense,
+                    strand: h.strand,
                 });
             }
         }
@@ -639,17 +687,13 @@ fn find_seeds_for_query(
 fn process_candidate(
     q_id: &str,
     q_seq: &[u8],
-    index: &SaIndex<'_>,
     candidate: &SeedCandidate,
-    opts: &ExtendArgs,
-    ctx: &mut DpContext,
-    stats: &mut SearchStats,
+    ctx: &mut SearchContext<'_>,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
-    let t_seq_cow = if candidate.is_antisense {
-        std::borrow::Cow::Owned(index.get_sequence_rc(t_idx))
-    } else {
-        std::borrow::Cow::Borrowed(index.get_sequence(t_idx))
+    let t_seq_cow = match candidate.strand {
+        Strand::Reverse => std::borrow::Cow::Owned(ctx.index.get_sequence_rc(t_idx)),
+        Strand::Forward => std::borrow::Cow::Borrowed(ctx.index.get_sequence(t_idx)),
     };
     let t_seq = &t_seq_cow;
     let t_start_idx = candidate.target_start;
@@ -657,12 +701,12 @@ fn process_candidate(
     let q_pos = candidate.query_pos;
 
     trace!(
-        "PROC_CAND: q_id={} t_idx={} q_pos={} t_start={} seed_len={} antisense={}",
-        q_id, t_idx, q_pos, t_start_idx, seed_len, candidate.is_antisense
+        "PROC_CAND: q_id={} t_idx={} q_pos={} t_start={} seed_len={} strand={:?}",
+        q_id, t_idx, q_pos, t_start_idx, seed_len, candidate.strand
     );
 
     if t_start_idx + seed_len > t_seq.len() {
-        stats.record_filter(FilterReason::SeedOutOfBounds);
+        ctx.stats.record_filter(FilterReason::SeedOutOfBounds);
         warn!(
             "PROC_CAND: FILTERED reason=SeedOutOfBounds t_start={} seed_len={} t_len={}",
             t_start_idx,
@@ -673,17 +717,16 @@ fn process_candidate(
     }
 
     // Call extend_seed (or essentially reproduce its valuable logic).
-    // Call extend_seed (or essentially reproduce its valuable logic).
-    let extension_result = extend_seed(ctx, q_seq, t_seq, candidate, opts, stats)?;
+    let extension_result = extend_seed(ctx, q_seq, t_seq, candidate)?;
 
     let ext = extension_result;
-    let score = ext.score; // RESTORED
+    let score = ext.score;
 
-    if score > opts.delta_g {
-        stats.record_filter(FilterReason::EnergyAboveThreshold);
+    if score > ctx.args.extend.delta_g {
+        ctx.stats.record_filter(FilterReason::EnergyAboveThreshold);
         trace!(
             "PROC_CAND: FILTERED reason=EnergyAboveThreshold score={:.2} > delta_g={}",
-            score, opts.delta_g
+            score, ctx.args.extend.delta_g
         );
         return None;
     }
@@ -694,25 +737,6 @@ fn process_candidate(
     let r_t = ext.r_t;
     let seed_q = q_pos;
     let seed_t = t_start_idx;
-
-    // Use Helper to get aligned sequence strings consistent with the trace
-    let (_final_qs, final_ts) = reconstruct_seqs_from_trace(
-        q_seq,
-        t_seq,
-        q_pos,
-        t_start_idx,
-        seed_len,
-        &ext.l_trace,
-        &ext.r_trace,
-        l_q,
-        l_t,
-        r_q,
-        r_t,
-    );
-
-    let full_fp = ext.interaction;
-    // full_ts from helper is the aligned target string
-    let full_ts = final_ts;
 
     // Normalize T -> U for output strings seems to be done in `print_search_hit`.
     // Let's store raw T strings in `SearchHit` and normalize at print time?
@@ -739,41 +763,18 @@ fn process_candidate(
     // Fwd: (N-1) ... 2 1 0
     // Yes.
 
-    let original_len = index.get_sequence_len(candidate.target_idx);
-    let (out_t_start, out_t_end, strand_char) = if candidate.is_antisense {
-        // Antisense hit
-        // The `final_t_start` and `final_t_end` are indices in the RC sequence.
-        // Convert to forward coordinates.
-        // Start in Fwd = N - 1 - End in RC.
-        // End in Fwd = N - 1 - Start in RC.
-        let fwd_start = original_len - 1 - final_t_end;
-        let fwd_end = original_len - 1 - final_t_start;
-        (fwd_start + 1, fwd_end + 1, '-')
-    // Wait, C output logic:
-    // If query aligns to RC of target, C reports coordinates on the... genome?
-    // risearch2.x output:
-    // Strand '+' usually means Sense.
-    // Strand '-' usually means Antisense.
-    // My `is_antisense` = true came from `search_sa_simple` on `reverse_sa`.
-    // `reverse_sa` is built from RC of target.
-    // If query matches RC of target, it means query binds to the "other" strand.
-    // Standard conventions:
-    // mRNA is the sense strand.
-    // miRNA binds to mRNA.
-    // So miRNA is antisense to mRNA.
-    // If we find match on Forward SA (Reverse Complement of Query matching Forward Target)
-    // means Query binds to Forward Target.
-
-    // Let's check `run_search` strand logic (lines 175-187 in original file, I can't see them now).
-    // Standard RIsearch output:
-    // Strand is usually relative to the Target.
-    // If match is on Fwd strand, strand is '+'.
-    // If match is on Rev strand, strand is '-'.
-    } else {
-        // Forward hit
-        // final_t_start is index in forward sequence.
-        (final_t_start + 1, final_t_end + 1, '+')
-        // Actually, let's look at `tests/c_parity.rs` output.
+    let original_len = ctx.index.get_sequence_len(candidate.target_idx);
+    let (out_t_start, out_t_end, strand_char) = match candidate.strand {
+        Strand::Reverse => {
+            // Antisense hit / Reverse Strand
+            let fwd_start = original_len - 1 - final_t_end;
+            let fwd_end = original_len - 1 - final_t_start;
+            (fwd_start + 1, fwd_end + 1, '-')
+        }
+        Strand::Forward => {
+            // Forward hit
+            (final_t_start + 1, final_t_end + 1, '+')
+        }
     };
 
     // Flanks
@@ -809,9 +810,8 @@ fn process_candidate(
 
     Some(SearchHit {
         query_id: q_id.to_string(),
-        target_id: index.get_id(t_idx).to_string(),
-        query_seq: String::from_utf8_lossy(q_seq).to_string(), // Or keep raw?
-        target_seq: full_ts,                                   // The alignment string
+        target_id: ctx.index.get_id(t_idx).to_string(),
+
         q_start: final_q_start,
         q_end: final_q_end,
         t_start: final_t_start,
@@ -820,7 +820,7 @@ fn process_candidate(
         output_t_end: out_t_end,
         strand: strand_char,
         energy: score,
-        interaction: full_fp,
+        alignment: ext.alignment,
         flank_5,
         flank_3: flank_3,
     })
@@ -828,8 +828,15 @@ fn process_candidate(
 
 fn print_search_hit(w: &mut dyn Write, hit: &SearchHit) -> std::io::Result<()> {
     // Normalize strings for output (T->U)
-    let norm_fp = &hit.interaction;
-    let norm_ts = hit.target_seq.replace('T', "U").replace('t', "u");
+    // Derive from alignment
+    let norm_fp: String = hit.alignment.iter().map(|p| p.to_char()).collect();
+    let norm_ts: String = hit
+        .alignment
+        .iter()
+        .map(|p| p.target_char())
+        .collect::<String>()
+        .replace('T', "U")
+        .replace('t', "u");
 
     writeln!(
         w,
@@ -859,144 +866,43 @@ pub struct DpResult {
     pub score: i32,
     pub ext_q_len: usize,
     pub ext_t_len: usize,
-    pub trace: String,
+    pub trace: Vec<DpMove>,
 }
 
-struct SeedExtension {
-    score: f64,
-    interaction: String,
-    l_trace: String,
-    r_trace: String,
-    l_q: usize,
-    l_t: usize,
-    r_q: usize,
-    r_t: usize,
+#[derive(Debug, Clone)]
+pub struct ExtensionResult {
+    pub score: f64,
+    pub alignment: Vec<Pairing>,
+    pub l_trace: Vec<DpMove>,
+    pub r_trace: Vec<DpMove>,
+    pub l_q: usize,
+    pub l_t: usize,
+    pub r_q: usize,
+    pub r_t: usize,
 }
 
-fn reconstruct_seqs_from_trace(
-    _q_seq: &[u8],
-    t_seq: &[u8],
-    q_seed_start: usize, // 0-based index of 5' end of seed in query
-    t_seed_start: usize, // 0-based index of 5' end of seed in target (low index; target is antiparallel to query)
-    seed_len: usize,
-    fp_l: &str,
-    fp_r: &str,
-    l_q: usize,
-    l_t: usize,
-    _r_q: usize,
-    _r_t: usize,
-) -> (String, String) {
-    // Reconstruct aligned target sequence from fingerprint traces.
-    //
-    // Coordinate system (antiparallel RNA binding):
-    //   Query:  5' ----[seed]----- 3'   (indices increase left to right)
-    //   Target: 3' ----[seed]----- 5'   (indices increase left to right, but binding is antiparallel)
-    //
-    // In the target array:
-    //   - t_seed_start is the LOW index (left side of seed in array)
-    //   - t_seed_start + seed_len - 1 is the HIGH index (right side of seed in array)
-    //   - Due to antiparallel binding:
-    //     * Query 5' (q_seed_start) pairs with Target 3' (t_seed_start + seed_len - 1)
-    //     * Query 3' (q_seed_start + seed_len - 1) pairs with Target 5' (t_seed_start)
-    //
-    // DP extension directions:
-    //   - dp_left:  Query moves 5' (index decreases), Target moves 3' (index increases)
-    //   - dp_right: Query moves 3' (index increases), Target moves 5' (index decreases)
-    //
-    // Trace characters:
-    //   - 'Q' = GapQ state: query has unpaired base, target has gap in alignment
-    //   - 'T' = GapT state: target has unpaired base, query has gap in alignment
-    //   - 'P'/'W'/'U' = paired/wobble/unpaired match state
-
-    let mut aligned_ts = String::new();
-
-    // LEFT PART (5' extension of query, 3' extension of target)
-    // fp_l is ordered seed-to-far (after reversal in extend_seed).
-    // We iterate REVERSE to build output in 5'->3' order (far-to-seed).
-    // Start at the far-left indices and move toward the seed.
-    let mut q_idx = q_seed_start - l_q;
-    let mut t_idx = (t_seed_start + seed_len - 1) + l_t;
-
-    for c in fp_l.chars().rev() {
-        match c {
-            'Q' => {
-                // GapQ state: Query has an unpaired base (bulge in query).
-                // In the aligned target string, this appears as a gap.
-                aligned_ts.push('-');
-                let _ = q_idx; // Suppress unused
-                q_idx += 1;
-            }
-            'T' => {
-                // GapT state: Target has an unpaired base (bulge in target).
-                // In the aligned target string, we emit the target base.
-                let tc = t_seq[t_idx];
-                let tc_char = tc as char;
-                aligned_ts.push(tc_char);
-                t_idx -= 1;
-            }
-            _ => {
-                // Match/Mismatch/Wobble
-                let tc = t_seq[t_idx];
-                aligned_ts.push(tc as char);
-                q_idx += 1;
-                t_idx -= 1;
-            }
-        }
+impl ExtensionResult {
+    /// Reconstructs the interaction fingerprint string (e.g. "||| :: |")
+    pub fn to_string(&self) -> String {
+        self.alignment.iter().map(|p| p.to_char()).collect()
     }
 
-    // SEED PART
-    // Iterate through seed bases. Due to antiparallel binding, target index decreases
-    // as query index increases (from 5' to 3').
-    let t_seed_end_idx = t_seed_start + seed_len - 1;
-    for k in 0..seed_len {
-        let t_i = t_seed_end_idx - k;
-        let tc = t_seq[t_i];
-        aligned_ts.push(tc as char);
+    /// Reconstructs the aligned target sequence string (including gaps as '-')
+    pub fn target_string(&self) -> String {
+        self.alignment.iter().map(|p| p.target_char()).collect()
     }
-
-    // RIGHT PART (3' extension of query, 5' extension of target)
-    // fp_r is ordered seed-to-far. We iterate FORWARD (seed toward 3' end).
-    // Target index decreases as we move right on query.
-    let mut q_idx = q_seed_start + seed_len;
-    let mut t_idx = t_seed_start.wrapping_sub(1);
-
-    for c in fp_r.chars() {
-        match c {
-            'Q' => {
-                // GapQ: Q has base, T has gap.
-                aligned_ts.push('-');
-                let _ = q_idx; // Suppress unused
-                q_idx += 1;
-            }
-            'T' => {
-                // GapT: T has base, Q has gap.
-                let tc = t_seq[t_idx];
-                aligned_ts.push(tc as char);
-                t_idx = t_idx.wrapping_sub(1);
-            }
-            _ => {
-                let tc = t_seq[t_idx];
-                aligned_ts.push(tc as char);
-                q_idx += 1;
-                t_idx = t_idx.wrapping_sub(1);
-            }
-        }
-    }
-
-    (String::new(), aligned_ts)
 }
 
 fn extend_seed(
-    ctx: &mut DpContext,
+    ctx: &mut SearchContext<'_>,
     q_seq: &[u8],
     t_seq: &[u8],
     candidate: &SeedCandidate,
-    opts: &ExtendArgs,
-    stats: &mut SearchStats,
-) -> Option<SeedExtension> {
+) -> Option<ExtensionResult> {
     let q_pos = candidate.query_pos;
     let t_pos = candidate.target_start;
     let len = candidate.len;
+    let opts = &ctx.args.extend;
 
     // MAXIMALITY CHECK
     // Skip non-maximal seeds: if the seed can be extended by a valid base pair
@@ -1025,7 +931,7 @@ fn extend_seed(
                     q_pos, t_pos, len, p_class
                 );
             } else {
-                stats.record_filter(FilterReason::MaximalityLeft);
+                ctx.stats.record_filter(FilterReason::MaximalityLeft);
                 trace!(
                     "MAXIMALITY: FILTERED reason=MaximalityLeft q_pos={} t_pos={} len={} pair={}",
                     q_pos, t_pos, len, p_class
@@ -1053,7 +959,7 @@ fn extend_seed(
                     q_pos, t_pos, len, p_class
                 );
             } else {
-                stats.record_filter(FilterReason::MaximalityRight);
+                ctx.stats.record_filter(FilterReason::MaximalityRight);
                 trace!(
                     "MAXIMALITY: FILTERED reason=MaximalityRight q_pos={} t_pos={} len={} pair={}",
                     q_pos, t_pos, len, p_class
@@ -1099,41 +1005,186 @@ fn extend_seed(
 
     // DP Left: Extend Query Left (5'), Target Right (3')
     // Start at: q_pos (5' Q), t_match_end (3' T)
-    let left_res = dp_left(ctx, q_seq, t_seq, q_pos, t_match_end, safe_ext);
+    let left_res = dp_left(&mut ctx.dp_ctx, q_seq, t_seq, q_pos, t_match_end, safe_ext);
 
     // DP Right: Extend Query Right (3'), Target Left (5')
     // Start at: q_pos + len - 1 (3' Q), t_pos (5' T)
-    let right_res = dp_right(ctx, q_seq, t_seq, q_pos + len - 1, t_pos, safe_ext);
+    let right_res = dp_right(
+        &mut ctx.dp_ctx,
+        q_seq,
+        t_seq,
+        q_pos + len - 1,
+        t_pos,
+        safe_ext,
+    );
 
     let final_score =
         (seed_energy + left_res.score as f64 + right_res.score as f64 - 559.0) / -100.0;
 
-    // Exhaustive extension logging
     debug!(
-        "EXTEND: q_pos={} t_pos={} seed_len={} seed_energy={:.1} l_score={} r_score={} final_score={:.2}",
-        q_pos, t_pos, len, seed_energy, left_res.score, right_res.score, final_score
-    );
-    trace!(
-        "EXTEND_DETAIL: seed_int={} l_trace={} r_trace={} l_ext=({},{}) r_ext=({},{})",
-        seed_int_str,
-        left_res.trace,
-        right_res.trace,
+        "EXTEND: score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",
+        final_score,
+        seed_energy / -100.0,
+        left_res.score,
+        right_res.score,
         left_res.ext_q_len,
         left_res.ext_t_len,
         right_res.ext_q_len,
         right_res.ext_t_len
     );
 
-    let l_trace_str: String = left_res.trace.chars().collect();
-    let r_trace_str: String = right_res.trace.chars().rev().collect();
+    let mut alignment = Vec::new();
 
-    let full_interaction = format!("{}{}{}", l_trace_str, seed_int_str, r_trace_str);
+    // 1. Left Trace (Query 5' -> Seed)
+    // l_trace is 5'->3' (from far left to seed start)
+    // Coordinates: q_start - i, t_start + j
+    // trace_vec[k] corresponds to step from (i,j) to (i-1, j) etc.
+    // We need to replay properly.
+    // Ideally we reconstruct by iterating trace and tracking (i, j).
+    // Start at best_i, best_j.
+    {
+        let mut i = left_res.ext_q_len;
+        let mut j = left_res.ext_t_len;
+        // left_res.trace is ordered from [step at best_i] ... [step at 1].
+        // So iterating it naturally goes from 5' end toward seed.
 
-    Some(SeedExtension {
+        for step in &left_res.trace {
+            match step {
+                DpMove::Match | DpMove::Stop => {
+                    // Consumes both
+                    let q_b = if i > 0 {
+                        q_seq[candidate.query_pos - i]
+                    } else {
+                        b'N'
+                    };
+                    let t_b = if t_match_end + j < t_seq.len() {
+                        t_seq[t_match_end + j]
+                    } else {
+                        b'N'
+                    };
+                    alignment.push(Pairing::from_bases(q_b, t_b));
+                    if i > 0 {
+                        i -= 1;
+                    }
+                    if j > 0 {
+                        j -= 1;
+                    }
+                }
+                DpMove::GapQ => {
+                    // Gap in Query? No, GapQ means Bq matrix (Query has base, Target has Gap).
+                    // In dp_left: trace "GapQ" means we came from Bq.
+                    // Bq state: "Insertion in Query" (vs Target).
+                    // So Query has Base. Target has Gap.
+                    // So Pairing::GapTarget.
+
+                    let q_b = if i > 0 {
+                        q_seq[candidate.query_pos - i]
+                    } else {
+                        b'N'
+                    };
+                    alignment.push(Pairing::GapTarget(q_b));
+                    if i > 0 {
+                        i -= 1;
+                    }
+                }
+                DpMove::GapT => {
+                    // GapT means Bt matrix. Target has base. Query has Gap.
+                    // So Pairing::GapQuery.
+
+                    let t_b = if t_match_end + j < t_seq.len() {
+                        t_seq[t_match_end + j]
+                    } else {
+                        b'N'
+                    };
+                    alignment.push(Pairing::GapQuery(t_b));
+                    if j > 0 {
+                        j -= 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Seed itself
+    for n in 0..len {
+        let q_idx = candidate.query_pos + n;
+        // candidate.target_start is start (lowest index).
+        // Since seed is antiparallel: Q binds T.
+        // Q: 5'->3' (idx +n).
+        // T: 3'->5' (idx -n).
+        // t_match_end is the 3' end of target site (matches 5' of query).
+        // So t_match_end corresponds to q_pos.
+        // t_match_end - n corresponds to q_pos + n.
+        let t_idx = if t_match_end >= n { t_match_end - n } else { 0 };
+
+        let q_b = q_seq[q_idx];
+        let t_b = t_seq[t_idx];
+        alignment.push(Pairing::from_bases(q_b, t_b));
+    }
+
+    // 3. Right Trace (Query 3' -> end)
+    {
+        let mut curr_i = 0;
+        let mut curr_j = 0;
+
+        // We iterate reversed trace (Start -> End)
+        for step in right_res.trace.iter().rev() {
+            match step {
+                DpMove::Match | DpMove::Stop => {
+                    curr_i += 1;
+                    curr_j += 1;
+                    let q_b = if candidate.query_pos + len - 1 + curr_i < q_seq.len() {
+                        q_seq[candidate.query_pos + len - 1 + curr_i]
+                    } else {
+                        b'N'
+                    };
+
+                    // t_pos is 5' end of seed (matches 3' of query).
+                    // Matches q_pos + len - 1.
+                    // As we extend right (3' of query), we extend left (5' of target).
+                    // So Target Index decreases.
+                    // t_b = t_seq[t_pos - curr_j].
+                    let t_b = if t_pos >= curr_j {
+                        t_seq[t_pos - curr_j]
+                    } else {
+                        b'N'
+                    };
+                    alignment.push(Pairing::from_bases(q_b, t_b));
+                }
+                DpMove::GapQ => {
+                    // DpMove::GapQ in dp_right.
+                    // i increases (Query). j same.
+                    // Query has Base. Target Gap.
+                    // Pairing::GapTarget.
+                    curr_i += 1;
+                    let q_b = if candidate.query_pos + len - 1 + curr_i < q_seq.len() {
+                        q_seq[candidate.query_pos + len - 1 + curr_i]
+                    } else {
+                        b'N'
+                    };
+                    alignment.push(Pairing::GapTarget(q_b));
+                }
+                DpMove::GapT => {
+                    // DpMove::GapT in dp_right.
+                    // j increases (Target 5'). i same.
+                    // Target Base. Query Gap.
+                    curr_j += 1;
+                    let t_b = if t_pos >= curr_j {
+                        t_seq[t_pos - curr_j]
+                    } else {
+                        b'N'
+                    };
+                    alignment.push(Pairing::GapQuery(t_b));
+                }
+            }
+        }
+    }
+
+    Some(ExtensionResult {
         score: final_score,
-        interaction: full_interaction.clone(),
-        l_trace: l_trace_str,
-        r_trace: r_trace_str,
+        alignment,
+        l_trace: left_res.trace,
+        r_trace: right_res.trace,
         l_q: left_res.ext_q_len,
         l_t: left_res.ext_t_len,
         r_q: right_res.ext_q_len,
@@ -1196,7 +1247,7 @@ fn dp_left(
             score: best_e,
             ext_q_len: best_i,
             ext_t_len: best_j,
-            trace: String::new(),
+            trace: Vec::new(),
         };
     }
 
@@ -1250,12 +1301,12 @@ fn dp_left(
                 j,
                 Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32),
             );
-            tb_bt.set(0, j, TraceStep::GapT);
+            tb_bt.set(0, j, DpMove::GapT);
 
             if q_len >= 1 {
                 let new_m = prev_bt + s_mat[q_char(1)][GAP_IDX][t_comp(j)][t_comp(j - 1)] as i32;
                 m.set(1, j, Some(new_m));
-                tb_m.set(1, j, TraceStep::GapT);
+                tb_m.set(1, j, DpMove::GapT);
                 let val = new_m + s_mat[GAP_IDX][q_char(1)][GAP_IDX][t_comp(j)] as i32;
                 if val > best_e {
                     best_e = val;
@@ -1274,12 +1325,12 @@ fn dp_left(
                 0,
                 Some(prev_bq + s_mat[q_char(i)][q_char(i - 1)][GAP_IDX][GAP_IDX] as i32),
             );
-            tb_bq.set(i, 0, TraceStep::GapQ);
+            tb_bq.set(i, 0, DpMove::GapQ);
 
             if t_len >= 1 {
                 let new_m = prev_bq + s_mat[q_char(i)][q_char(i - 1)][t_comp(1)][GAP_IDX] as i32;
                 m.set(i, 1, Some(new_m));
-                tb_m.set(i, 1, TraceStep::GapQ);
+                tb_m.set(i, 1, DpMove::GapQ);
                 let val = new_m + s_mat[GAP_IDX][q_char(i)][GAP_IDX][t_comp(1)] as i32;
                 if val > best_e {
                     best_e = val;
@@ -1298,18 +1349,18 @@ fn dp_left(
                 2,
                 Some(m11 + s_mat[GAP_IDX][q_char(1)][t_comp(2)][t_comp(1)] as i32),
             );
-            tb_bt.set(1, 2, TraceStep::Match);
+            tb_bt.set(1, 2, DpMove::Match);
 
             bq.set(
                 2,
                 1,
                 Some(m11 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(1)] as i32),
             );
-            tb_bq.set(2, 1, TraceStep::Match);
+            tb_bq.set(2, 1, DpMove::Match);
 
             let m22 = m11 + s_mat[q_char(2)][q_char(1)][t_comp(2)][t_comp(1)] as i32;
             m.set(2, 2, Some(m22));
-            tb_m.set(2, 2, TraceStep::Match);
+            tb_m.set(2, 2, DpMove::Match);
 
             let val = m22 + s_mat[GAP_IDX][q_char(2)][GAP_IDX][t_comp(2)] as i32;
             if val > best_e {
@@ -1324,7 +1375,7 @@ fn dp_left(
                 2,
                 Some(m12 + s_mat[q_char(2)][q_char(1)][GAP_IDX][t_comp(2)] as i32),
             );
-            tb_bq.set(2, 2, TraceStep::Match);
+            tb_bq.set(2, 2, DpMove::Match);
         }
         if let Some(m21) = m.get(2, 1) {
             bt.set(
@@ -1332,7 +1383,7 @@ fn dp_left(
                 2,
                 Some(m21 + s_mat[GAP_IDX][q_char(2)][t_comp(2)][t_comp(1)] as i32),
             );
-            tb_bt.set(2, 2, TraceStep::Match);
+            tb_bt.set(2, 2, DpMove::Match);
         }
     }
 
@@ -1356,14 +1407,14 @@ fn dp_left(
 
             // Find best value and corresponding traceback step
             let (val_m, step_m) = [
-                (s_mm, TraceStep::Match),
-                (s_mq, TraceStep::GapQ),
-                (s_mt, TraceStep::GapT),
+                (s_mm, DpMove::Match),
+                (s_mq, DpMove::GapQ),
+                (s_mt, DpMove::GapT),
             ]
             .into_iter()
             .filter_map(|(opt, step)| opt.map(|v| (v, step)))
             .max_by_key(|(v, _)| *v)
-            .unwrap_or((i32::MIN, TraceStep::Stop));
+            .unwrap_or((i32::MIN, DpMove::Stop));
 
             let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
             m.set(i, j, val_m);
@@ -1406,17 +1457,17 @@ fn dp_left(
                 match (s_qq, s_qm) {
                     (Some(qq), Some(qm)) if qq > qm => {
                         bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, TraceStep::GapQ);
+                        tb_bq.set(i, j, DpMove::GapQ);
                         trace!("DP_LEFT_CELL: i={} j={} Bq={} (from GapQ)", i, j, qq);
                     }
                     (_, Some(qm)) => {
                         bq.set(i, j, Some(qm));
-                        tb_bq.set(i, j, TraceStep::Match);
+                        tb_bq.set(i, j, DpMove::Match);
                         trace!("DP_LEFT_CELL: i={} j={} Bq={} (from Match)", i, j, qm);
                     }
                     (Some(qq), None) => {
                         bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, TraceStep::GapQ);
+                        tb_bq.set(i, j, DpMove::GapQ);
                         trace!("DP_LEFT_CELL: i={} j={} Bq={} (from GapQ, no M)", i, j, qq);
                     }
                     _ => {}
@@ -1436,17 +1487,17 @@ fn dp_left(
                 match (s_tt, s_tm) {
                     (Some(tt), Some(tm)) if tt > tm => {
                         bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, TraceStep::GapT);
+                        tb_bt.set(i, j, DpMove::GapT);
                         trace!("DP_LEFT_CELL: i={} j={} Bt={} (from GapT)", i, j, tt);
                     }
                     (_, Some(tm)) => {
                         bt.set(i, j, Some(tm));
-                        tb_bt.set(i, j, TraceStep::Match);
+                        tb_bt.set(i, j, DpMove::Match);
                         trace!("DP_LEFT_CELL: i={} j={} Bt={} (from Match)", i, j, tm);
                     }
                     (Some(tt), None) => {
                         bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, TraceStep::GapT);
+                        tb_bt.set(i, j, DpMove::GapT);
                         trace!("DP_LEFT_CELL: i={} j={} Bt={} (from GapT, no M)", i, j, tt);
                     }
                     _ => {}
@@ -1459,42 +1510,23 @@ fn dp_left(
     // Start in Match state since best_e is always computed from M matrix.
     let mut i = best_i;
     let mut j = best_j;
-    let mut fp = String::new();
+    // let mut fp = String::new(); // NO LONGER USED
+    let mut trace_vec = Vec::new(); // Changed to Vec
     let mut state = DpState::Match;
 
     while i > 0 || j > 0 {
-        let _qc = if i <= q_len { q_seq[q_start - i] } else { b'N' };
-
-        let qc_byte = if i <= q_start {
-            Base::from_byte(q_seq[q_start - i]).idx()
-        } else {
-            GAP_IDX
-        };
-        let t_char_idx = if t_start + j < t_seq.len() {
-            Base::from_byte(t_seq[t_start + j]).idx()
-        } else {
-            GAP_IDX
-        };
-
         match state {
             DpState::Match => {
-                // Current state is Match (M[i,j])
-                // We emit the character pair corresponding to this match/mismatch
-                let p_char = Base::from_idx(qc_byte).pairing_class(Base::from_idx(t_char_idx));
-                trace!(
-                    "DP_LEFT_TB: step=Match i={} j={} q={} t={} pair={}",
-                    i,
-                    j,
-                    Base::from_idx(qc_byte).as_char(),
-                    Base::from_idx(t_char_idx).as_char(),
-                    p_char
-                );
-                fp.push(p_char);
+                // ... (logic for trace logging) ...
+                // trace!("DP_LEFT_TB: ..."); // Keeping trace logic requires access to seqs which we have
+
+                // IMPORTANT: We do NOT push to fp string anymore.
+                // We assume reconstruction happens later or DpMove is enough.
+                // Wait, the original code pushed chars to 'fp' string based on PAIRING.
+                // But DpResult.trace is just DpMoves!
+                // So we don't care about bases here for the 'trace' vector.
 
                 if i == 0 || j == 0 {
-                    // Should not happen for Match state unless logic is wrong
-                    // In rigorous check: if i=0, we can't be in Match.
-                    // But if we are, we break.
                     break;
                 }
 
@@ -1502,18 +1534,24 @@ fn dp_left(
                 i -= 1;
                 j -= 1;
 
+                // We record the step that GOT us here? Or strictly the move?
+                // Step is "Where we came FROM".
+                // So if step is Match, we came from M.
+                // We push this step.
+                // Wait, if step is TraceStep::Match, it simply means diagonal move.
+                trace_vec.push(step); // Push DpMove
+
                 match step {
-                    TraceStep::Stop => break,
-                    TraceStep::Match => state = DpState::Match,
-                    TraceStep::GapQ => state = DpState::GapQ,
-                    TraceStep::GapT => state = DpState::GapT,
+                    DpMove::Stop => break,
+                    DpMove::Match => state = DpState::Match,
+                    DpMove::GapQ => state = DpState::GapQ,
+                    DpMove::GapT => state = DpState::GapT,
                 }
             }
             DpState::GapQ => {
-                // Current state is GapQ (Bq[i,j])
-                fp.push('Q');
-
                 let step = tb_bq.get(i, j);
+                trace_vec.push(step); // Push DpMove? 
+
                 if i > 0 {
                     i -= 1;
                 } else {
@@ -1521,17 +1559,16 @@ fn dp_left(
                 }
 
                 match step {
-                    TraceStep::Stop => break,
-                    TraceStep::Match => state = DpState::Match,
-                    TraceStep::GapQ => state = DpState::GapQ,
-                    TraceStep::GapT => state = DpState::GapT, // Should not occur
+                    DpMove::Stop => break,
+                    DpMove::Match => state = DpState::Match,
+                    DpMove::GapQ => state = DpState::GapQ,
+                    DpMove::GapT => state = DpState::GapT, // Should not occur
                 }
             }
             DpState::GapT => {
-                // Current state is GapT (Bt[i,j])
-                fp.push('T');
-
                 let step = tb_bt.get(i, j);
+                trace_vec.push(step);
+
                 if j > 0 {
                     j -= 1;
                 } else {
@@ -1539,30 +1576,28 @@ fn dp_left(
                 }
 
                 match step {
-                    TraceStep::Stop => break,
-                    TraceStep::Match => state = DpState::Match,
-                    TraceStep::GapT => state = DpState::GapT,
-                    TraceStep::GapQ => state = DpState::GapQ, // Should not occur
+                    DpMove::Stop => break,
+                    DpMove::Match => state = DpState::Match,
+                    DpMove::GapT => state = DpState::GapT,
+                    DpMove::GapQ => state = DpState::GapQ, // Should not occur
                 }
             }
         }
     }
 
     trace!(
-        "DP_LEFT: RESULT q_len={} t_len={} best_i={} best_j={} best_e={} trace_len={}",
-        q_len,
-        t_len,
+        "DP_LEFT: END score={:.2} q_ext={} t_ext={} trace_len={}",
+        best_e,
         best_i,
         best_j,
-        best_e,
-        fp.len()
+        trace_vec.len()
     );
 
     DpResult {
         score: best_e,
         ext_q_len: best_i,
         ext_t_len: best_j,
-        trace: fp,
+        trace: trace_vec,
     }
 }
 
@@ -1616,7 +1651,7 @@ fn dp_right(
             score: best_e,
             ext_q_len: best_i,
             ext_t_len: best_j,
-            trace: String::new(),
+            trace: Vec::new(),
         };
     }
 
@@ -1669,12 +1704,12 @@ fn dp_right(
                 j,
                 Some(prev_bt + s_mat[GAP_IDX][GAP_IDX][t_comp(j - 1)][t_comp(j)] as i32),
             );
-            tb_bt.set(0, j, TraceStep::GapT);
+            tb_bt.set(0, j, DpMove::GapT);
 
             if q_len >= 1 {
                 let new_m = prev_bt + s_mat[GAP_IDX][q_char(1)][t_comp(j - 1)][t_comp(j)] as i32;
                 m.set(1, j, Some(new_m));
-                tb_m.set(1, j, TraceStep::GapT);
+                tb_m.set(1, j, DpMove::GapT);
                 let val = new_m + s_mat[q_char(1)][GAP_IDX][t_comp(j)][GAP_IDX] as i32;
                 if val > best_e {
                     best_e = val;
@@ -1693,12 +1728,12 @@ fn dp_right(
                 0,
                 Some(prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][GAP_IDX] as i32),
             );
-            tb_bq.set(i, 0, TraceStep::GapQ);
+            tb_bq.set(i, 0, DpMove::GapQ);
 
             if t_len >= 1 {
                 let new_m = prev_bq + s_mat[q_char(i - 1)][q_char(i)][GAP_IDX][t_comp(1)] as i32;
                 m.set(i, 1, Some(new_m));
-                tb_m.set(i, 1, TraceStep::GapQ);
+                tb_m.set(i, 1, DpMove::GapQ);
                 let val = new_m + s_mat[q_char(i)][GAP_IDX][t_comp(1)][GAP_IDX] as i32;
                 if val > best_e {
                     best_e = val;
@@ -1717,18 +1752,18 @@ fn dp_right(
                 2,
                 Some(m11 + s_mat[q_char(1)][GAP_IDX][t_comp(1)][t_comp(2)] as i32),
             );
-            tb_bt.set(1, 2, TraceStep::Match);
+            tb_bt.set(1, 2, DpMove::Match);
 
             bq.set(
                 2,
                 1,
                 Some(m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][GAP_IDX] as i32),
             );
-            tb_bq.set(2, 1, TraceStep::Match);
+            tb_bq.set(2, 1, DpMove::Match);
 
             let m22 = m11 + s_mat[q_char(1)][q_char(2)][t_comp(1)][t_comp(2)] as i32;
             m.set(2, 2, Some(m22));
-            tb_m.set(2, 2, TraceStep::Match);
+            tb_m.set(2, 2, DpMove::Match);
 
             let val = m22 + s_mat[q_char(2)][GAP_IDX][t_comp(2)][GAP_IDX] as i32;
             if val > best_e {
@@ -1743,7 +1778,7 @@ fn dp_right(
                 2,
                 Some(m12 + s_mat[q_char(1)][q_char(2)][t_comp(2)][GAP_IDX] as i32),
             );
-            tb_bq.set(2, 2, TraceStep::Match);
+            tb_bq.set(2, 2, DpMove::Match);
         }
         if let Some(m21) = m.get(2, 1) {
             bt.set(
@@ -1751,7 +1786,7 @@ fn dp_right(
                 2,
                 Some(m21 + s_mat[q_char(2)][GAP_IDX][t_comp(1)][t_comp(2)] as i32),
             );
-            tb_bt.set(2, 2, TraceStep::Match);
+            tb_bt.set(2, 2, DpMove::Match);
         }
     }
 
@@ -1775,14 +1810,14 @@ fn dp_right(
 
             // Find best value and corresponding traceback step
             let (val_m, step_m) = [
-                (s_mm, TraceStep::Match),
-                (s_mq, TraceStep::GapQ),
-                (s_mt, TraceStep::GapT),
+                (s_mm, DpMove::Match),
+                (s_mq, DpMove::GapQ),
+                (s_mt, DpMove::GapT),
             ]
             .into_iter()
             .filter_map(|(opt, step)| opt.map(|v| (v, step)))
             .max_by_key(|(v, _)| *v)
-            .unwrap_or((i32::MIN, TraceStep::Stop));
+            .unwrap_or((i32::MIN, DpMove::Stop));
 
             let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
             m.set(i, j, val_m);
@@ -1827,15 +1862,15 @@ fn dp_right(
                 match (s_qq, s_qm) {
                     (Some(qq), Some(qm)) if qq > qm => {
                         bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, TraceStep::GapQ);
+                        tb_bq.set(i, j, DpMove::GapQ);
                     }
                     (_, Some(qm)) => {
                         bq.set(i, j, Some(qm));
-                        tb_bq.set(i, j, TraceStep::Match);
+                        tb_bq.set(i, j, DpMove::Match);
                     }
                     (Some(qq), None) => {
                         bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, TraceStep::GapQ);
+                        tb_bq.set(i, j, DpMove::GapQ);
                     }
                     _ => {}
                 }
@@ -1853,15 +1888,15 @@ fn dp_right(
                 match (s_tt, s_tm) {
                     (Some(tt), Some(tm)) if tt > tm => {
                         bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, TraceStep::GapT);
+                        tb_bt.set(i, j, DpMove::GapT);
                     }
                     (_, Some(tm)) => {
                         bt.set(i, j, Some(tm));
-                        tb_bt.set(i, j, TraceStep::Match);
+                        tb_bt.set(i, j, DpMove::Match);
                     }
                     (Some(tt), None) => {
                         bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, TraceStep::GapT);
+                        tb_bt.set(i, j, DpMove::GapT);
                     }
                     _ => {}
                 }
@@ -1873,26 +1908,13 @@ fn dp_right(
     // Start in Match state since best_e is always computed from M matrix.
     let mut i = best_i;
     let mut j = best_j;
-    let mut fp = String::new();
+    let mut trace_vec = Vec::new(); // Changed to Vec
     let mut state = DpState::Match;
 
     while i > 0 || j > 0 {
-        let qc_byte = if q_end + i < q_seq.len() {
-            Base::from_byte(q_seq[q_end + i]).idx()
-        } else {
-            GAP_IDX
-        };
-        let t_char_idx = if t_end >= j {
-            Base::from_byte(t_seq[t_end - j]).idx()
-        } else {
-            GAP_IDX
-        };
-
         match state {
             DpState::Match => {
                 // Current state is Match (M[i,j])
-                fp.push(Base::from_idx(qc_byte).pairing_class(Base::from_idx(t_char_idx)));
-
                 if i == 0 || j == 0 {
                     break;
                 }
@@ -1901,18 +1923,20 @@ fn dp_right(
                 i -= 1;
                 j -= 1;
 
+                trace_vec.push(step);
+
                 match step {
-                    TraceStep::Stop => break,
-                    TraceStep::Match => state = DpState::Match,
-                    TraceStep::GapQ => state = DpState::GapQ,
-                    TraceStep::GapT => state = DpState::GapT,
+                    DpMove::Stop => break,
+                    DpMove::Match => state = DpState::Match,
+                    DpMove::GapQ => state = DpState::GapQ,
+                    DpMove::GapT => state = DpState::GapT,
                 }
             }
             DpState::GapQ => {
                 // Current state is GapQ (Bq[i,j])
-                fp.push('Q');
-
                 let step = tb_bq.get(i, j);
+                trace_vec.push(step);
+
                 if i > 0 {
                     i -= 1;
                 } else {
@@ -1921,17 +1945,17 @@ fn dp_right(
                 // j stays same
 
                 match step {
-                    TraceStep::Stop => break,
-                    TraceStep::Match => state = DpState::Match,
-                    TraceStep::GapQ => state = DpState::GapQ,
-                    TraceStep::GapT => state = DpState::GapT, // Should not occur
+                    DpMove::Stop => break,
+                    DpMove::Match => state = DpState::Match,
+                    DpMove::GapQ => state = DpState::GapQ,
+                    DpMove::GapT => state = DpState::GapT, // Should not occur
                 }
             }
             DpState::GapT => {
                 // Current state is GapT (Bt[i,j])
-                fp.push('T');
-
                 let step = tb_bt.get(i, j);
+                trace_vec.push(step);
+
                 if j > 0 {
                     j -= 1;
                 } else {
@@ -1940,10 +1964,10 @@ fn dp_right(
                 // i stays same
 
                 match step {
-                    TraceStep::Stop => break,
-                    TraceStep::Match => state = DpState::Match,
-                    TraceStep::GapT => state = DpState::GapT,
-                    TraceStep::GapQ => state = DpState::GapQ, // Should not occur
+                    DpMove::Stop => break,
+                    DpMove::Match => state = DpState::Match,
+                    DpMove::GapT => state = DpState::GapT,
+                    DpMove::GapQ => state = DpState::GapQ, // Should not occur
                 }
             }
         }
@@ -1953,7 +1977,7 @@ fn dp_right(
         score: best_e,
         ext_q_len: best_i,
         ext_t_len: best_j,
-        trace: fp,
+        trace: trace_vec,
     }
 }
 

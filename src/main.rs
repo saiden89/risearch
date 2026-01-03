@@ -114,6 +114,29 @@ enum Backend {
     Sa,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strand {
+    Forward,
+    Reverse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum SeedPairing {
+    AllowWobble,
+    Strict,
+}
+
+impl From<bool> for SeedPairing {
+    fn from(wobble_arg: bool) -> Self {
+        if wobble_arg {
+            SeedPairing::Strict
+        } else {
+            SeedPairing::AllowWobble
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]
 #[command(author, version = "3.alpha.1", about = "Energy based RNA-RNA interaction predictions", long_about = None)]
@@ -180,8 +203,15 @@ pub struct SeedArgs {
     seed: Option<String>,
 
     /// Consider G-U wobble pairs as mismatch within the seed (only for locating seeds, energy model is not affected)
-    #[arg(short = 'w', long = "wobble", action = clap::ArgAction::SetTrue)]
-    wobble: bool,
+    #[arg(
+        short = 'w',
+        long = "wobble",
+        value_enum,
+        default_value_t = SeedPairing::AllowWobble,
+        default_missing_value = "strict",
+        num_args = 0
+    )]
+    pub pairing: SeedPairing,
 
     /// Introduce mismatched seeds
     /// Set the max num of mismatches (c) allowed in the seed and min num of consecutive matches required at seed start/end (p)
