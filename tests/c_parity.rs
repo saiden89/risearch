@@ -65,6 +65,184 @@ impl Rec {
     }
 }
 
+/// Analyzes differences between two interaction strings and classifies by region.
+///
+/// The interaction string has format: [LEFT_EXT][SEED][RIGHT_EXT]
+/// where LEFT_EXT = dp_left output, SEED = matched seed, RIGHT_EXT = dp_right output.
+///
+/// We estimate segment boundaries using:
+/// - Total length and coordinate spans
+/// - Assumption that seed is ~5-17nt depending on args
+fn analyze_interaction_diff(
+    rust_fp: &str,
+    c_fp: &str,
+    q_start: usize,
+    q_end: usize,
+    seed_len_hint: usize, // e.g., 5 or 6 from -s arg
+) -> String {
+    let mut report = String::new();
+
+    if rust_fp == c_fp {
+        return report;
+    }
+
+    // Calculate interaction length and estimate regions
+    let rust_len = rust_fp.len();
+    let c_len = c_fp.len();
+    let total_span = q_end.saturating_sub(q_start) + 1;
+
+    // Estimate: seed is in the middle, extensions are on either side
+    // If total_span == rust_len (no gaps), we can estimate seed position
+    // With gaps, interaction length > coordinate span
+
+    // Simple heuristic: divide into thirds for region classification
+    // More accurate would need seed_start from args, but this works for debugging
+    let left_boundary = rust_len / 3;
+    let right_boundary = rust_len * 2 / 3;
+
+    report.push_str("    INTERACTION DIFF ANALYSIS:\n");
+    report.push_str(&format!("      Rust: {}\n", rust_fp));
+    report.push_str(&format!("      C:    {}\n", c_fp));
+
+    // Build diff marker line
+    let mut diff_markers: Vec<char> = vec![' '; rust_len.max(c_len)];
+    let mut mismatches: Vec<(usize, char, char, &str)> = Vec::new();
+
+    for i in 0..rust_len.max(c_len) {
+        let r_char = rust_fp.chars().nth(i);
+        let c_char = c_fp.chars().nth(i);
+
+        match (r_char, c_char) {
+            (Some(r), Some(c)) if r != c => {
+                diff_markers[i] = '^';
+                let region = if i < left_boundary {
+                    "5' EXT (dp_left)"
+                } else if i >= right_boundary {
+                    "3' EXT (dp_right)"
+                } else {
+                    "SEED"
+                };
+                mismatches.push((i, r, c, region));
+            }
+            (Some(_), None) => {
+                diff_markers[i] = '+'; // Rust has extra
+                mismatches.push((i, rust_fp.chars().nth(i).unwrap(), '-', "LENGTH"));
+            }
+            (None, Some(_)) => {
+                diff_markers[i] = '-'; // C has extra
+                mismatches.push((i, '-', c_fp.chars().nth(i).unwrap(), "LENGTH"));
+            }
+            _ => {}
+        }
+    }
+
+    let marker_str: String = diff_markers.into_iter().collect();
+    report.push_str(&format!("      Diff: {}\n", marker_str.trim_end()));
+
+    // Count by region
+    let mut left_count = 0;
+    let mut seed_count = 0;
+    let mut right_count = 0;
+    let mut len_count = 0;
+
+    for (pos, r, c, region) in &mismatches {
+        match *region {
+            "5' EXT (dp_left)" => left_count += 1,
+            "SEED" => seed_count += 1,
+            "3' EXT (dp_right)" => right_count += 1,
+            "LENGTH" => len_count += 1,
+            _ => {}
+        }
+        report.push_str(&format!(
+            "      Pos {}: Rust='{}', C='{}' -> {}\n",
+            pos, r, c, region
+        ));
+    }
+
+    report.push_str(&format!(
+        "      REGION COUNTS: 5'ext={}, seed={}, 3'ext={}, len_diff={}\n",
+        left_count, seed_count, right_count, len_count
+    ));
+
+    report
+}
+
+/// Detailed analysis for focused tests with few hits.
+/// Tries to pair EXTRA (Rust-only) and MISSING (C-only) hits that likely represent
+/// the same biological interaction but with different coordinates/extensions.
+///
+/// Call this explicitly in isolated tests, NOT in compare_results.
+fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
+    if extras.is_empty() || missings.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("====================================================================");
+    println!("  PAIRED HIT ANALYSIS (for focused debugging)");
+    println!("====================================================================");
+
+    for extra in extras {
+        // Find best matching missing hit
+        let mut best_match: Option<(&Rec, i32)> = None;
+
+        for missing in missings {
+            // Score based on coordinate similarity (lower is better)
+            let q_start_diff = (extra.q_start as i32 - missing.q_start as i32).abs();
+            let q_end_diff = (extra.q_end as i32 - missing.q_end as i32).abs();
+            let t_start_diff = (extra.t_start as i32 - missing.t_start as i32).abs();
+            let t_end_diff = (extra.t_end as i32 - missing.t_end as i32).abs();
+            let score = q_start_diff + q_end_diff + t_start_diff + t_end_diff;
+
+            if best_match.is_none() || score < best_match.unwrap().1 {
+                best_match = Some((missing, score));
+            }
+        }
+
+        if let Some((m, score)) = best_match {
+            println!();
+            println!("--- LIKELY PAIR (distance={}) ---", score);
+            println!(
+                "  RUST (extra):   q=[{:>2},{:>2}]  t=[{:>3},{:>3}]  E={}",
+                extra.q_start, extra.q_end, extra.t_start, extra.t_end, extra.energy
+            );
+            println!(
+                "  C (missing):    q=[{:>2},{:>2}]  t=[{:>3},{:>3}]  E={}",
+                m.q_start, m.q_end, m.t_start, m.t_end, m.energy
+            );
+
+            // Calculate deltas
+            let dq_start = extra.q_start as i32 - m.q_start as i32;
+            let dq_end = extra.q_end as i32 - m.q_end as i32;
+            let dt_start = extra.t_start as i32 - m.t_start as i32;
+            let dt_end = extra.t_end as i32 - m.t_end as i32;
+
+            println!(
+                "  dq_start={:+3}  dq_end={:+3}  dt_start={:+3}  dt_end={:+3}",
+                dq_start, dq_end, dt_start, dt_end
+            );
+
+            // Diagnosis
+            if dq_end == 0 && dt_end == 0 && (dq_start != 0 || dt_start != 0) {
+                println!(
+                    "  >> DIAGNOSIS: Ends match, starts differ -> LEFT EXTENSION (dp_left) issue"
+                );
+            } else if dq_start == 0 && dt_start == 0 && (dq_end != 0 || dt_end != 0) {
+                println!(
+                    "  >> DIAGNOSIS: Starts match, ends differ -> RIGHT EXTENSION (dp_right) issue"
+                );
+            } else if dq_start != 0 && dq_end != 0 {
+                println!("  >> DIAGNOSIS: Both starts and ends differ -> SEED SELECTION issue");
+            }
+
+            // Show fingerprints
+            println!("  Rust FP: {}", extra.interaction);
+            println!("  C FP:    {}", m.interaction);
+            println!("---");
+        }
+    }
+}
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -369,9 +547,12 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                     ));
                 }
                 if r.interaction != c.interaction {
-                    report.push_str(&format!(
-                        "    -> Interaction Diff: Rust='{}' vs C='{}'\n",
-                        r.interaction, c.interaction
+                    report.push_str(&analyze_interaction_diff(
+                        &r.interaction,
+                        &c.interaction,
+                        r.q_start,
+                        r.q_end,
+                        5, // seed_len_hint, common default
                     ));
                 }
                 if r.target_seq != c.target_seq {
@@ -630,6 +811,105 @@ fn run_single_seq_parity(query_seq: &str, target_seq: &str, test_name: &str, arg
     compare_results(&rust_out, &c_out, test_name);
 }
 
+/// Detailed version for focused tests with few hits.
+/// Calls analyze_hit_pairs to show paired EXTRA/MISSING diagnosis.
+fn run_single_seq_parity_detailed(
+    query_seq: &str,
+    target_seq: &str,
+    test_name: &str,
+    args: &[&str],
+) {
+    let root = workspace_root();
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+
+    let query_path = tmpdir.path().join("query.fa");
+    let target_path = tmpdir.path().join("target.fa");
+
+    let q_upper = query_seq.to_uppercase();
+    let t_upper = target_seq.to_uppercase();
+
+    fs::write(&query_path, format!(">query\n{}\n", q_upper)).expect("write query");
+    fs::write(&target_path, format!(">target\n{}\n", t_upper)).expect("write target");
+
+    let c_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
+    let c_index = tmpdir.path().join("target.pksuf");
+
+    let c_index_cmd = std::process::Command::new(&c_bin)
+        .arg("-c")
+        .arg(target_path.to_str().unwrap())
+        .arg("-o")
+        .arg(c_index.to_str().unwrap())
+        .output()
+        .expect("c index creation");
+
+    if !c_index_cmd.status.success() {
+        panic!("C indexing failed: {:?}", c_index_cmd.status);
+    }
+
+    let rust_idx = tmpdir.path().join("target.idx");
+
+    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, args);
+    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+
+    // Print debug traces
+    for line in rust_out.lines() {
+        if line.contains("DEBUG_TRACE") || line.contains("DEBUG_MAX") {
+            println!("{}", line);
+        }
+    }
+
+    let c_out = search_c(&query_path, &c_index, &c_bin, args);
+
+    // Parse both outputs
+    let rust_recs = parse_output(&rust_out);
+    let c_recs = parse_output(&c_out);
+
+    println!("\n=== DETAILED PARITY ANALYSIS: {} ===", test_name);
+    println!("Rust hits: {}, C hits: {}", rust_recs.len(), c_recs.len());
+
+    // Find extras and missings
+    let mut c_matched = vec![false; c_recs.len()];
+    let mut extras: Vec<&Rec> = Vec::new();
+
+    for r in &rust_recs {
+        let mut found = false;
+        for (i, c) in c_recs.iter().enumerate() {
+            if !c_matched[i] && r == c {
+                c_matched[i] = true;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            extras.push(r);
+        }
+    }
+
+    let missings: Vec<&Rec> = c_recs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !c_matched[*i])
+        .map(|(_, r)| r)
+        .collect();
+
+    println!("Exact matches: {}", rust_recs.len() - extras.len());
+    println!("EXTRA in Rust: {}", extras.len());
+    println!("MISSING in Rust: {}", missings.len());
+
+    // Call paired analysis
+    analyze_hit_pairs(&extras, &missings);
+
+    // Still fail if there are differences
+    if !extras.is_empty() || !missings.is_empty() {
+        panic!(
+            "Parity failure in {}: {} extras, {} missings",
+            test_name,
+            extras.len(),
+            missings.len()
+        );
+    }
+}
+
 #[test]
 fn parity_single_sequence_suite() {
     // Default args: use relaxed energy for debugging parity
@@ -681,4 +961,157 @@ fn parity_single_sequence_suite() {
         &["-l", "20", "-e", "100.0", "-s", "6", "-p3"],
     );
      */
+}
+
+// =============================================================================
+// ISOLATED TESTS: Each tests a specific component to pinpoint differences
+// =============================================================================
+
+/// Tests seed matching only (no extension).
+/// Use -l 0 to disable extension, so only seed pairing is tested.
+#[test]
+fn parity_seed_only() {
+    // No extension: -l 0
+    // This tests only the seed pairing and energy calculation
+    let args = ["-l", "0", "-e", "100.0", "-s", "5", "-p3"];
+
+    // Query and target are exact complements (20nt)
+    // Should produce a single seed hit with no extensions
+    let query = "UGCUGCUGCUGCUGCUGCUG"; // 20nt
+    let target = "CAGCAGCAGCAGCAGCAGCA"; // Perfect complement, reversed
+
+    run_single_seq_parity(query, target, "seed_only_no_extension", &args);
+}
+
+/// Tests left extension only (dp_left).
+/// Design: seed at 3' end of query, extra bases only to the 5' side.
+#[test]
+fn parity_left_extension_only() {
+    // Seed at 3' end of query forces only left extension
+    // Query structure: [extra 5' bases][seed at 3']
+    // Target structure: [complement][extra 3' bases for matching]
+    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+
+    // Query: 5'-AAAAA_UGCUG-3' (5 extra + 5 seed)
+    // Target:   CAGCA_UUUUU (complement, extra extends 3' direction)
+    // Seed matches at positions 6-10, left ext should pick up AAAAA->UUUUU
+    let query = "AAAAAUGCUG";
+    let target = "CAGCAUUUUU";
+
+    run_single_seq_parity(query, target, "left_extension_only", &args);
+}
+
+/// Tests right extension only (dp_right).
+/// Design: seed at 5' end of query, extra bases only to the 3' side.
+#[test]
+fn parity_right_extension_only() {
+    // Seed at 5' end of query forces only right extension
+    // Query structure: [seed at 5'][extra 3' bases]
+    // Target structure: [extra 5' bases][complement]
+    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+
+    // Query: 5'-UGCUG_AAAAA-3' (5 seed + 5 extra)
+    // Target:   UUUUU_CAGCA (extra extends 5' direction, complement at end)
+    // Seed matches at positions 1-5, right ext should pick up AAAAA->UUUUU
+    let query = "UGCUGAAAAA";
+    let target = "UUUUUCAGCA";
+
+    run_single_seq_parity(query, target, "right_extension_only", &args);
+}
+
+/// Tests both left and right extension.
+/// Design: seed in middle, extra bases on both sides.
+#[test]
+fn parity_both_extensions() {
+    // Seed in middle, extensions on both sides
+    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+
+    // Query: 5'-AAA_UGCUG_AAA-3' (3 left + 5 seed + 3 right = 11nt)
+    // Target:    UUU_CAGCA_UUU (complement with extensions)
+    let query = "AAAUGCUGAAA";
+    let target = "UUUCAGCAUUU";
+
+    run_single_seq_parity(query, target, "both_extensions", &args);
+}
+
+/// Tests with wobble pairs (G-U) in the seed region.
+#[test]
+fn parity_wobble_seed() {
+    let args = ["-l", "0", "-e", "100.0", "-s", "5", "-p3"];
+
+    // Query has U where target has G -> wobble pair
+    // Query:  5'-UGUGU-3'
+    // Target: 3'-GCGCG-5' = GCGCG reversed for storage = GCGCG
+    // U-G wobble pairs should be allowed
+    let query = "UGUGUGUGUG"; // 10 alternating U-G pattern
+    let target = "CGCGCGCGCG"; // Complement with wobble
+
+    run_single_seq_parity(query, target, "wobble_seed_pairs", &args);
+}
+
+// =============================================================================
+// ISOLATED FAILURE REPRODUCTION: Uses actual failing sequences from parity_default_config
+// =============================================================================
+
+/// Isolated repro of parity_default_config failure.
+/// Uses actual hsa-miR-24-3p query and a short RHOC target region.
+///
+/// This test isolates the U/T swap issue seen in the full test.
+/// The failure pattern: FP positions showing 'U' in Rust but 'T' in C (or vice versa).
+#[test]
+fn parity_isolated_miR24_single_hit() {
+    // Query: hsa-miR-24-3p (MIMAT0000080)
+    // This is the exact sequence from mirnas.fa that causes failures
+    let query = "uggcucaguucagcaggaacag"; // 22nt
+
+    // Target: 80nt region from RHOC positions 350-430 (around original hit position)
+    // This is extracted from: grep -v "^>" RHOC.fa | tr -d '\n' | cut -c350-430
+    let target =
+        "GGAAGACCTGCCTCCTCATCGTCTTCAGCAAGGATCAGTTTCCGGAGGTCTACGTCCCTACTGTCTTTGAGAACTATATTG";
+
+    // Same args as parity_default_config but with relaxed energy
+    let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
+
+    println!("\n=== ISOLATED miR-24 SINGLE HIT TEST ===");
+    println!("Query:  {}", query);
+    println!("Target: {}", target);
+    println!("Args:   {:?}", args);
+    println!();
+
+    run_single_seq_parity_detailed(query, target, "miR24_isolated_single", &args);
+}
+
+/// More targeted single-hit test with explicit segment expectations.
+/// This test is designed to produce exactly ONE hit so we can compare
+/// the SEED, LEFT_EXT, and RIGHT_EXT portions precisely.
+#[test]
+fn parity_debug_segments() {
+    // Query: 15nt designed to match target exactly for seed, with extension regions
+    // Structure: [5' ext region][SEED][3' ext region]
+    //            AAAAA         UGCUGU       AAAAA
+    let query = "AAAAAUGCUGUAAAAA"; // 5 + 6 + 5 = 16nt
+
+    // Target should complement in antiparallel:
+    //   Query:  5'-AAAAA UGCUGU AAAAA-3'
+    //   Target: 3'-UUUUU ACGACA UUUUU-5' (stored 5'->3' as UUUUUACAGACUUUUU... wait)
+    // For antiparallel binding:
+    //   Q[0] (A) pairs with T[len-1] (U)
+    //   Seed UGCUGU pairs with ACAGCA (complement)
+    // Target: UUUUUACAGCAUUUUU reversed for DNA storage
+    let target = "UUUUUACAGCAUUUUU";
+
+    // Use extension length 20 to ensure both left and right extensions are attempted
+    let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
+
+    println!("\n=== SEGMENT DEBUG TEST ===");
+    println!("Query:  {} (len={})", query, query.len());
+    println!("Target: {} (len={})", target, target.len());
+    println!();
+    println!("Expected structure:");
+    println!("  LEFT_EXT  (dp_left):  AAAAA -> should extend with UUUUU");
+    println!("  SEED      (6nt):      UGCUGU -> matches ACAGCA");
+    println!("  RIGHT_EXT (dp_right): AAAAA -> should extend with UUUUU");
+    println!();
+
+    run_single_seq_parity(query, target, "segment_debug", &args);
 }
