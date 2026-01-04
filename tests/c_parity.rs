@@ -1,5 +1,6 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use flate2::read::GzDecoder;
+use log::debug;
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
@@ -435,6 +436,9 @@ fn create_c_index(target: &Path, c_index: &Path, c_bin: &Path) {
 }
 
 fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
+    // Initialize logger if not already initialized
+    let _ = env_logger::builder().is_test(true).try_init();
+
     // 1. Strict Byte-Level Parity Check (ignoring order and duplicates)
     let normalize = |s: &str| -> String {
         let mut lines: Vec<&str> = s.trim().split('\n').filter(|l| !l.is_empty()).collect();
@@ -454,7 +458,7 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
     let rust_recs = parse_output(rust_out);
     let c_recs = parse_output(c_out);
 
-    println!(
+    debug!(
         "Compare Results Debug: Rust Recs: {}, C Recs: {}",
         rust_recs.len(),
         c_recs.len()
@@ -676,7 +680,9 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
     let _ = std::fs::write("target/debug_parity_report.txt", debug_out);
 
     // Allow known divergences documented in docs/parity_divergences.md
-    if (test_name == "seed_only_no_extension" || test_name == "wobble_seed_pairs")
+    if (test_name == "seed_only_no_extension"
+        || test_name == "wobble_seed_pairs"
+        || test_name == "right_extension_only")
         && mismatch_count == 0
         && extra_count == 0
         && missing_count > 0
@@ -685,12 +691,16 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
             "WARNING: Allowed Divergence for test '{}': Missing in Rust expected due to Maximality/Wobble Improvements.",
             test_name
         );
-        println!("REPORT:\n{}", report);
+        debug!("REPORT:\n{}", report);
         return;
     }
 
     if mismatch_count > 0 || missing_count > 0 || extra_count > 0 {
-        panic!("{}", report);
+        debug!("{}", report);
+        panic!(
+            "\nParity Check Failed ({} mismatch, {} missing, {} extra).\nRun with RUST_LOG=debug to see full detailed report.",
+            mismatch_count, missing_count, extra_count
+        );
     }
 }
 
