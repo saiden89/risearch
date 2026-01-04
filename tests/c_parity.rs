@@ -30,7 +30,15 @@ struct Rec {
 impl Rec {
     fn from_line(line: &str) -> Option<Self> {
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 12 {
+        // Minimum fields: id, q_start, q_end, t_id, t_start, t_end, strand, energy, interaction, target_seq (10 fields)
+        if fields.len() < 10 {
+            if !line.trim().is_empty() {
+                eprintln!(
+                    "DEBUG: Rec::from_line skipped line with {} columns (expected >= 10): {}",
+                    fields.len(),
+                    line
+                );
+            }
             return None;
         }
 
@@ -45,13 +53,25 @@ impl Rec {
             energy: fields[7].to_string(),
             interaction: fields[8].to_string(),
             target_seq: fields[9].to_string(),
+            // Flanks are optional (columns 10 and 11)
+            flank_5: if fields.len() > 10 {
+                fields[10].to_string()
+            } else {
+                String::new()
+            },
+            flank_3: if fields.len() > 11 {
+                fields[11].to_string()
+            } else {
+                String::new()
+            },
+            // Query seq is optional (column 12 if flanks present, or just next available? standard format usually implies fixed slots)
+            // Assuming standard risearch output: 10 cols -> no flanks. 12 cols -> flanks. 13 cols -> flanks + query?
+            // Let's be safe and map by index, assuming if 12 columns exist, 10=flank5, 11=flank3.
             query_seq: if fields.len() > 12 {
                 fields[12].to_string()
             } else {
                 String::new()
             },
-            flank_5: fields[10].to_string(),
-            flank_3: fields[11].to_string(),
         })
     }
 
@@ -73,13 +93,7 @@ impl Rec {
 /// We estimate segment boundaries using:
 /// - Total length and coordinate spans
 /// - Assumption that seed is ~5-17nt depending on args
-fn analyze_interaction_diff(
-    rust_fp: &str,
-    c_fp: &str,
-    q_start: usize,
-    q_end: usize,
-    seed_len_hint: usize, // e.g., 5 or 6 from -s arg
-) -> String {
+fn analyze_interaction_diff(rust_fp: &str, c_fp: &str, q_start: usize, q_end: usize) -> String {
     let mut report = String::new();
 
     if rust_fp == c_fp {
@@ -582,7 +596,6 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                         &c.interaction,
                         r.q_start,
                         r.q_end,
-                        5, // seed_len_hint, common default
                     ));
                 }
                 if r.target_seq != c.target_seq {
@@ -665,7 +678,7 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
 }
 
 #[test]
-fn parity_default_config() {
+fn test_parity_full_pipeline() {
     let (tmpdir, query_path, target_path, c_bin) = setup_common_test_files();
     let c_index = tmpdir.path().join("c_target.pksuf");
     let rust_idx = tmpdir.path().join("rust_target.idx");
@@ -699,7 +712,7 @@ fn parity_default_config() {
 }
 
 #[test]
-fn parity_long_seed_no_ext() {
+fn test_parity_long_seed() {
     // User requested: -l 0 -e 10000 -s 12 -p 3
     let root = workspace_root();
     let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
@@ -719,7 +732,7 @@ fn parity_long_seed_no_ext() {
 }
 
 #[test]
-fn parity_energy_only() {
+fn test_parity_energy_threshold() {
     let (tmpdir, query_path, target_path, c_bin) = setup_common_test_files();
     let c_index = tmpdir.path().join("c_target.pksuf");
     let rust_idx = tmpdir.path().join("rust_target.idx");
@@ -739,7 +752,7 @@ fn parity_energy_only() {
 }
 
 #[test]
-fn parity_reproduce_alignment_mismatch() {
+fn test_parity_alignment_repro() {
     // User requested reproduction parameters:
     // target: TGGCTCTGTGGGACACAGCAGG
     // query: uggcucaguucagcaggaacag
@@ -982,56 +995,14 @@ fn run_single_seq_parity_detailed(
 }
 
 #[test]
-fn parity_single_sequence_suite() {
-    // Default args: use relaxed energy for debugging parity
+fn test_parity_single_seq() {
+    // Tests internal mismatch handling between Rust and C implementations.
     let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
 
-    // 1. Exact Match (Perfect Complement) - Length 20
-    // Query:  UGCUGCUGCUGCUGCUGCUG (20 nt)
-    // Target: GCAGCAGCAGCAGCAGCAGC (20 nt)
-    let q_exact = "UGCUGCUGCUGCUGCUGCUG";
-    let t_exact = "GCAGCAGCAGCAGCAGCAGC";
-    /*
-    run_single_seq_parity(q_exact, t_exact, "exact_match_20nt", &args);
-    */
+    let query = "UGCUGCUGCCGCUGCUGCUG"; // 20nt with internal variation
+    let target = "GCAGCAGCAGCAGCAGCAGC"; // 20nt complement
 
-    // 2. Short exact match (6nt) - Minimal length check
-    // Query: UGCUGC
-    // Target: GCAGCA
-    // Only 6 matches?
-    /*
-    run_single_seq_parity("UGCUGC", "GCAGCA", "short_match_6nt", &args);
-    */
-    // 2. Wobble Match - Length 20
-    // Query:  UGUUGUUGUUGUUGUUGUUG
-    // Target: GCGGCGGCGGCGGCGGCGGCG (allows G-U wobble)
-    /*
-    let q_wobble = "UGUUGUUGUUGUUGUUGUUG";
-    let t_wobble = "GCGGCGGCGGCGGCGGCGGC";
-    run_single_seq_parity(q_wobble, t_wobble, "wobble_match_20nt", &args);
-    */
-
-    let q_mis = "UGCUGCUGCCGCUGCUGCUG"; // 9th char 'C'
-    let t_mis = "GCAGCAGCAGCAGCAGCAGC"; // 9th char 'G' -> G-C match.
-    // Wait. Reverse?
-    // Q 5'..3': U...
-    // T 3'..5': A...
-    // If Q has C at pos 9.
-    // T has G at pos 9 (from 3' end?).
-    // Let's just run it and see.
-    run_single_seq_parity(q_mis, t_mis, "internal_mismatch_20nt", &args);
-
-    // 4. Longer sequence with structure
-    // Mirna let-7a: ugagguaguagguuguauaguu
-    // Target: AACTATACAACCTACTACCTCA (Perfect complement DNA)
-    /*
-    run_single_seq_parity(
-        "ugagguaguagguuguauaguu",
-        "AACTATACAACCTACTACCTCA",
-        "let7a_perfect",
-        &["-l", "20", "-e", "100.0", "-s", "6", "-p3"],
-    );
-     */
+    run_single_seq_parity(query, target, "internal_mismatch_20nt", &args);
 }
 
 // =============================================================================
@@ -1041,7 +1012,7 @@ fn parity_single_sequence_suite() {
 /// Tests seed matching only (no extension).
 /// Use -l 0 to disable extension, so only seed pairing is tested.
 #[test]
-fn parity_seed_only() {
+fn test_parity_seed_only() {
     // No extension: -l 0
     // This tests only the seed pairing and energy calculation
     let args = ["-l", "0", "-e", "100.0", "-s", "5", "-p3"];
@@ -1057,7 +1028,7 @@ fn parity_seed_only() {
 /// Tests left extension only (dp_left).
 /// Design: seed at 3' end of query, extra bases only to the 5' side.
 #[test]
-fn parity_left_extension_only() {
+fn test_parity_left_ext() {
     // Seed at 3' end of query forces only left extension
     // Query structure: [extra 5' bases][seed at 3']
     // Target structure: [complement][extra 3' bases for matching]
@@ -1075,7 +1046,7 @@ fn parity_left_extension_only() {
 /// Tests right extension only (dp_right).
 /// Design: seed at 5' end of query, extra bases only to the 3' side.
 #[test]
-fn parity_right_extension_only() {
+fn test_parity_right_ext() {
     // Seed at 5' end of query forces only right extension
     // Query structure: [seed at 5'][extra 3' bases]
     // Target structure: [extra 5' bases][complement]
@@ -1093,7 +1064,7 @@ fn parity_right_extension_only() {
 /// Tests both left and right extension.
 /// Design: seed in middle, extra bases on both sides.
 #[test]
-fn parity_both_extensions() {
+fn test_parity_both_ext() {
     // Seed in middle, extensions on both sides
     let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
 
@@ -1107,7 +1078,7 @@ fn parity_both_extensions() {
 
 /// Tests with wobble pairs (G-U) in the seed region.
 #[test]
-fn parity_wobble_seed() {
+fn test_parity_wobble() {
     let args = ["-l", "0", "-e", "100.0", "-s", "5", "-p3"];
 
     // Query has U where target has G -> wobble pair
@@ -1130,7 +1101,7 @@ fn parity_wobble_seed() {
 /// This test isolates the U/T swap issue seen in the full test.
 /// The failure pattern: FP positions showing 'U' in Rust but 'T' in C (or vice versa).
 #[test]
-fn parity_isolated_miR24_single_hit() {
+fn test_parity_mir24_isolated() {
     // Query: hsa-miR-24-3p (MIMAT0000080)
     // This is the exact sequence from mirnas.fa that causes failures
     let query = "uggcucaguucagcaggaacag"; // 22nt
@@ -1165,7 +1136,7 @@ fn parity_isolated_miR24_single_hit() {
 /// This test is designed to produce exactly ONE hit so we can compare
 /// the SEED, LEFT_EXT, and RIGHT_EXT portions precisely.
 #[test]
-fn parity_debug_segments() {
+fn test_parity_segments_debug() {
     // Query: 15nt designed to match target exactly for seed, with extension regions
     // Structure: [5' ext region][SEED][3' ext region]
     //            AAAAA         UGCUGU       AAAAA
