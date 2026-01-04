@@ -3,7 +3,7 @@ use risearch::fm;
 use risearch::{sa, search};
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand};
 use log::{debug, info, trace};
 use std::path::PathBuf;
 

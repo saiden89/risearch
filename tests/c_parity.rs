@@ -1,10 +1,21 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use flate2::read::GzDecoder;
-use log::debug;
+use log::{debug, info, trace, warn};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use tabled::{Table, Tabled, settings::Style};
+
+// =============================================================================
+// OUTPUT LEVEL GUIDE
+// =============================================================================
+// INFO  - Test progress: test name, hit counts, pass/fail summary
+// DEBUG - Detailed comparisons: individual hit diffs, alignment analysis, coords
+// TRACE - Raw data: full record dumps, C_DEBUG traces, file writes
+// WARN  - Known divergences, acceptable differences
+// ERROR - Reserved for panics (test failures)
+// =============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Rec {
@@ -34,8 +45,8 @@ impl Rec {
         // Minimum fields: id, q_start, q_end, t_id, t_start, t_end, strand, energy, interaction, target_seq (10 fields)
         if fields.len() < 10 {
             if !line.trim().is_empty() {
-                eprintln!(
-                    "DEBUG: Rec::from_line skipped line with {} columns (expected >= 10): {}",
+                trace!(
+                    "[REC] Skipped line with {} columns (expected >= 10): {}",
                     fields.len(),
                     line
                 );
@@ -54,25 +65,10 @@ impl Rec {
             energy: fields[7].to_string(),
             interaction: fields[8].to_string(),
             target_seq: fields[9].to_string(),
-            // Flanks are optional (columns 10 and 11)
-            flank_5: if fields.len() > 10 {
-                fields[10].to_string()
-            } else {
-                String::new()
-            },
-            flank_3: if fields.len() > 11 {
-                fields[11].to_string()
-            } else {
-                String::new()
-            },
-            // Query seq is optional (column 12 if flanks present, or just next available? standard format usually implies fixed slots)
-            // Assuming standard risearch output: 10 cols -> no flanks. 12 cols -> flanks. 13 cols -> flanks + query?
-            // Let's be safe and map by index, assuming if 12 columns exist, 10=flank5, 11=flank3.
-            query_seq: if fields.len() > 12 {
-                fields[12].to_string()
-            } else {
-                String::new()
-            },
+            // Optional fields - use get() for safe access
+            flank_5: fields.get(10).map_or(String::new(), |s| s.to_string()),
+            flank_3: fields.get(11).map_or(String::new(), |s| s.to_string()),
+            query_seq: fields.get(12).map_or(String::new(), |s| s.to_string()),
         })
     }
 
@@ -84,48 +80,47 @@ impl Rec {
             && self.t_end == other.t_end
             && self.strand == other.strand
     }
+
+    /// Format record for debug output
+    fn fmt_coords(&self) -> String {
+        format!(
+            "q=[{},{}] t=[{},{}] S={} E={}",
+            self.q_start, self.q_end, self.t_start, self.t_end, self.strand, self.energy
+        )
+    }
 }
 
-/// Analyzes differences between two interaction strings and classifies by region.
+/// Analyzes differences between two interaction strings and logs at DEBUG level.
 ///
 /// The interaction string has format: [LEFT_EXT][SEED][RIGHT_EXT]
 /// where LEFT_EXT = dp_left output, SEED = matched seed, RIGHT_EXT = dp_right output.
-///
-/// We estimate segment boundaries using:
-/// - Total length and coordinate spans
-/// - Assumption that seed is ~5-17nt depending on args
-fn analyze_interaction_diff(rust_fp: &str, c_fp: &str, q_start: usize, q_end: usize) -> String {
-    let mut report = String::new();
-
+fn analyze_interaction_diff(rust_fp: &str, c_fp: &str, _q_start: usize, _q_end: usize) {
     if rust_fp == c_fp {
-        return report;
+        return;
     }
 
-    // Calculate interaction length and estimate regions
     let rust_len = rust_fp.len();
     let c_len = c_fp.len();
-    let total_span = q_end.saturating_sub(q_start) + 1;
-
-    // Estimate: seed is in the middle, extensions are on either side
-    // If total_span == rust_len (no gaps), we can estimate seed position
-    // With gaps, interaction length > coordinate span
 
     // Simple heuristic: divide into thirds for region classification
-    // More accurate would need seed_start from args, but this works for debugging
     let left_boundary = rust_len / 3;
     let right_boundary = rust_len * 2 / 3;
 
-    report.push_str("    INTERACTION DIFF ANALYSIS:\n");
-    report.push_str(&format!("      Rust: {}\n", rust_fp));
-    report.push_str(&format!("      C:    {}\n", c_fp));
+    debug!("[DIFF] Interaction mismatch:");
+    debug!("[DIFF]   Rust: {}", rust_fp);
+    debug!("[DIFF]   C:    {}", c_fp);
 
-    // Build diff marker line
-    let mut diff_markers: Vec<char> = vec![' '; rust_len.max(c_len)];
+    // Build diff marker line - use zip_longest pattern with chars iterators (O(1) per char)
+    let max_len = rust_len.max(c_len);
+    let mut diff_markers = vec![' '; max_len];
     let mut mismatches: Vec<(usize, char, char, &str)> = Vec::new();
 
-    for i in 0..rust_len.max(c_len) {
-        let r_char = rust_fp.chars().nth(i);
-        let c_char = c_fp.chars().nth(i);
+    let rust_chars: Vec<char> = rust_fp.chars().collect();
+    let c_chars: Vec<char> = c_fp.chars().collect();
+
+    for i in 0..max_len {
+        let r_char = rust_chars.get(i).copied();
+        let c_char = c_chars.get(i).copied();
 
         match (r_char, c_char) {
             (Some(r), Some(c)) if r != c => {
@@ -139,20 +134,20 @@ fn analyze_interaction_diff(rust_fp: &str, c_fp: &str, q_start: usize, q_end: us
                 };
                 mismatches.push((i, r, c, region));
             }
-            (Some(_), None) => {
+            (Some(r), None) => {
                 diff_markers[i] = '+'; // Rust has extra
-                mismatches.push((i, rust_fp.chars().nth(i).unwrap(), '-', "LENGTH"));
+                mismatches.push((i, r, '-', "LENGTH"));
             }
-            (None, Some(_)) => {
+            (None, Some(c)) => {
                 diff_markers[i] = '-'; // C has extra
-                mismatches.push((i, '-', c_fp.chars().nth(i).unwrap(), "LENGTH"));
+                mismatches.push((i, '-', c, "LENGTH"));
             }
             _ => {}
         }
     }
 
     let marker_str: String = diff_markers.into_iter().collect();
-    report.push_str(&format!("      Diff: {}\n", marker_str.trim_end()));
+    debug!("[DIFF]   Mark: {}", marker_str.trim_end());
 
     // Count by region
     let mut left_count = 0;
@@ -168,61 +163,53 @@ fn analyze_interaction_diff(rust_fp: &str, c_fp: &str, q_start: usize, q_end: us
             "LENGTH" => len_count += 1,
             _ => {}
         }
-        report.push_str(&format!(
-            "      Pos {}: Rust='{}', C='{}' -> {}\n",
-            pos, r, c, region
-        ));
+        debug!("[DIFF]   Pos {}: Rust='{}' C='{}' -> {}", pos, r, c, region);
     }
 
-    report.push_str(&format!(
-        "      REGION COUNTS: 5'ext={}, seed={}, 3'ext={}, len_diff={}\n",
+    debug!(
+        "[DIFF]   Region counts: 5'ext={}, seed={}, 3'ext={}, len_diff={}",
         left_count, seed_count, right_count, len_count
-    ));
-
-    report
+    );
 }
 
 /// Detailed analysis for focused tests with few hits.
 /// Tries to pair EXTRA (Rust-only) and MISSING (C-only) hits that likely represent
 /// the same biological interaction but with different coordinates/extensions.
-///
-/// Call this explicitly in isolated tests, NOT in compare_results.
 fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
     if extras.is_empty() || missings.is_empty() {
         return;
     }
 
-    println!();
-    println!("====================================================================");
-    println!("  PAIRED HIT ANALYSIS (for focused debugging)");
-    println!("====================================================================");
+    info!(
+        "[PAIR] Paired hit analysis ({} extras, {} missings)",
+        extras.len(),
+        missings.len()
+    );
 
     for extra in extras {
-        // Find best matching missing hit
-        let mut best_match: Option<(&Rec, i32)> = None;
-
-        for missing in missings {
-            // Score based on coordinate similarity (lower is better)
+        // Find best matching missing hit using min_by_key
+        let best_match = missings.iter().min_by_key(|missing| {
             let q_start_diff = (extra.q_start as i32 - missing.q_start as i32).abs();
             let q_end_diff = (extra.q_end as i32 - missing.q_end as i32).abs();
             let t_start_diff = (extra.t_start as i32 - missing.t_start as i32).abs();
             let t_end_diff = (extra.t_end as i32 - missing.t_end as i32).abs();
-            let score = q_start_diff + q_end_diff + t_start_diff + t_end_diff;
+            q_start_diff + q_end_diff + t_start_diff + t_end_diff
+        });
 
-            if best_match.is_none() || score < best_match.unwrap().1 {
-                best_match = Some((missing, score));
-            }
-        }
+        if let Some(m) = best_match {
+            // Compute score for display
+            let score = (extra.q_start as i32 - m.q_start as i32).abs()
+                + (extra.q_end as i32 - m.q_end as i32).abs()
+                + (extra.t_start as i32 - m.t_start as i32).abs()
+                + (extra.t_end as i32 - m.t_end as i32).abs();
 
-        if let Some((m, score)) = best_match {
-            println!();
-            println!("--- LIKELY PAIR (distance={}) ---", score);
-            println!(
-                "  RUST (extra):   q=[{:>2},{:>2}]  t=[{:>3},{:>3}]  E={}",
+            debug!("[PAIR] Likely pair (distance={})", score);
+            debug!(
+                "[PAIR]   RUST (extra):   q=[{:>2},{:>2}] t=[{:>3},{:>3}] E={}",
                 extra.q_start, extra.q_end, extra.t_start, extra.t_end, extra.energy
             );
-            println!(
-                "  C (missing):    q=[{:>2},{:>2}]  t=[{:>3},{:>3}]  E={}",
+            debug!(
+                "[PAIR]   C (missing):    q=[{:>2},{:>2}] t=[{:>3},{:>3}] E={}",
                 m.q_start, m.q_end, m.t_start, m.t_end, m.energy
             );
 
@@ -232,28 +219,29 @@ fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
             let dt_start = extra.t_start as i32 - m.t_start as i32;
             let dt_end = extra.t_end as i32 - m.t_end as i32;
 
-            println!(
-                "  dq_start={:+3}  dq_end={:+3}  dt_start={:+3}  dt_end={:+3}",
+            debug!(
+                "[PAIR]   dq_start={:+3} dq_end={:+3} dt_start={:+3} dt_end={:+3}",
                 dq_start, dq_end, dt_start, dt_end
             );
 
             // Diagnosis
             if dq_end == 0 && dt_end == 0 && (dq_start != 0 || dt_start != 0) {
-                println!(
-                    "  >> DIAGNOSIS: Ends match, starts differ -> LEFT EXTENSION (dp_left) issue"
+                debug!(
+                    "[PAIR]   >> DIAGNOSIS: Ends match, starts differ -> LEFT EXTENSION (dp_left) issue"
                 );
             } else if dq_start == 0 && dt_start == 0 && (dq_end != 0 || dt_end != 0) {
-                println!(
-                    "  >> DIAGNOSIS: Starts match, ends differ -> RIGHT EXTENSION (dp_right) issue"
+                debug!(
+                    "[PAIR]   >> DIAGNOSIS: Starts match, ends differ -> RIGHT EXTENSION (dp_right) issue"
                 );
             } else if dq_start != 0 && dq_end != 0 {
-                println!("  >> DIAGNOSIS: Both starts and ends differ -> SEED SELECTION issue");
+                debug!(
+                    "[PAIR]   >> DIAGNOSIS: Both starts and ends differ -> SEED SELECTION issue"
+                );
             }
 
-            // Show fingerprints
-            println!("  Rust FP: {}", extra.interaction);
-            println!("  C FP:    {}", m.interaction);
-            println!("---");
+            // Show fingerprints at debug level
+            debug!("[PAIR]   Rust FP: {}", extra.interaction);
+            debug!("[PAIR]   C FP:    {}", m.interaction);
         }
     }
 }
@@ -262,16 +250,18 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn parse_output(output: &str) -> Vec<Rec> {
+/// Returns (records after dedup, count before dedup)
+fn parse_output(output: &str) -> (Vec<Rec>, usize) {
     let mut recs: Vec<Rec> = output
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .filter_map(Rec::from_line)
         .collect();
+    let parsed_count = recs.len();
     recs.sort();
     recs.dedup();
-    recs
+    (recs, parsed_count)
 }
 
 fn index_and_search_rust(
@@ -321,7 +311,7 @@ fn index_and_search_rust(
     if trace_enabled {
         let stderr = String::from_utf8_lossy(&output.stderr);
         for line in stderr.lines() {
-            eprintln!("{}", line);
+            trace!("[RUST] {}", line);
         }
     }
 
@@ -451,23 +441,78 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
     let c_norm = normalize(c_out);
 
     if r_norm == c_norm {
+        info!("[PARITY] {} - PASS (exact match)", test_name);
         return;
     }
 
     // 2. Granular Reporting
-    let rust_recs = parse_output(rust_out);
-    let c_recs = parse_output(c_out);
+    let (rust_recs, rust_parsed) = parse_output(rust_out);
+    let (c_recs, c_parsed) = parse_output(c_out);
 
-    debug!(
-        "Compare Results Debug: Rust Recs: {}, C Recs: {}",
+    // Sanity check: verify parsed count (before dedup) matches raw line count
+    // Difference due to dedup is fine, difference due to parse failure is not
+    let rust_lines = rust_out.lines().filter(|l| !l.trim().is_empty()).count();
+    let c_lines = c_out.lines().filter(|l| !l.trim().is_empty()).count();
+
+    if rust_parsed != rust_lines {
+        panic!(
+            "[PARITY] Rust parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
+            rust_lines,
+            rust_parsed,
+            rust_lines.saturating_sub(rust_parsed)
+        );
+    }
+    if c_parsed != c_lines {
+        panic!(
+            "[PARITY] C parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
+            c_lines,
+            c_parsed,
+            c_lines.saturating_sub(c_parsed)
+        );
+    }
+
+    // Log dedup info at debug level if any duplicates were removed
+    if rust_recs.len() != rust_parsed {
+        debug!(
+            "[PARITY] Rust: {} duplicates removed",
+            rust_parsed - rust_recs.len()
+        );
+    }
+    if c_recs.len() != c_parsed {
+        debug!("[PARITY] C: {} duplicates removed", c_parsed - c_recs.len());
+    }
+
+    info!(
+        "[PARITY] {} - Comparing: Rust={} hits, C={} hits",
+        test_name,
         rust_recs.len(),
         c_recs.len()
     );
 
-    let mut report = String::new();
-    report.push_str(&format!("\n=== PARITY FAILURE REPORT: {} ===\n", test_name));
-    report.push_str(&format!("Rust Count: {}\n", rust_recs.len()));
-    report.push_str(&format!("C Count:    {}\n\n", c_recs.len()));
+    // Dump raw records at trace level
+    trace!("[PARITY] Rust records:");
+    for r in &rust_recs {
+        trace!("[PARITY]   {:?}", r);
+    }
+    trace!("[PARITY] C records:");
+    for c in &c_recs {
+        trace!("[PARITY]   {:?}", c);
+    }
+
+    // Optionally write to file at trace level
+    if log::log_enabled!(log::Level::Trace) {
+        let mut debug_out = String::new();
+        debug_out.push_str("RUST RECORDS:\n");
+        for r in &rust_recs {
+            debug_out.push_str(&format!("{:?}\n", r));
+        }
+        debug_out.push_str("\nC RECORDS:\n");
+        for c in &c_recs {
+            debug_out.push_str(&format!("{:?}\n", c));
+        }
+        let _ = std::fs::write("target/debug_parity_report.txt", debug_out);
+        trace!("[PARITY] Wrote raw records to target/debug_parity_report.txt");
+    }
 
     // Group by (q_id, t_id)
     let mut keys = HashSet::new();
@@ -483,6 +528,18 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
     let mut missing_count = 0;
     let mut extra_count = 0;
     let mut mismatch_count = 0;
+    let mut exact_match_count = 0;
+
+    // Energy breakdown for coordinate-matched records
+    let mut rust_better_energy = 0;
+    let mut rust_worse_energy = 0;
+    let mut energy_equal = 0;
+
+    // Stats for extra/missing hits
+    let mut extra_len_sum: usize = 0;
+    let mut extra_energy_sum: f64 = 0.0;
+    let mut missing_len_sum: usize = 0;
+    let mut missing_energy_sum: f64 = 0.0;
 
     for (q, t) in sorted_keys {
         let mut r_group: Vec<&Rec> = rust_recs
@@ -518,6 +575,7 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                 if !c_matched[i] && r == *c {
                     c_matched[i] = true;
                     found = true;
+                    exact_match_count += 1;
                     break;
                 }
             }
@@ -537,12 +595,13 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
             continue;
         }
 
-        report.push_str(&format!("[{}:{}]\n", q, t));
+        debug!("");
+        debug!("[PARITY] Group [{}:{}]", q, t);
 
         let mut c_rem_matched = vec![false; c_remaining.len()];
 
         for r in &r_remaining {
-            let mut matched_kind = "EXTRA (No matching coordinates in C)";
+            let mut matched_kind = "EXTRA";
             let mut best_match_idx = None;
 
             for (i, c) in c_remaining.iter().enumerate() {
@@ -551,7 +610,7 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                 }
                 if r.coords_match(c) {
                     best_match_idx = Some(i);
-                    matched_kind = "MISMATCH (Coordinates match, content differs)";
+                    matched_kind = "MISMATCH";
                     break;
                 }
             }
@@ -564,280 +623,262 @@ fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                 let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
                 let c_e = c.energy.parse::<f64>().unwrap_or(0.0);
 
-                // If Rust is better or equal (within tolerance), count as WARNING not failure
-                if r_e <= c_e + 0.001 {
-                    report.push_str("  WARNING: Improved Energy Hit (Rust better/equal)\n");
-                    // Do NOT increment mismatch_count
-                } else {
-                    mismatch_count += 1;
-                    report.push_str(&format!("  {}\n", matched_kind));
-                }
-                report.push_str(&format!(
-                    "    Rust: coords={}-{}:{}-{} S={} E={}\n",
-                    r.q_start, r.q_end, r.t_start, r.t_end, r.strand, r.energy
-                ));
-                if !r.query_seq.is_empty() {
-                    report.push_str(&format!("          Query: {}\n", r.query_seq));
-                }
-                report.push_str(&format!("          FP:    {}\n", r.interaction));
-                report.push_str(&format!("          Tgt:   {}\n", r.target_seq));
-                report.push_str(&format!(
-                    "    C:    coords={}-{}:{}-{} S={} E={}\n",
-                    c.q_start, c.q_end, c.t_start, c.t_end, c.strand, c.energy
-                ));
-                if !c.query_seq.is_empty() {
-                    report.push_str(&format!("          Query: {}\n", c.query_seq));
-                }
-                report.push_str(&format!("          FP:    {}\n", c.interaction));
-                report.push_str(&format!("          Tgt:   {}\n", c.target_seq));
-
-                if r.energy != c.energy {
-                    report.push_str(&format!(
-                        "    -> Energy Diff: Rust='{}' vs C='{}'\n",
+                // If Rust is strictly better, log at warn. If equal, silently accept.
+                if r_e < c_e - 0.001 {
+                    rust_better_energy += 1;
+                    warn!(
+                        "[PARITY] Improved energy: Rust E={} vs C E={}",
                         r.energy, c.energy
-                    ));
+                    );
+                } else if r_e > c_e + 0.001 {
+                    // Rust is worse - this is a true mismatch
+                    rust_worse_energy += 1;
+                    mismatch_count += 1;
+                    debug!("[PARITY] {} (coords match, content differs)", matched_kind);
+                } else {
+                    // Equal within tolerance
+                    energy_equal += 1;
+                }
+
+                // Detailed alignment comparison at DEBUG level
+                debug!("[PARITY]   Rust: {}", r.fmt_coords());
+                if !r.query_seq.is_empty() {
+                    debug!("[PARITY]         Query: {}", r.query_seq);
+                }
+                debug!("[PARITY]         FP:    {}", r.interaction);
+                debug!("[PARITY]         Tgt:   {}", r.target_seq);
+
+                debug!("[PARITY]   C:    {}", c.fmt_coords());
+                if !c.query_seq.is_empty() {
+                    debug!("[PARITY]         Query: {}", c.query_seq);
+                }
+                debug!("[PARITY]         FP:    {}", c.interaction);
+                debug!("[PARITY]         Tgt:   {}", c.target_seq);
+
+                // Specific field diffs
+                if r.energy != c.energy {
+                    debug!(
+                        "[PARITY]   -> Energy diff: Rust='{}' vs C='{}'",
+                        r.energy, c.energy
+                    );
                 }
                 if r.interaction != c.interaction {
-                    report.push_str(&analyze_interaction_diff(
-                        &r.interaction,
-                        &c.interaction,
-                        r.q_start,
-                        r.q_end,
-                    ));
+                    analyze_interaction_diff(&r.interaction, &c.interaction, r.q_start, r.q_end);
                 }
                 if r.target_seq != c.target_seq {
-                    report.push_str(&format!(
-                        "    -> TargetSeq Diff: Rust='{}' vs C='{}'\n",
+                    debug!(
+                        "[PARITY]   -> TargetSeq diff: Rust='{}' vs C='{}'",
                         r.target_seq, c.target_seq
-                    ));
+                    );
                 }
                 if r.flank_5 != c.flank_5 {
-                    report.push_str(&format!(
-                        "    -> Flank5 Diff: Rust='{}' vs C='{}'\n",
+                    debug!(
+                        "[PARITY]   -> Flank5 diff: Rust='{}' vs C='{}'",
                         r.flank_5, c.flank_5
-                    ));
+                    );
                 }
                 if r.flank_3 != c.flank_3 {
-                    report.push_str(&format!(
-                        "    -> Flank3 Diff: Rust='{}' vs C='{}'\n",
+                    debug!(
+                        "[PARITY]   -> Flank3 diff: Rust='{}' vs C='{}'",
                         r.flank_3, c.flank_3
-                    ));
+                    );
                 }
             } else {
                 extra_count += 1;
-                report.push_str(&format!(
-                    "  EXTRA IN RUST: coords={}-{}:{}-{} S={} E={}\n",
-                    r.q_start, r.q_end, r.t_start, r.t_end, r.strand, r.energy
-                ));
+                extra_len_sum += r.interaction.len();
+                extra_energy_sum += r.energy.parse::<f64>().unwrap_or(0.0);
+                debug!("[PARITY]   EXTRA in Rust: {}", r.fmt_coords());
                 if !r.query_seq.is_empty() {
-                    report.push_str(&format!("                 Query: {}\n", r.query_seq));
+                    debug!("[PARITY]                  Query: {}", r.query_seq);
                 }
-                report.push_str(&format!("                 FP:    {}\n", r.interaction));
-                report.push_str(&format!("                 Tgt:   {}\n", r.target_seq));
+                debug!("[PARITY]                  FP:    {}", r.interaction);
+                debug!("[PARITY]                  Tgt:   {}", r.target_seq);
             }
         }
 
         for (i, c) in c_remaining.iter().enumerate() {
             if !c_rem_matched[i] {
                 missing_count += 1;
-                report.push_str(&format!(
-                    "  MISSING IN RUST: coords={}-{}:{}-{} S={} E={}\n",
-                    c.q_start, c.q_end, c.t_start, c.t_end, c.strand, c.energy
-                ));
+                missing_len_sum += c.interaction.len();
+                missing_energy_sum += c.energy.parse::<f64>().unwrap_or(0.0);
+                debug!("[PARITY]   MISSING in Rust: {}", c.fmt_coords());
                 if !c.query_seq.is_empty() {
-                    report.push_str(&format!("                   Query: {}\n", c.query_seq));
+                    debug!("[PARITY]                    Query: {}", c.query_seq);
                 }
-                report.push_str(&format!("                   FP:    {}\n", c.interaction));
-                report.push_str(&format!("                   Tgt:   {}\n", c.target_seq));
+                debug!("[PARITY]                    FP:    {}", c.interaction);
+                debug!("[PARITY]                    Tgt:   {}", c.target_seq);
             }
         }
     }
 
-    report.push_str("\nSUMMARY:\n");
-    report.push_str(&format!(
-        "  Total Mismatches (Coords matched): {}\n",
-        mismatch_count
-    ));
-    report.push_str(&format!(
-        "  Total Missing (In C, not Rust):    {}\n",
-        missing_count
-    ));
-    report.push_str(&format!(
-        "  Total Extra (In Rust, not C):      {}\n",
-        extra_count
-    ));
+    let coord_matched = rust_better_energy + rust_worse_energy + energy_equal;
+    let total_c = c_recs.len();
 
-    // DEBUG: Write FULL LISTS to file to avoid truncation
-    let mut debug_out = String::new();
-    debug_out.push_str("RUST RECORDS:\n");
-    for r in &rust_recs {
-        debug_out.push_str(&format!("{:?}\n", r));
-    }
-    debug_out.push_str("\nC RECORDS:\n");
-    for c in &c_recs {
-        debug_out.push_str(&format!("{:?}\n", c));
-    }
-    let _ = std::fs::write("target/debug_parity_report.txt", debug_out);
+    // Compute percentages for coord-matched breakdown
+    let pct = |n: usize, total: usize| -> String {
+        if total == 0 {
+            "0%".into()
+        } else {
+            format!("{}%", n * 100 / total)
+        }
+    };
 
-    // Allow known divergences documented in docs/parity_divergences.md
-    if (test_name == "seed_only_no_extension"
+    // Determine verdict
+    let is_pass = mismatch_count == 0 && missing_count == 0 && extra_count == 0;
+    let is_allowed_divergence = (test_name == "seed_only_no_extension"
         || test_name == "wobble_seed_pairs"
         || test_name == "right_extension_only")
         && mismatch_count == 0
         && extra_count == 0
-        && missing_count > 0
-    {
-        println!(
-            "WARNING: Allowed Divergence for test '{}': Missing in Rust expected due to Maximality/Wobble Improvements.",
+        && missing_count > 0;
+
+    // Build summary using tabled for proper alignment
+    #[derive(Tabled)]
+    struct SummaryRow {
+        #[tabled(rename = "Metric")]
+        metric: String,
+        #[tabled(rename = "Value")]
+        value: String,
+    }
+
+    let mut rows = vec![
+        SummaryRow {
+            metric: "Test".into(),
+            value: test_name.to_string(),
+        },
+        SummaryRow {
+            metric: "Rust hits".into(),
+            value: rust_recs.len().to_string(),
+        },
+        SummaryRow {
+            metric: "C hits".into(),
+            value: total_c.to_string(),
+        },
+        SummaryRow {
+            metric: "Exact matches".into(),
+            value: format!(
+                "{} ({})",
+                exact_match_count,
+                pct(exact_match_count, total_c)
+            ),
+        },
+        SummaryRow {
+            metric: "Coord-matched (diff content)".into(),
+            value: coord_matched.to_string(),
+        },
+        SummaryRow {
+            metric: "  ├ Rust better energy".into(),
+            value: format!(
+                "{} ({})",
+                rust_better_energy,
+                pct(rust_better_energy, coord_matched)
+            ),
+        },
+        SummaryRow {
+            metric: "  ├ Equal energy".into(),
+            value: format!("{} ({})", energy_equal, pct(energy_equal, coord_matched)),
+        },
+        SummaryRow {
+            metric: "  └ Rust worse energy".into(),
+            value: format!(
+                "{} ({})",
+                rust_worse_energy,
+                pct(rust_worse_energy, coord_matched)
+            ),
+        },
+    ];
+
+    // Missing stats
+    if missing_count > 0 {
+        let avg_len = missing_len_sum as f64 / missing_count as f64;
+        let avg_energy = missing_energy_sum / missing_count as f64;
+        rows.push(SummaryRow {
+            metric: "Missing (in C, not Rust)".into(),
+            value: format!(
+                "{} (avg_len={:.1}, avg_E={:.2})",
+                missing_count, avg_len, avg_energy
+            ),
+        });
+    } else {
+        rows.push(SummaryRow {
+            metric: "Missing (in C, not Rust)".into(),
+            value: "0".into(),
+        });
+    }
+
+    // Extra stats
+    if extra_count > 0 {
+        let avg_len = extra_len_sum as f64 / extra_count as f64;
+        let avg_energy = extra_energy_sum / extra_count as f64;
+        rows.push(SummaryRow {
+            metric: "Extra (in Rust, not C)".into(),
+            value: format!(
+                "{} (avg_len={:.1}, avg_E={:.2})",
+                extra_count, avg_len, avg_energy
+            ),
+        });
+    } else {
+        rows.push(SummaryRow {
+            metric: "Extra (in Rust, not C)".into(),
+            value: "0".into(),
+        });
+    }
+
+    // Verdict row
+    let verdict = if is_pass {
+        "✓ PASS".to_string()
+    } else if is_allowed_divergence {
+        "⚠ ALLOWED DIVERGENCE".to_string()
+    } else {
+        format!(
+            "✗ FAIL ({} worse, {} missing, {} extra)",
+            rust_worse_energy, missing_count, extra_count
+        )
+    };
+    rows.push(SummaryRow {
+        metric: "VERDICT".into(),
+        value: verdict,
+    });
+
+    let table = Table::new(rows).with(Style::rounded()).to_string();
+    for line in table.lines() {
+        info!("[PARITY] {}", line);
+    }
+
+    // Handle allowed divergences
+    if is_allowed_divergence {
+        warn!(
+            "[PARITY] Allowed divergence for '{}': Missing in Rust expected due to Maximality/Wobble improvements",
             test_name
         );
-        debug!("REPORT:\n{}", report);
         return;
     }
 
-    if mismatch_count > 0 || missing_count > 0 || extra_count > 0 {
-        debug!("{}", report);
+    if !is_pass {
         panic!(
-            "\nParity Check Failed ({} mismatch, {} missing, {} extra).\nRun with RUST_LOG=debug to see full detailed report.",
-            mismatch_count, missing_count, extra_count
+            "\n[PARITY] FAILED: {} ({} rust-worse, {} missing, {} extra)\nRun with RUST_LOG=debug for detailed diff analysis.",
+            test_name, rust_worse_energy, missing_count, extra_count
         );
     }
 }
 
-#[test]
-fn test_parity_full_pipeline() {
-    let (tmpdir, query_path, target_path, c_bin) = setup_common_test_files();
-    let c_index = tmpdir.path().join("c_target.pksuf");
-    let rust_idx = tmpdir.path().join("rust_target.idx");
+/// Unified single-sequence parity test runner.
+///
+/// # Arguments
+/// * `query_seq` - Query sequence (RNA/DNA)
+/// * `target_seq` - Target sequence (RNA/DNA)
+/// * `test_name` - Test identifier for logging
+/// * `args` - risearch arguments
+/// * `detailed` - If true, performs paired hit analysis for focused debugging
+fn run_single_seq_parity(
+    query_seq: &str,
+    target_seq: &str,
+    test_name: &str,
+    args: &[&str],
+    detailed: bool,
+) {
+    let _ = env_logger::builder().is_test(true).try_init();
 
-    create_c_index(&target_path, &c_index, &c_bin);
-
-    let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
-
-    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, &args);
-    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
-
-    // Debug: Print extend_seed traces captured from stdout
-    for line in rust_out.lines() {
-        if line.contains("C_DEBUG:") {
-            if line.contains("final=-20.49") || line.contains("final=-21.50") {
-                println!("RUST: {}", line);
-            }
-        }
-    }
-
-    let c_out = search_c(&query_path, &c_index, &c_bin, &args);
-    for line in c_out.lines() {
-        if line.contains("C_DEBUG:") {
-            if line.contains("final=-20.49") || line.contains("final=-21.50") {
-                println!("C   : {}", line);
-            }
-        }
-    }
-
-    compare_results(&rust_out, &c_out, "default_config");
-}
-
-#[test]
-fn test_parity_long_seed() {
-    // User requested: -l 0 -e 10000 -s 12 -p 3
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-    let c_index = root.join("legacy_c/RIsearch2/test_suite/RHOC.pksuf");
-    let c_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
-    let tmpdir = tempfile::tempdir().expect("tempdir");
-    let rust_idx = tmpdir.path().join("RHOC.idx");
-
-    let args = ["-l", "0", "-e", "10000", "-s", "12", "-p3"];
-
-    let rust_output = index_and_search_rust(&query, &target, &rust_idx, &args);
-    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
-    let c_out = search_c(&query, &c_index, &c_bin, &args);
-
-    compare_results(&rust_out, &c_out, "long_seed_no_ext");
-}
-
-#[test]
-fn test_parity_energy_threshold() {
-    let (tmpdir, query_path, target_path, c_bin) = setup_common_test_files();
-    let c_index = tmpdir.path().join("c_target.pksuf");
-    let rust_idx = tmpdir.path().join("rust_target.idx");
-
-    create_c_index(&target_path, &c_index, &c_bin);
-
-    // Test with just energy threshold, no detailed output (default output format)
-    // Note: C implementation output format might differ slightly for default output
-    // We'll use -p3 for consistent parsing but change other parameters
-    let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
-
-    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, &args);
-    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
-    let c_out = search_c(&query_path, &c_index, &c_bin, &args);
-
-    compare_results(&rust_out, &c_out, "energy_only");
-}
-
-#[test]
-fn test_parity_alignment_repro() {
-    // User requested reproduction parameters:
-    // target: TGGCTCTGTGGGACACAGCAGG
-    // query: uggcucaguucagcaggaacag
-    // args: -l 20 -e -20 -s 6 -p3
-
-    let root = workspace_root();
-    let tmpdir = tempfile::tempdir().expect("tempdir");
-
-    // Create inputs
-    let query_path = tmpdir.path().join("query.fa");
-    let target_path = tmpdir.path().join("target.fa");
-
-    fs::write(&query_path, ">query\nuggcucaguucagcaggaacag\n").expect("write query");
-    fs::write(&target_path, ">target\nTGGCTCTGTGGGACACAGCAGG\n").expect("write target");
-
-    let c_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
-    // We need to build a C index first
-    let c_index = tmpdir.path().join("target.pksuf");
-
-    // Index for C
-    // Usage: risearch2.x -c <target_fasta> -o <output_index>
-    let c_index_cmd = std::process::Command::new(&c_bin)
-        .arg("-c")
-        .arg(target_path.to_str().unwrap())
-        .arg("-o")
-        .arg(c_index.to_str().unwrap())
-        .output()
-        .expect("c index creation");
-
-    if !c_index_cmd.status.success() {
-        panic!("C indexing failed");
-    }
-
-    let rust_idx = tmpdir.path().join("target.idx");
-
-    let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
-
-    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, &args);
-    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
-    let c_out = search_c(&query_path, &c_index, &c_bin, &args);
-
-    println!("Rust Output:\n{}", rust_out);
-    println!("C Output:\n{}", c_out);
-
-    if rust_out != c_out {
-        println!("Outputs differ!");
-    } else {
-        println!("Outputs are identical!");
-    }
-
-    // Force failure if inputs differ
-    // We use compare_results to handle normalization (deduplication)
-    // if rust_out.trim() != c_out.trim() { ... } -- REMOVED
-
-    compare_results(&rust_out, &c_out, "alignment_mismatch_repro");
-}
-
-fn run_single_seq_parity(query_seq: &str, target_seq: &str, test_name: &str, args: &[&str]) {
     let root = workspace_root();
     let tmpdir = tempfile::tempdir().expect("tempdir");
 
@@ -871,38 +912,210 @@ fn run_single_seq_parity(query_seq: &str, target_seq: &str, test_name: &str, arg
 
     let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, args);
     let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+
+    // Log debug traces at TRACE level
     for line in rust_out.lines() {
         if line.contains("DEBUG_TRACE")
             || line.contains("DEBUG_MAX")
             || line.contains("DEBUG_DP_LEFT_RESULT")
+            || line.contains("C_DEBUG:")
         {
-            println!("{}", line);
+            trace!("[RUST] {}", line);
         }
     }
-    let c_out = search_c(&query_path, &c_index, &c_bin, args);
 
-    compare_results(&rust_out, &c_out, test_name);
+    // Filter out Rust-specific flags like --no-max-prune for C call
+    let c_args: Vec<&str> = args
+        .iter()
+        .filter(|&&a| a != "--no-max-prune")
+        .cloned()
+        .collect();
+    let c_out = search_c(&query_path, &c_index, &c_bin, &c_args);
+
+    if detailed {
+        // Parse both outputs for detailed analysis
+        let (rust_recs, _) = parse_output(&rust_out);
+        let (c_recs, _) = parse_output(&c_out);
+
+        info!(
+            "[PARITY] {} - Rust={} hits, C={} hits",
+            test_name,
+            rust_recs.len(),
+            c_recs.len()
+        );
+
+        // Find extras and missings
+        let mut c_matched = vec![false; c_recs.len()];
+        let mut extras: Vec<&Rec> = Vec::new();
+
+        for r in &rust_recs {
+            let mut found = false;
+            for (i, c) in c_recs.iter().enumerate() {
+                if !c_matched[i] {
+                    // Strict equality
+                    if r == c {
+                        c_matched[i] = true;
+                        found = true;
+                        break;
+                    }
+
+                    // Relaxed equality: Exact Coordinates + Rust Energy is Better/Equal
+                    if r.coords_match(c) {
+                        let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
+                        let c_e = c.energy.parse::<f64>().unwrap_or(0.0);
+                        // Only warn if Rust is strictly better, silently accept equal
+                        if r_e < c_e - 0.001 {
+                            warn!(
+                                "[PARITY] Improved energy: Rust E={} vs C E={}",
+                                r.energy, c.energy
+                            );
+                        }
+                        // Accept if Rust is better or equal
+                        if r_e <= c_e + 0.001 {
+                            c_matched[i] = true;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !found {
+                extras.push(r);
+            }
+        }
+
+        let missings: Vec<&Rec> = c_recs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !c_matched[*i])
+            .map(|(_, r)| r)
+            .collect();
+
+        debug!(
+            "[PARITY] Exact matches: {}, EXTRA: {}, MISSING: {}",
+            rust_recs.len() - extras.len(),
+            extras.len(),
+            missings.len()
+        );
+
+        // Call paired analysis
+        analyze_hit_pairs(&extras, &missings);
+
+        // Fail if we missed any C hits
+        if !missings.is_empty() {
+            panic!(
+                "[PARITY] FAILED {}: {} missings ({} extras)",
+                test_name,
+                missings.len(),
+                extras.len()
+            );
+        }
+
+        // Warn about extras but pass
+        if !extras.is_empty() {
+            warn!(
+                "[PARITY] {} extras in {} (acceptable if 0 missings)",
+                extras.len(),
+                test_name
+            );
+        }
+    } else {
+        compare_results(&rust_out, &c_out, test_name);
+    }
 }
 
-/// Detailed version for focused tests with few hits.
-/// Calls analyze_hit_pairs to show paired EXTRA/MISSING diagnosis.
-fn run_single_seq_parity_detailed(
-    query_seq: &str,
-    target_seq: &str,
-    test_name: &str,
-    args: &[&str],
-) {
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[test]
+fn test_parity_full_pipeline() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let (tmpdir, query_path, target_path, c_bin) = setup_common_test_files();
+    let c_index = tmpdir.path().join("c_target.pksuf");
+    let rust_idx = tmpdir.path().join("rust_target.idx");
+
+    create_c_index(&target_path, &c_index, &c_bin);
+
+    let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
+
+    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, &args);
+    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+
+    // Log C_DEBUG traces at trace level
+    for line in rust_out.lines() {
+        if line.contains("C_DEBUG:") {
+            if line.contains("final=-20.49") || line.contains("final=-21.50") {
+                trace!("[RUST] {}", line);
+            }
+        }
+    }
+
+    let c_out = search_c(&query_path, &c_index, &c_bin, &args);
+    for line in c_out.lines() {
+        if line.contains("C_DEBUG:") {
+            if line.contains("final=-20.49") || line.contains("final=-21.50") {
+                trace!("[C] {}", line);
+            }
+        }
+    }
+
+    compare_results(&rust_out, &c_out, "default_config");
+}
+
+#[test]
+fn test_parity_long_seed() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    // User requested: -l 0 -e 10000 -s 12 -p 3
+    let root = workspace_root();
+    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+    let c_index = root.join("legacy_c/RIsearch2/test_suite/RHOC.pksuf");
+    let c_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+    let rust_idx = tmpdir.path().join("RHOC.idx");
+
+    let args = ["-l", "0", "-e", "10000", "-s", "12", "-p3"];
+
+    let rust_output = index_and_search_rust(&query, &target, &rust_idx, &args);
+    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+    let c_out = search_c(&query, &c_index, &c_bin, &args);
+
+    compare_results(&rust_out, &c_out, "long_seed_no_ext");
+}
+
+#[test]
+fn test_parity_energy_threshold() {
+    let (tmpdir, query_path, target_path, c_bin) = setup_common_test_files();
+    let c_index = tmpdir.path().join("c_target.pksuf");
+    let rust_idx = tmpdir.path().join("rust_target.idx");
+
+    create_c_index(&target_path, &c_index, &c_bin);
+
+    let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
+
+    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, &args);
+    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+    let c_out = search_c(&query_path, &c_index, &c_bin, &args);
+
+    compare_results(&rust_out, &c_out, "energy_only");
+}
+
+#[test]
+fn test_parity_alignment_repro() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
     let root = workspace_root();
     let tmpdir = tempfile::tempdir().expect("tempdir");
 
+    // Create inputs
     let query_path = tmpdir.path().join("query.fa");
     let target_path = tmpdir.path().join("target.fa");
 
-    let q_upper = query_seq.to_uppercase();
-    let t_upper = target_seq.to_uppercase();
-
-    fs::write(&query_path, format!(">query\n{}\n", q_upper)).expect("write query");
-    fs::write(&target_path, format!(">target\n{}\n", t_upper)).expect("write target");
+    fs::write(&query_path, ">query\nuggcucaguucagcaggaacag\n").expect("write query");
+    fs::write(&target_path, ">target\nTGGCTCTGTGGGACACAGCAGG\n").expect("write target");
 
     let c_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
     let c_index = tmpdir.path().join("target.pksuf");
@@ -916,109 +1129,27 @@ fn run_single_seq_parity_detailed(
         .expect("c index creation");
 
     if !c_index_cmd.status.success() {
-        panic!("C indexing failed: {:?}", c_index_cmd.status);
+        panic!("C indexing failed");
     }
 
     let rust_idx = tmpdir.path().join("target.idx");
 
-    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, args);
+    let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
+
+    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, &args);
     let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+    let c_out = search_c(&query_path, &c_index, &c_bin, &args);
 
-    // Print debug traces
-    for line in rust_out.lines() {
-        if line.contains("DEBUG_TRACE")
-            || line.contains("DEBUG_MAX")
-            || line.contains("DEBUG_DP_LEFT_RESULT")
-        {
-            println!("{}", line);
-        }
+    debug!("[PARITY] Rust Output:\n{}", rust_out);
+    debug!("[PARITY] C Output:\n{}", c_out);
+
+    if rust_out.trim() == c_out.trim() {
+        info!("[PARITY] alignment_mismatch_repro - Outputs identical");
+    } else {
+        debug!("[PARITY] Outputs differ");
     }
 
-    // Filter out Rust-specific flags like --no-max-prune for C call
-    let c_args: Vec<&str> = args
-        .iter()
-        .filter(|&&a| a != "--no-max-prune")
-        .cloned()
-        .collect();
-    let c_out = search_c(&query_path, &c_index, &c_bin, &c_args);
-
-    // Parse both outputs
-    let rust_recs = parse_output(&rust_out);
-    let c_recs = parse_output(&c_out);
-
-    println!("\n=== DETAILED PARITY ANALYSIS: {} ===", test_name);
-    println!("Rust hits: {}, C hits: {}", rust_recs.len(), c_recs.len());
-
-    // Find extras and missings
-    let mut c_matched = vec![false; c_recs.len()];
-    let mut extras: Vec<&Rec> = Vec::new();
-
-    for r in &rust_recs {
-        let mut found = false;
-        for (i, c) in c_recs.iter().enumerate() {
-            if !c_matched[i] {
-                // Strict equality
-                if r == c {
-                    c_matched[i] = true;
-                    found = true;
-                    break;
-                }
-
-                // Relaxed equality: Exact Coordinates + Rust Energy is Better/Equal
-                if r.coords_match(c) {
-                    let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
-                    let c_e = c.energy.parse::<f64>().unwrap_or(0.0);
-                    // Allow small float tolerance or strict better
-                    if r_e <= c_e + 0.001 {
-                        println!(
-                            "WARNING: Rust found BETTER/EQUAL alignment for same coords: Rust E={} vs C E={}",
-                            r.energy, c.energy
-                        );
-                        c_matched[i] = true;
-                        found = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !found {
-            extras.push(r);
-        }
-    }
-
-    let missings: Vec<&Rec> = c_recs
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !c_matched[*i])
-        .map(|(_, r)| r)
-        .collect();
-
-    println!("Exact matches: {}", rust_recs.len() - extras.len());
-    println!("EXTRA in Rust: {}", extras.len());
-    println!("MISSING in Rust: {}", missings.len());
-
-    // Call paired analysis
-    analyze_hit_pairs(&extras, &missings);
-
-    // Still fail if there are differences
-    // Fail if we missed any C hits.
-    if !missings.is_empty() {
-        panic!(
-            "Parity failure in {}: {} missings ({} extras)",
-            test_name,
-            missings.len(),
-            extras.len()
-        );
-    }
-
-    // Warn about extras but pass
-    if !extras.is_empty() {
-        println!(
-            "WARNING: Parity Extras in {}: {} extras (acceptable if 0 missings)",
-            test_name,
-            extras.len()
-        );
-    }
+    compare_results(&rust_out, &c_out, "alignment_mismatch_repro");
 }
 
 #[test]
@@ -1029,7 +1160,7 @@ fn test_parity_single_seq() {
     let query = "UGCUGCUGCCGCUGCUGCUG"; // 20nt with internal variation
     let target = "GCAGCAGCAGCAGCAGCAGC"; // 20nt complement
 
-    run_single_seq_parity(query, target, "internal_mismatch_20nt", &args);
+    run_single_seq_parity(query, target, "internal_mismatch_20nt", &args, false);
 }
 
 // =============================================================================
@@ -1049,7 +1180,7 @@ fn test_parity_seed_only() {
     let query = "UGCUGCUGCUGCUGCUGCUG"; // 20nt
     let target = "CAGCAGCAGCAGCAGCAGCA"; // Perfect complement, reversed
 
-    run_single_seq_parity(query, target, "seed_only_no_extension", &args);
+    run_single_seq_parity(query, target, "seed_only_no_extension", &args, false);
 }
 
 /// Tests left extension only (dp_left).
@@ -1057,50 +1188,36 @@ fn test_parity_seed_only() {
 #[test]
 fn test_parity_left_ext() {
     // Seed at 3' end of query forces only left extension
-    // Query structure: [extra 5' bases][seed at 3']
-    // Target structure: [complement][extra 3' bases for matching]
     let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
 
-    // Query: 5'-AAAAA_UGCUG-3' (5 extra + 5 seed)
-    // Target:   CAGCA_UUUUU (complement, extra extends 3' direction)
-    // Seed matches at positions 6-10, left ext should pick up AAAAA->UUUUU
     let query = "AAAAAUGCUG";
     let target = "CAGCAUUUUU";
 
-    run_single_seq_parity(query, target, "left_extension_only", &args);
+    run_single_seq_parity(query, target, "left_extension_only", &args, false);
 }
 
 /// Tests right extension only (dp_right).
 /// Design: seed at 5' end of query, extra bases only to the 3' side.
 #[test]
 fn test_parity_right_ext() {
-    // Seed at 5' end of query forces only right extension
-    // Query structure: [seed at 5'][extra 3' bases]
-    // Target structure: [extra 5' bases][complement]
     let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
 
-    // Query: 5'-UGCUG_AAAAA-3' (5 seed + 5 extra)
-    // Target:   UUUUU_CAGCA (extra extends 5' direction, complement at end)
-    // Seed matches at positions 1-5, right ext should pick up AAAAA->UUUUU
     let query = "UGCUGAAAAA";
     let target = "UUUUUCAGCA";
 
-    run_single_seq_parity(query, target, "right_extension_only", &args);
+    run_single_seq_parity(query, target, "right_extension_only", &args, false);
 }
 
 /// Tests both left and right extension.
 /// Design: seed in middle, extra bases on both sides.
 #[test]
 fn test_parity_both_ext() {
-    // Seed in middle, extensions on both sides
     let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
 
-    // Query: 5'-AAA_UGCUG_AAA-3' (3 left + 5 seed + 3 right = 11nt)
-    // Target:    UUU_CAGCA_UUU (complement with extensions)
     let query = "AAAUGCUGAAA";
     let target = "UUUCAGCAUUU";
 
-    run_single_seq_parity(query, target, "both_extensions", &args);
+    run_single_seq_parity(query, target, "both_extensions", &args, false);
 }
 
 /// Tests with wobble pairs (G-U) in the seed region.
@@ -1108,14 +1225,10 @@ fn test_parity_both_ext() {
 fn test_parity_wobble() {
     let args = ["-l", "0", "-e", "100.0", "-s", "5", "-p3"];
 
-    // Query has U where target has G -> wobble pair
-    // Query:  5'-UGUGU-3'
-    // Target: 3'-GCGCG-5' = GCGCG reversed for storage = GCGCG
-    // U-G wobble pairs should be allowed
     let query = "UGUGUGUGUG"; // 10 alternating U-G pattern
     let target = "CGCGCGCGCG"; // Complement with wobble
 
-    run_single_seq_parity(query, target, "wobble_seed_pairs", &args);
+    run_single_seq_parity(query, target, "wobble_seed_pairs", &args, false);
 }
 
 // =============================================================================
@@ -1124,21 +1237,13 @@ fn test_parity_wobble() {
 
 /// Isolated repro of parity_default_config failure.
 /// Uses actual hsa-miR-24-3p query and a short RHOC target region.
-///
-/// This test isolates the U/T swap issue seen in the full test.
-/// The failure pattern: FP positions showing 'U' in Rust but 'T' in C (or vice versa).
 #[test]
 fn test_parity_mir24_isolated() {
-    // Query: hsa-miR-24-3p (MIMAT0000080)
-    // This is the exact sequence from mirnas.fa that causes failures
     let query = "uggcucaguucagcaggaacag"; // 22nt
 
-    // Target: 80nt region from RHOC positions 350-430 (around original hit position)
-    // This is extracted from: grep -v "^>" RHOC.fa | tr -d '\n' | cut -c350-430
     let target =
         "GGAAGACCTGCCTCCTCATCGTCTTCAGCAAGGATCAGTTTCCGGAGGTCTACGTCCCTACTGTCTTTGAGAACTATATTG";
 
-    // Same args as parity_default_config but with relaxed energy
     let args = [
         "-l",
         "20",
@@ -1150,46 +1255,29 @@ fn test_parity_mir24_isolated() {
         "--no-max-prune",
     ];
 
-    println!("\n=== ISOLATED miR-24 SINGLE HIT TEST ===");
-    println!("Query:  {}", query);
-    println!("Target: {}", target);
-    println!("Args:   {:?}", args);
-    println!();
+    info!("[PARITY] mir24_isolated_single test");
+    debug!("[PARITY] Query:  {}", query);
+    debug!("[PARITY] Target: {}", target);
+    debug!("[PARITY] Args:   {:?}", args);
 
-    run_single_seq_parity_detailed(query, target, "miR24_isolated_single", &args);
+    run_single_seq_parity(query, target, "miR24_isolated_single", &args, true);
 }
 
 /// More targeted single-hit test with explicit segment expectations.
-/// This test is designed to produce exactly ONE hit so we can compare
-/// the SEED, LEFT_EXT, and RIGHT_EXT portions precisely.
 #[test]
 fn test_parity_segments_debug() {
-    // Query: 15nt designed to match target exactly for seed, with extension regions
-    // Structure: [5' ext region][SEED][3' ext region]
-    //            AAAAA         UGCUGU       AAAAA
     let query = "AAAAAUGCUGUAAAAA"; // 5 + 6 + 5 = 16nt
-
-    // Target should complement in antiparallel:
-    //   Query:  5'-AAAAA UGCUGU AAAAA-3'
-    //   Target: 3'-UUUUU ACGACA UUUUU-5' (stored 5'->3' as UUUUUACAGACUUUUU... wait)
-    // For antiparallel binding:
-    //   Q[0] (A) pairs with T[len-1] (U)
-    //   Seed UGCUGU pairs with ACAGCA (complement)
-    // Target: UUUUUACAGCAUUUUU reversed for DNA storage
     let target = "UUUUUACAGCAUUUUU";
 
-    // Use extension length 20 to ensure both left and right extensions are attempted
     let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
 
-    println!("\n=== SEGMENT DEBUG TEST ===");
-    println!("Query:  {} (len={})", query, query.len());
-    println!("Target: {} (len={})", target, target.len());
-    println!();
-    println!("Expected structure:");
-    println!("  LEFT_EXT  (dp_left):  AAAAA -> should extend with UUUUU");
-    println!("  SEED      (6nt):      UGCUGU -> matches ACAGCA");
-    println!("  RIGHT_EXT (dp_right): AAAAA -> should extend with UUUUU");
-    println!();
+    info!("[PARITY] segment_debug test");
+    debug!("[PARITY] Query:  {} (len={})", query, query.len());
+    debug!("[PARITY] Target: {} (len={})", target, target.len());
+    debug!("[PARITY] Expected structure:");
+    debug!("[PARITY]   LEFT_EXT  (dp_left):  AAAAA -> should extend with UUUUU");
+    debug!("[PARITY]   SEED      (6nt):      UGCUGU -> matches ACAGCA");
+    debug!("[PARITY]   RIGHT_EXT (dp_right): AAAAA -> should extend with UUUUU");
 
-    run_single_seq_parity(query, target, "segment_debug", &args);
+    run_single_seq_parity(query, target, "segment_debug", &args, false);
 }
