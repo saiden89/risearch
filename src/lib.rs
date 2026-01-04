@@ -1,6 +1,8 @@
-// pub mod seed;
-// pub use seed::SeedSpec;
-
-// pub mod search;
-// pub use search::{SeedMatch, SeedIndex, NaiveIndex, Search};mod fm;
-mod io;
+pub mod args;
+pub mod dsm;
+#[cfg(feature = "fm-index")]
+pub mod fm;
+pub mod io;
+pub mod sa;
+pub mod search;
+pub mod seed;
