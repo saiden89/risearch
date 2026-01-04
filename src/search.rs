@@ -4,10 +4,11 @@ use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::dsm::{Base, DSM_T04_POS, DsmAccessor, PAIR_MAT};
+use crate::args::SearchArgs;
+use crate::dsm::{DSM_T04_POS, DsmAccessor, PAIR_MAT};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
-use crate::args::{SearchArgs, SeedPairing, Strand};
+use crate::types::{Base, SeedPairing, Strand};
 
 use std::collections::HashMap;
 

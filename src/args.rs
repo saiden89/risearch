@@ -1,5 +1,7 @@
 use clap::ValueEnum;
 
+pub use crate::types::{SeedPairing, Strand};
+
 #[derive(ValueEnum, Clone, Debug)]
 #[clap(rename_all = "snake_case")]
 pub enum Matrix {
@@ -25,29 +27,6 @@ pub enum Backend {
     Fm,
     /// Suffix Array backend
     Sa,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Strand {
-    Forward,
-    Reverse,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub enum SeedPairing {
-    AllowWobble,
-    Strict,
-}
-
-impl From<bool> for SeedPairing {
-    fn from(wobble_arg: bool) -> Self {
-        if wobble_arg {
-            SeedPairing::Strict
-        } else {
-            SeedPairing::AllowWobble
-        }
-    }
 }
 
 /// Arguments for seed generation
