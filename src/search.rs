@@ -7,7 +7,7 @@ use std::str::FromStr;
 use crate::dsm::{Base, DSM_T04_POS, DsmAccessor, PAIR_MAT};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
-use crate::{SearchArgs, SeedPairing, Strand};
+use crate::args::{SearchArgs, SeedPairing, Strand};
 
 use std::collections::HashMap;
 

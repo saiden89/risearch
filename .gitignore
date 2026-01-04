@@ -1,2 +1,6 @@
 target/
-legacy_c/
+*.log
+*.fa
+*.gz
+*.txt
+*.idx

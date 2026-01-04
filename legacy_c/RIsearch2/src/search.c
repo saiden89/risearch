@@ -1856,6 +1856,8 @@ extend_seed (saidx64_t j,	//!< Index in target suffix array (where seed match wa
   //ENERGY THRESHOLD for the interaction
   if (result->energy > min_energy)
     {
+       fprintf (stdout, "C_DEBUG: extend_seed: seed_energy=%d, l_score=%d, r_score=%d, raw_total=%d, final=%.2f\n",
+	  seed_score, *M_left, *M_right, total_score, result->energy);
       if (print_debug)
 	{
 	  fprintf (stderr, "seed_score: %d \n", seed_score);
