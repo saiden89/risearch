@@ -46,9 +46,25 @@ extern int show_alignment;
 extern int all_vs_all;
 extern int extPen;
 
+#ifdef DEBUG
+int print_debug = 1;
+#else
+#ifdef DEBUG
+int print_debug = 1;
+#else
 int print_debug = 0;
+#endif
+#endif
+#ifdef DEBUG
+int print_mats_l = 1;
+#else
 int print_mats_l = 0;
+#endif
+#ifdef DEBUG
+int print_mats_r = 1;
+#else
 int print_mats_r = 0;
+#endif
 
 //saidx64_t *seed_lengths; //array storing how many maximal seeds of each size are found; counts are incremented in the extend_seed function
 
