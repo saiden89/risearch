@@ -64,7 +64,8 @@ fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<u8>, Normalizatio
     for &b in seq {
         let c = b.to_ascii_lowercase();
         match c {
-            b'a' | b'c' | b'g' | b'u' | b't' => out.push(c),
+            b'a' | b'c' | b'g' => out.push(c),
+            b'u' | b't' => out.push(b't'),
             b'n' => out.push(b'n'),
             b'-' | b'.' => {
                 stats.removed_gaps += 1;
