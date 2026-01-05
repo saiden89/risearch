@@ -1302,7 +1302,8 @@ fn extend_seed(
         (seed_energy + left_res.score as f64 + right_res.score as f64 - 559.0) / -100.0;
 
     debug!(
-        "EXTEND: score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",
+        "{} score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",
+        SearchStage::Extend,
         final_score,
         seed_energy / -100.0,
         left_res.score,
