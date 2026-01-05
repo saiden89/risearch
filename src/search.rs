@@ -5,9 +5,10 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::args::SearchArgs;
-use crate::dsm::{DSM_T04_POS, DsmAccessor, PAIR_MAT};
+use crate::dsm::{DSM_T04_POS, DsmAccessor, PAIR_MAT, StackPair};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
+use crate::seq::Seq;
 use crate::types::{Base, SeedPairing, Strand};
 
 use std::collections::HashMap;
@@ -1262,41 +1263,50 @@ fn extend_seed(
     let t_match_end = t_pos + len - 1;
     let mut seed_int_str = String::with_capacity(len);
 
+    // Wrap sequences for clean base access
+    let query = Seq::forward(q_seq);
+    let target = Seq::new(t_seq, candidate.strand);
+
     for k in 0..len {
         let q_idx = q_pos + k;
         let t_idx = t_match_end - k;
 
         if k < len.saturating_sub(1) {
-            let q_b1 = Base::from_byte(q_seq[q_idx]).idx();
-            let q_b2 = Base::from_byte(q_seq[q_idx + 1]).idx();
-            let t_b1 = Base::from_byte(t_seq[t_idx]).idx();
-            let t_b2 = Base::from_byte(t_seq[t_match_end - (k + 1)]).idx();
-            let dsm_val = DSM_T04_POS[q_b1][q_b2][t_b1][t_b2];
+            // Get bases using Seq abstraction
+            let q1 = query.base(q_idx);
+            let q2 = query.base(q_idx + 1);
+            let t1 = target.base(t_idx);
+            let t2 = target.base(t_match_end - (k + 1));
+
+            // Use StackPair for energy lookup (no complement - handled by sequence prep)
+            let stack = StackPair::new(q1, q2, t1, t2);
+            let dsm_val = stack.energy();
+
             trace!(
-                "[SEED_DSM] k={} Q[{}][{}]={}{} T[{}][{}]={}{} DSM[{}][{}][{}][{}]={} running={}",
+                "[SEED_DSM] k={} Q[{}][{}]={}{} T[{}][{}]={}{} DSM[{:?}][{:?}][{:?}][{:?}]={} running={}",
                 k,
                 q_idx,
                 q_idx + 1,
-                q_seq[q_idx] as char,
-                q_seq[q_idx + 1] as char,
+                q1.as_char(),
+                q2.as_char(),
                 t_idx,
                 t_match_end - (k + 1),
-                t_seq[t_idx] as char,
-                t_seq[t_match_end - (k + 1)] as char,
-                q_b1,
-                q_b2,
-                t_b1,
-                t_b2,
+                t1.as_char(),
+                t2.as_char(),
+                q1,
+                q2,
+                t1,
+                t2,
                 dsm_val,
                 seed_energy + dsm_val as f64
             );
             seed_energy += dsm_val as f64;
         }
 
-        // Build interaction string
-        let qc = q_seq[q_idx];
-        let tc = t_seq[t_idx];
-        seed_int_str.push(Base::from_byte(qc).pairing_class(Base::from_byte(tc)));
+        // Build interaction string using Seq
+        let qc = query.base(q_idx);
+        let tc = target.base(t_idx);
+        seed_int_str.push(qc.pairing_class(tc));
     }
 
     let max_ext = opts.max_extension as usize;
