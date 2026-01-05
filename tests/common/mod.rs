@@ -1144,8 +1144,16 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
             continue;
         }
 
-        debug!("");
-        debug!("{} Group [{}:{}]", LogTag::Parity, q, t);
+        // Group summary at debug level
+        debug!(
+            "{} Group [{}:{}] Rust={} C={} (exact_match={})",
+            LogTag::Parity,
+            q,
+            t,
+            r_remaining.len() + exact_match_count,
+            c_remaining.len() + exact_match_count,
+            exact_match_count
+        );
 
         let mut c_rem_matched = vec![false; c_remaining.len()];
 
@@ -1207,20 +1215,29 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
                     HitStatus::Identical => {
                         trace!("{} {} Coords: {}", LogTag::Parity, status, r.fmt_coords());
                     }
-                    HitStatus::CoOptimal | HitStatus::RustBetter | HitStatus::RustWorse => {
-                        let energy_msg = if r.energy == c.energy {
-                            "".to_string()
-                        } else {
-                            format!(" | C Energy: {}", c.energy)
-                        };
+                    HitStatus::CoOptimal => {
+                        // Log co-optimal at trace level (less important)
+                        trace!("{} {} Coords: {}", LogTag::Parity, status, r.fmt_coords());
+                    }
+                    HitStatus::RustBetter => {
+                        // One-line summary for improvements (not a problem)
                         debug!(
-                            "{} {} Coords: {}{}",
+                            "{}   ✓ {} {} (C: {})",
                             LogTag::Parity,
                             status,
                             r.fmt_coords(),
-                            energy_msg
+                            c.energy
                         );
-                        // Show table for differences
+                    }
+                    HitStatus::RustWorse => {
+                        // Detailed table for problems
+                        debug!(
+                            "{}   ✗ {} {} (C: {})",
+                            LogTag::Parity,
+                            status,
+                            r.fmt_coords(),
+                            c.energy
+                        );
                         let table = ParityTable {
                             kind: ParityKind::Mismatch { rust: r, c },
                             config: TableConfig::default(),
@@ -1228,7 +1245,6 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
                         for line in table.to_string().lines() {
                             debug!("{} {}", LogTag::Parity, line);
                         }
-                        debug!("{}", LogTag::Parity);
                     }
                     _ => {}
                 }
