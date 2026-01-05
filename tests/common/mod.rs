@@ -60,6 +60,10 @@ pub struct Rec {
     query_seq: String,
     flank_5: String,
     flank_3: String,
+
+    // Seed range within interaction (parsed from markers if present)
+    seed_start: Option<usize>,
+    seed_end: Option<usize>,
 }
 
 impl Rec {
@@ -78,12 +82,35 @@ impl Rec {
             return None;
         }
 
-        // Helper to strip y/x debug markers from C output
+        // Helper to strip y/x debug markers from C output and optionally return seed range
+        let parse_and_strip = |s: &str| -> (String, Option<usize>, Option<usize>) {
+            let before = char::from(SeedMarker::BeforeSeed);
+            let after = char::from(SeedMarker::AfterSeed);
+
+            // Find marker positions before stripping
+            let y_pos = s.find(before);
+            let x_pos = s.find(after);
+
+            let (seed_start, seed_end) = match (y_pos, x_pos) {
+                (Some(y), Some(x)) if x > y => {
+                    // y marks start, x marks end (after y was removed = x-1)
+                    (Some(y), Some(x - 1))
+                }
+                _ => (None, None),
+            };
+
+            let clean: String = s.chars().filter(|&c| c != before && c != after).collect();
+            (clean, seed_start, seed_end)
+        };
+
         let strip = |s: &str| -> String {
             let before = char::from(SeedMarker::BeforeSeed);
             let after = char::from(SeedMarker::AfterSeed);
             s.chars().filter(|&c| c != before && c != after).collect()
         };
+
+        // Parse interaction with seed range extraction
+        let (interaction, seed_start, seed_end) = parse_and_strip(fields[8]);
 
         Some(Rec {
             q_id: fields[0].to_string(),
@@ -94,12 +121,14 @@ impl Rec {
             t_end: fields[5].parse().unwrap_or(0),
             strand: fields[6].to_string(),
             energy: fields[7].to_string(),
-            interaction: strip(fields[8]),
+            interaction,
             target_seq: strip(fields[9]),
             // Optional fields - use get() for safe access
             flank_5: fields.get(10).map_or(String::new(), |s| strip(s)),
             flank_3: fields.get(11).map_or(String::new(), |s| strip(s)),
             query_seq: fields.get(12).map_or(String::new(), |s| s.to_string()),
+            seed_start,
+            seed_end,
         })
     }
 
@@ -145,6 +174,8 @@ impl From<&risearch::SearchHit> for Rec {
             flank_5: hit.flank_5.clone(),
             flank_3: hit.flank_3.clone(),
             query_seq: String::new(), // Not stored in SearchHit
+            seed_start: Some(hit.alignment.left_extension().len()),
+            seed_end: Some(hit.alignment.left_extension().len() + hit.alignment.seed().len()),
         }
     }
 }
@@ -337,10 +368,16 @@ fn build_diff(a: &str, b: &str) -> String {
 }
 
 impl ParsedInteraction {
-    fn from_rec(rec: &Rec, strip: bool, guide_markers: Option<(usize, usize)>) -> Self {
+    fn from_rec(rec: &Rec) -> Self {
+        Self::from_rec_with_range(rec, rec.seed_start, rec.seed_end)
+    }
+
+    /// Parse interaction with explicit seed range override (for diff alignment)
+    fn from_rec_with_range(rec: &Rec, seed_start: Option<usize>, seed_end: Option<usize>) -> Self {
         let fp_raw = &rec.interaction;
 
-        let (left, seed, right) = if let Some((start, end)) = guide_markers {
+        // Use provided seed range if available, otherwise treat entire interaction as seed
+        let (left, seed, right) = if let (Some(start), Some(end)) = (seed_start, seed_end) {
             let chars: Vec<char> = fp_raw.chars().collect();
             let len = chars.len();
             if len >= end {
@@ -352,48 +389,22 @@ impl ParsedInteraction {
             } else {
                 ("".into(), fp_raw.clone(), "".into())
             }
-        } else if strip {
-            if let Some((clean, start, end)) = parse_seed_markers(fp_raw) {
-                let chars: Vec<char> = clean.chars().collect();
-                (
-                    chars[..start].iter().collect(),
-                    chars[start..end].iter().collect(),
-                    chars[end..].iter().collect(),
-                )
-            } else {
-                ("".into(), strip_markers(fp_raw), "".into())
-            }
         } else {
+            // No seed range info - put entire interaction in seed column
             ("".into(), fp_raw.clone(), "".into())
         };
 
-        let ctx_5 = if strip {
-            strip_markers(&rec.flank_5)
-        } else {
-            rec.flank_5.clone()
-        };
-        let ctx_3 = if strip {
-            strip_markers(&rec.flank_3)
-        } else {
-            rec.flank_3.clone()
-        };
-
         Self {
-            ctx_5,
+            ctx_5: rec.flank_5.clone(),
             ext_5: left,
             seed,
             ext_3: right,
-            ctx_3,
+            ctx_3: rec.flank_3.clone(),
         }
     }
 
-    fn from_rec_target(rec: &Rec, strip: bool, ref_parts: &ParsedInteraction) -> Self {
-        let tgt_raw = if strip {
-            strip_markers(&rec.target_seq)
-        } else {
-            rec.target_seq.clone()
-        };
-        let chars: Vec<char> = tgt_raw.chars().collect();
+    fn from_rec_target(rec: &Rec, ref_parts: &ParsedInteraction) -> Self {
+        let chars: Vec<char> = rec.target_seq.chars().collect();
 
         let l_len = ref_parts.ext_5.chars().count();
         let s_len = ref_parts.seed.chars().count();
@@ -456,26 +467,21 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
 
         match self.kind {
             ParityKind::RustOnly(r) => {
-                let p = ParsedInteraction::from_rec(r, false, None);
-                let p_tgt = ParsedInteraction::from_rec_target(r, false, &p);
+                let p = ParsedInteraction::from_rec(r);
+                let p_tgt = ParsedInteraction::from_rec_target(r, &p);
                 add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
                 add_row(&mut builder, RowLabel::SingleFP, &p);
             }
             ParityKind::COnly(c) => {
-                let p = ParsedInteraction::from_rec(c, true, None);
-                let p_tgt = ParsedInteraction::from_rec_target(c, true, &p);
+                let p = ParsedInteraction::from_rec(c);
+                let p_tgt = ParsedInteraction::from_rec_target(c, &p);
                 add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
                 add_row(&mut builder, RowLabel::SingleFP, &p);
             }
             ParityKind::Mismatch { rust: r, c } => {
-                let p_c = ParsedInteraction::from_rec(c, true, None);
-
-                let guide = if let Some((_, start, end)) = parse_seed_markers(&c.interaction) {
-                    Some((start, end))
-                } else {
-                    None
-                };
-                let p_r = ParsedInteraction::from_rec(r, false, guide);
+                let p_c = ParsedInteraction::from_rec(c);
+                // Use C's seed range for Rust's interaction so columns align for diff
+                let p_r = ParsedInteraction::from_rec_with_range(r, c.seed_start, c.seed_end);
 
                 let diff_l = build_diff(&p_c.ext_5, &p_r.ext_5);
                 let diff_s = build_diff(&p_c.seed, &p_r.seed);
@@ -489,8 +495,8 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
                     ctx_3: "".into(),
                 };
 
-                let p_c_tgt = ParsedInteraction::from_rec_target(c, true, &p_c);
-                let p_r_tgt = ParsedInteraction::from_rec_target(r, false, &p_r);
+                let p_c_tgt = ParsedInteraction::from_rec_target(c, &p_c);
+                let p_r_tgt = ParsedInteraction::from_rec_target(r, &p_r);
 
                 add_row(&mut builder, RowLabel::CompCTarget, &p_c_tgt);
                 add_row(&mut builder, RowLabel::CompCFP, &p_c);
@@ -1181,7 +1187,12 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                     config: TableConfig::default(),
                 };
                 // Print table with each line as separate log entry
-                debug!("{} {}", LogTag::Parity, HitStatus::Extra);
+                debug!(
+                    "{} {} Coords: {}",
+                    LogTag::Parity,
+                    HitStatus::Extra,
+                    r.fmt_coords()
+                );
                 for line in table.to_string().lines() {
                     debug!("{} {}", LogTag::Parity, line);
                 }
@@ -1200,7 +1211,12 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                     config: TableConfig::default(),
                 };
                 // Print table with each line as separate log entry
-                debug!("{} {}", LogTag::Parity, HitStatus::Missing);
+                debug!(
+                    "{} {} Coords: {}",
+                    LogTag::Parity,
+                    HitStatus::Missing,
+                    c.fmt_coords()
+                );
                 for line in table.to_string().lines() {
                     debug!("{} {}", LogTag::Parity, line);
                 }
