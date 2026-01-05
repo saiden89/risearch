@@ -15,6 +15,31 @@ use std::collections::HashMap;
 const MAX_DP_EXT: usize = 30;
 const GAP_IDX: usize = Base::Gap as usize;
 
+#[derive(Debug, Clone, Copy)]
+enum InternalLogTag {
+    Query,
+    QuerySeq,
+    Candidate,
+    ProcCand,
+    Maximality,
+    HitAccepted,
+    FindCand,
+}
+
+impl std::fmt::Display for InternalLogTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Query => write!(f, "[QUERY]"),
+            Self::QuerySeq => write!(f, "[QUERY_SEQ]"),
+            Self::Candidate => write!(f, "[CANDIDATE]"),
+            Self::ProcCand => write!(f, "[PROC_CAND]"),
+            Self::Maximality => write!(f, "[MAXIMALITY]"),
+            Self::HitAccepted => write!(f, "[HIT_ACCEPTED]"),
+            Self::FindCand => write!(f, "[FIND_CAND]"),
+        }
+    }
+}
+
 /// Reasons why a seed, candidate, or hit was filtered out
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FilterReason {
@@ -295,7 +320,8 @@ impl<'a> SaIndex<'a> {
             .collect();
 
         debug!(
-            "FIND_CAND: seed={} pairing={:?}",
+            "{} seed={} pairing={:?}",
+            InternalLogTag::FindCand,
             String::from_utf8_lossy(&seed_normalized),
             pairing
         );
@@ -333,12 +359,20 @@ impl<'a> SaIndex<'a> {
             let rc_count = candidates.len() - rc_count_before;
 
             trace!(
-                "FIND_CAND: seq_idx={} name={} fwd_hits={} rc_hits={}",
-                i, &seq_idx.name, fwd_count, rc_count
+                "{} seq_idx={} name={} fwd_hits={} rc_hits={}",
+                InternalLogTag::FindCand,
+                i,
+                &seq_idx.name,
+                fwd_count,
+                rc_count
             );
         }
 
-        debug!("FIND_CAND: total_candidates={}", candidates.len());
+        debug!(
+            "{} total_candidates={}",
+            InternalLogTag::FindCand,
+            candidates.len()
+        );
         candidates
     }
 
@@ -622,17 +656,22 @@ pub fn run_search(
     let mut all_hits = Vec::new();
 
     for (q_id, q_seq) in queries {
-        debug!("QUERY: id={} len={}", q_id, q_seq.len());
-        trace!("QUERY_SEQ: {}", String::from_utf8_lossy(q_seq));
+        debug!("{} id={} len={}", InternalLogTag::Query, q_id, q_seq.len());
+        trace!(
+            "{} {}",
+            InternalLogTag::QuerySeq,
+            String::from_utf8_lossy(q_seq)
+        );
 
         // Find seeds
         let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
-        debug!("QUERY: {} candidates found", seeds.len());
+        debug!("{} {} candidates found", InternalLogTag::Query, seeds.len());
         ctx.stats.candidates_processed += seeds.len();
 
         for candidate in &seeds {
             trace!(
-                "CANDIDATE: q_pos={} t_idx={} t_start={} len={} strand={:?}",
+                "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
+                InternalLogTag::Candidate,
                 candidate.query_pos,
                 candidate.target_idx,
                 candidate.target_start,
@@ -641,8 +680,13 @@ pub fn run_search(
             );
             if let Some(hit) = process_candidate(q_id, q_seq, candidate, &mut ctx) {
                 trace!(
-                    "HIT_ACCEPTED: q={}-{} t={}-{} E={:.2}",
-                    hit.q_start, hit.q_end, hit.t_start, hit.t_end, hit.energy
+                    "{} q={}-{} t={}-{} E={:.2}",
+                    InternalLogTag::HitAccepted,
+                    hit.q_start,
+                    hit.q_end,
+                    hit.t_start,
+                    hit.t_end,
+                    hit.energy
                 );
                 all_hits.push(hit);
             }
@@ -836,14 +880,21 @@ fn process_candidate(
     let q_pos = candidate.query_pos;
 
     trace!(
-        "PROC_CAND: q_id={} t_idx={} q_pos={} t_start={} seed_len={} strand={:?}",
-        q_id, t_idx, q_pos, t_start_idx, seed_len, candidate.strand
+        "{} q_id={} t_idx={} q_pos={} t_start={} seed_len={} strand={:?}",
+        InternalLogTag::ProcCand,
+        q_id,
+        t_idx,
+        q_pos,
+        t_start_idx,
+        seed_len,
+        candidate.strand
     );
 
     if t_start_idx + seed_len > t_seq.len() {
         ctx.stats.record_filter(FilterReason::SeedOutOfBounds);
         warn!(
-            "PROC_CAND: FILTERED reason=SeedOutOfBounds t_start={} seed_len={} t_len={}",
+            "{} FILTERED reason=SeedOutOfBounds t_start={} seed_len={} t_len={}",
+            InternalLogTag::ProcCand,
             t_start_idx,
             seed_len,
             t_seq.len()
@@ -860,8 +911,10 @@ fn process_candidate(
     if score > ctx.args.extend.delta_g {
         ctx.stats.record_filter(FilterReason::EnergyAboveThreshold);
         trace!(
-            "PROC_CAND: FILTERED reason=EnergyAboveThreshold score={:.2} > delta_g={}",
-            score, ctx.args.extend.delta_g
+            "{} FILTERED reason=EnergyAboveThreshold score={:.2} > delta_g={}",
+            InternalLogTag::ProcCand,
+            score,
+            ctx.args.extend.delta_g
         );
         return None;
     }
@@ -990,8 +1043,12 @@ fn extend_seed(
     // on either end, it's a sub-seed of a longer match and will
 
     trace!(
-        "MAXIMALITY: ENTERING extend_seed q_pos={} t_pos={} len={} delta_g={}",
-        q_pos, t_pos, len, opts.delta_g
+        "{} ENTERING extend_seed q_pos={} t_pos={} len={} delta_g={}",
+        InternalLogTag::Maximality,
+        q_pos,
+        t_pos,
+        len,
+        opts.delta_g
     );
 
     // 1. Left extendable?
@@ -1001,8 +1058,14 @@ fn extend_seed(
         let p_class = PAIR_MAT[q_prev][t_next];
 
         trace!(
-            "MAXIMALITY: Left Check q_pos={} t_pos={} len={} q_prev={} t_next={} pair={}",
-            q_pos, t_pos, len, q_prev, t_next, p_class
+            "{} Left Check q_pos={} t_pos={} len={} q_prev={} t_next={} pair={}",
+            InternalLogTag::Maximality,
+            q_pos,
+            t_pos,
+            len,
+            q_prev,
+            t_next,
+            p_class
         );
 
         if p_class != 0 {
@@ -1014,8 +1077,12 @@ fn extend_seed(
             } else {
                 ctx.stats.record_filter(FilterReason::MaximalityLeft);
                 trace!(
-                    "MAXIMALITY: FILTERED reason=MaximalityLeft q_pos={} t_pos={} len={} pair={}",
-                    q_pos, t_pos, len, p_class
+                    "{} FILTERED reason=MaximalityLeft q_pos={} t_pos={} len={} pair={}",
+                    InternalLogTag::Maximality,
+                    q_pos,
+                    t_pos,
+                    len,
+                    p_class
                 );
                 return None;
             }
@@ -1029,8 +1096,14 @@ fn extend_seed(
         let p_class = PAIR_MAT[q_next][t_prev];
 
         trace!(
-            "MAXIMALITY: Right Check q_pos={} t_pos={} len={} q_next={} t_prev={} pair={}",
-            q_pos, t_pos, len, q_next, t_prev, p_class
+            "{} Right Check q_pos={} t_pos={} len={} q_next={} t_prev={} pair={}",
+            InternalLogTag::Maximality,
+            q_pos,
+            t_pos,
+            len,
+            q_next,
+            t_prev,
+            p_class
         );
 
         if p_class != 0 {
@@ -1042,8 +1115,12 @@ fn extend_seed(
             } else {
                 ctx.stats.record_filter(FilterReason::MaximalityRight);
                 trace!(
-                    "MAXIMALITY: FILTERED reason=MaximalityRight q_pos={} t_pos={} len={} pair={}",
-                    q_pos, t_pos, len, p_class
+                    "{} FILTERED reason=MaximalityRight q_pos={} t_pos={} len={} pair={}",
+                    InternalLogTag::Maximality,
+                    q_pos,
+                    t_pos,
+                    len,
+                    p_class
                 );
                 return None;
             }
@@ -1051,8 +1128,12 @@ fn extend_seed(
     }
 
     trace!(
-        "MAXIMALITY: Accepted Seed: q_pos={} t_pos={} len={} delta_g={}",
-        q_pos, t_pos, len, opts.delta_g
+        "{} Accepted Seed: q_pos={} t_pos={} len={} delta_g={}",
+        InternalLogTag::Maximality,
+        q_pos,
+        t_pos,
+        len,
+        opts.delta_g
     );
 
     let mut seed_energy = 0.0;

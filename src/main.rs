@@ -47,18 +47,18 @@ fn init_logging(verbosity: u8) {
             // Messages without recognized prefix use level color for consistency
             let msg_color = if msg.starts_with("DP_LEFT") || msg.starts_with("DP_RIGHT") {
                 CYAN
-            } else if msg.starts_with("SA_SEARCH") || msg.starts_with("FIND_CAND") {
+            } else if msg.starts_with("SA_SEARCH") || msg.starts_with("[FIND_CAND]") {
                 YELLOW
             } else if msg.starts_with("SEED") {
                 GREEN
-            } else if msg.starts_with("EXTEND") || msg.starts_with("MAXIMALITY") {
+            } else if msg.starts_with("EXTEND") || msg.starts_with("[MAXIMALITY]") {
                 MAGENTA
             } else if msg.starts_with("DEDUP")
-                || msg.starts_with("HIT")
-                || msg.starts_with("PROC_CAND")
+                || msg.starts_with("[HIT")
+                || msg.starts_with("[PROC_CAND]")
             {
                 BLUE
-            } else if msg.starts_with("QUERY")
+            } else if msg.starts_with("[QUERY]")
                 || msg.starts_with("Starting")
                 || msg.starts_with("Search")
             {
