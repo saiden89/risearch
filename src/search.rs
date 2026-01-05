@@ -15,27 +15,42 @@ use std::collections::HashMap;
 const MAX_DP_EXT: usize = 30;
 const GAP_IDX: usize = Base::Gap as usize;
 
+/// High-level algorithm stages for structured logging
 #[derive(Debug, Clone, Copy)]
-enum InternalLogTag {
-    Query,
-    QuerySeq,
-    Candidate,
-    ProcCand,
-    Maximality,
-    HitAccepted,
-    FindCand,
+enum SearchStage {
+    Input,  // Query parsing and processing
+    Seed,   // Suffix array search, seed generation
+    Extend, // DP extension, maximality checks
+    Dedup,  // Deduplication
+    Output, // Final results
 }
 
-impl std::fmt::Display for InternalLogTag {
+impl std::fmt::Display for SearchStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Query => write!(f, "[QUERY]"),
-            Self::QuerySeq => write!(f, "[QUERY_SEQ]"),
-            Self::Candidate => write!(f, "[CANDIDATE]"),
-            Self::ProcCand => write!(f, "[PROC_CAND]"),
-            Self::Maximality => write!(f, "[MAXIMALITY]"),
-            Self::HitAccepted => write!(f, "[HIT_ACCEPTED]"),
-            Self::FindCand => write!(f, "[FIND_CAND]"),
+            Self::Input => write!(f, "[INPUT]"),
+            Self::Seed => write!(f, "[SEED]"),
+            Self::Extend => write!(f, "[EXTEND]"),
+            Self::Dedup => write!(f, "[DEDUP]"),
+            Self::Output => write!(f, "[OUTPUT]"),
+        }
+    }
+}
+
+/// DP cell-level tracing (very verbose, trace level only)
+#[derive(Debug, Clone, Copy)]
+enum DpCell {
+    Left,  // dp_left function
+    Right, // dp_right function
+    Cell,  // Per-cell updates (most verbose)
+}
+
+impl std::fmt::Display for DpCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Left => write!(f, "[DP_LEFT]"),
+            Self::Right => write!(f, "[DP_RIGHT]"),
+            Self::Cell => write!(f, "[DP_CELL]"),
         }
     }
 }
@@ -321,7 +336,7 @@ impl<'a> SaIndex<'a> {
 
         debug!(
             "{} seed={} pairing={:?}",
-            InternalLogTag::FindCand,
+            SearchStage::Seed,
             String::from_utf8_lossy(&seed_normalized),
             pairing
         );
@@ -360,7 +375,7 @@ impl<'a> SaIndex<'a> {
 
             trace!(
                 "{} seq_idx={} name={} fwd_hits={} rc_hits={}",
-                InternalLogTag::FindCand,
+                SearchStage::Seed,
                 i,
                 &seq_idx.name,
                 fwd_count,
@@ -370,7 +385,7 @@ impl<'a> SaIndex<'a> {
 
         debug!(
             "{} total_candidates={}",
-            InternalLogTag::FindCand,
+            SearchStage::Seed,
             candidates.len()
         );
         candidates
@@ -407,7 +422,8 @@ impl<'a> SaIndex<'a> {
         candidates: &mut Vec<SeedCandidate>,
     ) {
         trace!(
-            "SA_SEARCH: START seed={} pairing={:?} idx={} strand={:?}",
+            "{} START seed={} pairing={:?} idx={} strand={:?}",
+            SearchStage::Seed,
             String::from_utf8_lossy(seed),
             pairing,
             seq_idx,
@@ -447,16 +463,23 @@ impl<'a> SaIndex<'a> {
                 };
 
                 trace!(
-                    "SA_SEARCH: Wobble Check offset={} char={} pairing={:?} wobble_char={:?}",
-                    offset, target_char as char, pairing, wobble_char
+                    "{} Wobble Check offset={} char={} pairing={:?} wobble_char={:?}",
+                    SearchStage::Seed,
+                    offset,
+                    target_char as char,
+                    pairing,
+                    wobble_char
                 );
 
                 if let Some(wc) = wobble_char {
                     let (ws, we) = self.get_sa_interval(sa, text, start, end, offset, wc);
                     if ws < we {
                         trace!(
-                            "SA_SEARCH: Wobble Found! offset={} range={}-{}",
-                            offset, ws, we
+                            "{} Wobble Found! offset={} range={}-{}",
+                            SearchStage::Seed,
+                            offset,
+                            ws,
+                            we
                         );
                         stack.push((ws, we, offset + 1));
                     }
@@ -648,7 +671,7 @@ pub fn run_search(
         Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
     };
 
-    debug!("SEARCH: output={:?}", output.as_ref());
+    debug!("{} output={:?}", SearchStage::Output, output.as_ref());
 
     // Create Search Context
     let mut ctx = SearchContext::new(index, opts);
@@ -656,22 +679,18 @@ pub fn run_search(
     let mut all_hits = Vec::new();
 
     for (q_id, q_seq) in queries {
-        debug!("{} id={} len={}", InternalLogTag::Query, q_id, q_seq.len());
-        trace!(
-            "{} {}",
-            InternalLogTag::QuerySeq,
-            String::from_utf8_lossy(q_seq)
-        );
+        debug!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
+        trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
 
         // Find seeds
         let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
-        debug!("{} {} candidates found", InternalLogTag::Query, seeds.len());
+        debug!("{} {} candidates found", SearchStage::Input, seeds.len());
         ctx.stats.candidates_processed += seeds.len();
 
         for candidate in &seeds {
             trace!(
                 "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
-                InternalLogTag::Candidate,
+                SearchStage::Seed,
                 candidate.query_pos,
                 candidate.target_idx,
                 candidate.target_start,
@@ -681,7 +700,7 @@ pub fn run_search(
             if let Some(hit) = process_candidate(q_id, q_seq, candidate, &mut ctx) {
                 trace!(
                     "{} q={}-{} t={}-{} E={:.2}",
-                    InternalLogTag::HitAccepted,
+                    SearchStage::Output,
                     hit.q_start,
                     hit.q_end,
                     hit.t_start,
@@ -740,22 +759,18 @@ pub fn run_search_collect(
     let mut all_hits = Vec::new();
 
     for (q_id, q_seq) in queries {
-        debug!("{} id={} len={}", InternalLogTag::Query, q_id, q_seq.len());
-        trace!(
-            "{} {}",
-            InternalLogTag::QuerySeq,
-            String::from_utf8_lossy(q_seq)
-        );
+        debug!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
+        trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
 
         // Find seeds
         let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
-        debug!("{} {} candidates found", InternalLogTag::Query, seeds.len());
+        debug!("{} {} candidates found", SearchStage::Input, seeds.len());
         ctx.stats.candidates_processed += seeds.len();
 
         for candidate in &seeds {
             trace!(
                 "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
-                InternalLogTag::Candidate,
+                SearchStage::Seed,
                 candidate.query_pos,
                 candidate.target_idx,
                 candidate.target_start,
@@ -765,7 +780,7 @@ pub fn run_search_collect(
             if let Some(hit) = process_candidate(q_id, q_seq, candidate, &mut ctx) {
                 trace!(
                     "{} q={}-{} t={}-{} E={:.2}",
-                    InternalLogTag::HitAccepted,
+                    SearchStage::Output,
                     hit.q_start,
                     hit.q_end,
                     hit.t_start,
@@ -825,7 +840,7 @@ fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
 }
 
 fn deduplicate_hits(mut hits: Vec<SearchHit>, stats: &mut SearchStats) -> Vec<SearchHit> {
-    debug!("DEDUP: input_count={}", hits.len());
+    debug!("{} input_count={}", SearchStage::Dedup, hits.len());
 
     if hits.is_empty() {
         return hits;
@@ -845,15 +860,20 @@ fn deduplicate_hits(mut hits: Vec<SearchHit>, stats: &mut SearchStats) -> Vec<Se
         if let Some(reason) = kept.iter().find_map(|k| shadows(k, &h)) {
             stats.record_filter(reason);
             trace!(
-                "DEDUP: FILTERED q{}-{}:t{}-{} reason={:?}",
-                h.q_start, h.q_end, h.t_start, h.t_end, reason
+                "{} FILTERED q{}-{}:t{}-{} reason={:?}",
+                SearchStage::Dedup,
+                h.q_start,
+                h.q_end,
+                h.t_start,
+                h.t_end,
+                reason
             );
         } else {
             kept.push(h);
         }
     }
 
-    debug!("DEDUP: output_count={}", kept.len());
+    debug!("{} output_count={}", SearchStage::Dedup, kept.len());
     kept
 }
 
@@ -874,14 +894,23 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
     let end0 = end - 1;
 
     debug!(
-        "SEEDS: spec={} q_len={} range=({},{}) mi_len={} pairing={:?}",
-        seed_spec_str, q_len, start, end, mi_len, ctx.args.seed.pairing
+        "{} spec={} q_len={} range=({},{}) mi_len={} pairing={:?}",
+        SearchStage::Seed,
+        seed_spec_str,
+        q_len,
+        start,
+        end,
+        mi_len,
+        ctx.args.seed.pairing
     );
 
     if start0 + mi_len > q_len {
         warn!(
-            "SEEDS: seed range too long for query: start0={} mi_len={} q_len={}",
-            start0, mi_len, q_len
+            "{} seed range too long for query: start0={} mi_len={} q_len={}",
+            SearchStage::Seed,
+            start0,
+            mi_len,
+            q_len
         );
         return Ok(candidates);
     }
@@ -899,8 +928,11 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
             if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
                 ctx.stats.record_filter(FilterReason::SeedContainsN);
                 trace!(
-                    "SEEDS: FILTERED q_pos={} len={} reason=SeedContainsN",
-                    q_pos, seed_len
+                    "{} FILTERED q_pos={} len={} reason={:?}",
+                    SearchStage::Seed,
+                    q_pos,
+                    seed_len,
+                    FilterReason::SeedContainsN
                 );
                 continue;
             }
@@ -912,7 +944,8 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
             let mut hits = ctx.index.find_candidates(&seed_rc, pairing);
 
             trace!(
-                "SEEDS: q_pos={} len={} seed={} rc={} hits={}",
+                "{} q_pos={} len={} seed={} rc={} hits={}",
+                SearchStage::Seed,
                 q_pos,
                 seed_len,
                 String::from_utf8_lossy(seed_seq),
@@ -935,7 +968,8 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
     }
 
     debug!(
-        "SEEDS: generated {} candidates ({} skipped for N)",
+        "{} generated {} candidates ({} skipped for N)",
+        SearchStage::Seed,
         candidates.len(),
         n_skipped
     );
@@ -961,7 +995,7 @@ fn process_candidate(
 
     trace!(
         "{} q_id={} t_idx={} q_pos={} t_start={} seed_len={} strand={:?}",
-        InternalLogTag::ProcCand,
+        SearchStage::Extend,
         q_id,
         t_idx,
         q_pos,
@@ -973,8 +1007,9 @@ fn process_candidate(
     if t_start_idx + seed_len > t_seq.len() {
         ctx.stats.record_filter(FilterReason::SeedOutOfBounds);
         warn!(
-            "{} FILTERED reason=SeedOutOfBounds t_start={} seed_len={} t_len={}",
-            InternalLogTag::ProcCand,
+            "{} FILTERED reason={:?} t_start={} seed_len={} t_len={}",
+            SearchStage::Extend,
+            FilterReason::SeedOutOfBounds,
             t_start_idx,
             seed_len,
             t_seq.len()
@@ -991,8 +1026,9 @@ fn process_candidate(
     if score > ctx.args.extend.delta_g {
         ctx.stats.record_filter(FilterReason::EnergyAboveThreshold);
         trace!(
-            "{} FILTERED reason=EnergyAboveThreshold score={:.2} > delta_g={}",
-            InternalLogTag::ProcCand,
+            "{} FILTERED reason={:?} score={:.2} > delta_g={}",
+            SearchStage::Extend,
+            FilterReason::EnergyAboveThreshold,
             score,
             ctx.args.extend.delta_g
         );
@@ -1124,7 +1160,7 @@ fn extend_seed(
 
     trace!(
         "{} ENTERING extend_seed q_pos={} t_pos={} len={} delta_g={}",
-        InternalLogTag::Maximality,
+        SearchStage::Extend,
         q_pos,
         t_pos,
         len,
@@ -1139,7 +1175,7 @@ fn extend_seed(
 
         trace!(
             "{} Left Check q_pos={} t_pos={} len={} q_prev={} t_next={} pair={}",
-            InternalLogTag::Maximality,
+            SearchStage::Extend,
             q_pos,
             t_pos,
             len,
@@ -1157,8 +1193,9 @@ fn extend_seed(
             } else {
                 ctx.stats.record_filter(FilterReason::MaximalityLeft);
                 trace!(
-                    "{} FILTERED reason=MaximalityLeft q_pos={} t_pos={} len={} pair={}",
-                    InternalLogTag::Maximality,
+                    "{} FILTERED reason={:?} q_pos={} t_pos={} len={} pair={}",
+                    SearchStage::Extend,
+                    FilterReason::MaximalityLeft,
                     q_pos,
                     t_pos,
                     len,
@@ -1177,7 +1214,7 @@ fn extend_seed(
 
         trace!(
             "{} Right Check q_pos={} t_pos={} len={} q_next={} t_prev={} pair={}",
-            InternalLogTag::Maximality,
+            SearchStage::Extend,
             q_pos,
             t_pos,
             len,
@@ -1195,8 +1232,9 @@ fn extend_seed(
             } else {
                 ctx.stats.record_filter(FilterReason::MaximalityRight);
                 trace!(
-                    "{} FILTERED reason=MaximalityRight q_pos={} t_pos={} len={} pair={}",
-                    InternalLogTag::Maximality,
+                    "{} FILTERED reason={:?} q_pos={} t_pos={} len={} pair={}",
+                    SearchStage::Extend,
+                    FilterReason::MaximalityRight,
                     q_pos,
                     t_pos,
                     len,
@@ -1209,7 +1247,7 @@ fn extend_seed(
 
     trace!(
         "{} Accepted Seed: q_pos={} t_pos={} len={} delta_g={}",
-        InternalLogTag::Maximality,
+        SearchStage::Extend,
         q_pos,
         t_pos,
         len,
@@ -1488,8 +1526,11 @@ fn dp_left(
     let mut best_j = 0;
 
     trace!(
-        "DP_LEFT: START q_len={} t_len={} initial_best_e={}",
-        q_len, t_len, best_e
+        "{} START q_len={} t_len={} initial_best_e={}",
+        DpCell::Left,
+        q_len,
+        t_len,
+        best_e
     );
 
     // C: if (lq <= 1 || lt <= 1) return best_e;
@@ -1672,7 +1713,8 @@ fn dp_left(
             tb_m.set(i, j, step_m);
 
             trace!(
-                "DP_LEFT_CELL: i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
+                "{} i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
+                DpCell::Cell,
                 i,
                 j,
                 val_m.map_or("-".to_string(), |v| v.to_string()),
@@ -1686,8 +1728,12 @@ fn dp_left(
                 let curr_e = v + s_mat[GAP_IDX][q_idx(i)][GAP_IDX][t_idx(j)] as i32;
                 if curr_e > best_e {
                     trace!(
-                        "DP_LEFT: UPDATE best: i={} j={} curr_e={} (was {})",
-                        i, j, curr_e, best_e
+                        "{} UPDATE best: i={} j={} curr_e={} (was {})",
+                        DpCell::Left,
+                        i,
+                        j,
+                        curr_e,
+                        best_e
                     );
                     best_e = curr_e;
                     best_i = i;
@@ -1709,17 +1755,23 @@ fn dp_left(
                     (Some(qq), Some(qm)) if qq > qm => {
                         bq.set(i, j, Some(qq));
                         tb_bq.set(i, j, DpMove::GapQ);
-                        trace!("DP_LEFT_CELL: i={} j={} Bq={} (from GapQ)", i, j, qq);
+                        trace!("{} i={} j={} Bq={} (from GapQ)", DpCell::Cell, i, j, qq);
                     }
                     (_, Some(qm)) => {
                         bq.set(i, j, Some(qm));
                         tb_bq.set(i, j, DpMove::Match);
-                        trace!("DP_LEFT_CELL: i={} j={} Bq={} (from Match)", i, j, qm);
+                        trace!("{} i={} j={} Bq={} (from Match)", DpCell::Cell, i, j, qm);
                     }
                     (Some(qq), None) => {
                         bq.set(i, j, Some(qq));
                         tb_bq.set(i, j, DpMove::GapQ);
-                        trace!("DP_LEFT_CELL: i={} j={} Bq={} (from GapQ, no M)", i, j, qq);
+                        trace!(
+                            "{} i={} j={} Bq={} (from GapQ, no M)",
+                            DpCell::Cell,
+                            i,
+                            j,
+                            qq
+                        );
                     }
                     _ => {}
                 }
@@ -1739,17 +1791,23 @@ fn dp_left(
                     (Some(tt), Some(tm)) if tt > tm => {
                         bt.set(i, j, Some(tt));
                         tb_bt.set(i, j, DpMove::GapT);
-                        trace!("DP_LEFT_CELL: i={} j={} Bt={} (from GapT)", i, j, tt);
+                        trace!("{} i={} j={} Bt={} (from GapT)", DpCell::Cell, i, j, tt);
                     }
                     (_, Some(tm)) => {
                         bt.set(i, j, Some(tm));
                         tb_bt.set(i, j, DpMove::Match);
-                        trace!("DP_LEFT_CELL: i={} j={} Bt={} (from Match)", i, j, tm);
+                        trace!("{} i={} j={} Bt={} (from Match)", DpCell::Cell, i, j, tm);
                     }
                     (Some(tt), None) => {
                         bt.set(i, j, Some(tt));
                         tb_bt.set(i, j, DpMove::GapT);
-                        trace!("DP_LEFT_CELL: i={} j={} Bt={} (from GapT, no M)", i, j, tt);
+                        trace!(
+                            "{} i={} j={} Bt={} (from GapT, no M)",
+                            DpCell::Cell,
+                            i,
+                            j,
+                            tt
+                        );
                     }
                     _ => {}
                 }
@@ -1823,7 +1881,8 @@ fn dp_left(
     }
 
     trace!(
-        "DP_LEFT: END score={:.2} q_ext={} t_ext={} trace_len={}",
+        "{} END score={:.2} q_ext={} t_ext={} trace_len={}",
+        DpCell::Left,
         best_e,
         best_i,
         best_j,
@@ -2068,7 +2127,8 @@ fn dp_right(
             tb_m.set(i, j, step_m);
 
             trace!(
-                "DP_RIGHT_CELL: i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
+                "{} i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
+                DpCell::Cell,
                 i,
                 j,
                 val_m.map_or("-".to_string(), |v| v.to_string()),
@@ -2082,7 +2142,8 @@ fn dp_right(
                 let term = s_mat[q_idx(i)][GAP_IDX][t_idx(j)][GAP_IDX] as i32;
                 if v + term > best_e {
                     trace!(
-                        "DP_RIGHT: UPDATE best: i={} j={} curr_e={} (was {})",
+                        "{} UPDATE best: i={} j={} curr_e={} (was {})",
+                        DpCell::Right,
                         i,
                         j,
                         v + term,
