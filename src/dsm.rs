@@ -30,6 +30,64 @@ impl Dsm {
     }
 }
 
+/// Represents a stacked base pair for energy calculation.
+///
+/// Encapsulates the biological meaning of a dinucleotide stack:
+/// ```text
+///   5' [q1]-[q2] 3'   Query strand
+///       |    |
+///   3' [t1]-[t2] 5'   Target strand (antiparallel)
+/// ```
+///
+/// The complement transformation is applied internally when creating
+/// from bases, centralizing the antiparallel binding semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackPair {
+    /// Query 5' base
+    pub q1: Base,
+    /// Query 3' base  
+    pub q2: Base,
+    /// Target 3' base (pairs with q1)
+    pub t1: Base,
+    /// Target 5' base (pairs with q2)
+    pub t2: Base,
+}
+
+impl StackPair {
+    /// Create from bases directly (no transformation).
+    #[inline]
+    pub fn new(q1: Base, q2: Base, t1: Base, t2: Base) -> Self {
+        Self { q1, q2, t1, t2 }
+    }
+
+    /// Create from bases, applying complement to target.
+    ///
+    /// This is the standard way to create a StackPair for energy calculation.
+    /// The complement transformation handles the antiparallel binding semantics:
+    /// when target base T pairs with query base Q, we need complement(T) for DSM lookup.
+    #[inline]
+    pub fn from_bases_complemented(q1: Base, q2: Base, t1: Base, t2: Base) -> Self {
+        Self {
+            q1,
+            q2,
+            t1: t1.complement(),
+            t2: t2.complement(),
+        }
+    }
+
+    /// Get stacking energy from T04 matrix (default).
+    #[inline]
+    pub fn energy(&self) -> i16 {
+        Dsm::T04.get(self.q1, self.q2, self.t1, self.t2)
+    }
+
+    /// Get energy from a specific DSM table.
+    #[inline]
+    pub fn energy_with(&self, dsm: &Dsm) -> i16 {
+        dsm.get(self.q1, self.q2, self.t1, self.t2)
+    }
+}
+
 // Legacy constants for backward compatibility
 pub const GAP: i32 = 0;
 
@@ -1337,5 +1395,53 @@ impl DsmAccessor for Vec<u8> {
     #[inline(always)]
     fn base_at(&self, pos: usize) -> Base {
         self.as_slice().base_at(pos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stack_pair_new() {
+        let sp = StackPair::new(Base::A, Base::C, Base::U, Base::G);
+        assert_eq!(sp.q1, Base::A);
+        assert_eq!(sp.q2, Base::C);
+        assert_eq!(sp.t1, Base::U);
+        assert_eq!(sp.t2, Base::G);
+    }
+
+    #[test]
+    fn test_stack_pair_from_bases_complemented() {
+        // A-U pair: complement of U is A
+        let sp = StackPair::from_bases_complemented(Base::A, Base::C, Base::U, Base::G);
+        assert_eq!(sp.q1, Base::A);
+        assert_eq!(sp.q2, Base::C);
+        assert_eq!(sp.t1, Base::A); // complement of U
+        assert_eq!(sp.t2, Base::C); // complement of G
+    }
+
+    #[test]
+    fn test_stack_pair_energy() {
+        // A-U / A-U stack: query AA, target UU (complementary)
+        // This is a valid Watson-Crick stack
+        let sp = StackPair::new(Base::A, Base::A, Base::U, Base::U);
+        let energy = sp.energy();
+        // Just verify we get a value (could be positive or negative)
+        // The important thing is it compiles and runs
+        assert_ne!(energy, 0, "Stack energy should not be zero");
+    }
+
+    #[test]
+    fn test_dsm_get() {
+        let dsm = Dsm::T04;
+        // Just verify lookup works
+        let energy = dsm.get(Base::A, Base::U, Base::U, Base::A);
+        // Gap penalty should be handled by DSM table
+        let gap_energy = dsm.get(Base::Gap, Base::A, Base::Gap, Base::U);
+        assert!(
+            gap_energy != 0 || energy != 0,
+            "At least one lookup should be non-zero"
+        );
     }
 }

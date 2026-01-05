@@ -1546,8 +1546,10 @@ fn dp_left(
     let mut best_j = 0;
 
     trace!(
-        "{} START q_len={} t_len={} initial_best_e={}",
+        "{} START q_start={} t_start={} q_len={} t_len={} Q(0)={} T(0)={} best_e=DSM[0][{}][0][{}]={}",
         DpCell::Left,
+        q_start,
+        t_start,
         q_len,
         t_len,
         q_idx(0),

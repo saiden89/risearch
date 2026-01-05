@@ -6,9 +6,12 @@ pub mod io;
 pub mod sa;
 pub mod search;
 pub mod seed;
+pub mod seq;
 pub mod types; // Core domain types - must be first
 
 // Re-exports for convenience
+pub use dsm::{Dsm, StackPair};
+pub use seq::Seq;
 pub use types::{BASE_COUNT, Base, SeedPairing, Strand};
 
 // Search API re-exports for library usage
