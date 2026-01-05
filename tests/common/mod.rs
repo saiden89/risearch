@@ -584,10 +584,10 @@ pub fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
             debug!("{} Likely pair (distance={})", LogTag::Pair, score);
 
             if extra.interaction == m.interaction {
-                debug!("{}   [NOTE] Interactions Identical!", LogTag::Pair);
+                debug!("{} [NOTE] Interactions Identical!", LogTag::Pair);
                 if extra.energy != m.energy {
                     debug!(
-                        "{}   Energy Diff: Rust={} vs C={}",
+                        "{} Energy Diff: Rust={} vs C={}",
                         LogTag::Pair,
                         extra.energy,
                         m.energy
@@ -595,7 +595,7 @@ pub fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
                 }
                 if extra.target_seq != m.target_seq {
                     debug!(
-                        "{}   Target Diff: Rust={} vs C={}",
+                        "{} Target Diff: Rust={} vs C={}",
                         LogTag::Pair,
                         extra.target_seq,
                         m.target_seq
@@ -604,7 +604,7 @@ pub fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
                 // Check coords
                 if !extra.coords_match(m) {
                     debug!(
-                        "{}   Coords Diff: Rust={} vs C={}",
+                        "{} Coords Diff: Rust={} vs C={}",
                         LogTag::Pair,
                         extra.fmt_coords(),
                         m.fmt_coords()
@@ -619,7 +619,7 @@ pub fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
             };
 
             for line in table.to_string().lines() {
-                debug!("{}   {}", LogTag::Pair, line);
+                debug!("{} {}", LogTag::Pair, line);
             }
         }
     }
@@ -1150,22 +1150,25 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
 
                 // Only show significant differences
                 if status.is_significant() {
-                    debug!("{}", LogTag::Parity);
                     let energy_msg = if r.energy == c.energy {
                         "".to_string()
                     } else {
                         format!(" | C Energy: {}", c.energy)
                     };
+                    // Status and coords first
                     debug!(
-                        "{}   {} Coords: {}{}",
+                        "{} {} Coords: {}{}",
                         LogTag::Parity,
                         status,
                         r.fmt_coords(),
                         energy_msg
                     );
-
-                    // Print table as single block to preserve alignment
-                    debug!("{}   {}\n{}", LogTag::Parity, status, table);
+                    // Then table
+                    for line in table.to_string().lines() {
+                        debug!("{} {}", LogTag::Parity, line);
+                    }
+                    // Blank separator after table
+                    debug!("{}", LogTag::Parity);
                 }
 
                 // Note: Explicit "Differs in: ..." summary removed as it's redundant with the visual diff table.
@@ -1177,8 +1180,13 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                     kind: ParityKind::RustOnly(r),
                     config: TableConfig::default(),
                 };
-                // Print table as single block
-                debug!("{}   {}\n{}", LogTag::Parity, HitStatus::Extra, table);
+                // Print table with each line as separate log entry
+                debug!("{} {}", LogTag::Parity, HitStatus::Extra);
+                for line in table.to_string().lines() {
+                    debug!("{} {}", LogTag::Parity, line);
+                }
+                // Blank separator after table
+                debug!("{}", LogTag::Parity);
             }
         }
 
@@ -1191,8 +1199,13 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                     kind: ParityKind::COnly(c),
                     config: TableConfig::default(),
                 };
-                // Print table as single block
-                debug!("{}   {}\n{}", LogTag::Parity, HitStatus::Missing, table);
+                // Print table with each line as separate log entry
+                debug!("{} {}", LogTag::Parity, HitStatus::Missing);
+                for line in table.to_string().lines() {
+                    debug!("{} {}", LogTag::Parity, line);
+                }
+                // Blank separator after table
+                debug!("{}", LogTag::Parity);
             }
         }
     }
