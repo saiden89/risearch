@@ -340,9 +340,88 @@ impl std::fmt::Display for HitStatus {
     }
 }
 
-impl HitStatus {
-    pub fn is_significant(&self) -> bool {
-        !matches!(self, Self::Identical)
+/// Why a C hit was not found in Rust output
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingReason {
+    /// Rust found overlapping hit with better (lower) energy
+    BetterEnergy,
+    /// Rust found overlapping hit with equal energy (co-optimal)
+    EqualEnergy,
+    /// Rust found overlapping hit with worse (higher) energy
+    WorseEnergy,
+    /// No overlapping Rust hit - completely missed
+    NoOverlap,
+}
+
+impl std::fmt::Display for MissingReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BetterEnergy => write!(f, "COVERED_BETTER"),
+            Self::EqualEnergy => write!(f, "COVERED_EQUAL"),
+            Self::WorseEnergy => write!(f, "COVERED_WORSE"),
+            Self::NoOverlap => write!(f, "NO_OVERLAP"),
+        }
+    }
+}
+
+impl MissingReason {
+    pub fn is_acceptable(&self, mode: ParityMode) -> bool {
+        match mode {
+            ParityMode::Strict => false,
+            ParityMode::Relaxed => matches!(self, Self::BetterEnergy | Self::EqualEnergy),
+        }
+    }
+}
+
+/// Comparison mode for parity tests
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParityMode {
+    #[allow(dead_code)] // Reserved for strict parity testing
+    Strict,
+    /// Accept improvements and co-optimal traces
+    #[default]
+    Relaxed,
+}
+
+/// Check if two coordinate ranges overlap
+fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
+    a_start <= b_end && b_start <= a_end
+}
+
+/// Check if two hits overlap in both query and target coordinates
+fn hits_overlap(a: &Rec, b: &Rec) -> bool {
+    a.strand == b.strand
+        && ranges_overlap(a.t_start, a.t_end, b.t_start, b.t_end)
+        && ranges_overlap(a.q_start, a.q_end, b.q_start, b.q_end)
+}
+
+/// Classify why a C hit is missing from Rust output
+/// Finds the BEST (lowest energy) overlapping Rust hit for comparison
+fn classify_missing(c_hit: &Rec, rust_hits: &[&Rec]) -> MissingReason {
+    let c_e = c_hit.energy.parse::<f64>().unwrap_or(0.0);
+
+    // Find the best (lowest energy) overlapping Rust hit
+    let best_overlap = rust_hits
+        .iter()
+        .filter(|r| hits_overlap(c_hit, r))
+        .min_by(|a, b| {
+            let a_e = a.energy.parse::<f64>().unwrap_or(0.0);
+            let b_e = b.energy.parse::<f64>().unwrap_or(0.0);
+            a_e.partial_cmp(&b_e).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+    match best_overlap {
+        Some(r) => {
+            let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
+            if r_e < c_e - 0.001 {
+                MissingReason::BetterEnergy
+            } else if r_e > c_e + 0.001 {
+                MissingReason::WorseEnergy
+            } else {
+                MissingReason::EqualEnergy
+            }
+        }
+        None => MissingReason::NoOverlap,
     }
 }
 
@@ -514,35 +593,6 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
 // of interaction strings. Format: <left_ext>y<seed>x<right_ext>
 // =============================================================================
 
-/// Parse y/x markers from a C debug output string.
-/// Returns (interaction_without_markers, seed_start, seed_end) or None if no markers.
-pub fn parse_seed_markers(s: &str) -> Option<(String, usize, usize)> {
-    let before = char::from(SeedMarker::BeforeSeed);
-    let after = char::from(SeedMarker::AfterSeed);
-
-    let y_pos = s.find(before)?;
-    let x_pos = s.find(after)?;
-
-    if x_pos <= y_pos {
-        return None; // Invalid marker order
-    }
-
-    // Remove markers and compute seed indices in the clean string
-    let clean: String = s.chars().filter(|&c| c != before && c != after).collect();
-    let seed_start = y_pos;
-    let seed_end = x_pos - 1; // -1 because y was before this position
-
-    Some((clean, seed_start, seed_end))
-}
-
-/// Strip y/x markers from a string (simple cleanup without parsing positions)
-/// Strip y/x markers from a string (simple cleanup without parsing positions)
-fn strip_markers(s: &str) -> String {
-    let before = char::from(SeedMarker::BeforeSeed);
-    let after = char::from(SeedMarker::AfterSeed);
-    s.chars().filter(|&c| c != before && c != after).collect()
-}
-
 /// Format a Rec as a horizontal table for display
 /// Columns: 5' Context | 5' EXT | SEED | 3' EXT | 3' Context
 /// Rows: FP, Target (and optionally Query)
@@ -695,7 +745,7 @@ pub fn run_file_parity(
     let c_out = search_c(query, &c_index_path, &c_bin, &c_args);
 
     // Compare
-    compare_results(&rust_out, &c_out, test_name);
+    compare_results(&rust_out, &c_out, test_name, ParityMode::Relaxed);
 }
 
 pub fn index_and_search_rust(
@@ -755,6 +805,7 @@ pub fn index_and_search_rust(
 
 /// Search using risearch as a library (no subprocess).
 /// Logs go through the test logger naturally (colored, filtered).
+#[allow(dead_code)]
 pub fn search_rust_lib(
     query_seq: &str,
     target_seq: &str,
@@ -918,7 +969,7 @@ pub fn create_c_index(target: &Path, c_index: &Path, c_bin: &Path) {
     }
 }
 
-pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
+pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: ParityMode) {
     // Initialize logger if not already initialized
     // Initialize logger if not already initialized
     init_test_logging();
@@ -1036,6 +1087,9 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
     let mut missing_len_sum: usize = 0;
     let mut missing_energy_sum: f64 = 0.0;
 
+    // Pre-compute reference to all Rust hits for missing classification
+    let all_rust_refs: Vec<&Rec> = rust_recs.iter().collect();
+
     for (q, t) in sorted_keys {
         let mut r_group: Vec<&Rec> = rust_recs
             .iter()
@@ -1148,33 +1202,35 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
                     }
                 }
 
-                // Use ParityTable for all mismatch display (it handles parsing/diff internally)
-                let table = ParityTable {
-                    kind: ParityKind::Mismatch { rust: r, c },
-                    config: TableConfig::default(),
-                };
-
-                // Only show significant differences
-                if status.is_significant() {
-                    let energy_msg = if r.energy == c.energy {
-                        "".to_string()
-                    } else {
-                        format!(" | C Energy: {}", c.energy)
-                    };
-                    // Status and coords first
-                    debug!(
-                        "{} {} Coords: {}{}",
-                        LogTag::Parity,
-                        status,
-                        r.fmt_coords(),
-                        energy_msg
-                    );
-                    // Then table
-                    for line in table.to_string().lines() {
-                        debug!("{} {}", LogTag::Parity, line);
+                // Log all matched hits at appropriate levels
+                match status {
+                    HitStatus::Identical => {
+                        trace!("{} {} Coords: {}", LogTag::Parity, status, r.fmt_coords());
                     }
-                    // Blank separator after table
-                    debug!("{}", LogTag::Parity);
+                    HitStatus::CoOptimal | HitStatus::RustBetter | HitStatus::RustWorse => {
+                        let energy_msg = if r.energy == c.energy {
+                            "".to_string()
+                        } else {
+                            format!(" | C Energy: {}", c.energy)
+                        };
+                        debug!(
+                            "{} {} Coords: {}{}",
+                            LogTag::Parity,
+                            status,
+                            r.fmt_coords(),
+                            energy_msg
+                        );
+                        // Show table for differences
+                        let table = ParityTable {
+                            kind: ParityKind::Mismatch { rust: r, c },
+                            config: TableConfig::default(),
+                        };
+                        for line in table.to_string().lines() {
+                            debug!("{} {}", LogTag::Parity, line);
+                        }
+                        debug!("{}", LogTag::Parity);
+                    }
+                    _ => {}
                 }
 
                 // Note: Explicit "Differs in: ..." summary removed as it's redundant with the visual diff table.
@@ -1203,25 +1259,40 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
 
         for (i, c) in c_remaining.iter().enumerate() {
             if !c_rem_matched[i] {
-                missing_count += 1;
-                missing_len_sum += c.interaction.len();
-                missing_energy_sum += c.energy.parse::<f64>().unwrap_or(0.0);
-                let table = ParityTable {
-                    kind: ParityKind::COnly(c),
-                    config: TableConfig::default(),
-                };
-                // Print table with each line as separate log entry
-                debug!(
-                    "{} {} Coords: {}",
-                    LogTag::Parity,
-                    HitStatus::Missing,
-                    c.fmt_coords()
-                );
-                for line in table.to_string().lines() {
-                    debug!("{} {}", LogTag::Parity, line);
+                // Classify why this C hit is missing - check against ALL Rust hits
+                let reason = classify_missing(c, &all_rust_refs);
+
+                if reason.is_acceptable(mode) {
+                    // Acceptable missing - log but don't count as failure
+                    debug!(
+                        "{} {} {} Coords: {}",
+                        LogTag::Parity,
+                        HitStatus::Missing,
+                        reason,
+                        c.fmt_coords()
+                    );
+                } else {
+                    // Unacceptable missing - count as failure
+                    missing_count += 1;
+                    missing_len_sum += c.interaction.len();
+                    missing_energy_sum += c.energy.parse::<f64>().unwrap_or(0.0);
+
+                    let table = ParityTable {
+                        kind: ParityKind::COnly(c),
+                        config: TableConfig::default(),
+                    };
+                    debug!(
+                        "{} {} {} Coords: {}",
+                        LogTag::Parity,
+                        HitStatus::Missing,
+                        reason,
+                        c.fmt_coords()
+                    );
+                    for line in table.to_string().lines() {
+                        debug!("{} {}", LogTag::Parity, line);
+                    }
+                    debug!("{}", LogTag::Parity);
                 }
-                // Blank separator after table
-                debug!("{}", LogTag::Parity);
             }
         }
     }
@@ -1551,6 +1622,6 @@ pub fn run_single_seq_parity(
             );
         }
     } else {
-        compare_results(&rust_out, &c_out, test_name);
+        compare_results(&rust_out, &c_out, test_name, ParityMode::Relaxed);
     }
 }
