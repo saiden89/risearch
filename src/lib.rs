@@ -10,3 +10,6 @@ pub mod types; // Core domain types - must be first
 
 // Re-exports for convenience
 pub use types::{BASE_COUNT, Base, SeedPairing, Strand};
+
+// Search API re-exports for library usage
+pub use search::{Alignment, SearchHit, run_search_collect};

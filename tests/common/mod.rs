@@ -121,6 +121,34 @@ impl Rec {
     }
 }
 
+impl From<&risearch::SearchHit> for Rec {
+    fn from(hit: &risearch::SearchHit) -> Self {
+        Rec {
+            q_id: hit.query_id.clone(),
+            q_start: hit.q_start,
+            q_end: hit.q_end,
+            t_id: hit.target_id.clone(),
+            t_start: hit.output_t_start,
+            t_end: hit.output_t_end,
+            strand: hit.strand.to_string(),
+            energy: format!("{:.2}", hit.energy),
+            interaction: hit
+                .alignment
+                .fingerprint()
+                .replace('T', "U")
+                .replace('t', "u"),
+            target_seq: hit
+                .alignment
+                .target_sequence()
+                .replace('T', "U")
+                .replace('t', "u"),
+            flank_5: hit.flank_5.clone(),
+            flank_3: hit.flank_3.clone(),
+            query_seq: String::new(), // Not stored in SearchHit
+        }
+    }
+}
+
 // =============================================================================
 // PARITY DATA MODELS & VIEW
 // =============================================================================
@@ -242,8 +270,6 @@ pub struct ParityTable<'a> {
 pub enum LogTag {
     Rec,
     Pair,
-    Rust,
-    C,
     Parity,
     Summary,
 }
@@ -253,8 +279,6 @@ impl std::fmt::Display for LogTag {
         match self {
             Self::Rec => write!(f, "[REC]"),
             Self::Pair => write!(f, "[PAIR]"),
-            Self::Rust => write!(f, "[RUST]"),
-            Self::C => write!(f, "[C]"),
             Self::Parity => write!(f, "[PARITY]"),
             Self::Summary => write!(f, "[SUMMARY]"),
         }
@@ -619,6 +643,55 @@ pub fn parse_output(output: &str) -> (Vec<Rec>, usize) {
     (recs, parsed_count)
 }
 
+/// Run parity test with file inputs.
+/// Handles C indexing, Rust indexing, searching both, and comparison.
+///
+/// # Arguments
+/// * `query` - Path to query FASTA file
+/// * `target` - Path to target FASTA file  
+/// * `c_index` - Optional path to pre-existing C index (if None, will create)
+/// * `test_name` - Name for logging/assertions
+/// * `args` - CLI args for search
+pub fn run_file_parity(
+    query: &Path,
+    target: &Path,
+    c_index: Option<&Path>,
+    test_name: &str,
+    args: &[&str],
+) {
+    init_test_logging();
+
+    let root = workspace_root();
+    let c_bin = c_binary_path(&root);
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+
+    // Create C index if not provided
+    let c_index_path = if let Some(idx) = c_index {
+        idx.to_path_buf()
+    } else {
+        let idx_path = tmpdir.path().join("c_target.pksuf");
+        create_c_index(target, &idx_path, &c_bin);
+        idx_path
+    };
+
+    let rust_idx = tmpdir.path().join("rust_target.idx");
+
+    // Run Rust search
+    let rust_output = index_and_search_rust(query, target, &rust_idx, args);
+    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+
+    // Run C search
+    let c_args: Vec<&str> = args
+        .iter()
+        .filter(|&&a| a != "--no-max-prune")
+        .cloned()
+        .collect();
+    let c_out = search_c(query, &c_index_path, &c_bin, &c_args);
+
+    // Compare
+    compare_results(&rust_out, &c_out, test_name);
+}
+
 pub fn index_and_search_rust(
     query: &Path,
     target: &Path,
@@ -672,6 +745,43 @@ pub fn index_and_search_rust(
         panic!("Rust search failed: {:?}", output.status);
     }
     output
+}
+
+/// Search using risearch as a library (no subprocess).
+/// Logs go through the test logger naturally (colored, filtered).
+pub fn search_rust_lib(
+    query_seq: &str,
+    target_seq: &str,
+    query_id: &str,
+    target_id: &str,
+    args: &risearch::args::SearchArgs,
+) -> Vec<Rec> {
+    use risearch::search::SaIndex;
+    use tempfile::tempdir;
+
+    // Create temp files for index
+    let tmpdir = tempdir().expect("tempdir");
+    let target_path = tmpdir.path().join("target.fa");
+    let index_path = tmpdir.path().join("target.idx");
+
+    // Write target to file
+    fs::write(&target_path, format!(">{}\n{}\n", target_id, target_seq)).expect("write target");
+
+    // Build index
+    risearch::sa::create_suffix_array(&target_path, &index_path).expect("build index");
+
+    // Load index
+    let index_file = risearch::sa::load_index_file(&index_path).expect("load index");
+    let index = SaIndex { index: &index_file };
+
+    // Prepare query
+    let queries = vec![(query_id.to_string(), query_seq.as_bytes().to_vec())];
+
+    // Run search
+    let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
+
+    // Convert to Rec
+    hits.iter().map(Rec::from).collect()
 }
 
 pub fn search_c(query: &Path, c_index: &Path, c_bin: &Path, args: &[&str]) -> String {
@@ -834,7 +944,8 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
 
     if rust_parsed != rust_lines {
         panic!(
-            "[PARITY] Rust parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
+            "{} Rust parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
+            LogTag::Parity,
             rust_lines,
             rust_parsed,
             rust_lines.saturating_sub(rust_parsed)
@@ -842,7 +953,8 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
     }
     if c_parsed != c_lines {
         panic!(
-            "[PARITY] C parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
+            "{} C parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
+            LogTag::Parity,
             c_lines,
             c_parsed,
             c_lines.saturating_sub(c_parsed)
@@ -852,16 +964,22 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
     // Log dedup info at debug level if any duplicates were removed
     if rust_recs.len() != rust_parsed {
         debug!(
-            "[PARITY] Rust: {} duplicates removed",
+            "{} Rust: {} duplicates removed",
+            LogTag::Parity,
             rust_parsed - rust_recs.len()
         );
     }
     if c_recs.len() != c_parsed {
-        debug!("[PARITY] C: {} duplicates removed", c_parsed - c_recs.len());
+        debug!(
+            "{} C: {} duplicates removed",
+            LogTag::Parity,
+            c_parsed - c_recs.len()
+        );
     }
 
     info!(
-        "[PARITY] {} - Comparing: Rust={} hits, C={} hits",
+        "{} {} - Comparing: Rust={} hits, C={} hits",
+        LogTag::Parity,
         test_name,
         rust_recs.len(),
         c_recs.len()
@@ -1093,9 +1211,14 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str) {
 
     // Determine verdict
     let is_pass = mismatch_count == 0 && missing_count == 0 && extra_count == 0;
-    let is_allowed_divergence = (test_name == "seed_only_no_extension"
-        || test_name == "wobble_seed_pairs"
-        || test_name == "right_extension_only")
+
+    // Tests with known divergences that are acceptable (documented behavioral differences)
+    const KNOWN_DIVERGENT_TESTS: &[&str] = &[
+        "seed_only_no_extension", // G-U wobble handling in maximality check
+        "wobble_seed_pairs",      // G-U wobble pair enumeration
+        "right_extension_only",   // Right extension boundary condition
+    ];
+    let is_allowed_divergence = KNOWN_DIVERGENT_TESTS.contains(&test_name)
         && mismatch_count == 0
         && extra_count == 0
         && missing_count > 0;
@@ -1311,7 +1434,8 @@ pub fn run_single_seq_parity(
         let (c_recs, _) = parse_output(&c_out);
 
         info!(
-            "[PARITY] {} - Rust={} hits, C={} hits",
+            "{} {} - Rust={} hits, C={} hits",
+            LogTag::Parity,
             test_name,
             rust_recs.len(),
             c_recs.len()
@@ -1339,8 +1463,10 @@ pub fn run_single_seq_parity(
                         // Only warn if Rust is strictly better, silently accept equal
                         if r_e < c_e - 0.001 {
                             warn!(
-                                "[PARITY] Improved energy: Rust E={} vs C E={}",
-                                r.energy, c.energy
+                                "{} Improved energy: Rust E={} vs C E={}",
+                                LogTag::Parity,
+                                r.energy,
+                                c.energy
                             );
                         }
                         // Accept if Rust is better or equal
@@ -1365,7 +1491,8 @@ pub fn run_single_seq_parity(
             .collect();
 
         debug!(
-            "[PARITY] Exact matches: {}, EXTRA: {}, MISSING: {}",
+            "{} Exact matches: {}, EXTRA: {}, MISSING: {}",
+            LogTag::Parity,
             rust_recs.len() - extras.len(),
             extras.len(),
             missings.len()
@@ -1377,7 +1504,8 @@ pub fn run_single_seq_parity(
         // Fail if we missed any C hits
         if !missings.is_empty() {
             panic!(
-                "[PARITY] FAILED {}: {} missings ({} extras)",
+                "{} FAILED {}: {} missings ({} extras)",
+                LogTag::Parity,
                 test_name,
                 missings.len(),
                 extras.len()
@@ -1387,7 +1515,8 @@ pub fn run_single_seq_parity(
         // Warn about extras but pass
         if !extras.is_empty() {
             warn!(
-                "[PARITY] {} extras in {} (acceptable if 0 missings)",
+                "{} {} extras in {} (acceptable if 0 missings)",
+                LogTag::Parity,
                 extras.len(),
                 test_name
             );

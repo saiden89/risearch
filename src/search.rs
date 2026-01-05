@@ -720,6 +720,86 @@ pub fn run_search(
     Ok(())
 }
 
+/// Run search and return hits directly (for library/test usage).
+/// Unlike `run_search`, this returns the hits instead of writing to a file.
+pub fn run_search_collect(
+    queries: &[(String, Vec<u8>)],
+    index: &SaIndex<'_>,
+    opts: &SearchArgs,
+) -> Result<Vec<SearchHit>> {
+    info!(
+        "Starting search: {} queries, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.extend.delta_g
+    );
+
+    // Create Search Context
+    let mut ctx = SearchContext::new(index, opts);
+    let mut all_hits = Vec::new();
+
+    for (q_id, q_seq) in queries {
+        debug!("{} id={} len={}", InternalLogTag::Query, q_id, q_seq.len());
+        trace!(
+            "{} {}",
+            InternalLogTag::QuerySeq,
+            String::from_utf8_lossy(q_seq)
+        );
+
+        // Find seeds
+        let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
+        debug!("{} {} candidates found", InternalLogTag::Query, seeds.len());
+        ctx.stats.candidates_processed += seeds.len();
+
+        for candidate in &seeds {
+            trace!(
+                "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
+                InternalLogTag::Candidate,
+                candidate.query_pos,
+                candidate.target_idx,
+                candidate.target_start,
+                candidate.len,
+                candidate.strand
+            );
+            if let Some(hit) = process_candidate(q_id, q_seq, candidate, &mut ctx) {
+                trace!(
+                    "{} q={}-{} t={}-{} E={:.2}",
+                    InternalLogTag::HitAccepted,
+                    hit.q_start,
+                    hit.q_end,
+                    hit.t_start,
+                    hit.t_end,
+                    hit.energy
+                );
+                all_hits.push(hit);
+            }
+        }
+    }
+
+    // Deduplicate logic
+    ctx.stats.hits_before_dedup = all_hits.len();
+    let deduped = deduplicate_hits(all_hits, &mut ctx.stats);
+    ctx.stats.hits_final = deduped.len();
+
+    // Log filter stats
+    info!(
+        "Search complete: {} hits ({} before dedup)",
+        ctx.stats.hits_final, ctx.stats.hits_before_dedup
+    );
+    if !ctx.stats.filtered.is_empty() {
+        let filter_summary: Vec<String> = ctx
+            .stats
+            .filtered
+            .iter()
+            .map(|(r, c)| format!("{:?}={}", r, c))
+            .collect();
+        info!("Filtered: {}", filter_summary.join(", "));
+    }
+
+    Ok(deduped)
+}
+
 /// Check if hit `k` shadows hit `h` (k is better and contains h)
 fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
     // Exact match - identical coordinates
