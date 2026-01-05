@@ -1144,18 +1144,12 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
             continue;
         }
 
-        // Group summary at debug level
-        debug!(
-            "{} Group [{}:{}] Rust={} C={} (exact_match={})",
-            LogTag::Parity,
-            q,
-            t,
-            r_remaining.len() + exact_match_count,
-            c_remaining.len() + exact_match_count,
-            exact_match_count
-        );
-
         let mut c_rem_matched = vec![false; c_remaining.len()];
+
+        // Collect hits by category for ordered output
+        let mut good_hits: Vec<(&Rec, &Rec, HitStatus)> = Vec::new();
+        let mut problem_hits: Vec<(&Rec, &Rec, HitStatus)> = Vec::new();
+        let mut extra_hits: Vec<&Rec> = Vec::new();
 
         for r in &r_remaining {
             let mut best_match_idx = None;
@@ -1174,102 +1168,96 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
                 c_rem_matched[idx] = true;
                 let c = c_remaining[idx];
 
-                // Check if this is an "Improved Energy" case or a "True Mismatch"
                 let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
                 let c_e = c.energy.parse::<f64>().unwrap_or(0.0);
 
                 let status: HitStatus;
 
-                // If Rust is strictly better, log at warn. If equal, silently accept.
                 if r_e < c_e - 0.001 {
                     rust_better_energy += 1;
                     status = HitStatus::RustBetter;
-                    warn!(
-                        "{} Improved energy: Rust E={} vs C E={}",
-                        LogTag::Parity,
-                        r.energy,
-                        c.energy
-                    );
+                    good_hits.push((r, c, status));
                 } else if r_e > c_e + 0.001 {
-                    // Rust is worse - this is a true mismatch
                     rust_worse_energy += 1;
                     mismatch_count += 1;
                     status = HitStatus::RustWorse;
-                    debug!(
-                        "{} {} (coords match, content differs)",
-                        LogTag::Parity,
-                        status
-                    );
+                    problem_hits.push((r, c, status));
                 } else {
-                    // Equal within tolerance - markers already stripped at parse time
                     energy_equal += 1;
                     if r.interaction == c.interaction {
                         status = HitStatus::Identical;
                     } else {
                         status = HitStatus::CoOptimal;
                     }
+                    good_hits.push((r, c, status));
                 }
-
-                // Log all matched hits at appropriate levels
-                match status {
-                    HitStatus::Identical => {
-                        trace!("{} {} Coords: {}", LogTag::Parity, status, r.fmt_coords());
-                    }
-                    HitStatus::CoOptimal => {
-                        // Log co-optimal at trace level (less important)
-                        trace!("{} {} Coords: {}", LogTag::Parity, status, r.fmt_coords());
-                    }
-                    HitStatus::RustBetter => {
-                        // One-line summary for improvements (not a problem)
-                        debug!(
-                            "{}   ✓ {} {} (C: {})",
-                            LogTag::Parity,
-                            status,
-                            r.fmt_coords(),
-                            c.energy
-                        );
-                    }
-                    HitStatus::RustWorse => {
-                        // Detailed table for problems
-                        debug!(
-                            "{}   ✗ {} {} (C: {})",
-                            LogTag::Parity,
-                            status,
-                            r.fmt_coords(),
-                            c.energy
-                        );
-                        let table = ParityTable {
-                            kind: ParityKind::Mismatch { rust: r, c },
-                            config: TableConfig::default(),
-                        };
-                        for line in table.to_string().lines() {
-                            debug!("{} {}", LogTag::Parity, line);
-                        }
-                    }
-                    _ => {}
-                }
-
-                // Note: Explicit "Differs in: ..." summary removed as it's redundant with the visual diff table.
             } else {
                 extra_count += 1;
                 extra_len_sum += r.interaction.len();
                 extra_energy_sum += r.energy.parse::<f64>().unwrap_or(0.0);
-                let table = ParityTable {
-                    kind: ParityKind::RustOnly(r),
-                    config: TableConfig::default(),
-                };
-                // Print table with each line as separate log entry
-                debug!(
-                    "{} {} Coords: {}",
-                    LogTag::Parity,
-                    HitStatus::Extra,
-                    r.fmt_coords()
-                );
-                for line in table.to_string().lines() {
-                    debug!("{} {}", LogTag::Parity, line);
-                }
-                // Blank separator after table
-                debug!("{}", LogTag::Parity);
+                extra_hits.push(r);
+            }
+        }
+
+        // Print group with newline separator
+        debug!("");
+        debug!(
+            "{} Group [{}:{}] R={} C={} (exact={})",
+            LogTag::Parity,
+            q,
+            t,
+            r_remaining.len() + exact_match_count,
+            c_remaining.len() + exact_match_count,
+            exact_match_count
+        );
+
+        // 1. Print non-problematic hits first (short format)
+        for (r, _c, status) in &good_hits {
+            debug!(
+                "{}   {} {} {} E={}",
+                LogTag::Parity,
+                status,
+                r.strand,
+                format!("q[{},{}] t[{},{}]", r.q_start, r.q_end, r.t_start, r.t_end),
+                r.energy
+            );
+        }
+
+        // 2. Print problematic hits with details
+        for (r, c, status) in &problem_hits {
+            debug!(
+                "{}   ✗ {} {} {} E={} (C: {})",
+                LogTag::Parity,
+                status,
+                r.strand,
+                format!("q[{},{}] t[{},{}]", r.q_start, r.q_end, r.t_start, r.t_end),
+                r.energy,
+                c.energy
+            );
+            let table = ParityTable {
+                kind: ParityKind::Mismatch { rust: r, c },
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
+        }
+
+        // 3. Print extra hits (Rust only)
+        for r in &extra_hits {
+            debug!(
+                "{}   ✗ EXTRA {} {} E={}",
+                LogTag::Parity,
+                r.strand,
+                format!("q[{},{}] t[{},{}]", r.q_start, r.q_end, r.t_start, r.t_end),
+                r.energy
+            );
+            let table = ParityTable {
+                kind: ParityKind::RustOnly(r),
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
             }
         }
 
