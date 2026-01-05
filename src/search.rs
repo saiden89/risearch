@@ -1271,7 +1271,26 @@ fn extend_seed(
             let q_b2 = Base::from_byte(q_seq[q_idx + 1]).idx();
             let t_b1 = Base::from_byte(t_seq[t_idx]).idx();
             let t_b2 = Base::from_byte(t_seq[t_match_end - (k + 1)]).idx();
-            seed_energy += DSM_T04_POS[q_b1][q_b2][t_b1][t_b2] as f64;
+            let dsm_val = DSM_T04_POS[q_b1][q_b2][t_b1][t_b2];
+            trace!(
+                "[SEED_DSM] k={} Q[{}][{}]={}{} T[{}][{}]={}{} DSM[{}][{}][{}][{}]={} running={}",
+                k,
+                q_idx,
+                q_idx + 1,
+                q_seq[q_idx] as char,
+                q_seq[q_idx + 1] as char,
+                t_idx,
+                t_match_end - (k + 1),
+                t_seq[t_idx] as char,
+                t_seq[t_match_end - (k + 1)] as char,
+                q_b1,
+                q_b2,
+                t_b1,
+                t_b2,
+                dsm_val,
+                seed_energy + dsm_val as f64
+            );
+            seed_energy += dsm_val as f64;
         }
 
         // Build interaction string
@@ -1531,6 +1550,10 @@ fn dp_left(
         DpCell::Left,
         q_len,
         t_len,
+        q_idx(0),
+        t_idx(0),
+        q_idx(0),
+        t_idx(0),
         best_e
     );
 
@@ -1937,8 +1960,6 @@ fn dp_right(
         if j > t_end {
             0 // Gap
         } else {
-            // Note: NOT applying COMP_TABLE here - Rust handles complement
-            // during sequence preparation, unlike C which uses comp[] in DP
             t_seq.dsm_at(t_end - j)
         }
     };
@@ -1948,6 +1969,20 @@ fn dp_right(
     let mut best_e = s_mat[q_idx(0)][GAP_IDX][t_idx(0)][GAP_IDX] as i32;
     let mut best_i = 0;
     let mut best_j = 0;
+
+    trace!(
+        "{} START q_end={} t_end={} q_len={} t_len={} Q(0)={} T(0)={} best_e=DSM[{}][0][{}][0]={}",
+        DpCell::Right,
+        q_end,
+        t_end,
+        q_len,
+        t_len,
+        q_idx(0),
+        t_idx(0),
+        q_idx(0),
+        t_idx(0),
+        best_e
+    );
 
     // C: if (lq <= 1 || lt <= 1) return best_e;
     if q_len <= 1 || t_len <= 1 {
@@ -2143,10 +2178,14 @@ fn dp_right(
                 let term = s_mat[q_idx(i)][GAP_IDX][t_idx(j)][GAP_IDX] as i32;
                 if v + term > best_e {
                     trace!(
-                        "{} UPDATE best: i={} j={} curr_e={} (was {})",
+                        "{} UPDATE best: i={} j={} M[i,j]={} term=DSM[{}][0][{}][0]={} total={} (was {})",
                         DpCell::Right,
                         i,
                         j,
+                        v,
+                        q_idx(i),
+                        t_idx(j),
+                        term,
                         v + term,
                         best_e
                     );
@@ -2278,6 +2317,15 @@ fn dp_right(
             }
         }
     }
+
+    trace!(
+        "{} END score={} q_ext={} t_ext={} trace_len={}",
+        DpCell::Right,
+        best_e,
+        best_i,
+        best_j,
+        trace_vec.len()
+    );
 
     DpResult {
         score: best_e,
