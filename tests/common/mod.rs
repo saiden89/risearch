@@ -27,7 +27,6 @@ pub mod table;
 // =============================================================================
 
 // Used by runner.rs (internally)
-pub(crate) use record::Rec;
 
 // Used by c_parity.rs
 pub use runner::{ParityRunner, SingleSeqRunner};
@@ -76,17 +75,25 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// Returns (records after dedup, count before dedup)
-pub fn parse_output(output: &str) -> (Vec<Rec>, usize) {
-    let mut recs: Vec<Rec> = output
+pub fn parse_output(output: &str) -> (Vec<risearch::SearchHit>, usize) {
+    let mut hits: Vec<risearch::SearchHit> = output
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        .filter_map(Rec::from_line)
+        .filter_map(risearch::SearchHit::from_c_output)
         .collect();
-    let parsed_count = recs.len();
-    recs.sort();
-    recs.dedup();
-    (recs, parsed_count)
+    let parsed_count = hits.len();
+    // Sort by group_key, coords for deterministic comparison
+    hits.sort_by(|a, b| {
+        a.group_key()
+            .cmp(&b.group_key())
+            .then(a.q_start.cmp(&b.q_start))
+            .then(a.output_t_start.cmp(&b.output_t_start))
+    });
+    hits.dedup_by(|a, b| {
+        a.coords_match(b) && (a.energy.as_f64() - b.energy.as_f64()).abs() < 0.001
+    });
+    (hits, parsed_count)
 }
 
 // Comparison logic has been moved to comparison.rs (ParityComparator)

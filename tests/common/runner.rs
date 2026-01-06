@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use crate::common::c_runner::{CRunner, NoIndex as CNoIndex};
 use crate::common::comparison::{LogTag, ParityComparator, analyze_hit_pairs};
-use crate::common::record::Rec;
 use crate::common::status::ParityMode;
 use crate::common::{init_test_logging, parse_output, workspace_root};
 
@@ -77,7 +76,11 @@ impl RustRunner<NoIndex> {
 
 impl RustRunner<Indexed> {
     /// Search using risearch as a library.
-    pub fn search(&self, query_path: &Path, args: &risearch::args::SearchArgs) -> Vec<Rec> {
+    pub fn search(
+        &self,
+        query_path: &Path,
+        args: &risearch::args::SearchArgs,
+    ) -> Vec<risearch::SearchHit> {
         use risearch::search::SaIndex;
 
         let index = SaIndex {
@@ -86,7 +89,7 @@ impl RustRunner<Indexed> {
         let queries = risearch::io::read_fasta_sequences(query_path).expect("read query FASTA");
         let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
 
-        hits.iter().map(Rec::from).collect()
+        hits
     }
 
     /// Get the index path.
@@ -132,9 +135,13 @@ impl ParityRunner {
 
     /// Compare Rust and C results, returning the parsed outputs.
     #[allow(dead_code)] // Useful API for detailed analysis
-    pub fn compare(&self, query: &Path, args: &[&str]) -> (Vec<Rec>, Vec<Rec>) {
+    pub fn compare(
+        &self,
+        query: &Path,
+        args: &[&str],
+    ) -> (Vec<risearch::SearchHit>, Vec<risearch::SearchHit>) {
         let search_args = parse_search_args(args);
-        let rust_recs = self.rust.search(query, &search_args);
+        let rust_hits = self.rust.search(query, &search_args);
 
         let c_args: Vec<&str> = args
             .iter()
@@ -142,9 +149,9 @@ impl ParityRunner {
             .cloned()
             .collect();
         let c_out = self.c.search(query, &c_args);
-        let (c_recs, _) = parse_output(&c_out);
+        let (c_hits, _) = parse_output(&c_out);
 
-        (rust_recs, c_recs)
+        (rust_hits, c_hits)
     }
 
     /// Run comparison and assert parity passes.
@@ -194,8 +201,8 @@ impl ParityRunner {
         );
 
         // Detailed logging for extras and missings
-        let extras: Vec<&Rec> = result.extras.iter().collect();
-        let missings: Vec<&Rec> = result.missings.iter().map(|(r, _)| r).collect();
+        let extras: Vec<&risearch::SearchHit> = result.extras.iter().collect();
+        let missings: Vec<&risearch::SearchHit> = result.missings.iter().map(|(r, _)| r).collect();
 
         if !extras.is_empty() || !missings.is_empty() {
             analyze_hit_pairs(&extras, &missings);

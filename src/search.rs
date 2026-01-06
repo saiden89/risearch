@@ -439,6 +439,68 @@ impl SearchHit {
     fn strip_markers_simple(s: &str) -> String {
         s.chars().filter(|&c| c != 'y' && c != 'x').collect()
     }
+
+    // =========================================================================
+    // COMPARISON HELPERS (for parity testing)
+    // =========================================================================
+
+    /// Returns true if coordinates and strand match another hit.
+    pub fn coords_match(&self, other: &Self) -> bool {
+        self.q_start == other.q_start
+            && self.q_end == other.q_end
+            && self.output_t_start == other.output_t_start
+            && self.output_t_end == other.output_t_end
+            && self.strand == other.strand
+    }
+
+    /// Group key for matching hits (query_id:target_id).
+    pub fn group_key(&self) -> String {
+        format!(
+            "{}:{}",
+            self.query_id.truncated(),
+            self.target_id.truncated()
+        )
+    }
+
+    /// Fingerprint string for comparison.
+    pub fn fingerprint(&self) -> String {
+        self.alignment.fingerprint()
+    }
+
+    /// Target sequence for comparison.
+    pub fn target_seq(&self) -> String {
+        self.alignment.target_sequence()
+    }
+
+    /// Query sequence for comparison (may have N placeholders if from C output).
+    pub fn query_seq(&self) -> String {
+        self.alignment.query_sequence()
+    }
+
+    /// Seed start position within interaction.
+    pub fn seed_start(&self) -> Option<usize> {
+        Some(self.alignment.left_extension().len())
+    }
+
+    /// Seed end position within interaction.
+    pub fn seed_end(&self) -> Option<usize> {
+        let start = self.alignment.left_extension().len();
+        let seed_len = self.alignment.seed().len();
+        Some(start + seed_len)
+    }
+
+    /// Format for debug output.
+    pub fn fmt_coords(&self) -> String {
+        format!(
+            "q=[{},{}] t=[{},{}] S={} E={}",
+            self.q_start,
+            self.q_end,
+            self.output_t_start,
+            self.output_t_end,
+            self.strand,
+            self.energy
+        )
+    }
 }
 
 // Reimplementing mapping locally for safety and speed
