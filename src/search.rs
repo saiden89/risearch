@@ -335,7 +335,7 @@ impl<'a> SaIndex<'a> {
             })
             .collect();
 
-        debug!(
+        trace!(
             "{} seed={} pairing={:?}",
             SearchStage::Seed,
             String::from_utf8_lossy(&seed_normalized),
@@ -384,7 +384,7 @@ impl<'a> SaIndex<'a> {
             );
         }
 
-        debug!(
+        trace!(
             "{} total_candidates={}",
             SearchStage::Seed,
             candidates.len()
@@ -1352,7 +1352,7 @@ fn extend_seed(
     let final_score =
         (seed_energy + new_left.score as f64 + new_right.score as f64 - 559.0) / -100.0;
 
-    debug!(
+    trace!(
         "{} score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",
         SearchStage::Extend,
         final_score,
