@@ -4,7 +4,34 @@
 //! differences between Rust and C implementations.
 
 use crate::common::record::Rec;
-use tabled::{builder::Builder, settings::Style};
+use tabled::{Table, Tabled, builder::Builder, settings::Style};
+
+// =============================================================================
+// SUMMARY TABLE
+// =============================================================================
+
+/// Row for summary tables.
+#[derive(Tabled)]
+pub struct SummaryRow {
+    #[tabled(rename = "Metric")]
+    pub metric: String,
+    #[tabled(rename = "Count")]
+    pub count: String,
+}
+
+impl SummaryRow {
+    pub fn new(metric: &str, count: impl ToString) -> Self {
+        Self {
+            metric: metric.to_string(),
+            count: count.to_string(),
+        }
+    }
+}
+
+/// Render a list of summary rows as a table string.
+pub fn render_summary_table(rows: Vec<SummaryRow>) -> String {
+    Table::new(rows).with(Style::rounded()).to_string()
+}
 
 // =============================================================================
 // PARITY KIND
@@ -12,6 +39,7 @@ use tabled::{builder::Builder, settings::Style};
 
 /// The type of parity comparison being displayed.
 #[derive(Debug)]
+#[allow(dead_code)] // Some variants used only in detailed debugging
 pub enum ParityKind<'a> {
     /// Mismatch between Rust and C results
     Mismatch { rust: &'a Rec, c: &'a Rec },

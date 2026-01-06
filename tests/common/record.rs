@@ -143,6 +143,7 @@ impl Rec {
     }
 
     /// Format record for debug output.
+    #[allow(dead_code)] // Useful for debugging
     pub fn fmt_coords(&self) -> String {
         format!(
             "q=[{},{}] t=[{},{}] S={} E={}",

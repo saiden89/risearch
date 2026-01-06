@@ -74,6 +74,280 @@ impl ParityResult {
             }
         }
     }
+
+    /// Log detailed comparison results for all hit types.
+    pub fn log_details(&self, test_name: &str) {
+        use crate::common::table::{ParityKind, ParityTable, TableConfig};
+        use log::debug;
+
+        debug!("{} {} Summary:", LogTag::Parity, test_name);
+        debug!(
+            "{}   Exact matches: {}, Co-optimal: {}, Rust-better: {}, Rust-worse: {}, Extras: {}, Missings: {}",
+            LogTag::Parity,
+            self.exact_matches,
+            self.co_optimal.len(),
+            self.rust_better.len(),
+            self.rust_worse.len(),
+            self.extras.len(),
+            self.missings.len()
+        );
+
+        // Log co-optimal hits (different interaction strings with same energy)
+        for matched in &self.co_optimal {
+            debug!(
+                "{} CO-OPTIMAL: q[{},{}] t[{},{}] {} E={}",
+                LogTag::Parity,
+                matched.rust.q_start,
+                matched.rust.q_end,
+                matched.rust.t_start,
+                matched.rust.t_end,
+                matched.rust.strand,
+                matched.rust.energy
+            );
+        }
+
+        // Log rust-better hits
+        for matched in &self.rust_better {
+            debug!(
+                "{} RUST-BETTER: q[{},{}] t[{},{}] {} Rust E={} vs C E={}",
+                LogTag::Parity,
+                matched.rust.q_start,
+                matched.rust.q_end,
+                matched.rust.t_start,
+                matched.rust.t_end,
+                matched.rust.strand,
+                matched.rust.energy,
+                matched.c.energy
+            );
+            let table = ParityTable {
+                kind: ParityKind::Mismatch {
+                    rust: &matched.rust,
+                    c: &matched.c,
+                },
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
+        }
+
+        // Log rust-worse hits (problems!)
+        for matched in &self.rust_worse {
+            debug!(
+                "{} ✗ RUST-WORSE: q[{},{}] t[{},{}] {} Rust E={} vs C E={}",
+                LogTag::Parity,
+                matched.rust.q_start,
+                matched.rust.q_end,
+                matched.rust.t_start,
+                matched.rust.t_end,
+                matched.rust.strand,
+                matched.rust.energy,
+                matched.c.energy
+            );
+            let table = ParityTable {
+                kind: ParityKind::Mismatch {
+                    rust: &matched.rust,
+                    c: &matched.c,
+                },
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
+        }
+
+        // Log extras (only in Rust)
+        for extra in &self.extras {
+            debug!(
+                "{} ✗ EXTRA: q[{},{}] t[{},{}] {} E={}",
+                LogTag::Parity,
+                extra.q_start,
+                extra.q_end,
+                extra.t_start,
+                extra.t_end,
+                extra.strand,
+                extra.energy
+            );
+            let table = ParityTable {
+                kind: ParityKind::RustOnly(extra),
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
+        }
+
+        // Log missings (only in C)
+        for (missing, reason) in &self.missings {
+            debug!(
+                "{} ✗ MISSING ({}): q[{},{}] t[{},{}] {} E={}",
+                LogTag::Parity,
+                reason,
+                missing.q_start,
+                missing.q_end,
+                missing.t_start,
+                missing.t_end,
+                missing.strand,
+                missing.energy
+            );
+            let table = ParityTable {
+                kind: ParityKind::COnly(missing),
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
+        }
+
+        // Final summary table (matching old compare_recs_impl format)
+        use crate::common::table::{SummaryRow, render_summary_table};
+        use log::info;
+
+        let total_rust = self.exact_matches
+            + self.rust_better.len()
+            + self.rust_worse.len()
+            + self.co_optimal.len()
+            + self.extras.len();
+        let total_c = self.exact_matches
+            + self.rust_better.len()
+            + self.rust_worse.len()
+            + self.co_optimal.len()
+            + self.missings.len();
+        let coord_matched = self.rust_better.len() + self.rust_worse.len() + self.co_optimal.len();
+
+        let pct = |n: usize, total: usize| -> String {
+            if total == 0 {
+                "0%".into()
+            } else {
+                format!("{}%", n * 100 / total)
+            }
+        };
+
+        // Calculate avg stats for extras/missings
+        let avg_extra_len = if self.extras.is_empty() {
+            0.0
+        } else {
+            self.extras
+                .iter()
+                .map(|r| r.interaction.len())
+                .sum::<usize>() as f64
+                / self.extras.len() as f64
+        };
+        let avg_extra_energy = if self.extras.is_empty() {
+            0.0
+        } else {
+            self.extras
+                .iter()
+                .filter_map(|r| r.energy.parse::<f64>().ok())
+                .sum::<f64>()
+                / self.extras.len() as f64
+        };
+        let avg_missing_len = if self.missings.is_empty() {
+            0.0
+        } else {
+            self.missings
+                .iter()
+                .map(|(r, _)| r.interaction.len())
+                .sum::<usize>() as f64
+                / self.missings.len() as f64
+        };
+        let avg_missing_energy = if self.missings.is_empty() {
+            0.0
+        } else {
+            self.missings
+                .iter()
+                .filter_map(|(r, _)| r.energy.parse::<f64>().ok())
+                .sum::<f64>()
+                / self.missings.len() as f64
+        };
+
+        let mut rows = vec![
+            SummaryRow::new("Rust hits", total_rust),
+            SummaryRow::new("C hits", total_c),
+            SummaryRow::new(
+                "Exact matches",
+                format!(
+                    "{} ({})",
+                    self.exact_matches,
+                    pct(self.exact_matches, total_c)
+                ),
+            ),
+            SummaryRow::new("Coord-matched (diff content)", coord_matched),
+            SummaryRow::new(
+                "  ├ Rust better energy",
+                format!(
+                    "{} ({})",
+                    self.rust_better.len(),
+                    pct(self.rust_better.len(), coord_matched)
+                ),
+            ),
+            SummaryRow::new(
+                "  ├ Equal energy (co-optimal)",
+                format!(
+                    "{} ({})",
+                    self.co_optimal.len(),
+                    pct(self.co_optimal.len(), coord_matched)
+                ),
+            ),
+            SummaryRow::new(
+                "  └ Rust worse energy",
+                format!(
+                    "{} ({})",
+                    self.rust_worse.len(),
+                    pct(self.rust_worse.len(), coord_matched)
+                ),
+            ),
+        ];
+
+        if !self.missings.is_empty() {
+            rows.push(SummaryRow::new(
+                "Missing (in C, not Rust)",
+                format!(
+                    "{} (avg_len={:.1}, avg_E={:.2})",
+                    self.missings.len(),
+                    avg_missing_len,
+                    avg_missing_energy
+                ),
+            ));
+        } else {
+            rows.push(SummaryRow::new("Missing (in C, not Rust)", "0"));
+        }
+
+        if !self.extras.is_empty() {
+            rows.push(SummaryRow::new(
+                "Extra (in Rust, not C)",
+                format!(
+                    "{} (avg_len={:.1}, avg_E={:.2})",
+                    self.extras.len(),
+                    avg_extra_len,
+                    avg_extra_energy
+                ),
+            ));
+        } else {
+            rows.push(SummaryRow::new("Extra (in Rust, not C)", "0"));
+        }
+
+        let is_pass = self.rust_worse.is_empty()
+            && self
+                .missings
+                .iter()
+                .all(|(_, r)| r.is_acceptable(ParityMode::Relaxed));
+        let verdict = if is_pass {
+            "✓ PASS".to_string()
+        } else {
+            format!(
+                "✗ FAIL ({} worse, {} missing, {} extra)",
+                self.rust_worse.len(),
+                self.missings.len(),
+                self.extras.len()
+            )
+        };
+        rows.push(SummaryRow::new("VERDICT", verdict));
+
+        for line in render_summary_table(rows).lines() {
+            info!("{} {}", LogTag::Parity, line);
+        }
+    }
 }
 
 // =============================================================================
@@ -419,5 +693,63 @@ mod tests {
         let result = ParityComparator::new(&rust, &c).compare();
         assert_eq!(result.rust_worse.len(), 1);
         assert!(!result.is_pass(ParityMode::Relaxed));
+    }
+
+    #[test]
+    fn test_log_details_covers_all_categories() {
+        // Create a result with all hit types
+        let rust = vec![
+            make_rec(1, 10, 100, 110, "+", "-10.00"), // exact match
+            make_rec(1, 10, 200, 210, "+", "-15.00"), // rust better
+            make_rec(1, 10, 300, 310, "+", "-5.00"),  // rust worse
+            make_rec(1, 10, 400, 410, "+", "-8.00"),  // extra (no C match)
+        ];
+        let c = vec![
+            make_rec(1, 10, 100, 110, "+", "-10.00"), // exact match
+            make_rec(1, 10, 200, 210, "+", "-10.00"), // rust better
+            make_rec(1, 10, 300, 310, "+", "-10.00"), // rust worse
+            make_rec(1, 10, 500, 510, "+", "-8.00"),  // missing (no Rust match)
+        ];
+
+        let result = ParityComparator::new(&rust, &c).compare();
+
+        // Verify all categories are populated
+        assert_eq!(result.exact_matches, 1, "exact matches");
+        assert_eq!(result.rust_better.len(), 1, "rust better");
+        assert_eq!(result.rust_worse.len(), 1, "rust worse");
+        assert_eq!(result.extras.len(), 1, "extras");
+        assert_eq!(result.missings.len(), 1, "missings");
+
+        // log_details shouldn't panic - this is a smoke test for visualization
+        result.log_details("test_all_categories");
+    }
+
+    #[test]
+    fn test_log_details_empty_result() {
+        let result = ParityResult::default();
+        // Should not panic with empty result
+        result.log_details("empty_test");
+    }
+
+    #[test]
+    fn test_log_details_co_optimal() {
+        // Same coords and energy, different interaction string
+        let mut rust_rec = make_rec(1, 10, 100, 110, "+", "-10.00");
+        rust_rec.interaction = "AAAA----CCCC".to_string();
+        let mut c_rec = make_rec(1, 10, 100, 110, "+", "-10.00");
+        c_rec.interaction = "AAA-----CCCC".to_string();
+
+        let rust = vec![rust_rec];
+        let c = vec![c_rec];
+        let result = ParityComparator::new(&rust, &c).compare();
+
+        assert_eq!(result.co_optimal.len(), 1, "should detect co-optimal");
+        assert_eq!(
+            result.exact_matches, 0,
+            "not exact due to different interaction"
+        );
+
+        // Visualization smoke test
+        result.log_details("co_optimal_test");
     }
 }

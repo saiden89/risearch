@@ -3,16 +3,15 @@
 //! Provides `RustRunner<S>` and `ParityRunner` for orchestrating
 //! parity tests between Rust and C implementations.
 
-use assert_cmd::cargo::cargo_bin_cmd;
-use log::{debug, info, trace, warn};
+use log::info;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::common::c_runner::{CRunner, NoIndex as CNoIndex};
-use crate::common::comparison::{LogTag, analyze_hit_pairs};
+use crate::common::comparison::{LogTag, ParityComparator, analyze_hit_pairs};
 use crate::common::record::Rec;
 use crate::common::status::ParityMode;
-use crate::common::{compare_results_with_recs, init_test_logging, parse_output, workspace_root};
+use crate::common::{init_test_logging, parse_output, workspace_root};
 
 // =============================================================================
 // TYPE-STATE MARKERS
@@ -51,35 +50,25 @@ impl RustRunner<NoIndex> {
 
     /// Create an index from the target file.
     /// Consumes self and returns an indexed runner.
-    #[allow(dead_code)] // Useful API - we use create_index_at instead
-    pub fn create_index(self) -> RustRunner<Indexed> {
-        let tmpdir = tempfile::tempdir().expect("tempdir");
-        let index_path = tmpdir.path().join("target.idx");
+    /// If `index_path` is None, uses a temporary directory.
+    pub fn create_index(self, index_path: Option<&Path>) -> RustRunner<Indexed> {
+        let (index_path, _tmpdir) = match index_path {
+            Some(p) => (p.to_path_buf(), None),
+            None => {
+                let tmpdir = tempfile::tempdir().expect("tempdir");
+                let path = tmpdir.path().join("target.idx");
+                // Leak tempdir to keep index alive
+                (path, Some(std::mem::ManuallyDrop::new(tmpdir)))
+            }
+        };
 
         risearch::sa::create_suffix_array(&self.target_path, &index_path).expect("build index");
         let index_file = risearch::sa::load_index_file(&index_path).expect("load index");
-
-        // Leak the tempdir to keep the index file alive
-        std::mem::forget(tmpdir);
 
         RustRunner {
             target_path: self.target_path,
             state: Indexed {
                 index_path,
-                index_file,
-            },
-        }
-    }
-
-    /// Create index at a specific path (for tests that need persistent index).
-    pub fn create_index_at(self, index_path: &Path) -> RustRunner<Indexed> {
-        risearch::sa::create_suffix_array(&self.target_path, index_path).expect("build index");
-        let index_file = risearch::sa::load_index_file(index_path).expect("load index");
-
-        RustRunner {
-            target_path: self.target_path,
-            state: Indexed {
-                index_path: index_path.to_path_buf(),
                 index_file,
             },
         }
@@ -98,41 +87,6 @@ impl RustRunner<Indexed> {
         let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
 
         hits.iter().map(Rec::from).collect()
-    }
-
-    /// Search using CLI subprocess (for trace/debug output).
-    pub fn search_cli(&self, query_path: &Path, args: &[&str]) -> std::process::Output {
-        let mut cmd = cargo_bin_cmd!("risearch");
-
-        let trace_enabled = std::env::var("RUST_LOG")
-            .map(|v| v.contains("trace"))
-            .unwrap_or(false);
-
-        let mut final_args = vec!["search"];
-        if trace_enabled {
-            final_args.push("-vvv");
-        }
-
-        final_args.extend_from_slice(&[
-            "-i",
-            self.state.index_path.to_str().unwrap(),
-            "-q",
-            query_path.to_str().unwrap(),
-            "-o",
-            "-",
-        ]);
-        final_args.extend_from_slice(args);
-
-        let output = cmd.args(&final_args).output().expect("run risearch");
-
-        if trace_enabled {
-            eprint!("{}", String::from_utf8_lossy(&output.stderr));
-        }
-
-        if !output.status.success() {
-            panic!("Rust search failed: {:?}", output.status);
-        }
-        output
     }
 
     /// Get the index path.
@@ -167,7 +121,7 @@ impl ParityRunner {
 
         // Create Rust index
         let rust_index_path = tmpdir.path().join("target.idx");
-        let rust = RustRunner::<NoIndex>::new(target).create_index_at(&rust_index_path);
+        let rust = RustRunner::<NoIndex>::new(target).create_index(Some(&rust_index_path));
 
         // Create C index
         let c_index_path = tmpdir.path().join("target.pksuf");
@@ -195,44 +149,41 @@ impl ParityRunner {
 
     /// Run comparison and assert parity passes.
     pub fn assert_pass(&self, query: &Path, test_name: &str, args: &[&str]) {
-        let search_args = parse_search_args(args);
-        let rust_recs = self.rust.search(query, &search_args);
+        let (rust_recs, c_recs) = self.compare(query, args);
 
-        let c_args: Vec<&str> = args
-            .iter()
-            .filter(|&&a| a != "--no-max-prune")
-            .cloned()
-            .collect();
-        let c_out = self.c.search(query, &c_args);
+        let result = ParityComparator::new(&rust_recs, &c_recs).compare();
 
-        compare_results_with_recs(rust_recs, &c_out, test_name, ParityMode::Relaxed);
+        info!(
+            "{} {} - Rust={} hits, C={} hits, exact={}, extras={}, missings={}",
+            LogTag::Parity,
+            test_name,
+            rust_recs.len(),
+            c_recs.len(),
+            result.exact_matches,
+            result.extras.len(),
+            result.missings.len()
+        );
+
+        // Detailed debug logging (all hit types with tables)
+        result.log_details(test_name);
+
+        if !result.is_pass(ParityMode::Relaxed) {
+            panic!(
+                "\n{} FAILED: {} ({} rust-worse, {} missing, {} extra)\nRun with RUST_LOG=debug for detailed diff analysis.\n",
+                LogTag::Parity,
+                test_name,
+                result.rust_worse.len(),
+                result.missings.len(),
+                result.extras.len()
+            );
+        }
     }
 
-    /// Run detailed comparison with CLI output (for debugging).
+    /// Run detailed comparison with verbose logging.
     pub fn assert_pass_detailed(&self, query: &Path, test_name: &str, args: &[&str]) {
-        let rust_output = self.rust.search_cli(query, args);
-        let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+        let (rust_recs, c_recs) = self.compare(query, args);
 
-        // Log debug traces
-        for line in rust_out.lines() {
-            if line.contains("DEBUG_TRACE")
-                || line.contains("DEBUG_MAX")
-                || line.contains("DEBUG_DP_LEFT_RESULT")
-                || line.contains("C_DEBUG:")
-            {
-                trace!("[RUST] {}", line);
-            }
-        }
-
-        let c_args: Vec<&str> = args
-            .iter()
-            .filter(|&&a| a != "--no-max-prune")
-            .cloned()
-            .collect();
-        let c_out = self.c.search(query, &c_args);
-
-        let (rust_recs, _) = parse_output(&rust_out);
-        let (c_recs, _) = parse_output(&c_out);
+        let result = ParityComparator::new(&rust_recs, &c_recs).compare();
 
         info!(
             "{} {} - Rust={} hits, C={} hits",
@@ -242,75 +193,22 @@ impl ParityRunner {
             c_recs.len()
         );
 
-        let mut c_matched = vec![false; c_recs.len()];
-        let mut extras: Vec<&Rec> = Vec::new();
+        // Detailed logging for extras and missings
+        let extras: Vec<&Rec> = result.extras.iter().collect();
+        let missings: Vec<&Rec> = result.missings.iter().map(|(r, _)| r).collect();
 
-        for r in &rust_recs {
-            let mut found = false;
-            for (i, c) in c_recs.iter().enumerate() {
-                if !c_matched[i] {
-                    if r == c {
-                        c_matched[i] = true;
-                        found = true;
-                        break;
-                    }
-                    if r.coords_match(c) {
-                        let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
-                        let c_e = c.energy.parse::<f64>().unwrap_or(0.0);
-                        if r_e < c_e - 0.001 {
-                            warn!(
-                                "{} Improved energy: Rust E={} vs C E={}",
-                                LogTag::Parity,
-                                r.energy,
-                                c.energy
-                            );
-                        }
-                        if r_e <= c_e + 0.001 {
-                            c_matched[i] = true;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if !found {
-                extras.push(r);
-            }
+        if !extras.is_empty() || !missings.is_empty() {
+            analyze_hit_pairs(&extras, &missings);
         }
 
-        let missings: Vec<&Rec> = c_recs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !c_matched[*i])
-            .map(|(_, r)| r)
-            .collect();
-
-        debug!(
-            "{} Exact matches: {}, EXTRA: {}, MISSING: {}",
-            LogTag::Parity,
-            rust_recs.len() - extras.len(),
-            extras.len(),
-            missings.len()
-        );
-
-        analyze_hit_pairs(&extras, &missings);
-
-        if !missings.is_empty() {
+        if !result.is_pass(ParityMode::Relaxed) {
             panic!(
-                "{} FAILED {}: {} missings ({} extras)",
+                "\n{} FAILED: {} ({} rust-worse, {} missing, {} extra)\n",
                 LogTag::Parity,
                 test_name,
-                missings.len(),
-                extras.len()
-            );
-        }
-
-        if !extras.is_empty() {
-            warn!(
-                "{} {} extras in {} (acceptable if 0 missings)",
-                LogTag::Parity,
-                extras.len(),
-                test_name
+                result.rust_worse.len(),
+                result.missings.len(),
+                result.extras.len()
             );
         }
     }
