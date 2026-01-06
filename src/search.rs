@@ -5,6 +5,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::args::SearchArgs;
+use crate::dp;
 use crate::dsm::{PAIR_MAT, StackPair};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
@@ -1315,6 +1316,15 @@ fn extend_seed(
     // Start at: q_pos (5' Q), t_match_end (3' T)
     let left_res = dp_left(&mut ctx.dp_ctx, q_seq, t_seq, q_pos, t_match_end, safe_ext);
 
+    // NEW DP comparison
+    let new_left = dp::extend_left(&query, &target, q_pos, t_match_end, safe_ext);
+    if left_res.score != new_left.score {
+        trace!(
+            "DP_LEFT DIFF: old={} new={} q_pos={} t_end={}",
+            left_res.score, new_left.score, q_pos, t_match_end
+        );
+    }
+
     // DP Right: Extend Query Right (3'), Target Left (5')
     // Start at: q_pos + len - 1 (3' Q), t_pos (5' T)
     let right_res = dp_right(
@@ -1326,6 +1336,19 @@ fn extend_seed(
         safe_ext,
     );
 
+    // NEW DP comparison
+    let new_right = dp::extend_right(&query, &target, q_pos + len - 1, t_pos, safe_ext);
+    if right_res.score != new_right.score {
+        trace!(
+            "DP_RIGHT DIFF: old={} new={} q_end={} t_pos={}",
+            right_res.score,
+            new_right.score,
+            q_pos + len - 1,
+            t_pos
+        );
+    }
+
+    // Use OLD DP scores (new DP still in testing)
     let final_score =
         (seed_energy + left_res.score as f64 + right_res.score as f64 - 559.0) / -100.0;
 

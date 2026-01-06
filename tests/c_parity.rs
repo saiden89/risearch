@@ -158,3 +158,41 @@ fn test_parity_segments_debug() {
 
     run_single_seq_parity(query, target, "segment_debug", &args, false);
 }
+
+/// Isolated test for rust-worse energy case.
+/// From full_pipeline: q=[1,22] t=[359,384] with E=-21.74 (C: -22.38)
+/// The FP diff shows gap placement difference in 3' EXT:
+///   C:    UQPPP (gap-then-pair)
+///   Rust: UUQPP (unpaired-then-gap)
+#[test]
+fn test_parity_rust_worse_debug() {
+    // Query: hsa-miR-24-3p
+    let query = "uggcucaguucagcaggaacag"; // 22nt
+
+    // Target: ENST00000414971 positions 320-420 (contains t=[359,384])
+    // Extracted directly from RHOC.fa
+    let target = "ATATTGCGGACATTGAGGTGGACGGCAAGCAGGTGGAGCTGGCTCTGTGGGACACAGCAGGGCAGGAAGACTATGATCGACTGCGGCCTCTCTCCTACCCG";
+
+    let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
+
+    run_single_seq_parity(query, target, "rust_worse_debug", &args, false);
+}
+
+/// Minimal reproducible test for identical-alignment-different-energy issue.
+/// q[1,17] t[20,33]: Rust=-15.04, C=-15.35 (31 centiunit difference)
+/// Both produce identical alignment: Seed=PPWPPPPP, 3'EXT=UQQQPPPWP
+/// but the energy scores differ, indicating DSM lookup or initialization mismatch.
+#[test]
+fn test_parity_energy_discrepancy_minimal() {
+    // Query: hsa-miR-24-3p (positions 1-17 used in this hit)
+    let query = "uggcucaguucagcaggaacag"; // 22nt
+
+    // Target: ENST00000534717 (positions 20-33 used in this hit)
+    // Only first 60nt needed to reproduce the issue
+    let target = "AAGCCCGGGAAGCTGACTCCTTGCCCTGAGTCACAGGGAGGGGUGGGCAGGGCATGCGGC";
+
+    // Args matching energy_threshold test: -l 10 -e -10 -s 5 -p3
+    let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
+
+    run_single_seq_parity(query, target, "energy_discrepancy_minimal", &args, false);
+}

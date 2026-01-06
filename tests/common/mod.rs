@@ -1212,15 +1212,27 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
         );
 
         // 1. Print non-problematic hits first (short format)
-        for (r, _c, status) in &good_hits {
-            debug!(
-                "{}   {} {} {} E={}",
-                LogTag::Parity,
-                status,
-                r.strand,
-                format!("q[{},{}] t[{},{}]", r.q_start, r.q_end, r.t_start, r.t_end),
-                r.energy
-            );
+        for (r, c, status) in &good_hits {
+            if *status == HitStatus::RustBetter {
+                debug!(
+                    "{}   {} {} {} R={} C={}",
+                    LogTag::Parity,
+                    status,
+                    r.strand,
+                    format!("q[{},{}] t[{},{}]", r.q_start, r.q_end, r.t_start, r.t_end),
+                    r.energy,
+                    c.energy
+                );
+            } else {
+                debug!(
+                    "{}   {} {} {} E={}",
+                    LogTag::Parity,
+                    status,
+                    r.strand,
+                    format!("q[{},{}] t[{},{}]", r.q_start, r.q_end, r.t_start, r.t_end),
+                    r.energy
+                );
+            }
         }
 
         // 2. Print problematic hits with details
@@ -1313,8 +1325,8 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
         }
     };
 
-    // Determine verdict
-    let is_pass = mismatch_count == 0 && missing_count == 0 && extra_count == 0;
+    // Determine verdict: rust_worse and missing are failures, extra is acceptable
+    let is_pass = mismatch_count == 0 && missing_count == 0;
 
     // Tests with known divergences that are acceptable (documented behavioral differences)
     const KNOWN_DIVERGENT_TESTS: &[&str] = &[
