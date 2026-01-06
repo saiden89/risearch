@@ -1347,57 +1347,6 @@ const fn build_dsm_lookup() -> [usize; 256] {
 
 pub const DSM_LOOKUP: [usize; 256] = build_dsm_lookup();
 
-// ============================================================================
-// DsmAccessor Trait - Uniform sequence access for DP operations
-// ============================================================================
-
-/// Trait for efficient DSM index access on byte sequences
-/// Provides zero-overhead abstractions matching C's XRIS() macro semantics
-pub trait DsmAccessor {
-    /// Get DSM index at position (equivalent to C's XRIS())
-    fn dsm_at(&self, pos: usize) -> usize;
-
-    /// Get complement's DSM index at position (equivalent to C's comp[XRIS()])
-    fn dsm_comp_at(&self, pos: usize) -> usize;
-
-    /// Get Base enum at position
-    fn base_at(&self, pos: usize) -> Base;
-}
-
-impl DsmAccessor for [u8] {
-    #[inline(always)]
-    fn dsm_at(&self, pos: usize) -> usize {
-        DSM_LOOKUP[self[pos] as usize]
-    }
-
-    #[inline(always)]
-    fn dsm_comp_at(&self, pos: usize) -> usize {
-        COMP_TABLE[DSM_LOOKUP[self[pos] as usize]]
-    }
-
-    #[inline(always)]
-    fn base_at(&self, pos: usize) -> Base {
-        Base::from_idx(DSM_LOOKUP[self[pos] as usize])
-    }
-}
-
-impl DsmAccessor for Vec<u8> {
-    #[inline(always)]
-    fn dsm_at(&self, pos: usize) -> usize {
-        self.as_slice().dsm_at(pos)
-    }
-
-    #[inline(always)]
-    fn dsm_comp_at(&self, pos: usize) -> usize {
-        self.as_slice().dsm_comp_at(pos)
-    }
-
-    #[inline(always)]
-    fn base_at(&self, pos: usize) -> Base {
-        self.as_slice().base_at(pos)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::args::SearchArgs;
-use crate::dsm::{DSM_T04_POS, DsmAccessor, PAIR_MAT, StackPair};
+use crate::dsm::{DSM_T04_POS, PAIR_MAT, StackPair};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
 use crate::seq::Seq;
@@ -1155,6 +1155,10 @@ fn extend_seed(
     let len = candidate.len;
     let opts = &ctx.args.extend;
 
+    // Wrap sequences for clean base access (used throughout function)
+    let query = Seq::forward(q_seq);
+    let target = Seq::new(t_seq, candidate.strand);
+
     // MAXIMALITY CHECK
     // Skip non-maximal seeds: if the seed can be extended by a valid base pair
     // on either end, it's a sub-seed of a longer match and will
@@ -1170,8 +1174,8 @@ fn extend_seed(
 
     // 1. Left extendable?
     if q_pos > 0 && t_pos + len < t_seq.len() {
-        let q_prev = Base::from_byte(q_seq[q_pos - 1]).idx();
-        let t_next = Base::from_byte(t_seq[t_pos + len]).idx();
+        let q_prev = query.base(q_pos - 1).idx();
+        let t_next = target.base(t_pos + len).idx();
         let p_class = PAIR_MAT[q_prev][t_next];
 
         trace!(
@@ -1209,8 +1213,8 @@ fn extend_seed(
 
     // 2. Right extendable? Check if q[q_pos+len] pairs with t[t_pos-1]
     if q_pos + len < q_seq.len() && t_pos > 0 {
-        let q_next = Base::from_byte(q_seq[q_pos + len]).idx();
-        let t_prev = Base::from_byte(t_seq[t_pos - 1]).idx();
+        let q_next = query.base(q_pos + len).idx();
+        let t_prev = target.base(t_pos - 1).idx();
         let p_class = PAIR_MAT[q_next][t_prev];
 
         trace!(
@@ -1262,10 +1266,6 @@ fn extend_seed(
 
     let t_match_end = t_pos + len - 1;
     let mut seed_int_str = String::with_capacity(len);
-
-    // Wrap sequences for clean base access
-    let query = Seq::forward(q_seq);
-    let target = Seq::new(t_seq, candidate.strand);
 
     for k in 0..len {
         let q_idx = q_pos + k;
@@ -1360,19 +1360,23 @@ fn extend_seed(
 
         for step in &left_res.trace {
             match step {
-                DpMove::Match | DpMove::Stop => {
-                    // Consumes both
-                    let q_b = if i > 0 {
-                        q_seq[candidate.query_pos - i]
-                    } else {
-                        b'N'
-                    };
-                    let t_b = if t_match_end + j < t_seq.len() {
-                        t_seq[t_match_end + j]
-                    } else {
-                        b'N'
-                    };
-                    left_alignment.push(Pairing::from_bytes(q_b, t_b));
+                DpMove::Match => {
+                    // Match: both Q and T advance
+                    let q_b = query.left(candidate.query_pos, i);
+                    let t_b = target.base_or_gap(t_match_end + j);
+                    left_alignment.push(Pairing::from_bases(q_b, t_b));
+                    if i > 0 {
+                        i -= 1;
+                    }
+                    if j > 0 {
+                        j -= 1;
+                    }
+                }
+                DpMove::Stop => {
+                    // Stop: same as Match semantically
+                    let q_b = query.left(candidate.query_pos, i);
+                    let t_b = target.base_or_gap(t_match_end + j);
+                    left_alignment.push(Pairing::from_bases(q_b, t_b));
                     if i > 0 {
                         i -= 1;
                     }
@@ -1381,18 +1385,10 @@ fn extend_seed(
                     }
                 }
                 DpMove::GapQ => {
-                    // Gap in Query? No, GapQ means Bq matrix (Query has base, Target has Gap).
-                    // In dp_left: trace "GapQ" means we came from Bq.
-                    // Bq state: "Insertion in Query" (vs Target).
-                    // So Query has Base. Target has Gap.
+                    // GapQ means Bq matrix (from dp_left). Query has base. Target has Gap.
                     // So Pairing::GapTarget.
-
-                    let q_b = if i > 0 {
-                        q_seq[candidate.query_pos - i]
-                    } else {
-                        b'N'
-                    };
-                    left_alignment.push(Pairing::GapTarget(Base::from_byte(q_b)));
+                    let q_b = query.left(candidate.query_pos, i);
+                    left_alignment.push(Pairing::GapTarget(q_b));
                     if i > 0 {
                         i -= 1;
                     }
@@ -1400,13 +1396,8 @@ fn extend_seed(
                 DpMove::GapT => {
                     // GapT means Bt matrix. Target has base. Query has Gap.
                     // So Pairing::GapQuery.
-
-                    let t_b = if t_match_end + j < t_seq.len() {
-                        t_seq[t_match_end + j]
-                    } else {
-                        b'N'
-                    };
-                    left_alignment.push(Pairing::GapQuery(Base::from_byte(t_b)));
+                    let t_b = target.base_or_gap(t_match_end + j);
+                    left_alignment.push(Pairing::GapQuery(t_b));
                     if j > 0 {
                         j -= 1;
                     }
@@ -1428,9 +1419,9 @@ fn extend_seed(
         // t_match_end - n corresponds to q_pos + n.
         let t_idx = if t_match_end >= n { t_match_end - n } else { 0 };
 
-        let q_b = q_seq[q_idx];
-        let t_b = t_seq[t_idx];
-        seed_alignment.push(Pairing::from_bytes(q_b, t_b));
+        let q_b = query.base(q_idx);
+        let t_b = target.base(t_idx);
+        seed_alignment.push(Pairing::from_bases(q_b, t_b));
     }
 
     // 3. Right Trace (Query 3' -> end)
@@ -1445,23 +1436,10 @@ fn extend_seed(
                 DpMove::Match | DpMove::Stop => {
                     curr_i += 1;
                     curr_j += 1;
-                    let q_b = if candidate.query_pos + len - 1 + curr_i < q_seq.len() {
-                        q_seq[candidate.query_pos + len - 1 + curr_i]
-                    } else {
-                        b'N'
-                    };
-
-                    // t_pos is 5' end of seed (matches 3' of query).
-                    // Matches q_pos + len - 1.
-                    // As we extend right (3' of query), we extend left (5' of target).
-                    // So Target Index decreases.
-                    // t_b = t_seq[t_pos - curr_j].
-                    let t_b = if t_pos >= curr_j {
-                        t_seq[t_pos - curr_j]
-                    } else {
-                        b'N'
-                    };
-                    right_alignment.push(Pairing::from_bytes(q_b, t_b));
+                    // Query extends right (3'), target extends left (5')
+                    let q_b = query.base_or_gap(candidate.query_pos + len - 1 + curr_i);
+                    let t_b = target.left(t_pos, curr_j);
+                    right_alignment.push(Pairing::from_bases(q_b, t_b));
                 }
                 DpMove::GapQ => {
                     // DpMove::GapQ in dp_right.
@@ -1469,24 +1447,16 @@ fn extend_seed(
                     // Query has Base. Target Gap.
                     // Pairing::GapTarget.
                     curr_i += 1;
-                    let q_b = if candidate.query_pos + len - 1 + curr_i < q_seq.len() {
-                        q_seq[candidate.query_pos + len - 1 + curr_i]
-                    } else {
-                        b'N'
-                    };
-                    right_alignment.push(Pairing::GapTarget(Base::from_byte(q_b)));
+                    let q_b = query.base_or_gap(candidate.query_pos + len - 1 + curr_i);
+                    right_alignment.push(Pairing::GapTarget(q_b));
                 }
                 DpMove::GapT => {
                     // DpMove::GapT in dp_right.
                     // j increases (Target 5'). i same.
                     // Target Base. Query Gap.
                     curr_j += 1;
-                    let t_b = if t_pos >= curr_j {
-                        t_seq[t_pos - curr_j]
-                    } else {
-                        b'N'
-                    };
-                    right_alignment.push(Pairing::GapQuery(Base::from_byte(t_b)));
+                    let t_b = target.left(t_pos, curr_j);
+                    right_alignment.push(Pairing::GapQuery(t_b));
                 }
             }
         }
@@ -1524,29 +1494,15 @@ fn dp_left(
 
     let s_mat = &DSM_T04_POS;
 
-    // Index mapping functions for the DP using DsmAccessor trait:
-    // q_idx(i) -> DSM index at q_start - i (query extends left, index decreases)
-    // t_idx(j) -> DSM index at t_start + j (target extends right, index increases)
-    //
-    // NOTE: We do NOT apply complement transform here because:
-    // - For Forward strand: target is original sequence
-    // - For Reverse strand: target was pre-transformed via reverse_complement_dna()
-    // The antiparallel binding semantics are handled by the index directions, not comp[].
-    // This differs from C which stores original sequence and applies comp[] in DP.
-    let q_idx = |i: usize| -> usize {
-        if i > q_start {
-            0 // Gap
-        } else {
-            q_seq.dsm_at(q_start - i)
-        }
-    };
-    let t_idx = |j: usize| -> usize {
-        if t_start + j >= t_seq.len() {
-            0 // Gap
-        } else {
-            t_seq.dsm_at(t_start + j)
-        }
-    };
+    // Wrap sequences for clean base access
+    let query = Seq::forward(q_seq);
+    let target = Seq::forward(t_seq); // Strand already handled by caller
+
+    // Base access using Seq::left/right methods
+    // query.left(q_start, i) -> base at q_start-i (extends 5')
+    // target.right(t_start, j) -> base at t_start+j (extends 3')
+    let q_idx = |i: usize| -> usize { query.left(q_start, i).idx() };
+    let t_idx = |j: usize| -> usize { target.right(t_start, j).idx() };
 
     // Initial score: terminal penalty for the seed boundary base pair.
     // This matches C code: best_e = (*S)[GAP][Q(0)][GAP][T(0)]
@@ -1952,29 +1908,15 @@ fn dp_right(
 
     let s_mat = &DSM_T04_POS;
 
-    // Index mapping functions for the DP using DsmAccessor trait:
-    // q_idx(i) -> DSM index at q_end + i (query extends right, index increases)
-    // t_idx(j) -> DSM complement index at t_end - j (target extends left, index decreases)
-    //
-    // NOTE: We do NOT apply complement transform here because:
-    // - For Forward strand: target is original sequence
-    // - For Reverse strand: target was pre-transformed via reverse_complement_dna()
-    // The antiparallel binding semantics are handled by the index directions, not comp[].
-    // This differs from C which stores original sequence and applies comp[] in DP.
-    let q_idx = |i: usize| -> usize {
-        if q_end + i >= q_seq.len() {
-            0 // Gap
-        } else {
-            q_seq.dsm_at(q_end + i)
-        }
-    };
-    let t_idx = |j: usize| -> usize {
-        if j > t_end {
-            0 // Gap
-        } else {
-            t_seq.dsm_at(t_end - j)
-        }
-    };
+    // Wrap sequences for clean base access
+    let query = Seq::forward(q_seq);
+    let target = Seq::forward(t_seq); // Strand already handled by caller
+
+    // Base access using Seq::left/right methods
+    // query.right(q_end, i) -> base at q_end+i (extends 3')
+    // target.left(t_end, j) -> base at t_end-j (extends 5')
+    let q_idx = |i: usize| -> usize { query.right(q_end, i).idx() };
+    let t_idx = |j: usize| -> usize { target.left(t_end, j).idx() };
 
     // Initial score from seed boundary
     // C DP_right uses Q(0)->Gap, T(0)->Gap logic ([Q][Gap][T][Gap])
