@@ -1348,9 +1348,9 @@ fn extend_seed(
         );
     }
 
-    // Use OLD DP scores (new DP still in testing)
+    // Use NEW DP scores
     let final_score =
-        (seed_energy + left_res.score as f64 + right_res.score as f64 - 559.0) / -100.0;
+        (seed_energy + new_left.score as f64 + new_right.score as f64 - 559.0) / -100.0;
 
     debug!(
         "{} score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",
