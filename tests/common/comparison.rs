@@ -76,11 +76,12 @@ impl ParityResult {
 
     /// Log detailed comparison results for all hit types.
     pub fn log_details(&self, test_name: &str) {
+        use crate::common::table::{ParityKind, ParityTable, TableConfig};
         use log::debug;
 
         debug!("{} {} Summary:", LogTag::Parity, test_name);
         debug!(
-            "{}   Exact matches: {}, Co-optimal: {}, Rust-better: {}, Rust-worse: {}, Extras: {}, Missings: {}",
+            "{} Exact matches: {}, Co-optimal: {}, Rust-better: {}, Rust-worse: {}, Extras: {}, Missings: {}",
             LogTag::Parity,
             self.exact_matches,
             self.co_optimal.len(),
@@ -100,7 +101,7 @@ impl ParityResult {
             );
         }
 
-        // Log rust-better hits
+        // Log rust-better hits with table
         for matched in &self.rust_better {
             debug!(
                 "{} RUST-BETTER: {} vs C E={}",
@@ -108,9 +109,19 @@ impl ParityResult {
                 matched.rust.fmt_coords(),
                 matched.c.energy
             );
+            let table = ParityTable {
+                kind: ParityKind::Mismatch {
+                    rust: &matched.rust,
+                    c: &matched.c,
+                },
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
         }
 
-        // Log rust-worse hits (problems!)
+        // Log rust-worse hits (problems!) with table
         for matched in &self.rust_worse {
             debug!(
                 "{} ✗ RUST-WORSE: {} vs C E={}",
@@ -118,33 +129,45 @@ impl ParityResult {
                 matched.rust.fmt_coords(),
                 matched.c.energy
             );
-            debug!(
-                "{}   Rust FP: {}",
-                LogTag::Parity,
-                matched.rust.fingerprint()
-            );
-            debug!("{}   C FP:    {}", LogTag::Parity, matched.c.fingerprint());
+            let table = ParityTable {
+                kind: ParityKind::Mismatch {
+                    rust: &matched.rust,
+                    c: &matched.c,
+                },
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
         }
 
-        // Log extras (only in Rust)
+        // Log extras (only in Rust) with table
         for extra in &self.extras {
-            debug!(
-                "{} ✗ EXTRA: {} FP={}",
-                LogTag::Parity,
-                extra.fmt_coords(),
-                extra.fingerprint()
-            );
+            debug!("{} ✗ EXTRA: {}", LogTag::Parity, extra.fmt_coords());
+            let table = ParityTable {
+                kind: ParityKind::RustOnly(extra),
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
         }
 
-        // Log missings (only in C)
+        // Log missings (only in C) with table
         for (missing, reason) in &self.missings {
             debug!(
-                "{} ✗ MISSING ({}): {} FP={}",
+                "{} ✗ MISSING ({}): {}",
                 LogTag::Parity,
                 reason,
-                missing.fmt_coords(),
-                missing.fingerprint()
+                missing.fmt_coords()
             );
+            let table = ParityTable {
+                kind: ParityKind::COnly(missing),
+                config: TableConfig::default(),
+            };
+            for line in table.to_string().lines() {
+                debug!("{} {}", LogTag::Parity, line);
+            }
         }
 
         // Final summary table (matching old compare_recs_impl format)
