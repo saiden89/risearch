@@ -4,9 +4,8 @@
 //!
 //! # Module Organization
 //!
-//! - `record`: `Rec` struct and parsing
 //! - `status`: `HitStatus`, `MissingReason`, `ParityMode`
-//! - `table`: `ParityTable` and display formatting
+//! - `table`: Table formatting utilities
 //! - `comparison`: Comparison logic and `ParityComparator`
 //! - `c_runner`: C binary runner with type-state pattern
 //! - `runner`: Test orchestration functions
@@ -17,7 +16,6 @@
 
 pub mod c_runner;
 pub mod comparison;
-pub mod record;
 pub mod runner;
 pub mod status;
 pub mod table;

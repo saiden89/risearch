@@ -39,12 +39,13 @@ impl Base {
     #[inline]
     pub fn from_idx(i: usize) -> Self {
         match i {
+            0 => Base::Gap,
             1 => Base::A,
             2 => Base::G,
             3 => Base::C,
             4 => Base::U,
-            0 => Base::Gap,
-            _ => Base::N,
+            5 => Base::N,
+            _ => panic!("Invalid Base index: {}", i),
         }
     }
 
