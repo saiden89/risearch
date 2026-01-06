@@ -159,18 +159,8 @@ impl Rec {
 impl From<&risearch::SearchHit> for Rec {
     fn from(hit: &risearch::SearchHit) -> Self {
         // Truncate IDs at whitespace to match C output format
-        let q_id = hit
-            .query_id
-            .split_whitespace()
-            .next()
-            .unwrap_or(&hit.query_id)
-            .to_string();
-        let t_id = hit
-            .target_id
-            .split_whitespace()
-            .next()
-            .unwrap_or(&hit.target_id)
-            .to_string();
+        let q_id = hit.query_id.truncated().to_string();
+        let t_id = hit.target_id.truncated().to_string();
 
         Rec {
             q_id,
@@ -180,7 +170,7 @@ impl From<&risearch::SearchHit> for Rec {
             t_start: hit.output_t_start,
             t_end: hit.output_t_end,
             strand: hit.strand.to_string(),
-            energy: format!("{:.2}", hit.energy),
+            energy: hit.energy.format(),
             interaction: hit
                 .alignment
                 .fingerprint()

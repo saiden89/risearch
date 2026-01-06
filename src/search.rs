@@ -10,7 +10,7 @@ use crate::dsm::{PAIR_MAT, StackPair};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
 use crate::seq::Seq;
-use crate::types::{Base, SeedPairing, Strand};
+use crate::types::{Base, Energy, QueryId, SeedPairing, Strand, TargetId};
 
 use std::collections::HashMap;
 
@@ -125,6 +125,17 @@ impl Pairing {
         }
     }
 
+    /// Get the query base character for alignment display
+    pub fn query_char(&self) -> char {
+        match self {
+            Pairing::Match(q, _)
+            | Pairing::Wobble(q, _)
+            | Pairing::Mismatch(q, _)
+            | Pairing::GapTarget(q) => q.as_char().to_ascii_lowercase(),
+            Pairing::GapQuery(_) => '-',
+        }
+    }
+
     /// Get query base (if present)
     pub fn query_base(&self) -> Option<Base> {
         match self {
@@ -209,6 +220,48 @@ impl Alignment {
     pub fn target_sequence(&self) -> String {
         self.steps.iter().map(|p| p.target_char()).collect()
     }
+
+    /// Generates the query sequence string (e.g. "gc--uuca")
+    pub fn query_sequence(&self) -> String {
+        self.steps.iter().map(|p| p.query_char()).collect()
+    }
+
+    /// Create from C output (fingerprint + target sequence + seed markers).
+    /// C output uses 'y' and 'x' markers to delimit seed region.
+    pub fn from_c_output(
+        fingerprint: &str,
+        target_seq: &str,
+        seed_start: Option<usize>,
+        seed_end: Option<usize>,
+    ) -> Self {
+        let fp_chars: Vec<char> = fingerprint.chars().collect();
+        let tgt_chars: Vec<char> = target_seq.chars().collect();
+
+        let mut steps = Vec::with_capacity(fp_chars.len());
+
+        for (i, fp_char) in fp_chars.iter().enumerate() {
+            let t_base = tgt_chars.get(i).copied().unwrap_or('-');
+            let t = Base::from_byte(t_base as u8);
+
+            // We don't have query bases from C output, use N as placeholder
+            let pairing = match fp_char {
+                'P' => Pairing::Match(Base::N, t),
+                'W' => Pairing::Wobble(Base::N, t),
+                'U' => Pairing::Mismatch(Base::N, t),
+                'T' => Pairing::GapQuery(t),        // Gap in query
+                'Q' => Pairing::GapTarget(Base::N), // Gap in target
+                _ => Pairing::Mismatch(Base::N, t),
+            };
+            steps.push(pairing);
+        }
+
+        let seed_range = match (seed_start, seed_end) {
+            (Some(s), Some(e)) => s..e,
+            _ => 0..steps.len(), // If no markers, treat entire thing as seed
+        };
+
+        Self { steps, seed_range }
+    }
 }
 /// Statistics for search filtering
 #[derive(Debug, Default)]
@@ -264,8 +317,8 @@ pub struct SeedCandidate {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct SearchHit {
-    pub query_id: String,
-    pub target_id: String,
+    pub query_id: QueryId,
+    pub target_id: TargetId,
 
     pub q_start: usize,
     pub q_end: usize,
@@ -274,7 +327,7 @@ pub struct SearchHit {
     pub output_t_start: usize, // 1-based, strand-aware
     pub output_t_end: usize,   // 1-based, strand-aware
     pub strand: Strand,
-    pub energy: f64,
+    pub energy: Energy,
     pub alignment: Alignment,
     pub flank_5: String,
     pub flank_3: String,
@@ -294,25 +347,97 @@ impl SearchHit {
         writeln!(
             w,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
-            self.query_id
-                .split_whitespace()
-                .next()
-                .unwrap_or(&self.query_id),
+            self.query_id.truncated(),
             self.q_start + 1,
             self.q_end + 1,
-            self.target_id
-                .split_whitespace()
-                .next()
-                .unwrap_or(&self.target_id),
+            self.target_id.truncated(),
             self.output_t_start,
             self.output_t_end,
             self.strand,
-            self.energy,
+            self.energy.as_f64(),
             norm_fp,
             norm_ts,
             self.flank_5,
             self.flank_3
         )
+    }
+
+    /// Parse a SearchHit from C risearch output line.
+    ///
+    /// C output format (tab-separated):
+    /// `q_id, q_start, q_end, t_id, t_start, t_end, strand, energy, interaction, target_seq, [flank_5, flank_3]`
+    ///
+    /// Handles C quirks:
+    /// - Seed markers 'y' and 'x' in interaction/target strings
+    /// - Missing optional columns (flanks)
+    /// - 1-based coordinates
+    pub fn from_c_output(line: &str) -> Option<Self> {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 10 {
+            return None;
+        }
+
+        // Parse and strip seed markers from interaction
+        let (interaction, seed_start, seed_end) = Self::strip_c_markers(fields[8]);
+        let target_seq = Self::strip_markers_simple(fields[9]);
+
+        // Parse coordinates (C uses 1-based)
+        let q_start: usize = fields[1].parse().ok()?;
+        let q_end: usize = fields[2].parse().ok()?;
+        let t_start: usize = fields[4].parse().ok()?;
+        let t_end: usize = fields[5].parse().ok()?;
+
+        // Parse strand
+        let strand = fields[6].chars().next().unwrap_or('+').into();
+
+        // Parse energy
+        let energy = Energy::parse(fields[7])?;
+
+        // Create alignment from fingerprint and target sequence
+        let alignment = Alignment::from_c_output(&interaction, &target_seq, seed_start, seed_end);
+
+        // Optional flanks
+        let flank_5 = fields
+            .get(10)
+            .map_or(String::new(), |s| Self::strip_markers_simple(s));
+        let flank_3 = fields
+            .get(11)
+            .map_or(String::new(), |s| Self::strip_markers_simple(s));
+
+        Some(SearchHit {
+            query_id: fields[0].into(),
+            target_id: fields[3].into(),
+            q_start, // Keep 1-based for now (matches C output)
+            q_end,
+            t_start,
+            t_end,
+            output_t_start: t_start,
+            output_t_end: t_end,
+            strand,
+            energy,
+            alignment,
+            flank_5,
+            flank_3,
+        })
+    }
+
+    /// Strip y/x seed markers and extract seed range positions.
+    fn strip_c_markers(s: &str) -> (String, Option<usize>, Option<usize>) {
+        let y_pos = s.find('y');
+        let x_pos = s.find('x');
+
+        let (seed_start, seed_end) = match (y_pos, x_pos) {
+            (Some(y), Some(x)) if x > y => (Some(y), Some(x - 1)),
+            _ => (None, None),
+        };
+
+        let clean: String = s.chars().filter(|&c| c != 'y' && c != 'x').collect();
+        (clean, seed_start, seed_end)
+    }
+
+    /// Strip y/x markers without tracking positions.
+    fn strip_markers_simple(s: &str) -> String {
+        s.chars().filter(|&c| c != 'y' && c != 'x').collect()
     }
 }
 
@@ -1109,8 +1234,8 @@ fn process_candidate(
     };
 
     Some(SearchHit {
-        query_id: q_id.to_string(),
-        target_id: ctx.index.get_id(t_idx).to_string(),
+        query_id: q_id.into(),
+        target_id: ctx.index.get_id(t_idx).into(),
 
         q_start: final_q_start,
         q_end: final_q_end,
@@ -1119,7 +1244,7 @@ fn process_candidate(
         output_t_start: out_t_start,
         output_t_end: out_t_end,
         strand: strand_char.into(),
-        energy: score,
+        energy: score.into(),
         alignment: ext.alignment,
         flank_5,
         flank_3: flank_3,
@@ -2288,5 +2413,44 @@ mod tests {
             "dp_right score: {}, i: {}, j: {}",
             res.score, res.ext_q_len, res.ext_t_len
         );
+    }
+
+    #[test]
+    fn test_search_hit_from_c_output() {
+        // Sample C output line
+        let line =
+            "hsa-miR-1\t1\t10\tENSG00000001\t100\t110\t+\t-15.50\tyPPPUPPPx\tacguacgu\tAA\tCC";
+
+        let hit = SearchHit::from_c_output(line).expect("should parse");
+
+        assert_eq!(hit.query_id.as_str(), "hsa-miR-1");
+        assert_eq!(hit.target_id.as_str(), "ENSG00000001");
+        assert_eq!(hit.q_start, 1);
+        assert_eq!(hit.q_end, 10);
+        assert_eq!(hit.t_start, 100);
+        assert_eq!(hit.t_end, 110);
+        assert_eq!(hit.strand, Strand::Forward);
+        assert!((hit.energy.as_f64() - (-15.50)).abs() < 0.01);
+        assert_eq!(hit.alignment.fingerprint(), "PPPUPPP"); // markers stripped
+        assert_eq!(hit.flank_5, "AA");
+        assert_eq!(hit.flank_3, "CC");
+    }
+
+    #[test]
+    fn test_search_hit_from_c_output_minimal() {
+        // Minimal 10 columns (no flanks)
+        let line = "q1\t1\t5\tt1\t10\t15\t-\t-8.00\tPPPPP\tacgua";
+
+        let hit = SearchHit::from_c_output(line).expect("should parse minimal");
+        assert_eq!(hit.query_id.as_str(), "q1");
+        assert_eq!(hit.strand, Strand::Reverse);
+        assert_eq!(hit.flank_5, "");
+        assert_eq!(hit.flank_3, "");
+    }
+
+    #[test]
+    fn test_search_hit_from_c_output_invalid() {
+        assert!(SearchHit::from_c_output("too\tfew\tcolumns").is_none());
+        assert!(SearchHit::from_c_output("").is_none());
     }
 }
