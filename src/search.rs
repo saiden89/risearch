@@ -1005,7 +1005,12 @@ pub fn run_search_collect(
 
 /// Check if hit `k` shadows hit `h` (k is better and contains h)
 fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
-    // Exact match - identical coordinates
+    // Different strands are never duplicates
+    if k.strand != h.strand {
+        return None;
+    }
+
+    // Exact match - identical coordinates AND strand
     if k.q_start == h.q_start && k.q_end == h.q_end && k.t_start == h.t_start && k.t_end == h.t_end
     {
         return Some(FilterReason::DedupExactMatch);
