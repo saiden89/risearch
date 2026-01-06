@@ -152,11 +152,26 @@ impl Rec {
 
 impl From<&risearch::SearchHit> for Rec {
     fn from(hit: &risearch::SearchHit) -> Self {
+        // Truncate IDs at whitespace to match C output format (and SearchHit::write)
+        let q_id = hit
+            .query_id
+            .split_whitespace()
+            .next()
+            .unwrap_or(&hit.query_id)
+            .to_string();
+        let t_id = hit
+            .target_id
+            .split_whitespace()
+            .next()
+            .unwrap_or(&hit.target_id)
+            .to_string();
+
         Rec {
-            q_id: hit.query_id.clone(),
-            q_start: hit.q_start,
-            q_end: hit.q_end,
-            t_id: hit.target_id.clone(),
+            q_id,
+            q_start: hit.q_start + 1, // Convert from 0-based to 1-based (matches SearchHit::write)
+            q_end: hit.q_end + 1,     // Convert from 0-based to 1-based (matches SearchHit::write)
+            t_id,
+
             t_start: hit.output_t_start,
             t_end: hit.output_t_end,
             strand: hit.strand.to_string(),
@@ -396,8 +411,8 @@ fn hits_overlap(a: &Rec, b: &Rec) -> bool {
 }
 
 /// Classify why a C hit is missing from Rust output
-/// Finds the BEST (lowest energy) overlapping Rust hit for comparison
-fn classify_missing(c_hit: &Rec, rust_hits: &[&Rec]) -> MissingReason {
+/// Returns the reason and optionally the best overlapping Rust hit for logging
+fn classify_missing<'a>(c_hit: &Rec, rust_hits: &[&'a Rec]) -> (MissingReason, Option<&'a Rec>) {
     let c_e = c_hit.energy.parse::<f64>().unwrap_or(0.0);
 
     // Find the best (lowest energy) overlapping Rust hit
@@ -408,20 +423,22 @@ fn classify_missing(c_hit: &Rec, rust_hits: &[&Rec]) -> MissingReason {
             let a_e = a.energy.parse::<f64>().unwrap_or(0.0);
             let b_e = b.energy.parse::<f64>().unwrap_or(0.0);
             a_e.partial_cmp(&b_e).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        })
+        .copied();
 
     match best_overlap {
         Some(r) => {
             let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
-            if r_e < c_e - 0.001 {
+            let reason = if r_e < c_e - 0.001 {
                 MissingReason::BetterEnergy
             } else if r_e > c_e + 0.001 {
                 MissingReason::WorseEnergy
             } else {
                 MissingReason::EqualEnergy
-            }
+            };
+            (reason, Some(r))
         }
-        None => MissingReason::NoOverlap,
+        None => (MissingReason::NoOverlap, None),
     }
 }
 
@@ -730,11 +747,11 @@ pub fn run_file_parity(
         idx_path
     };
 
-    let rust_idx = tmpdir.path().join("rust_target.idx");
+    // Parse CLI args into SearchArgs
+    let search_args = parse_search_args(args);
 
-    // Run Rust search
-    let rust_output = index_and_search_rust(query, target, &rust_idx, args);
-    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
+    // Run Rust search using library (gives us proper seed_start/seed_end)
+    let rust_recs = search_rust_lib_files(query, target, &search_args);
 
     // Run C search
     let c_args: Vec<&str> = args
@@ -744,8 +761,27 @@ pub fn run_file_parity(
         .collect();
     let c_out = search_c(query, &c_index_path, &c_bin, &c_args);
 
-    // Compare
-    compare_results(&rust_out, &c_out, test_name, ParityMode::Relaxed);
+    // Compare using the new function that takes Recs directly
+    compare_results_with_recs(rust_recs, &c_out, test_name, ParityMode::Relaxed);
+}
+
+/// Parse CLI-style args into SearchArgs using clap
+fn parse_search_args(args: &[&str]) -> risearch::args::SearchArgs {
+    use clap::Parser;
+
+    // Build a fake command line - FakeCmd just has flattened SearchArgs, no subcommand
+    let mut cli_args = vec!["risearch"];
+    cli_args.extend(args.iter().copied());
+
+    // Use a helper struct that only has the search args (flattened)
+    #[derive(Parser)]
+    struct FakeCmd {
+        #[command(flatten)]
+        search: risearch::args::SearchArgs,
+    }
+
+    let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
+    parsed.search
 }
 
 pub fn index_and_search_rust(
@@ -838,6 +874,37 @@ pub fn search_rust_lib(
     let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
 
     // Convert to Rec
+    hits.iter().map(Rec::from).collect()
+}
+
+/// Search using risearch as a library with FASTA file inputs.
+/// Returns Vec<Rec> with proper seed_start/seed_end from SearchHit.
+pub fn search_rust_lib_files(
+    query_path: &Path,
+    target_path: &Path,
+    args: &risearch::args::SearchArgs,
+) -> Vec<Rec> {
+    use risearch::search::SaIndex;
+    use tempfile::tempdir;
+
+    // Create temp directory for index
+    let tmpdir = tempdir().expect("tempdir");
+    let index_path = tmpdir.path().join("target.idx");
+
+    // Build index
+    risearch::sa::create_suffix_array(target_path, &index_path).expect("build index");
+
+    // Load index
+    let index_file = risearch::sa::load_index_file(&index_path).expect("load index");
+    let index = SaIndex { index: &index_file };
+
+    // Read queries from FASTA
+    let queries = risearch::io::read_fasta_sequences(query_path).expect("read query FASTA");
+
+    // Run search
+    let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
+
+    // Convert to Rec (uses From<&SearchHit> which has proper seed info)
     hits.iter().map(Rec::from).collect()
 }
 
@@ -969,12 +1036,24 @@ pub fn create_c_index(target: &Path, c_index: &Path, c_bin: &Path) {
     }
 }
 
-pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: ParityMode) {
-    // Initialize logger if not already initialized
-    // Initialize logger if not already initialized
+/// Compare results where Rust records come directly from SearchHit (with proper seed info).
+/// C output is still parsed from string (with y/x markers).
+pub fn compare_results_with_recs(
+    rust_recs: Vec<Rec>,
+    c_out: &str,
+    test_name: &str,
+    mode: ParityMode,
+) {
     init_test_logging();
 
-    // 1. Strict Byte-Level Parity Check (ignoring order and duplicates)
+    let (c_recs, _) = parse_output(c_out);
+    compare_recs_impl(rust_recs, c_recs, test_name, mode);
+}
+
+pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: ParityMode) {
+    init_test_logging();
+
+    // Quick check for exact match
     let normalize = |s: &str| -> String {
         let mut lines: Vec<&str> = s.trim().split('\n').filter(|l| !l.is_empty()).collect();
         lines.sort();
@@ -982,58 +1061,20 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
         lines.join("\n")
     };
 
-    let r_norm = normalize(rust_out);
-    let c_norm = normalize(c_out);
-
-    if r_norm == c_norm {
+    if normalize(rust_out) == normalize(c_out) {
         info!("{} {} - PASS (exact match)", LogTag::Parity, test_name);
         return;
     }
 
-    // 2. Granular Reporting
-    let (rust_recs, rust_parsed) = parse_output(rust_out);
-    let (c_recs, c_parsed) = parse_output(c_out);
+    // Parse both and delegate
+    let (rust_recs, _) = parse_output(rust_out);
+    let (c_recs, _) = parse_output(c_out);
 
-    // Sanity check: verify parsed count (before dedup) matches raw line count
-    // Difference due to dedup is fine, difference due to parse failure is not
-    let rust_lines = rust_out.lines().filter(|l| !l.trim().is_empty()).count();
-    let c_lines = c_out.lines().filter(|l| !l.trim().is_empty()).count();
+    compare_recs_impl(rust_recs, c_recs, test_name, mode);
+}
 
-    if rust_parsed != rust_lines {
-        panic!(
-            "{} Rust parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
-            LogTag::Parity,
-            rust_lines,
-            rust_parsed,
-            rust_lines.saturating_sub(rust_parsed)
-        );
-    }
-    if c_parsed != c_lines {
-        panic!(
-            "{} C parse error: {} lines in output, {} records parsed (dropped {}). Check Rec::from_line parsing.",
-            LogTag::Parity,
-            c_lines,
-            c_parsed,
-            c_lines.saturating_sub(c_parsed)
-        );
-    }
-
-    // Log dedup info at debug level if any duplicates were removed
-    if rust_recs.len() != rust_parsed {
-        debug!(
-            "{} Rust: {} duplicates removed",
-            LogTag::Parity,
-            rust_parsed - rust_recs.len()
-        );
-    }
-    if c_recs.len() != c_parsed {
-        debug!(
-            "{} C: {} duplicates removed",
-            LogTag::Parity,
-            c_parsed - c_recs.len()
-        );
-    }
-
+/// Shared implementation for comparing Rust and C records.
+fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mode: ParityMode) {
     info!(
         "{} {} - Comparing: Rust={} hits, C={} hits",
         LogTag::Parity,
@@ -1043,6 +1084,7 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
     );
 
     // Optionally write to file at trace level
+
     if log::log_enabled!(log::Level::Trace) {
         let mut debug_out = String::new();
         debug_out.push_str("RUST RECORDS:\n");
@@ -1211,7 +1253,7 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
             exact_match_count
         );
 
-        // 1. Print non-problematic hits first (short format)
+        // 1. Print non-problematic hits first (short format, with optional tables for RustBetter)
         for (r, c, status) in &good_hits {
             if *status == HitStatus::RustBetter {
                 debug!(
@@ -1223,6 +1265,14 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
                     r.energy,
                     c.energy
                 );
+                // Show table for RustBetter too so user can compare
+                let table = ParityTable {
+                    kind: ParityKind::Mismatch { rust: r, c },
+                    config: TableConfig::default(),
+                };
+                for line in table.to_string().lines() {
+                    debug!("{} {}", LogTag::Parity, line);
+                }
             } else {
                 debug!(
                     "{}   {} {} {} E={}",
@@ -1276,38 +1326,43 @@ pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: Parit
         for (i, c) in c_remaining.iter().enumerate() {
             if !c_rem_matched[i] {
                 // Classify why this C hit is missing - check against ALL Rust hits
-                let reason = classify_missing(c, &all_rust_refs);
+                let (reason, covering_hit) = classify_missing(c, &all_rust_refs);
+                let acceptable = reason.is_acceptable(mode);
 
-                if reason.is_acceptable(mode) {
-                    // Acceptable missing - log but don't count as failure
+                // Log header with status
+                let status_prefix = if acceptable { "  " } else { "✗ " };
+                debug!(
+                    "{} {}{} {} Coords: {}",
+                    LogTag::Parity,
+                    status_prefix,
+                    HitStatus::Missing,
+                    reason,
+                    c.fmt_coords()
+                );
+
+                // Show which Rust hit covers this C hit (if any)
+                if let Some(r) = covering_hit {
                     debug!(
-                        "{} {} {} Coords: {}",
+                        "{}      Covered by Rust: {}",
                         LogTag::Parity,
-                        HitStatus::Missing,
-                        reason,
-                        c.fmt_coords()
+                        r.fmt_coords()
                     );
-                } else {
-                    // Unacceptable missing - count as failure
+                }
+
+                // Always show table for all missing hits
+                let table = ParityTable {
+                    kind: ParityKind::COnly(c),
+                    config: TableConfig::default(),
+                };
+                for line in table.to_string().lines() {
+                    debug!("{} {}", LogTag::Parity, line);
+                }
+
+                // Only count as failure if not acceptable
+                if !acceptable {
                     missing_count += 1;
                     missing_len_sum += c.interaction.len();
                     missing_energy_sum += c.energy.parse::<f64>().unwrap_or(0.0);
-
-                    let table = ParityTable {
-                        kind: ParityKind::COnly(c),
-                        config: TableConfig::default(),
-                    };
-                    debug!(
-                        "{} {} {} Coords: {}",
-                        LogTag::Parity,
-                        HitStatus::Missing,
-                        reason,
-                        c.fmt_coords()
-                    );
-                    for line in table.to_string().lines() {
-                        debug!("{} {}", LogTag::Parity, line);
-                    }
-                    debug!("{}", LogTag::Parity);
                 }
             }
         }
