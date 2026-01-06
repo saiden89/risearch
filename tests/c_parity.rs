@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{run_file_parity, run_single_seq_parity, setup_common_test_files, workspace_root};
+use common::{ParityRunner, SingleSeqRunner, workspace_root};
 
 // =============================================================================
 // FILE-BASED TESTS
@@ -13,9 +13,12 @@ use common::{run_file_parity, run_single_seq_parity, setup_common_test_files, wo
 
 #[test]
 fn test_parity_full_pipeline() {
-    let (_, query_path, target_path, _) = setup_common_test_files();
+    let root = workspace_root();
+    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
     let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
-    run_file_parity(&query_path, &target_path, None, "default_config", &args);
+
+    ParityRunner::new(&target).assert_pass(&query, "default_config", &args);
 }
 
 #[test]
@@ -23,16 +26,19 @@ fn test_parity_long_seed() {
     let root = workspace_root();
     let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
     let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-    let c_index = root.join("legacy_c/RIsearch2/test_suite/RHOC.pksuf");
     let args = ["-l", "0", "-e", "10000", "-s", "12", "-p3"];
-    run_file_parity(&query, &target, Some(&c_index), "long_seed_no_ext", &args);
+
+    ParityRunner::new(&target).assert_pass(&query, "long_seed_no_ext", &args);
 }
 
 #[test]
 fn test_parity_energy_threshold() {
-    let (_, query_path, target_path, _) = setup_common_test_files();
+    let root = workspace_root();
+    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
     let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
-    run_file_parity(&query_path, &target_path, None, "energy_only", &args);
+
+    ParityRunner::new(&target).assert_pass(&query, "energy_only", &args);
 }
 
 #[test]
@@ -40,7 +46,8 @@ fn test_parity_alignment_repro() {
     let query = "uggcucaguucagcaggaacag";
     let target = "TGGCTCTGTGGGACACAGCAGG";
     let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
-    run_single_seq_parity(query, target, "alignment_mismatch_repro", &args, false);
+
+    SingleSeqRunner::new(query, target).assert_pass("alignment_mismatch_repro", &args);
 }
 
 #[test]
@@ -51,7 +58,7 @@ fn test_parity_single_seq() {
     let query = "UGCUGCUGCCGCUGCUGCUG"; // 20nt with internal variation
     let target = "GCAGCAGCAGCAGCAGCAGC"; // 20nt complement
 
-    run_single_seq_parity(query, target, "internal_mismatch_20nt", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("internal_mismatch_20nt", &args);
 }
 
 // =============================================================================
@@ -71,7 +78,7 @@ fn test_parity_seed_only() {
     let query = "UGCUGCUGCUGCUGCUGCUG"; // 20nt
     let target = "CAGCAGCAGCAGCAGCAGCA"; // Perfect complement, reversed
 
-    run_single_seq_parity(query, target, "seed_only_no_extension", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("seed_only_no_extension", &args);
 }
 
 /// Tests left extension only (dp_left).
@@ -84,7 +91,7 @@ fn test_parity_left_ext() {
     let query = "AAAAAUGCUG";
     let target = "CAGCAUUUUU";
 
-    run_single_seq_parity(query, target, "left_extension_only", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("left_extension_only", &args);
 }
 
 /// Tests right extension only (dp_right).
@@ -96,7 +103,7 @@ fn test_parity_right_ext() {
     let query = "UGCUGAAAAA";
     let target = "UUUUUCAGCA";
 
-    run_single_seq_parity(query, target, "right_extension_only", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("right_extension_only", &args);
 }
 
 /// Tests both left and right extension.
@@ -108,7 +115,7 @@ fn test_parity_both_ext() {
     let query = "AAAUGCUGAAA";
     let target = "UUUCAGCAUUU";
 
-    run_single_seq_parity(query, target, "both_extensions", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("both_extensions", &args);
 }
 
 /// Tests with wobble pairs (G-U) in the seed region.
@@ -119,7 +126,7 @@ fn test_parity_wobble() {
     let query = "UGUGUGUGUG"; // 10 alternating U-G pattern
     let target = "CGCGCGCGCG"; // Complement with wobble
 
-    run_single_seq_parity(query, target, "wobble_seed_pairs", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("wobble_seed_pairs", &args);
 }
 
 // =============================================================================
@@ -146,7 +153,7 @@ fn test_parity_mir24_isolated() {
         "--no-max-prune",
     ];
 
-    run_single_seq_parity(query, target, "miR24_isolated_single", &args, true);
+    SingleSeqRunner::new(query, target).assert_pass_detailed("miR24_isolated_single", &args);
 }
 
 /// More targeted single-hit test with explicit segment expectations.
@@ -156,7 +163,7 @@ fn test_parity_segments_debug() {
     let target = "UUUUUACAGCAUUUUU";
     let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
 
-    run_single_seq_parity(query, target, "segment_debug", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("segment_debug", &args);
 }
 
 /// Isolated test for rust-worse energy case.
@@ -175,7 +182,7 @@ fn test_parity_rust_worse_debug() {
 
     let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
 
-    run_single_seq_parity(query, target, "rust_worse_debug", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("rust_worse_debug", &args);
 }
 
 /// Minimal reproducible test for identical-alignment-different-energy issue.
@@ -194,5 +201,5 @@ fn test_parity_energy_discrepancy_minimal() {
     // Args matching energy_threshold test: -l 10 -e -10 -s 5 -p3
     let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
 
-    run_single_seq_parity(query, target, "energy_discrepancy_minimal", &args, false);
+    SingleSeqRunner::new(query, target).assert_pass("energy_discrepancy_minimal", &args);
 }

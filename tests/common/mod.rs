@@ -1,12 +1,47 @@
-use assert_cmd::cargo::cargo_bin_cmd;
-use flate2::read::GzDecoder;
+//! Common test utilities for parity testing.
+//!
+//! This module provides infrastructure for comparing Rust and C risearch output.
+//!
+//! # Module Organization
+//!
+//! - `record`: `Rec` struct and parsing
+//! - `status`: `HitStatus`, `MissingReason`, `ParityMode`
+//! - `table`: `ParityTable` and display formatting
+//! - `comparison`: Comparison logic and `ParityComparator`
+//! - `c_runner`: C binary runner with type-state pattern
+//! - `runner`: Test orchestration functions
+
+// =============================================================================
+// SUBMODULES
+// =============================================================================
+
+pub mod c_runner;
+pub mod comparison;
+pub mod record;
+pub mod runner;
+pub mod status;
+pub mod table;
+
+// =============================================================================
+// RE-EXPORTS (public API)
+// Used by runner.rs (internally)
+pub(crate) use comparison::{LogTag, classify_missing};
+pub(crate) use record::Rec;
+pub(crate) use status::{HitStatus, ParityMode};
+pub(crate) use table::{ParityKind, ParityTable, TableConfig};
+
+// Used by c_parity.rs
+pub use runner::{ParityRunner, SingleSeqRunner};
+
+// =============================================================================
+// LOGGING SETUP
+// =============================================================================
+
 use log::{debug, info, trace, warn};
 use std::collections::HashSet;
-use std::fs;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Once;
-use tabled::{Table, Tabled, builder::Builder, settings::Style};
+use tabled::{Table, Tabled, settings::Style};
 
 static INIT: Once = Once::new();
 
@@ -40,664 +75,6 @@ pub fn init_test_logging() {
 // ERROR - Reserved for panics (test failures)
 // =============================================================================
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Rec {
-    // Identity fields for grouping
-    q_id: String,
-    t_id: String,
-
-    // Coordinate fields
-    q_start: usize,
-    q_end: usize,
-    t_start: usize,
-    t_end: usize,
-    strand: String,
-
-    // Data fields
-    energy: String, // Keep as string for exact comparison, parse for fuzzy
-    interaction: String,
-    target_seq: String,
-    query_seq: String,
-    flank_5: String,
-    flank_3: String,
-
-    // Seed range within interaction (parsed from markers if present)
-    seed_start: Option<usize>,
-    seed_end: Option<usize>,
-}
-
-impl Rec {
-    fn from_line(line: &str) -> Option<Self> {
-        let fields: Vec<&str> = line.split('\t').collect();
-        // Minimum fields: id, q_start, q_end, t_id, t_start, t_end, strand, energy, interaction, target_seq (10 fields)
-        if fields.len() < 10 {
-            if !line.trim().is_empty() {
-                trace!(
-                    "{} Skipped line with {} columns (expected >= 10): {}",
-                    LogTag::Rec,
-                    fields.len(),
-                    line
-                );
-            }
-            return None;
-        }
-
-        // Helper to strip y/x debug markers from C output and optionally return seed range
-        let parse_and_strip = |s: &str| -> (String, Option<usize>, Option<usize>) {
-            let before = char::from(SeedMarker::BeforeSeed);
-            let after = char::from(SeedMarker::AfterSeed);
-
-            // Find marker positions before stripping
-            let y_pos = s.find(before);
-            let x_pos = s.find(after);
-
-            let (seed_start, seed_end) = match (y_pos, x_pos) {
-                (Some(y), Some(x)) if x > y => {
-                    // y marks start, x marks end (after y was removed = x-1)
-                    (Some(y), Some(x - 1))
-                }
-                _ => (None, None),
-            };
-
-            let clean: String = s.chars().filter(|&c| c != before && c != after).collect();
-            (clean, seed_start, seed_end)
-        };
-
-        let strip = |s: &str| -> String {
-            let before = char::from(SeedMarker::BeforeSeed);
-            let after = char::from(SeedMarker::AfterSeed);
-            s.chars().filter(|&c| c != before && c != after).collect()
-        };
-
-        // Parse interaction with seed range extraction
-        let (interaction, seed_start, seed_end) = parse_and_strip(fields[8]);
-
-        Some(Rec {
-            q_id: fields[0].to_string(),
-            q_start: fields[1].parse().unwrap_or(0),
-            q_end: fields[2].parse().unwrap_or(0),
-            t_id: fields[3].to_string(),
-            t_start: fields[4].parse().unwrap_or(0),
-            t_end: fields[5].parse().unwrap_or(0),
-            strand: fields[6].to_string(),
-            energy: fields[7].to_string(),
-            interaction,
-            target_seq: strip(fields[9]),
-            // Optional fields - use get() for safe access
-            flank_5: fields.get(10).map_or(String::new(), |s| strip(s)),
-            flank_3: fields.get(11).map_or(String::new(), |s| strip(s)),
-            query_seq: fields.get(12).map_or(String::new(), |s| s.to_string()),
-            seed_start,
-            seed_end,
-        })
-    }
-
-    /// Returns true if coordinates and strand match
-    fn coords_match(&self, other: &Self) -> bool {
-        self.q_start == other.q_start
-            && self.q_end == other.q_end
-            && self.t_start == other.t_start
-            && self.t_end == other.t_end
-            && self.strand == other.strand
-    }
-
-    /// Format record for debug output
-    fn fmt_coords(&self) -> String {
-        format!(
-            "q=[{},{}] t=[{},{}] S={} E={}",
-            self.q_start, self.q_end, self.t_start, self.t_end, self.strand, self.energy
-        )
-    }
-}
-
-impl From<&risearch::SearchHit> for Rec {
-    fn from(hit: &risearch::SearchHit) -> Self {
-        // Truncate IDs at whitespace to match C output format (and SearchHit::write)
-        let q_id = hit
-            .query_id
-            .split_whitespace()
-            .next()
-            .unwrap_or(&hit.query_id)
-            .to_string();
-        let t_id = hit
-            .target_id
-            .split_whitespace()
-            .next()
-            .unwrap_or(&hit.target_id)
-            .to_string();
-
-        Rec {
-            q_id,
-            q_start: hit.q_start + 1, // Convert from 0-based to 1-based (matches SearchHit::write)
-            q_end: hit.q_end + 1,     // Convert from 0-based to 1-based (matches SearchHit::write)
-            t_id,
-
-            t_start: hit.output_t_start,
-            t_end: hit.output_t_end,
-            strand: hit.strand.to_string(),
-            energy: format!("{:.2}", hit.energy),
-            interaction: hit
-                .alignment
-                .fingerprint()
-                .replace('T', "U")
-                .replace('t', "u"),
-            target_seq: hit
-                .alignment
-                .target_sequence()
-                .replace('T', "U")
-                .replace('t', "u"),
-            flank_5: hit.flank_5.clone(),
-            flank_3: hit.flank_3.clone(),
-            query_seq: String::new(), // Not stored in SearchHit
-            seed_start: Some(hit.alignment.left_extension().len()),
-            seed_end: Some(hit.alignment.left_extension().len() + hit.alignment.seed().len()),
-        }
-    }
-}
-
-// =============================================================================
-// PARITY DATA MODELS & VIEW
-// =============================================================================
-
-#[derive(Debug)]
-pub enum ParityKind<'a> {
-    Mismatch { rust: &'a Rec, c: &'a Rec },
-    RustOnly(&'a Rec),
-    COnly(&'a Rec),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ColumnKind {
-    Label,
-    Ctx5,
-    Ext5,
-    Seed,
-    Ext3,
-    Ctx3,
-}
-
-impl ColumnKind {
-    pub fn header(&self) -> &'static str {
-        match self {
-            Self::Label => "", // Placeholder
-            Self::Ctx5 => "5' Ctx",
-            Self::Ext5 => "5' EXT",
-            Self::Seed => "SEED",
-            Self::Ext3 => "3' EXT",
-            Self::Ctx3 => "3' Ctx",
-        }
-    }
-}
-
-pub struct TableConfig {
-    pub columns: Vec<ColumnKind>,
-}
-
-impl Default for TableConfig {
-    fn default() -> Self {
-        Self {
-            columns: vec![
-                ColumnKind::Label,
-                ColumnKind::Ctx5,
-                ColumnKind::Ext5,
-                ColumnKind::Seed,
-                ColumnKind::Ext3,
-                ColumnKind::Ctx3,
-            ],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum RowLabel {
-    SingleFP,
-    SingleTarget,
-    CompCFP,
-    CompCTarget,
-    CompDiff,
-    CompRFP,
-    CompRTarget,
-}
-
-impl std::fmt::Display for RowLabel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SingleFP => write!(f, "FP"),
-            Self::SingleTarget => write!(f, "Target"),
-            Self::CompCFP => write!(f, "C FP"),
-            Self::CompCTarget => write!(f, "C Tgt"),
-            Self::CompDiff => write!(f, "DIFF"),
-            Self::CompRFP => write!(f, "R FP"),
-            Self::CompRTarget => write!(f, "R Tgt"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffChar {
-    Match,    // ' '
-    Mismatch, // 'X'
-}
-
-impl DiffChar {
-    pub fn as_char(&self) -> char {
-        match self {
-            Self::Match => ' ',
-            Self::Mismatch => 'X',
-        }
-    }
-}
-
-impl From<(char, char)> for DiffChar {
-    fn from((a, b): (char, char)) -> Self {
-        if a == b { Self::Match } else { Self::Mismatch }
-    }
-}
-
-pub enum SeedMarker {
-    BeforeSeed, // 'y'
-    AfterSeed,  // 'x'
-}
-
-impl From<SeedMarker> for char {
-    fn from(marker: SeedMarker) -> char {
-        match marker {
-            SeedMarker::BeforeSeed => 'y',
-            SeedMarker::AfterSeed => 'x',
-        }
-    }
-}
-
-pub struct ParityTable<'a> {
-    pub kind: ParityKind<'a>,
-    pub config: TableConfig,
-}
-
-pub enum LogTag {
-    Rec,
-    Pair,
-    Parity,
-    Summary,
-}
-
-impl std::fmt::Display for LogTag {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Rec => write!(f, "[REC]"),
-            Self::Pair => write!(f, "[PAIR]"),
-            Self::Parity => write!(f, "[PARITY]"),
-            Self::Summary => write!(f, "[SUMMARY]"),
-        }
-    }
-}
-
-/// Status of a hit in parity comparison
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HitStatus {
-    Identical,  // Exact match between Rust and C (markers already stripped)
-    CoOptimal,  // Equal energy, different trace (co-optimal)
-    RustBetter, // Rust has better energy
-    RustWorse,  // Rust has worse energy
-    Extra,      // Only in Rust
-    Missing,    // Only in C
-}
-
-impl std::fmt::Display for HitStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Identical => write!(f, "IDENTICAL"),
-            Self::CoOptimal => write!(f, "CO-OPTIMAL"),
-            Self::RustBetter => write!(f, "RUST BETTER"),
-            Self::RustWorse => write!(f, "RUST WORSE"),
-            Self::Extra => write!(f, "EXTRA"),
-            Self::Missing => write!(f, "MISSING"),
-        }
-    }
-}
-
-/// Why a C hit was not found in Rust output
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MissingReason {
-    /// Rust found overlapping hit with better (lower) energy
-    BetterEnergy,
-    /// Rust found overlapping hit with equal energy (co-optimal)
-    EqualEnergy,
-    /// Rust found overlapping hit with worse (higher) energy
-    WorseEnergy,
-    /// No overlapping Rust hit - completely missed
-    NoOverlap,
-}
-
-impl std::fmt::Display for MissingReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::BetterEnergy => write!(f, "COVERED_BETTER"),
-            Self::EqualEnergy => write!(f, "COVERED_EQUAL"),
-            Self::WorseEnergy => write!(f, "COVERED_WORSE"),
-            Self::NoOverlap => write!(f, "NO_OVERLAP"),
-        }
-    }
-}
-
-impl MissingReason {
-    pub fn is_acceptable(&self, mode: ParityMode) -> bool {
-        match mode {
-            ParityMode::Strict => false,
-            ParityMode::Relaxed => matches!(self, Self::BetterEnergy | Self::EqualEnergy),
-        }
-    }
-}
-
-/// Comparison mode for parity tests
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ParityMode {
-    #[allow(dead_code)] // Reserved for strict parity testing
-    Strict,
-    /// Accept improvements and co-optimal traces
-    #[default]
-    Relaxed,
-}
-
-/// Check if two coordinate ranges overlap
-fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
-    a_start <= b_end && b_start <= a_end
-}
-
-/// Check if two hits overlap in both query and target coordinates
-fn hits_overlap(a: &Rec, b: &Rec) -> bool {
-    a.strand == b.strand
-        && ranges_overlap(a.t_start, a.t_end, b.t_start, b.t_end)
-        && ranges_overlap(a.q_start, a.q_end, b.q_start, b.q_end)
-}
-
-/// Classify why a C hit is missing from Rust output
-/// Returns the reason and optionally the best overlapping Rust hit for logging
-fn classify_missing<'a>(c_hit: &Rec, rust_hits: &[&'a Rec]) -> (MissingReason, Option<&'a Rec>) {
-    let c_e = c_hit.energy.parse::<f64>().unwrap_or(0.0);
-
-    // Find the best (lowest energy) overlapping Rust hit
-    let best_overlap = rust_hits
-        .iter()
-        .filter(|r| hits_overlap(c_hit, r))
-        .min_by(|a, b| {
-            let a_e = a.energy.parse::<f64>().unwrap_or(0.0);
-            let b_e = b.energy.parse::<f64>().unwrap_or(0.0);
-            a_e.partial_cmp(&b_e).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .copied();
-
-    match best_overlap {
-        Some(r) => {
-            let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
-            let reason = if r_e < c_e - 0.001 {
-                MissingReason::BetterEnergy
-            } else if r_e > c_e + 0.001 {
-                MissingReason::WorseEnergy
-            } else {
-                MissingReason::EqualEnergy
-            };
-            (reason, Some(r))
-        }
-        None => (MissingReason::NoOverlap, None),
-    }
-}
-
-pub struct ParsedInteraction {
-    pub ctx_5: String,
-    pub ext_5: String,
-    pub seed: String,
-    pub ext_3: String,
-    pub ctx_3: String,
-}
-
-fn build_diff(a: &str, b: &str) -> String {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-    let len = a_chars.len().max(b_chars.len());
-    let mut diff = String::with_capacity(len);
-    for i in 0..len {
-        let ac = a_chars.get(i).copied().unwrap_or(' ');
-        let bc = b_chars.get(i).copied().unwrap_or(' ');
-        diff.push(DiffChar::from((ac, bc)).as_char());
-    }
-    diff
-}
-
-impl ParsedInteraction {
-    fn from_rec(rec: &Rec) -> Self {
-        Self::from_rec_with_range(rec, rec.seed_start, rec.seed_end)
-    }
-
-    /// Parse interaction with explicit seed range override (for diff alignment)
-    fn from_rec_with_range(rec: &Rec, seed_start: Option<usize>, seed_end: Option<usize>) -> Self {
-        let fp_raw = &rec.interaction;
-
-        // Use provided seed range if available, otherwise treat entire interaction as seed
-        let (left, seed, right) = if let (Some(start), Some(end)) = (seed_start, seed_end) {
-            let chars: Vec<char> = fp_raw.chars().collect();
-            let len = chars.len();
-            if len >= end {
-                (
-                    chars[..start].iter().collect(),
-                    chars[start..end].iter().collect(),
-                    chars[end..].iter().collect(),
-                )
-            } else {
-                ("".into(), fp_raw.clone(), "".into())
-            }
-        } else {
-            // No seed range info - put entire interaction in seed column
-            ("".into(), fp_raw.clone(), "".into())
-        };
-
-        Self {
-            ctx_5: rec.flank_5.clone(),
-            ext_5: left,
-            seed,
-            ext_3: right,
-            ctx_3: rec.flank_3.clone(),
-        }
-    }
-
-    fn from_rec_target(rec: &Rec, ref_parts: &ParsedInteraction) -> Self {
-        let chars: Vec<char> = rec.target_seq.chars().collect();
-
-        let l_len = ref_parts.ext_5.chars().count();
-        let s_len = ref_parts.seed.chars().count();
-
-        let total = chars.len();
-        let p1 = l_len.min(total);
-        let p2 = (l_len + s_len).min(total);
-
-        Self {
-            ctx_5: ref_parts.ctx_5.clone(),
-            ext_5: chars[..p1].iter().collect(),
-            seed: chars[p1..p2].iter().collect(),
-            ext_3: chars[p2..].iter().collect(),
-            ctx_3: ref_parts.ctx_3.clone(),
-        }
-    }
-}
-
-impl<'a> std::fmt::Display for ParityTable<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut builder = Builder::default();
-
-        let strand = match &self.kind {
-            ParityKind::Mismatch { c, .. } => &c.strand,
-            ParityKind::RustOnly(r) => &r.strand,
-            ParityKind::COnly(c) => &c.strand,
-        };
-
-        let headers: Vec<String> = self
-            .config
-            .columns
-            .iter()
-            .map(|c| {
-                if matches!(c, ColumnKind::Label) {
-                    format!("S={}", strand)
-                } else {
-                    c.header().to_string()
-                }
-            })
-            .collect();
-        builder.push_record(headers);
-
-        let add_row = |b: &mut Builder, label: RowLabel, p: &ParsedInteraction| {
-            let label_str = label.to_string();
-            let row: Vec<String> = self
-                .config
-                .columns
-                .iter()
-                .map(|col| match col {
-                    ColumnKind::Label => label_str.clone(),
-                    ColumnKind::Ctx5 => p.ctx_5.clone(),
-                    ColumnKind::Ext5 => p.ext_5.clone(),
-                    ColumnKind::Seed => p.seed.clone(),
-                    ColumnKind::Ext3 => p.ext_3.clone(),
-                    ColumnKind::Ctx3 => p.ctx_3.clone(),
-                })
-                .collect();
-            b.push_record(row);
-        };
-
-        match self.kind {
-            ParityKind::RustOnly(r) => {
-                let p = ParsedInteraction::from_rec(r);
-                let p_tgt = ParsedInteraction::from_rec_target(r, &p);
-                add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
-                add_row(&mut builder, RowLabel::SingleFP, &p);
-            }
-            ParityKind::COnly(c) => {
-                let p = ParsedInteraction::from_rec(c);
-                let p_tgt = ParsedInteraction::from_rec_target(c, &p);
-                add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
-                add_row(&mut builder, RowLabel::SingleFP, &p);
-            }
-            ParityKind::Mismatch { rust: r, c } => {
-                let p_c = ParsedInteraction::from_rec(c);
-                // Use C's seed range for Rust's interaction so columns align for diff
-                let p_r = ParsedInteraction::from_rec_with_range(r, c.seed_start, c.seed_end);
-
-                let diff_l = build_diff(&p_c.ext_5, &p_r.ext_5);
-                let diff_s = build_diff(&p_c.seed, &p_r.seed);
-                let diff_r = build_diff(&p_c.ext_3, &p_r.ext_3);
-
-                let p_diff = ParsedInteraction {
-                    ctx_5: "".into(),
-                    ext_5: diff_l,
-                    seed: diff_s,
-                    ext_3: diff_r,
-                    ctx_3: "".into(),
-                };
-
-                let p_c_tgt = ParsedInteraction::from_rec_target(c, &p_c);
-                let p_r_tgt = ParsedInteraction::from_rec_target(r, &p_r);
-
-                add_row(&mut builder, RowLabel::CompCTarget, &p_c_tgt);
-                add_row(&mut builder, RowLabel::CompCFP, &p_c);
-                add_row(&mut builder, RowLabel::CompDiff, &p_diff);
-                add_row(&mut builder, RowLabel::CompRFP, &p_r);
-                add_row(&mut builder, RowLabel::CompRTarget, &p_r_tgt);
-            }
-        }
-
-        write!(f, "{}", builder.build().with(Style::rounded()))
-    }
-}
-
-// For debug output comparison, we insert y/x markers around the seed portion
-// of interaction strings. Format: <left_ext>y<seed>x<right_ext>
-// =============================================================================
-
-/// Format a Rec as a horizontal table for display
-/// Columns: 5' Context | 5' EXT | SEED | 3' EXT | 3' Context
-/// Rows: FP, Target (and optionally Query)
-
-/// Analyzes differences between Rust and C interaction strings.
-///
-/// If C output contains y/x seed markers, shows aligned comparison:
-/// ```
-/// C:    [left_ext] y[seed]x [right_ext]
-/// Rust: [left_ext]  [seed]  [right_ext]
-/// ```
-
-/// Detailed analysis for focused tests with few hits.
-/// Tries to pair EXTRA (Rust-only) and MISSING (C-only) hits that likely represent
-/// the same biological interaction but with different coordinates/extensions.
-pub fn analyze_hit_pairs(extras: &[&Rec], missings: &[&Rec]) {
-    if extras.is_empty() || missings.is_empty() {
-        return;
-    }
-
-    info!(
-        "{} Paired hit analysis ({} extras, {} missings)",
-        LogTag::Pair,
-        extras.len(),
-        missings.len()
-    );
-
-    for extra in extras {
-        // Find best matching missing hit using min_by_key
-        let best_match = missings.iter().min_by_key(|missing| {
-            let q_start_diff = (extra.q_start as i32 - missing.q_start as i32).abs();
-            let q_end_diff = (extra.q_end as i32 - missing.q_end as i32).abs();
-            let t_start_diff = (extra.t_start as i32 - missing.t_start as i32).abs();
-            let t_end_diff = (extra.t_end as i32 - missing.t_end as i32).abs();
-            q_start_diff + q_end_diff + t_start_diff + t_end_diff
-        });
-
-        if let Some(m) = best_match {
-            // Compute score for display
-            let score = (extra.q_start as i32 - m.q_start as i32).abs()
-                + (extra.q_end as i32 - m.q_end as i32).abs()
-                + (extra.t_start as i32 - m.t_start as i32).abs()
-                + (extra.t_end as i32 - m.t_end as i32).abs();
-
-            debug!("{} Likely pair (distance={})", LogTag::Pair, score);
-
-            if extra.interaction == m.interaction {
-                debug!("{} [NOTE] Interactions Identical!", LogTag::Pair);
-                if extra.energy != m.energy {
-                    debug!(
-                        "{} Energy Diff: Rust={} vs C={}",
-                        LogTag::Pair,
-                        extra.energy,
-                        m.energy
-                    );
-                }
-                if extra.target_seq != m.target_seq {
-                    debug!(
-                        "{} Target Diff: Rust={} vs C={}",
-                        LogTag::Pair,
-                        extra.target_seq,
-                        m.target_seq
-                    );
-                }
-                // Check coords
-                if !extra.coords_match(m) {
-                    debug!(
-                        "{} Coords Diff: Rust={} vs C={}",
-                        LogTag::Pair,
-                        extra.fmt_coords(),
-                        m.fmt_coords()
-                    );
-                }
-            }
-
-            // Show as a mismatch table to visualize the alignment differences
-            let table = ParityTable {
-                kind: ParityKind::Mismatch { rust: extra, c: m },
-                config: TableConfig::default(),
-            };
-
-            for line in table.to_string().lines() {
-                debug!("{} {}", LogTag::Pair, line);
-            }
-        }
-    }
-}
-
 pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -716,328 +93,7 @@ pub fn parse_output(output: &str) -> (Vec<Rec>, usize) {
     (recs, parsed_count)
 }
 
-/// Run parity test with file inputs.
-/// Handles C indexing, Rust indexing, searching both, and comparison.
-///
-/// # Arguments
-/// * `query` - Path to query FASTA file
-/// * `target` - Path to target FASTA file  
-/// * `c_index` - Optional path to pre-existing C index (if None, will create)
-/// * `test_name` - Name for logging/assertions
-/// * `args` - CLI args for search
-pub fn run_file_parity(
-    query: &Path,
-    target: &Path,
-    c_index: Option<&Path>,
-    test_name: &str,
-    args: &[&str],
-) {
-    init_test_logging();
-
-    let root = workspace_root();
-    let c_bin = c_binary_path(&root);
-    let tmpdir = tempfile::tempdir().expect("tempdir");
-
-    // Create C index if not provided
-    let c_index_path = if let Some(idx) = c_index {
-        idx.to_path_buf()
-    } else {
-        let idx_path = tmpdir.path().join("c_target.pksuf");
-        create_c_index(target, &idx_path, &c_bin);
-        idx_path
-    };
-
-    // Parse CLI args into SearchArgs
-    let search_args = parse_search_args(args);
-
-    // Run Rust search using library (gives us proper seed_start/seed_end)
-    let rust_recs = search_rust_lib_files(query, target, &search_args);
-
-    // Run C search
-    let c_args: Vec<&str> = args
-        .iter()
-        .filter(|&&a| a != "--no-max-prune")
-        .cloned()
-        .collect();
-    let c_out = search_c(query, &c_index_path, &c_bin, &c_args);
-
-    // Compare using the new function that takes Recs directly
-    compare_results_with_recs(rust_recs, &c_out, test_name, ParityMode::Relaxed);
-}
-
-/// Parse CLI-style args into SearchArgs using clap
-fn parse_search_args(args: &[&str]) -> risearch::args::SearchArgs {
-    use clap::Parser;
-
-    // Build a fake command line - FakeCmd just has flattened SearchArgs, no subcommand
-    let mut cli_args = vec!["risearch"];
-    cli_args.extend(args.iter().copied());
-
-    // Use a helper struct that only has the search args (flattened)
-    #[derive(Parser)]
-    struct FakeCmd {
-        #[command(flatten)]
-        search: risearch::args::SearchArgs,
-    }
-
-    let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
-    parsed.search
-}
-
-pub fn index_and_search_rust(
-    query: &Path,
-    target: &Path,
-    index_path: &Path,
-    args: &[&str],
-) -> std::process::Output {
-    // Build index
-    let mut cmd = cargo_bin_cmd!("risearch");
-    cmd.args([
-        "index",
-        target.to_str().unwrap(),
-        index_path.to_str().unwrap(),
-    ])
-    .assert()
-    .success();
-
-    let mut cmd = cargo_bin_cmd!("risearch");
-
-    // Check if trace logging is requested via RUST_LOG
-    let trace_enabled = std::env::var("RUST_LOG")
-        .map(|v| v.contains("trace"))
-        .unwrap_or(false);
-
-    // Search
-    let mut final_args = vec!["search"];
-
-    // Add -vvv for trace output if RUST_LOG=trace
-    if trace_enabled {
-        final_args.push("-vvv");
-    }
-
-    final_args.extend_from_slice(&[
-        "-i",
-        index_path.to_str().unwrap(),
-        "-q",
-        query.to_str().unwrap(),
-        "-o",
-        "-", // Output to stdout
-    ]);
-    final_args.extend_from_slice(args);
-
-    let output = cmd.args(&final_args).output().expect("run risearch");
-
-    // Pass through binary stderr directly
-    // Note: won't be colored since subprocess output is captured, not a TTY
-    if trace_enabled {
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    if !output.status.success() {
-        panic!("Rust search failed: {:?}", output.status);
-    }
-    output
-}
-
-/// Search using risearch as a library (no subprocess).
-/// Logs go through the test logger naturally (colored, filtered).
-#[allow(dead_code)]
-pub fn search_rust_lib(
-    query_seq: &str,
-    target_seq: &str,
-    query_id: &str,
-    target_id: &str,
-    args: &risearch::args::SearchArgs,
-) -> Vec<Rec> {
-    use risearch::search::SaIndex;
-    use tempfile::tempdir;
-
-    // Create temp files for index
-    let tmpdir = tempdir().expect("tempdir");
-    let target_path = tmpdir.path().join("target.fa");
-    let index_path = tmpdir.path().join("target.idx");
-
-    // Write target to file
-    fs::write(&target_path, format!(">{}\n{}\n", target_id, target_seq)).expect("write target");
-
-    // Build index
-    risearch::sa::create_suffix_array(&target_path, &index_path).expect("build index");
-
-    // Load index
-    let index_file = risearch::sa::load_index_file(&index_path).expect("load index");
-    let index = SaIndex { index: &index_file };
-
-    // Prepare query
-    let queries = vec![(query_id.to_string(), query_seq.as_bytes().to_vec())];
-
-    // Run search
-    let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
-
-    // Convert to Rec
-    hits.iter().map(Rec::from).collect()
-}
-
-/// Search using risearch as a library with FASTA file inputs.
-/// Returns Vec<Rec> with proper seed_start/seed_end from SearchHit.
-pub fn search_rust_lib_files(
-    query_path: &Path,
-    target_path: &Path,
-    args: &risearch::args::SearchArgs,
-) -> Vec<Rec> {
-    use risearch::search::SaIndex;
-    use tempfile::tempdir;
-
-    // Create temp directory for index
-    let tmpdir = tempdir().expect("tempdir");
-    let index_path = tmpdir.path().join("target.idx");
-
-    // Build index
-    risearch::sa::create_suffix_array(target_path, &index_path).expect("build index");
-
-    // Load index
-    let index_file = risearch::sa::load_index_file(&index_path).expect("load index");
-    let index = SaIndex { index: &index_file };
-
-    // Read queries from FASTA
-    let queries = risearch::io::read_fasta_sequences(query_path).expect("read query FASTA");
-
-    // Run search
-    let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
-
-    // Convert to Rec (uses From<&SearchHit> which has proper seed info)
-    hits.iter().map(Rec::from).collect()
-}
-
-pub fn search_c(query: &Path, c_index: &Path, c_bin: &Path, args: &[&str]) -> String {
-    // Legacy RIsearch2 writes results to files (e.g. risearch_<query-id>.out.gz)
-    // in the current working directory by default.
-    let tmpdir = tempfile::tempdir().expect("tempdir");
-
-    let mut final_args = vec![
-        "-q",
-        query.to_str().unwrap(),
-        "-i",
-        c_index.to_str().unwrap(),
-    ];
-    final_args.extend_from_slice(args);
-
-    let out = std::process::Command::new(c_bin)
-        .current_dir(tmpdir.path())
-        .args(&final_args)
-        .output()
-        .expect("run legacy C risearch2");
-
-    if !out.status.success() {
-        panic!(
-            "Legacy C risearch2 failed: status={:?}\nstdout=\n{}\nstderr=\n{}\n",
-            out.status,
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    let mut out_files: Vec<PathBuf> = fs::read_dir(tmpdir.path())
-        .expect("read legacy C output dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("risearch_") && n.ends_with(".out.gz"))
-        })
-        .collect();
-
-    if out_files.is_empty() {
-        panic!(
-            "Legacy C risearch2 produced no output files!\nArgs: {:?}\nStderr:\n{}\nStdout:\n{}\n",
-            final_args,
-            String::from_utf8_lossy(&out.stderr),
-            String::from_utf8_lossy(&out.stdout)
-        );
-    }
-
-    out_files.sort();
-
-    let mut combined = String::new();
-    for path in out_files {
-        let bytes = fs::read(&path).expect("read legacy output file");
-        let mut decoder = GzDecoder::new(&bytes[..]);
-        let mut s = String::new();
-        decoder
-            .read_to_string(&mut s)
-            .expect("decode legacy .out.gz as utf8");
-        combined.push_str(&s);
-        if !combined.ends_with('\n') {
-            combined.push('\n');
-        }
-    }
-
-    // If no output files, check if stdout was used (legacy behavior varies, but typically files).
-    // In our tests, we use -q and -i, which typically generate files.
-    if combined.trim().is_empty() {
-        panic!(
-            "Legacy C risearch2 produced empty output!\nArgs: {:?}\nStderr:\n{}\nStdout:\n{}\n",
-            final_args,
-            String::from_utf8_lossy(&out.stderr),
-            String::from_utf8_lossy(&out.stdout)
-        );
-    }
-
-    if combined.is_empty() {
-        String::from_utf8_lossy(&out.stdout).to_string()
-    } else {
-        combined
-    }
-}
-
-pub fn setup_common_test_files() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-    let c_bin = c_binary_path(&root);
-    let tmpdir = tempfile::tempdir().expect("tempdir");
-    (tmpdir, query, target, c_bin)
-}
-
-/// Get path to C risearch2 binary.
-/// Prefers debug binary (risearch2.dbg.x) if it exists, otherwise uses release (risearch2.x).
-/// Debug binary has x/y seed markers and DP matrix output for parity debugging.
-pub fn c_binary_path(root: &Path) -> PathBuf {
-    let debug_bin = root.join("legacy_c/RIsearch2/bin/risearch2.dbg.x");
-    let release_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
-
-    if debug_bin.exists() {
-        debug!(
-            "{} Using debug C binary: {}",
-            LogTag::Parity,
-            debug_bin.display()
-        );
-        debug_bin
-    } else {
-        debug!(
-            "{} Using release C binary: {}",
-            LogTag::Parity,
-            release_bin.display()
-        );
-        release_bin
-    }
-}
-
-pub fn create_c_index(target: &Path, c_index: &Path, c_bin: &Path) {
-    let output = std::process::Command::new(c_bin)
-        .arg("-c")
-        .arg(target)
-        .arg("-o")
-        .arg(c_index)
-        .output()
-        .expect("create c index");
-    if !output.status.success() {
-        panic!("C index creation failed");
-    }
-}
-
 /// Compare results where Rust records come directly from SearchHit (with proper seed info).
-/// C output is still parsed from string (with y/x markers).
 pub fn compare_results_with_recs(
     rust_recs: Vec<Rec>,
     c_out: &str,
@@ -1050,29 +106,6 @@ pub fn compare_results_with_recs(
     compare_recs_impl(rust_recs, c_recs, test_name, mode);
 }
 
-pub fn compare_results(rust_out: &str, c_out: &str, test_name: &str, mode: ParityMode) {
-    init_test_logging();
-
-    // Quick check for exact match
-    let normalize = |s: &str| -> String {
-        let mut lines: Vec<&str> = s.trim().split('\n').filter(|l| !l.is_empty()).collect();
-        lines.sort();
-        lines.dedup();
-        lines.join("\n")
-    };
-
-    if normalize(rust_out) == normalize(c_out) {
-        info!("{} {} - PASS (exact match)", LogTag::Parity, test_name);
-        return;
-    }
-
-    // Parse both and delegate
-    let (rust_recs, _) = parse_output(rust_out);
-    let (c_recs, _) = parse_output(c_out);
-
-    compare_recs_impl(rust_recs, c_recs, test_name, mode);
-}
-
 /// Shared implementation for comparing Rust and C records.
 fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mode: ParityMode) {
     info!(
@@ -1082,8 +115,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
         rust_recs.len(),
         c_recs.len()
     );
-
-    // Optionally write to file at trace level
 
     if log::log_enabled!(log::Level::Trace) {
         let mut debug_out = String::new();
@@ -1118,18 +149,15 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
     let mut mismatch_count = 0;
     let mut exact_match_count = 0;
 
-    // Energy breakdown for coordinate-matched records
     let mut rust_better_energy = 0;
     let mut rust_worse_energy = 0;
     let mut energy_equal = 0;
 
-    // Stats for extra/missing hits
     let mut extra_len_sum: usize = 0;
     let mut extra_energy_sum: f64 = 0.0;
     let mut missing_len_sum: usize = 0;
     let mut missing_energy_sum: f64 = 0.0;
 
-    // Pre-compute reference to all Rust hits for missing classification
     let all_rust_refs: Vec<&Rec> = rust_recs.iter().collect();
 
     for (q, t) in sorted_keys {
@@ -1188,7 +216,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
 
         let mut c_rem_matched = vec![false; c_remaining.len()];
 
-        // Collect hits by category for ordered output
         let mut good_hits: Vec<(&Rec, &Rec, HitStatus)> = Vec::new();
         let mut problem_hits: Vec<(&Rec, &Rec, HitStatus)> = Vec::new();
         let mut extra_hits: Vec<&Rec> = Vec::new();
@@ -1241,7 +268,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
             }
         }
 
-        // Print group with newline separator
         debug!("");
         debug!(
             "{} Group [{}:{}] R={} C={} (exact={})",
@@ -1253,7 +279,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
             exact_match_count
         );
 
-        // 1. Print non-problematic hits first (short format, with optional tables for RustBetter)
         for (r, c, status) in &good_hits {
             if *status == HitStatus::RustBetter {
                 debug!(
@@ -1265,7 +290,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
                     r.energy,
                     c.energy
                 );
-                // Show table for RustBetter too so user can compare
                 let table = ParityTable {
                     kind: ParityKind::Mismatch { rust: r, c },
                     config: TableConfig::default(),
@@ -1285,7 +309,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
             }
         }
 
-        // 2. Print problematic hits with details
         for (r, c, status) in &problem_hits {
             debug!(
                 "{}   ✗ {} {} {} E={} (C: {})",
@@ -1305,7 +328,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
             }
         }
 
-        // 3. Print extra hits (Rust only)
         for r in &extra_hits {
             debug!(
                 "{}   ✗ EXTRA {} {} E={}",
@@ -1325,11 +347,9 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
 
         for (i, c) in c_remaining.iter().enumerate() {
             if !c_rem_matched[i] {
-                // Classify why this C hit is missing - check against ALL Rust hits
                 let (reason, covering_hit) = classify_missing(c, &all_rust_refs);
                 let acceptable = reason.is_acceptable(mode);
 
-                // Log header with status
                 let status_prefix = if acceptable { "  " } else { "✗ " };
                 debug!(
                     "{} {}{} {} Coords: {}",
@@ -1340,7 +360,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
                     c.fmt_coords()
                 );
 
-                // Show which Rust hit covers this C hit (if any)
                 if let Some(r) = covering_hit {
                     debug!(
                         "{}      Covered by Rust: {}",
@@ -1349,7 +368,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
                     );
                 }
 
-                // Always show table for all missing hits
                 let table = ParityTable {
                     kind: ParityKind::COnly(c),
                     config: TableConfig::default(),
@@ -1358,7 +376,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
                     debug!("{} {}", LogTag::Parity, line);
                 }
 
-                // Only count as failure if not acceptable
                 if !acceptable {
                     missing_count += 1;
                     missing_len_sum += c.interaction.len();
@@ -1371,7 +388,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
     let coord_matched = rust_better_energy + rust_worse_energy + energy_equal;
     let total_c = c_recs.len();
 
-    // Compute percentages for coord-matched breakdown
     let pct = |n: usize, total: usize| -> String {
         if total == 0 {
             "0%".into()
@@ -1380,21 +396,18 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
         }
     };
 
-    // Determine verdict: rust_worse and missing are failures, extra is acceptable
     let is_pass = mismatch_count == 0 && missing_count == 0;
 
-    // Tests with known divergences that are acceptable (documented behavioral differences)
     const KNOWN_DIVERGENT_TESTS: &[&str] = &[
-        "seed_only_no_extension", // G-U wobble handling in maximality check
-        "wobble_seed_pairs",      // G-U wobble pair enumeration
-        "right_extension_only",   // Right extension boundary condition
+        "seed_only_no_extension",
+        "wobble_seed_pairs",
+        "right_extension_only",
     ];
     let is_allowed_divergence = KNOWN_DIVERGENT_TESTS.contains(&test_name)
         && mismatch_count == 0
         && extra_count == 0
         && missing_count > 0;
 
-    // Build summary using tabled for proper alignment
     #[derive(Tabled)]
     struct SummaryRow {
         #[tabled(rename = "Metric")]
@@ -1450,7 +463,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
         },
     ];
 
-    // Missing stats
     if missing_count > 0 {
         let avg_len = missing_len_sum as f64 / missing_count as f64;
         let avg_energy = missing_energy_sum / missing_count as f64;
@@ -1468,7 +480,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
         });
     }
 
-    // Extra stats
     if extra_count > 0 {
         let avg_len = extra_len_sum as f64 / extra_count as f64;
         let avg_energy = extra_energy_sum / extra_count as f64;
@@ -1486,7 +497,6 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
         });
     }
 
-    // Verdict row
     let verdict = if is_pass {
         "✓ PASS".to_string()
     } else if is_allowed_divergence {
@@ -1504,10 +514,9 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
 
     let table = Table::new(rows).with(Style::rounded()).to_string();
     for line in table.lines() {
-        info!("{} {}", LogTag::Summary, line);
+        info!("{} {}", LogTag::Parity, line);
     }
 
-    // Handle allowed divergences
     if is_allowed_divergence {
         warn!(
             "{} Allowed divergence for '{}': Missing in Rust expected due to Maximality/Wobble improvements",
@@ -1526,173 +535,5 @@ fn compare_recs_impl(rust_recs: Vec<Rec>, c_recs: Vec<Rec>, test_name: &str, mod
             missing_count,
             extra_count
         );
-    }
-}
-
-/// Unified single-sequence parity test runner.
-///
-/// # Arguments
-/// * `query_seq` - Query sequence (RNA/DNA)
-/// * `target_seq` - Target sequence (RNA/DNA)
-/// * `test_name` - Test identifier for logging
-/// * `args` - risearch arguments
-/// * `detailed` - If true, performs paired hit analysis for focused debugging
-pub fn run_single_seq_parity(
-    query_seq: &str,
-    target_seq: &str,
-    test_name: &str,
-    args: &[&str],
-    detailed: bool,
-) {
-    init_test_logging();
-
-    let root = workspace_root();
-    let tmpdir = tempfile::tempdir().expect("tempdir");
-
-    let query_path = tmpdir.path().join("query.fa");
-    let target_path = tmpdir.path().join("target.fa");
-
-    // Force uppercase for compatibility
-    let q_upper = query_seq.to_uppercase();
-    let t_upper = target_seq.to_uppercase();
-
-    fs::write(&query_path, format!(">query\n{}\n", q_upper)).expect("write query");
-    fs::write(&target_path, format!(">target\n{}\n", t_upper)).expect("write target");
-
-    let c_bin = c_binary_path(&root);
-    let c_index = tmpdir.path().join("target.pksuf");
-
-    // Index for C
-    let c_index_cmd = std::process::Command::new(&c_bin)
-        .arg("-c")
-        .arg(target_path.to_str().unwrap())
-        .arg("-o")
-        .arg(c_index.to_str().unwrap())
-        .output()
-        .expect("c index creation");
-
-    if !c_index_cmd.status.success() {
-        panic!("C indexing failed: {:?}", c_index_cmd.status);
-    }
-
-    let rust_idx = tmpdir.path().join("target.idx");
-
-    let rust_output = index_and_search_rust(&query_path, &target_path, &rust_idx, args);
-    let rust_out = String::from_utf8_lossy(&rust_output.stdout).to_string();
-
-    // Log debug traces at TRACE level
-    for line in rust_out.lines() {
-        if line.contains("DEBUG_TRACE")
-            || line.contains("DEBUG_MAX")
-            || line.contains("DEBUG_DP_LEFT_RESULT")
-            || line.contains("C_DEBUG:")
-        {
-            trace!("[RUST] {}", line);
-        }
-    }
-
-    // Filter out Rust-specific flags like --no-max-prune for C call
-    let c_args: Vec<&str> = args
-        .iter()
-        .filter(|&&a| a != "--no-max-prune")
-        .cloned()
-        .collect();
-    let c_out = search_c(&query_path, &c_index, &c_bin, &c_args);
-
-    if detailed {
-        // Parse both outputs for detailed analysis
-        let (rust_recs, _) = parse_output(&rust_out);
-        let (c_recs, _) = parse_output(&c_out);
-
-        info!(
-            "{} {} - Rust={} hits, C={} hits",
-            LogTag::Parity,
-            test_name,
-            rust_recs.len(),
-            c_recs.len()
-        );
-
-        // Find extras and missings
-        let mut c_matched = vec![false; c_recs.len()];
-        let mut extras: Vec<&Rec> = Vec::new();
-
-        for r in &rust_recs {
-            let mut found = false;
-            for (i, c) in c_recs.iter().enumerate() {
-                if !c_matched[i] {
-                    // Strict equality
-                    if r == c {
-                        c_matched[i] = true;
-                        found = true;
-                        break;
-                    }
-
-                    // Relaxed equality: Exact Coordinates + Rust Energy is Better/Equal
-                    if r.coords_match(c) {
-                        let r_e = r.energy.parse::<f64>().unwrap_or(0.0);
-                        let c_e = c.energy.parse::<f64>().unwrap_or(0.0);
-                        // Only warn if Rust is strictly better, silently accept equal
-                        if r_e < c_e - 0.001 {
-                            warn!(
-                                "{} Improved energy: Rust E={} vs C E={}",
-                                LogTag::Parity,
-                                r.energy,
-                                c.energy
-                            );
-                        }
-                        // Accept if Rust is better or equal
-                        if r_e <= c_e + 0.001 {
-                            c_matched[i] = true;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if !found {
-                extras.push(r);
-            }
-        }
-
-        let missings: Vec<&Rec> = c_recs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !c_matched[*i])
-            .map(|(_, r)| r)
-            .collect();
-
-        debug!(
-            "{} Exact matches: {}, EXTRA: {}, MISSING: {}",
-            LogTag::Parity,
-            rust_recs.len() - extras.len(),
-            extras.len(),
-            missings.len()
-        );
-
-        // Call paired analysis
-        analyze_hit_pairs(&extras, &missings);
-
-        // Fail if we missed any C hits
-        if !missings.is_empty() {
-            panic!(
-                "{} FAILED {}: {} missings ({} extras)",
-                LogTag::Parity,
-                test_name,
-                missings.len(),
-                extras.len()
-            );
-        }
-
-        // Warn about extras but pass
-        if !extras.is_empty() {
-            warn!(
-                "{} {} extras in {} (acceptable if 0 missings)",
-                LogTag::Parity,
-                extras.len(),
-                test_name
-            );
-        }
-    } else {
-        compare_results(&rust_out, &c_out, test_name, ParityMode::Relaxed);
     }
 }

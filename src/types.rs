@@ -119,3 +119,166 @@ impl From<bool> for SeedPairing {
         }
     }
 }
+
+// =============================================================================
+// STRAND - Display and conversion impls
+// =============================================================================
+
+impl std::fmt::Display for Strand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Strand::Forward => write!(f, "+"),
+            Strand::Reverse => write!(f, "-"),
+        }
+    }
+}
+
+impl From<char> for Strand {
+    fn from(c: char) -> Self {
+        match c {
+            '+' => Strand::Forward,
+            _ => Strand::Reverse,
+        }
+    }
+}
+
+impl From<Strand> for char {
+    fn from(s: Strand) -> char {
+        match s {
+            Strand::Forward => '+',
+            Strand::Reverse => '-',
+        }
+    }
+}
+
+// =============================================================================
+// ID NEWTYPES
+// =============================================================================
+
+/// Query sequence identifier (newtype for type safety).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct QueryId(pub String);
+
+impl QueryId {
+    /// Create from string.
+    pub fn new(s: impl Into<String>) -> Self {
+        QueryId(s.into())
+    }
+
+    /// Get the ID string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Truncate at first whitespace (for C output compatibility).
+    pub fn truncated(&self) -> &str {
+        self.0.split_whitespace().next().unwrap_or(&self.0)
+    }
+}
+
+impl std::fmt::Display for QueryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for QueryId {
+    fn from(s: &str) -> Self {
+        QueryId(s.to_string())
+    }
+}
+
+impl From<String> for QueryId {
+    fn from(s: String) -> Self {
+        QueryId(s)
+    }
+}
+
+/// Target sequence identifier (newtype for type safety).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct TargetId(pub String);
+
+impl TargetId {
+    /// Create from string.
+    pub fn new(s: impl Into<String>) -> Self {
+        TargetId(s.into())
+    }
+
+    /// Get the ID string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Truncate at first whitespace (for C output compatibility).
+    pub fn truncated(&self) -> &str {
+        self.0.split_whitespace().next().unwrap_or(&self.0)
+    }
+}
+
+impl std::fmt::Display for TargetId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for TargetId {
+    fn from(s: &str) -> Self {
+        TargetId(s.to_string())
+    }
+}
+
+impl From<String> for TargetId {
+    fn from(s: String) -> Self {
+        TargetId(s)
+    }
+}
+
+// =============================================================================
+// ENERGY NEWTYPE
+// =============================================================================
+
+/// Energy value in kcal/mol (newtype for type safety and formatting).
+#[derive(Clone, Copy, PartialEq, PartialOrd, Debug, Default)]
+pub struct Energy(pub f64);
+
+impl Energy {
+    /// Create from f64.
+    pub fn new(value: f64) -> Self {
+        Energy(value)
+    }
+
+    /// Get the raw f64 value.
+    pub fn as_f64(&self) -> f64 {
+        self.0
+    }
+
+    /// Format as string with 2 decimal places (matches C output).
+    pub fn format(&self) -> String {
+        format!("{:.2}", self.0)
+    }
+
+    /// Parse from string.
+    pub fn parse(s: &str) -> Option<Self> {
+        s.parse::<f64>().ok().map(Energy)
+    }
+}
+
+impl std::fmt::Display for Energy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.2}", self.0)
+    }
+}
+
+impl Eq for Energy {}
+
+impl Ord for Energy {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
+impl From<f64> for Energy {
+    fn from(v: f64) -> Self {
+        Energy(v)
+    }
+}

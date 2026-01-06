@@ -13,7 +13,7 @@ pub mod types; // Core domain types - must be first
 // Re-exports for convenience
 pub use dsm::{Dsm, StackPair};
 pub use seq::Seq;
-pub use types::{BASE_COUNT, Base, SeedPairing, Strand};
+pub use types::{BASE_COUNT, Base, Energy, QueryId, SeedPairing, Strand, TargetId};
 
 // Search API re-exports for library usage
 pub use search::{Alignment, SearchHit, run_search_collect};

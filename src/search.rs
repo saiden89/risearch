@@ -273,7 +273,7 @@ pub struct SearchHit {
     pub t_end: usize,
     pub output_t_start: usize, // 1-based, strand-aware
     pub output_t_end: usize,   // 1-based, strand-aware
-    pub strand: char,
+    pub strand: Strand,
     pub energy: f64,
     pub alignment: Alignment,
     pub flank_5: String,
@@ -1118,7 +1118,7 @@ fn process_candidate(
         t_end: final_t_end,
         output_t_start: out_t_start,
         output_t_end: out_t_end,
-        strand: strand_char,
+        strand: strand_char.into(),
         energy: score,
         alignment: ext.alignment,
         flank_5,
