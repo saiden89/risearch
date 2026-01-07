@@ -5,7 +5,7 @@
 use log::{debug, info};
 use std::collections::HashSet;
 
-use crate::common::status::{HitStatus, MissingReason, ParityMode};
+use crate::common::status::{HitStatus, MissingReason, ParityMode, TEST_PARITY_MODE};
 use risearch::SearchHit;
 
 // =============================================================================
@@ -58,18 +58,27 @@ pub struct ParityResult {
 impl ParityResult {
     /// Check if the result is a pass given the parity mode.
     pub fn is_pass(&self, mode: ParityMode) -> bool {
+        // Rust-worse is always a failure
         if !self.rust_worse.is_empty() {
             return false;
         }
         match mode {
-            ParityMode::Strict => {
+            ParityMode::Absolute => {
+                // 100% identical - nothing but exact matches allowed
                 self.extras.is_empty()
                     && self.missings.is_empty()
                     && self.rust_better.is_empty()
                     && self.co_optimal.is_empty()
             }
+            ParityMode::Strict => {
+                // Allow co-optimal (same energy, different trace)
+                self.extras.is_empty()
+                    && self.missings.is_empty()
+                    && self.rust_better.is_empty()
+            }
             ParityMode::Relaxed => {
-                // In relaxed mode, only unacceptable missings count as failures
+                // Allow co-optimal, rust-better, extras
+                // Only fail on unacceptable missings (worse energy or no overlap)
                 !self.missings.iter().any(|(_, r, _)| !r.is_acceptable(mode))
             }
         }
@@ -105,26 +114,28 @@ impl ParityResult {
             table.to_string()
         };
 
-        // Collect co-optimal
-        for matched in &self.co_optimal {
-            let key = (
-                matched.rust.query_id.to_string(),
-                matched.rust.target_id.to_string(),
-            );
-            let label = format!(
-                "CO-OPTIMAL: {} FP={} vs C FP={}",
-                matched.rust.fmt_coords(),
-                matched.rust.fingerprint(),
-                matched.c.fingerprint()
-            );
-            let table = render_table(ParityKind::Mismatch {
-                rust: &matched.rust,
-                c: &matched.c,
-            });
-            groups
-                .entry(key)
-                .or_default()
-                .push(("co_optimal", format!("{}\n{}", label, table)));
+        // Collect co-optimal (only show details if not allowed by current mode)
+        if matches!(TEST_PARITY_MODE, ParityMode::Absolute) {
+            for matched in &self.co_optimal {
+                let key = (
+                    matched.rust.query_id.to_string(),
+                    matched.rust.target_id.to_string(),
+                );
+                let label = format!(
+                    "CO-OPTIMAL: {} FP={} vs C FP={}",
+                    matched.rust.fmt_coords(),
+                    matched.rust.fingerprint(),
+                    matched.c.fingerprint()
+                );
+                let table = render_table(ParityKind::Mismatch {
+                    rust: &matched.rust,
+                    c: &matched.c,
+                });
+                groups
+                    .entry(key)
+                    .or_default()
+                    .push(("co_optimal", format!("{}\n{}", label, table)));
+            }
         }
 
         // Collect rust-better
@@ -350,11 +361,12 @@ impl ParityResult {
             rows.push(SummaryRow::new("Extra (in Rust, not C)", "0"));
         }
 
-        let verdict = if self.is_pass(ParityMode::default()) {
-            "✓ PASS".to_string()
+        let verdict = if self.is_pass(TEST_PARITY_MODE) {
+            format!("✓ PASS [{:?}]", TEST_PARITY_MODE)
         } else {
             format!(
-                "✗ FAIL ({} co-opt, {} better, {} worse, {} missing, {} extra)",
+                "✗ FAIL [{:?}] ({} co-opt, {} better, {} worse, {} missing, {} extra)",
+                TEST_PARITY_MODE,
                 self.co_optimal.len(),
                 self.rust_better.len(),
                 self.rust_worse.len(),
@@ -445,7 +457,7 @@ impl<'a> ParityComparator<'a> {
         Self {
             rust_hits,
             c_hits,
-            mode: ParityMode::default(),
+            mode: TEST_PARITY_MODE,
         }
     }
 

@@ -9,37 +9,33 @@ use common::{ParityRunner, SingleSeqRunner, workspace_root};
 use rstest::rstest;
 
 // =============================================================================
-// FILE-BASED TESTS
+// PARAMETERIZED FILE-BASED TESTS
 // =============================================================================
+//
+// Main parity test matrix: tests all combinations of seed length and extension limit
+// using the standard mirnas.fa (query) and RHOC.fa (target) test files.
+//
+// Coverage:
+//   - Seed lengths: 6-15 (standard miRNA seed range to long seeds)
+//   - Extension limits: 0-40 in steps of 5 (covers no-extension to full extension)
+//
+// Total: 10 seeds × 9 extensions = 90 test cases
 
-#[test]
-fn test_parity_full_pipeline() {
+#[rstest]
+fn test_parity(
+    #[values(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)] s: usize,
+    #[values(0, 5, 10, 15, 20, 25, 30, 35, 40)] l: usize,
+) {
     let root = workspace_root();
     let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
     let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-    let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
 
-    ParityRunner::new(&target).assert_pass(&query, "default_config", &args);
-}
+    let l_str = l.to_string();
+    let s_str = s.to_string();
+    // Use high energy threshold to not filter hits by energy (test alignment parity)
+    let args = ["-l", &l_str, "-e", "100.0", "-s", &s_str, "-p3"];
 
-#[test]
-fn test_parity_long_seed() {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-    let args = ["-l", "0", "-e", "10000", "-s", "12", "-p3"];
-
-    ParityRunner::new(&target).assert_pass(&query, "long_seed_no_ext", &args);
-}
-
-#[test]
-fn test_parity_energy_threshold() {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-    let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
-
-    ParityRunner::new(&target).assert_pass(&query, "energy_only", &args);
+    ParityRunner::new(&target).assert_pass(&query, &format!("s{}_l{}", s, l), &args);
 }
 
 #[test]

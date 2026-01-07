@@ -69,6 +69,7 @@ impl MissingReason {
     /// Check if this reason is acceptable given the parity mode.
     pub fn is_acceptable(&self, mode: ParityMode) -> bool {
         match mode {
+            ParityMode::Absolute => false,
             ParityMode::Strict => false,
             ParityMode::Relaxed => matches!(self, Self::BetterEnergy | Self::EqualEnergy),
         }
@@ -80,14 +81,28 @@ impl MissingReason {
 // =============================================================================
 
 /// Comparison mode for parity tests.
+///
+/// | Mode     | Identical | CoOptimal | RustBetter | RustWorse | Extra | Missing |
+/// |----------|-----------|-----------|------------|-----------|-------|---------|
+/// | Absolute | ✓         | ✗         | ✗          | ✗         | ✗     | ✗       |
+/// | Strict   | ✓         | ✓         | ✗          | ✗         | ✗     | ✗       |
+/// | Relaxed  | ✓         | ✓         | ✓          | ✗         | ✓     | ✗*      |
+///
+/// *Missing is acceptable in Relaxed only if covered by better/equal energy hit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParityMode {
-    /// Require exact match - no differences acceptable
+    /// 100% identical to C - no differences at all
+    Absolute,
+    /// Allow co-optimal alignments (same energy, different trace)
     #[default]
     Strict,
-    /// Accept improvements and co-optimal traces
+    /// Accept improvements: co-optimal, better energy, extras
     Relaxed,
 }
+
+/// Single source of truth: the parity mode used for all tests.
+/// Change this to adjust what level of parity is required across the test suite.
+pub const TEST_PARITY_MODE: ParityMode = ParityMode::Strict;
 
 // =============================================================================
 // UNIT TESTS
@@ -98,17 +113,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_missing_reason_acceptable_relaxed() {
-        assert!(MissingReason::BetterEnergy.is_acceptable(ParityMode::Relaxed));
-        assert!(MissingReason::EqualEnergy.is_acceptable(ParityMode::Relaxed));
-        assert!(!MissingReason::WorseEnergy.is_acceptable(ParityMode::Relaxed));
-        assert!(!MissingReason::NoOverlap.is_acceptable(ParityMode::Relaxed));
+    fn test_missing_reason_acceptable_absolute() {
+        // Absolute mode: nothing is acceptable
+        assert!(!MissingReason::BetterEnergy.is_acceptable(ParityMode::Absolute));
+        assert!(!MissingReason::EqualEnergy.is_acceptable(ParityMode::Absolute));
+        assert!(!MissingReason::WorseEnergy.is_acceptable(ParityMode::Absolute));
+        assert!(!MissingReason::NoOverlap.is_acceptable(ParityMode::Absolute));
     }
 
     #[test]
     fn test_missing_reason_acceptable_strict() {
+        // Strict mode: nothing is acceptable (co-optimal is about hits, not missings)
         assert!(!MissingReason::BetterEnergy.is_acceptable(ParityMode::Strict));
         assert!(!MissingReason::EqualEnergy.is_acceptable(ParityMode::Strict));
+        assert!(!MissingReason::WorseEnergy.is_acceptable(ParityMode::Strict));
+        assert!(!MissingReason::NoOverlap.is_acceptable(ParityMode::Strict));
+    }
+
+    #[test]
+    fn test_missing_reason_acceptable_relaxed() {
+        // Relaxed mode: better/equal energy covered is acceptable
+        assert!(MissingReason::BetterEnergy.is_acceptable(ParityMode::Relaxed));
+        assert!(MissingReason::EqualEnergy.is_acceptable(ParityMode::Relaxed));
+        assert!(!MissingReason::WorseEnergy.is_acceptable(ParityMode::Relaxed));
+        assert!(!MissingReason::NoOverlap.is_acceptable(ParityMode::Relaxed));
     }
 
     #[test]

@@ -742,12 +742,12 @@ pub fn run_search(
     let mut all_hits = Vec::new();
 
     for (q_id, q_seq) in queries {
-        debug!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
+        trace!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
         trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
 
         // Find seeds
         let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
-        debug!("{} {} candidates found", SearchStage::Input, seeds.len());
+        trace!("{} {} candidates found", SearchStage::Input, seeds.len());
         ctx.stats.candidates_processed += seeds.len();
 
         for candidate in &seeds {
@@ -822,12 +822,12 @@ pub fn run_search_collect(
     let mut all_hits = Vec::new();
 
     for (q_id, q_seq) in queries {
-        debug!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
+        trace!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
         trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
 
         // Find seeds
         let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
-        debug!("{} {} candidates found", SearchStage::Input, seeds.len());
+        trace!("{} {} candidates found", SearchStage::Input, seeds.len());
         ctx.stats.candidates_processed += seeds.len();
         for candidate in &seeds {
             trace!(
@@ -935,7 +935,7 @@ fn deduplicate_hits(
     stats: &mut SearchStats,
     dedup_shadow: bool,
 ) -> Vec<SearchHit> {
-    debug!("{} input_count={}", SearchStage::Dedup, hits.len());
+    trace!("{} input_count={}", SearchStage::Dedup, hits.len());
 
     if hits.is_empty() {
         return hits;
@@ -968,7 +968,7 @@ fn deduplicate_hits(
         }
     }
 
-    debug!("{} output_count={}", SearchStage::Dedup, kept.len());
+    trace!("{} output_count={}", SearchStage::Dedup, kept.len());
     kept
 }
 
@@ -988,7 +988,7 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
     let start0 = start - 1;
     let end0 = end - 1;
 
-    debug!(
+    trace!(
         "{} spec={} q_len={} range=({},{}) mi_len={} pairing={:?}",
         SearchStage::Seed,
         seed_spec_str,

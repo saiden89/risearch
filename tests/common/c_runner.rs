@@ -172,7 +172,7 @@ impl CRunner<Indexed> {
 // =============================================================================
 
 /// Get path to C risearch2 binary.
-/// Prefers debug binary (risearch2.dbg.x) if it exists, otherwise uses release.
+/// Prefers debug binary (risearch2.dbg.x) for seed boundary markers, falls back to release.
 pub fn c_binary_path(root: &Path) -> PathBuf {
     let debug_bin = root.join("legacy_c/RIsearch2/bin/risearch2.dbg.x");
     let release_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");

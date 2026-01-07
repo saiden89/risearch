@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::common::c_runner::{CRunner, NoIndex as CNoIndex};
 use crate::common::comparison::{LogTag, ParityComparator};
-use crate::common::status::ParityMode;
+use crate::common::status::TEST_PARITY_MODE;
 use crate::common::{init_test_logging, parse_output, workspace_root};
 
 // =============================================================================
@@ -181,11 +181,14 @@ impl ParityRunner {
         // Detailed debug logging (all hit types with tables)
         result.log_details(test_name);
 
-        if !result.is_pass(ParityMode::default()) {
+        if !result.is_pass(TEST_PARITY_MODE) {
             panic!(
-                "\n{} FAILED: {} ({} rust-worse, {} missing, {} extra)\nRun with RUST_LOG=debug for detailed diff analysis.\n",
+                "\n{} FAILED [mode={:?}]: {} ({} co-optimal, {} rust-better, {} rust-worse, {} missing, {} extra)\nRun with RUST_LOG=debug for detailed diff analysis.\n",
                 LogTag::Parity,
+                TEST_PARITY_MODE,
                 test_name,
+                result.co_optimal.len(),
+                result.rust_better.len(),
                 result.rust_worse.len(),
                 result.missings.len(),
                 result.extras.len()
