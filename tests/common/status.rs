@@ -2,6 +2,8 @@
 //!
 //! Defines the outcome states when comparing Rust vs C hits.
 
+use std::sync::LazyLock;
+
 // =============================================================================
 // HIT STATUS
 // =============================================================================
@@ -71,6 +73,7 @@ impl MissingReason {
         match mode {
             ParityMode::Absolute => false,
             ParityMode::Strict => false,
+            ParityMode::Balanced => false, // No missing allowed in balanced mode
             ParityMode::Relaxed => matches!(self, Self::BetterEnergy | Self::EqualEnergy),
         }
     }
@@ -82,11 +85,12 @@ impl MissingReason {
 
 /// Comparison mode for parity tests.
 ///
-/// | Mode     | Identical | CoOptimal | RustBetter | RustWorse | Extra | Missing |
-/// |----------|-----------|-----------|------------|-----------|-------|---------|
-/// | Absolute | ✓         | ✗         | ✗          | ✗         | ✗     | ✗       |
-/// | Strict   | ✓         | ✓         | ✗          | ✗         | ✗     | ✗       |
-/// | Relaxed  | ✓         | ✓         | ✓          | ✗         | ✓     | ✗*      |
+/// | Mode     | Identical | CoOptimal | RustBetter | Extras | Missing |
+/// |----------|-----------|-----------|------------|--------|---------|
+/// | Absolute | ✓         | ✗         | ✗          | ✗      | ✗       |
+/// | Strict   | ✓         | ✓         | ✗          | ✗      | ✗       |
+/// | Balanced | ✓         | ✓         | ✗          | ✓      | ✗       |
+/// | Relaxed  | ✓         | ✓         | ✓          | ✓      | ✗*      |
 ///
 /// *Missing is acceptable in Relaxed only if covered by better/equal energy hit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -96,13 +100,29 @@ pub enum ParityMode {
     /// Allow co-optimal alignments (same energy, different trace)
     #[default]
     Strict,
-    /// Accept improvements: co-optimal, better energy, extras
+    /// Allow co-optimal and extras, but no missing or rust-better
+    Balanced,
+    /// Accept improvements: co-optimal, better energy, extras, covered missings
     Relaxed,
 }
 
 /// Single source of truth: the parity mode used for all tests.
-/// Change this to adjust what level of parity is required across the test suite.
-pub const TEST_PARITY_MODE: ParityMode = ParityMode::Strict;
+///
+/// Set via environment variable `PARITY_MODE`:
+/// - `absolute` - 100% identical to C
+/// - `strict` (default) - allow co-optimal alignments
+/// - `balanced` - allow co-optimal and extras, but no missing
+/// - `relaxed` - accept all improvements including covered missings
+///
+/// Example: `PARITY_MODE=balanced cargo test --test c_parity`
+pub static TEST_PARITY_MODE: LazyLock<ParityMode> = LazyLock::new(|| {
+    match std::env::var("PARITY_MODE").as_deref() {
+        Ok("absolute") => ParityMode::Absolute,
+        Ok("balanced") => ParityMode::Balanced,
+        Ok("relaxed") => ParityMode::Relaxed,
+        _ => ParityMode::Strict,
+    }
+});
 
 // =============================================================================
 // UNIT TESTS

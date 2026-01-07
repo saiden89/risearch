@@ -181,11 +181,11 @@ impl ParityRunner {
         // Detailed debug logging (all hit types with tables)
         result.log_details(test_name);
 
-        if !result.is_pass(TEST_PARITY_MODE) {
+        if !result.is_pass(*TEST_PARITY_MODE) {
             panic!(
                 "\n{} FAILED [mode={:?}]: {} ({} co-optimal, {} rust-better, {} rust-worse, {} missing, {} extra)\nRun with RUST_LOG=debug for detailed diff analysis.\n",
                 LogTag::Parity,
-                TEST_PARITY_MODE,
+                *TEST_PARITY_MODE,
                 test_name,
                 result.co_optimal.len(),
                 result.rust_better.len(),

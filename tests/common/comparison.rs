@@ -76,6 +76,10 @@ impl ParityResult {
                     && self.missings.is_empty()
                     && self.rust_better.is_empty()
             }
+            ParityMode::Balanced => {
+                // Allow co-optimal and extras, but no missing or rust-better
+                self.missings.is_empty() && self.rust_better.is_empty()
+            }
             ParityMode::Relaxed => {
                 // Allow co-optimal, rust-better, extras
                 // Only fail on unacceptable missings (worse energy or no overlap)
@@ -115,7 +119,7 @@ impl ParityResult {
         };
 
         // Collect co-optimal (only show details if not allowed by current mode)
-        if matches!(TEST_PARITY_MODE, ParityMode::Absolute) {
+        if matches!(*TEST_PARITY_MODE, ParityMode::Absolute) {
             for matched in &self.co_optimal {
                 let key = (
                     matched.rust.query_id.to_string(),
@@ -361,20 +365,19 @@ impl ParityResult {
             rows.push(SummaryRow::new("Extra (in Rust, not C)", "0"));
         }
 
-        let verdict = if self.is_pass(TEST_PARITY_MODE) {
-            format!("✓ PASS [{:?}]", TEST_PARITY_MODE)
-        } else {
-            format!(
+        // Only show verdict on failure (pass is implied by test not panicking)
+        if !self.is_pass(*TEST_PARITY_MODE) {
+            let verdict = format!(
                 "✗ FAIL [{:?}] ({} co-opt, {} better, {} worse, {} missing, {} extra)",
-                TEST_PARITY_MODE,
+                *TEST_PARITY_MODE,
                 self.co_optimal.len(),
                 self.rust_better.len(),
                 self.rust_worse.len(),
                 self.missings.len(),
                 self.extras.len()
-            )
-        };
-        rows.push(SummaryRow::new("VERDICT", verdict));
+            );
+            rows.push(SummaryRow::new("VERDICT", verdict));
+        }
 
         for line in render_summary_table(rows).lines() {
             info!("{} {}", LogTag::Parity, line);
@@ -457,7 +460,7 @@ impl<'a> ParityComparator<'a> {
         Self {
             rust_hits,
             c_hits,
-            mode: TEST_PARITY_MODE,
+            mode: *TEST_PARITY_MODE,
         }
     }
 
