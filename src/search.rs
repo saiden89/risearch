@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use log::{debug, info, trace, warn};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -320,7 +320,6 @@ pub struct SearchHit {
 impl SearchHit {
     pub fn write(&self, w: &mut dyn Write) -> std::io::Result<()> {
         // Normalize strings for output (T->U)
-        // Derive from alignment
         let norm_fp = self.alignment.fingerprint();
         let norm_ts = self
             .alignment
@@ -726,11 +725,13 @@ pub fn run_search(
         opts.extend.delta_g
     );
 
-    // Create output writer
+    // Create buffered output writer (BufWriter significantly reduces syscalls)
     let mut writer: Box<dyn Write> = if output.as_ref() == Path::new("-") {
-        Box::new(std::io::stdout())
+        Box::new(BufWriter::new(std::io::stdout()))
     } else {
-        Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
+        Box::new(BufWriter::new(
+            std::fs::File::create(output.as_ref()).context("Failed to create output file")?,
+        ))
     };
 
     debug!("{} output={:?}", SearchStage::Output, output.as_ref());
