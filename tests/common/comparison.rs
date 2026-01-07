@@ -476,6 +476,7 @@ impl<'a> ParityComparator<'a> {
                 .iter()
                 .filter(|h| h.group_key() == key)
                 .collect();
+
             r_group.sort_by(|a, b| {
                 a.q_start
                     .cmp(&b.q_start)
@@ -675,6 +676,8 @@ mod tests {
             q_end,
             t_start,
             t_end,
+            output_q_start: q_start, // Test uses same coords for internal/output
+            output_q_end: q_end,
             output_t_start: t_start,
             output_t_end: t_end,
             strand: strand_enum,

@@ -302,12 +302,14 @@ pub struct SearchHit {
     pub query_id: QueryId,
     pub target_id: TargetId,
 
-    pub q_start: usize,
-    pub q_end: usize,
-    pub t_start: usize,
-    pub t_end: usize,
-    pub output_t_start: usize, // 1-based, strand-aware
-    pub output_t_end: usize,   // 1-based, strand-aware
+    pub q_start: usize,          // 0-based internal
+    pub q_end: usize,            // 0-based internal
+    pub t_start: usize,          // 0-based internal
+    pub t_end: usize,            // 0-based internal
+    pub output_q_start: usize,   // 1-based for output/comparison
+    pub output_q_end: usize,     // 1-based for output/comparison
+    pub output_t_start: usize,   // 1-based, strand-aware
+    pub output_t_end: usize,     // 1-based, strand-aware
     pub strand: Strand,
     pub energy: Energy,
     pub alignment: Alignment,
@@ -330,8 +332,8 @@ impl SearchHit {
             w,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
             self.query_id.truncated(),
-            self.q_start + 1,
-            self.q_end + 1,
+            self.output_q_start,
+            self.output_q_end,
             self.target_id.truncated(),
             self.output_t_start,
             self.output_t_end,
@@ -389,12 +391,14 @@ impl SearchHit {
         Some(SearchHit {
             query_id: fields[0].into(),
             target_id: fields[3].into(),
-            q_start, // Keep 1-based for now (matches C output)
-            q_end,
-            t_start,
-            t_end,
-            output_t_start: t_start,
-            output_t_end: t_end,
+            q_start: q_start.saturating_sub(1), // 0-based internal
+            q_end: q_end.saturating_sub(1),     // 0-based internal
+            t_start: t_start.saturating_sub(1), // 0-based internal
+            t_end: t_end.saturating_sub(1),     // 0-based internal
+            output_q_start: q_start,            // 1-based for comparison
+            output_q_end: q_end,                // 1-based for comparison
+            output_t_start: t_start,            // 1-based
+            output_t_end: t_end,                // 1-based
             strand,
             energy,
             alignment,
@@ -427,9 +431,10 @@ impl SearchHit {
     // =========================================================================
 
     /// Returns true if coordinates and strand match another hit.
+    /// Uses output coordinates (1-based) for comparison.
     pub fn coords_match(&self, other: &Self) -> bool {
-        self.q_start == other.q_start
-            && self.q_end == other.q_end
+        self.output_q_start == other.output_q_start
+            && self.output_q_end == other.output_q_end
             && self.output_t_start == other.output_t_start
             && self.output_t_end == other.output_t_end
             && self.strand == other.strand
@@ -471,12 +476,12 @@ impl SearchHit {
         Some(start + seed_len)
     }
 
-    /// Format for debug output.
+    /// Format for debug output (uses 1-based output coordinates).
     pub fn fmt_coords(&self) -> String {
         format!(
             "q=[{},{}] t=[{},{}] S={} E={}",
-            self.q_start,
-            self.q_end,
+            self.output_q_start,
+            self.output_q_end,
             self.output_t_start,
             self.output_t_end,
             self.strand,
@@ -873,16 +878,41 @@ pub fn run_search_collect(
 }
 
 /// Check if hit `k` shadows hit `h`.
-/// If dedup_shadow is true, filters both exact matches AND contained hits.
-/// If dedup_shadow is false (C behavior), only filters exact matches.
+///
+/// # Deduplication behavior
+///
+/// **Energy-different duplicates at same coordinates:**
+/// C does NOT filter hits with identical coordinates but different energies.
+/// This can occur when different extension paths (varying seeds or traceback
+/// choices) produce alignments ending at the same coordinates with different
+/// total energies. Both are valid biological findings that may represent
+/// different sub-optimal solutions.
+///
+/// Whether this is "better" is use-case dependent:
+/// - **Preserving all**: More complete output, shows alternative alignments
+/// - **Dedup to best**: Cleaner output, but loses sub-optimal alternatives
+///
+/// We match C behavior (preserve all) for parity. Only true duplicates
+/// (same coords AND same energy within 0.001) are filtered.
+///
+/// # Parameters
+/// - `dedup_shadow`: If true, also filters contained hits (not in C)
 fn shadows(k: &SearchHit, h: &SearchHit, dedup_shadow: bool) -> Option<FilterReason> {
     // Different targets or strands are never duplicates
     if k.target_id != h.target_id || k.strand != h.strand {
         return None;
     }
 
-    // Exact match - identical coordinates AND strand AND target
-    if k.q_start == h.q_start && k.q_end == h.q_end && k.t_start == h.t_start && k.t_end == h.t_end
+    // NOTE: C does NOT filter exact coordinate matches with different energies.
+    // Multiple extension paths can produce hits at the same coordinates with
+    // different energies. We preserve all of them for C parity.
+    // The DedupExactMatch filter below only removes true duplicates (same coords
+    // AND same energy, which would be redundant output).
+    if k.q_start == h.q_start
+        && k.q_end == h.q_end
+        && k.t_start == h.t_start
+        && k.t_end == h.t_end
+        && (k.energy.as_f64() - h.energy.as_f64()).abs() < 0.001
     {
         return Some(FilterReason::DedupExactMatch);
     }
@@ -1180,6 +1210,8 @@ fn process_candidate(
         q_end: final_q_end,
         t_start: final_t_start,
         t_end: final_t_end,
+        output_q_start: final_q_start + 1, // 1-based for output
+        output_q_end: final_q_end + 1,     // 1-based for output
         output_t_start: out_t_start,
         output_t_end: out_t_end,
         strand: strand_char.into(),
@@ -1541,7 +1573,7 @@ mod tests {
 
     #[test]
     fn test_search_hit_from_c_output() {
-        // Sample C output line
+        // Sample C output line (C uses 1-based coords)
         let line =
             "hsa-miR-1\t1\t10\tENSG00000001\t100\t110\t+\t-15.50\tyPPPUPPPx\tacguacgu\tAA\tCC";
 
@@ -1549,10 +1581,16 @@ mod tests {
 
         assert_eq!(hit.query_id.as_str(), "hsa-miR-1");
         assert_eq!(hit.target_id.as_str(), "ENSG00000001");
-        assert_eq!(hit.q_start, 1);
-        assert_eq!(hit.q_end, 10);
-        assert_eq!(hit.t_start, 100);
-        assert_eq!(hit.t_end, 110);
+        // Internal coords are 0-based (converted from C's 1-based)
+        assert_eq!(hit.q_start, 0);
+        assert_eq!(hit.q_end, 9);
+        assert_eq!(hit.t_start, 99);
+        assert_eq!(hit.t_end, 109);
+        // Output coords stay 1-based for display
+        assert_eq!(hit.output_q_start, 1);
+        assert_eq!(hit.output_q_end, 10);
+        assert_eq!(hit.output_t_start, 100);
+        assert_eq!(hit.output_t_end, 110);
         assert_eq!(hit.strand, Strand::Forward);
         assert!((hit.energy.as_f64() - (-15.50)).abs() < 0.01);
         assert_eq!(hit.alignment.fingerprint(), "PPPUPPP"); // markers stripped
@@ -1562,11 +1600,21 @@ mod tests {
 
     #[test]
     fn test_search_hit_from_c_output_minimal() {
-        // Minimal 10 columns (no flanks)
+        // Minimal 10 columns (no flanks), C uses 1-based coords
         let line = "q1\t1\t5\tt1\t10\t15\t-\t-8.00\tPPPPP\tacgua";
 
         let hit = SearchHit::from_c_output(line).expect("should parse minimal");
         assert_eq!(hit.query_id.as_str(), "q1");
+        // Internal coords are 0-based
+        assert_eq!(hit.q_start, 0);
+        assert_eq!(hit.q_end, 4);
+        assert_eq!(hit.t_start, 9);
+        assert_eq!(hit.t_end, 14);
+        // Output coords stay 1-based
+        assert_eq!(hit.output_q_start, 1);
+        assert_eq!(hit.output_q_end, 5);
+        assert_eq!(hit.output_t_start, 10);
+        assert_eq!(hit.output_t_end, 15);
         assert_eq!(hit.strand, Strand::Reverse);
         assert_eq!(hit.flank_5, "");
         assert_eq!(hit.flank_3, "");
