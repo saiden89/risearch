@@ -5,19 +5,52 @@ pub use crate::types::{SeedPairing, Strand};
 #[derive(ValueEnum, Clone, Debug)]
 #[clap(rename_all = "snake_case")]
 pub enum Matrix {
+    /// Turner 1999 RNA-RNA parameters
     T99,
+    /// Turner 2004 RNA-RNA parameters (default)
     T04,
+
+    // ========================================================================
+    // TODO: Placeholder matrix types from C implementation - not yet implemented
+    // ========================================================================
+
+    /// TODO: SantaLucia 1995 RNA-DNA duplex parameters
+    #[value(name = "su95")]
+    Su95,
+
+    /// TODO: SantaLucia 1995 RNA-DNA modified for CRISPRoff2
+    #[value(name = "su95c2")]
+    Su95c2,
+
+    /// TODO: SantaLucia 1995 RNA-DNA with mismatches as loop size 2
+    #[value(name = "su95wk11")]
+    Su95wk11,
+
+    /// TODO: SantaLucia 1995 RNA-DNA without G-U wobble pairs
+    #[value(name = "su95_nogu")]
+    Su95NoGU,
+
+    /// TODO: SantaLucia 2004 DNA-DNA without G-T wobble pairs
+    #[value(name = "sl04_nogu")]
+    Sl04NoGU,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 #[value(rename_all = "lowercase")]
 pub enum OutputFormat {
-    /// Report predictions in detailed format
+    /// Report predictions in detailed format (C: -p or -p1)
     Detailed,
-    /// Report predictions in a simple format together with CIGAR-like string for interaction structure
+    /// Report predictions in a simple format together with CIGAR-like string for interaction structure (C: -p2)
     Cigar,
-    /// Report predictions in a simple format together with binding site (3'->5'), flanking 5'end (3'->5') and flanking 3'end (5'->3') sequences of the target x(required for post-processing of CRISPR off-target predictions)
+    /// Report predictions in a simple format together with binding site (3'->5'), flanking 5'end (3'->5') and flanking 3'end (5'->3') sequences of the target (required for post-processing of CRISPR off-target predictions) (C: -p3)
     BindingSite,
+
+    // ========================================================================
+    // TODO: Placeholder output format from C implementation - not yet implemented
+    // ========================================================================
+
+    /// TODO: Minimal format - target, start, strand, and energy only (C: -p4)
+    Minimal,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -111,6 +144,37 @@ pub struct ExtendArgs {
     /// Default: true (filters contained hits). Set --no-dedup-shadow for C-compatible behavior.
     #[arg(long = "no-dedup-shadow", action = clap::ArgAction::SetFalse, default_value_t = true)]
     pub dedup_shadow: bool,
+
+    // ========================================================================
+    // TODO: Placeholder flags from C implementation - not yet implemented
+    // ========================================================================
+
+    /// TODO: Banded search - limits the search for bulged matches.
+    /// In C: `-b band, --band=band` - Integer size of bands limiting bulge search.
+    /// The minimum size is 1; use seed option to avoid any bulge.
+    #[arg(long = "band", value_name = "BAND", hide = true)]
+    pub band: Option<u32>,
+
+    /// TODO: Secondary energy matrix for custom energy parameters.
+    /// In C: `-y mat2, --matrix2=mat2` - Only needed for custom energy matrices.
+    #[arg(long = "matrix2", value_name = "MATRIX2", hide = true)]
+    pub matrix2: Option<String>,
+
+    /// TODO: Path to directory holding custom energy matrices.
+    /// In C: `-M PATH, --matpath=PATH` - Directory with energy matrix files.
+    #[arg(long = "matpath", value_name = "PATH", hide = true)]
+    pub matpath: Option<String>,
+
+    /// TODO: Temperature scaling for energy calculations.
+    /// In C: `-K T1[,T2,T3], --temperature=T0[,T1,T2]` - Temperatures in Kelvin.
+    /// T0 is the target temperature; T1/T2 only needed for custom energy parameters.
+    #[arg(long = "temperature", value_name = "T1[,T2,T3]", hide = true)]
+    pub temperature: Option<String>,
+
+    /// TODO: CRISPR weighting for gRNA-target interactions.
+    /// In C: `-w arr, --weights=arr` - Use "CRISPR_gRNApPAM" to weight by CRISPR/Cas9 impact.
+    #[arg(long = "weights", value_name = "WEIGHTS", hide = true)]
+    pub weights: Option<String>,
 }
 
 /// Options that apply to the `search` subcommand
@@ -133,4 +197,27 @@ pub struct SearchArgs {
         value_enum
     )]
     pub report_format: Option<OutputFormat>,
+
+    // ========================================================================
+    // TODO: Placeholder flags from C implementation - not yet implemented
+    // ========================================================================
+
+    /// TODO: One-vs-one mode - only print results where query name matches target name.
+    /// In C: `-1, --one_vs_one` - Filters results to matching query/target names.
+    #[arg(short = '1', long = "one-vs-one", action = clap::ArgAction::SetTrue, hide = true)]
+    pub one_vs_one: bool,
+
+    /// TODO: 3' PAM filter - report only predictions matching a 3' PAM pattern.
+    /// In C: `-3 <reg>, --three_prime_match=PC` - Regex for 3' PAM forward complement.
+    /// Example for cas9: `^(.cc|.uc|.cu)` matching NGG/NAG/NGA 3' PAMs.
+    /// Requires output format 3 or 4 (binding_site).
+    #[arg(short = '3', long = "three-prime-match", value_name = "REGEX", hide = true)]
+    pub three_prime_match: Option<String>,
+
+    /// TODO: 5' PAM filter - report only predictions matching a 5' PAM pattern.
+    /// In C: `-5 <reg>, --five_prime_match=PC` - Regex for 5' PAM reverse complement.
+    /// Example for cas12a: `^([^a]aaa)` matching TTTV 5' PAMs.
+    /// Requires output format 3 or 4 (binding_site).
+    #[arg(short = '5', long = "five-prime-match", value_name = "REGEX", hide = true)]
+    pub five_prime_match: Option<String>,
 }

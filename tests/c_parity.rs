@@ -228,6 +228,7 @@ fn test_parity_energy_discrepancy_minimal() {
 // =============================================================================
 
 /// Watson-Crick complement for RNA (returns reverse complement for antiparallel pairing).
+// TODO use already estabilished abstraction.
 fn wc_complement(seq: &str) -> String {
     seq.chars()
         .rev()
