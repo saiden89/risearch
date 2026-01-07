@@ -51,7 +51,8 @@ pub struct ParityResult {
     pub rust_worse: Vec<MatchedHit>,
     pub co_optimal: Vec<MatchedHit>,
     pub extras: Vec<SearchHit>,
-    pub missings: Vec<(SearchHit, MissingReason)>,
+    /// Missing hits: (C hit, reason, optional overlapping Rust hit)
+    pub missings: Vec<(SearchHit, MissingReason, Option<SearchHit>)>,
 }
 
 impl ParityResult {
@@ -69,7 +70,7 @@ impl ParityResult {
             }
             ParityMode::Relaxed => {
                 // In relaxed mode, only unacceptable missings count as failures
-                !self.missings.iter().any(|(_, r)| !r.is_acceptable(mode))
+                !self.missings.iter().any(|(_, r, _)| !r.is_acceptable(mode))
             }
         }
     }
@@ -78,6 +79,7 @@ impl ParityResult {
     pub fn log_details(&self, test_name: &str) {
         use crate::common::table::{ParityKind, ParityTable, TableConfig};
         use log::debug;
+        use std::collections::BTreeMap;
 
         debug!("{} {} Summary:", LogTag::Parity, test_name);
         debug!(
@@ -91,82 +93,136 @@ impl ParityResult {
             self.missings.len()
         );
 
-        // Log co-optimal hits (different interaction strings with same energy)
+        // Collect all hits into groups by (query_id, target_id)
+        let mut groups: BTreeMap<(String, String), Vec<(&str, String)>> = BTreeMap::new();
+
+        // Helper to render a table and collect lines
+        let render_table = |kind: ParityKind| -> String {
+            let table = ParityTable {
+                kind,
+                config: TableConfig::default(),
+            };
+            table.to_string()
+        };
+
+        // Collect co-optimal
         for matched in &self.co_optimal {
-            debug!(
-                "{} CO-OPTIMAL: {} FP={}",
-                LogTag::Parity,
-                matched.rust.fmt_coords(),
-                matched.rust.fingerprint()
+            let key = (
+                matched.rust.query_id.to_string(),
+                matched.rust.target_id.to_string(),
             );
+            let label = format!(
+                "CO-OPTIMAL: {} FP={} vs C FP={}",
+                matched.rust.fmt_coords(),
+                matched.rust.fingerprint(),
+                matched.c.fingerprint()
+            );
+            let table = render_table(ParityKind::Mismatch {
+                rust: &matched.rust,
+                c: &matched.c,
+            });
+            groups
+                .entry(key)
+                .or_default()
+                .push(("co_optimal", format!("{}\n{}", label, table)));
         }
 
-        // Log rust-better hits with table
+        // Collect rust-better
         for matched in &self.rust_better {
-            debug!(
-                "{} RUST-BETTER: {} vs C E={}",
-                LogTag::Parity,
+            let key = (
+                matched.rust.query_id.to_string(),
+                matched.rust.target_id.to_string(),
+            );
+            let label = format!(
+                "RUST-BETTER: {} vs C E={}",
                 matched.rust.fmt_coords(),
                 matched.c.energy
             );
-            let table = ParityTable {
-                kind: ParityKind::Mismatch {
-                    rust: &matched.rust,
-                    c: &matched.c,
-                },
-                config: TableConfig::default(),
-            };
-            for line in table.to_string().lines() {
-                debug!("{} {}", LogTag::Parity, line);
-            }
+            let table = render_table(ParityKind::Mismatch {
+                rust: &matched.rust,
+                c: &matched.c,
+            });
+            groups
+                .entry(key)
+                .or_default()
+                .push(("rust_better", format!("{}\n{}", label, table)));
         }
 
-        // Log rust-worse hits (problems!) with table
+        // Collect rust-worse
         for matched in &self.rust_worse {
-            debug!(
-                "{} ✗ RUST-WORSE: {} vs C E={}",
-                LogTag::Parity,
+            let key = (
+                matched.rust.query_id.to_string(),
+                matched.rust.target_id.to_string(),
+            );
+            let label = format!(
+                "✗ RUST-WORSE: {} vs C E={}",
                 matched.rust.fmt_coords(),
                 matched.c.energy
             );
-            let table = ParityTable {
-                kind: ParityKind::Mismatch {
-                    rust: &matched.rust,
-                    c: &matched.c,
-                },
-                config: TableConfig::default(),
-            };
-            for line in table.to_string().lines() {
-                debug!("{} {}", LogTag::Parity, line);
-            }
+            let table = render_table(ParityKind::Mismatch {
+                rust: &matched.rust,
+                c: &matched.c,
+            });
+            groups
+                .entry(key)
+                .or_default()
+                .push(("rust_worse", format!("{}\n{}", label, table)));
         }
 
-        // Log extras (only in Rust) with table
+        // Collect extras
         for extra in &self.extras {
-            debug!("{} ✗ EXTRA: {}", LogTag::Parity, extra.fmt_coords());
-            let table = ParityTable {
-                kind: ParityKind::RustOnly(extra),
-                config: TableConfig::default(),
-            };
-            for line in table.to_string().lines() {
-                debug!("{} {}", LogTag::Parity, line);
-            }
+            let key = (extra.query_id.to_string(), extra.target_id.to_string());
+            let label = format!("✗ EXTRA: {}", extra.fmt_coords());
+            let table = render_table(ParityKind::RustOnly(extra));
+            groups
+                .entry(key)
+                .or_default()
+                .push(("extra", format!("{}\n{}", label, table)));
         }
 
-        // Log missings (only in C) with table
-        for (missing, reason) in &self.missings {
-            debug!(
-                "{} ✗ MISSING ({}): {}",
-                LogTag::Parity,
-                reason,
-                missing.fmt_coords()
-            );
-            let table = ParityTable {
-                kind: ParityKind::COnly(missing),
-                config: TableConfig::default(),
+        // Collect missings
+        for (missing, reason, overlap) in &self.missings {
+            let key = (missing.query_id.to_string(), missing.target_id.to_string());
+            let (label, table) = match overlap {
+                Some(rust_hit) => {
+                    let energy_diff = missing.energy.as_f64() - rust_hit.energy.as_f64();
+                    // Format: C hit coords vs Rust hit coords, with energy delta
+                    let label = format!(
+                        "✗ MISSING ({}): C {} vs R {} (ΔE={:+.2})",
+                        reason,
+                        missing.fmt_coords(),
+                        rust_hit.fmt_coords(),
+                        energy_diff
+                    );
+                    let table = render_table(ParityKind::CoveredBy { c: missing, rust: rust_hit });
+                    (label, table)
+                }
+                None => {
+                    let label = format!("✗ MISSING ({}): {}", reason, missing.fmt_coords());
+                    let table = render_table(ParityKind::COnly(missing));
+                    (label, table)
+                }
             };
-            for line in table.to_string().lines() {
-                debug!("{} {}", LogTag::Parity, line);
+            groups
+                .entry(key)
+                .or_default()
+                .push(("missing", format!("{}\n{}", label, table)));
+        }
+
+        // Print groups
+        for ((q_id, t_id), hits) in groups {
+            debug!("");
+            debug!(
+                "{} Group [{}:{}] hits={}",
+                LogTag::Parity,
+                q_id,
+                t_id,
+                hits.len()
+            );
+            for (_kind, content) in hits {
+                for line in content.lines() {
+                    debug!("{} {}", LogTag::Parity, line);
+                }
             }
         }
 
@@ -214,7 +270,7 @@ impl ParityResult {
         } else {
             self.missings
                 .iter()
-                .map(|(r, _)| r.fingerprint().len())
+                .map(|(r, _, _)| r.fingerprint().len())
                 .sum::<usize>() as f64
                 / self.missings.len() as f64
         };
@@ -223,7 +279,7 @@ impl ParityResult {
         } else {
             self.missings
                 .iter()
-                .map(|(r, _)| r.energy.as_f64())
+                .map(|(r, _, _)| r.energy.as_f64())
                 .sum::<f64>()
                 / self.missings.len() as f64
         };
@@ -294,16 +350,13 @@ impl ParityResult {
             rows.push(SummaryRow::new("Extra (in Rust, not C)", "0"));
         }
 
-        let is_pass = self.rust_worse.is_empty()
-            && self
-                .missings
-                .iter()
-                .all(|(_, r)| r.is_acceptable(ParityMode::default()));
-        let verdict = if is_pass {
+        let verdict = if self.is_pass(ParityMode::default()) {
             "✓ PASS".to_string()
         } else {
             format!(
-                "✗ FAIL ({} worse, {} missing, {} extra)",
+                "✗ FAIL ({} co-opt, {} better, {} worse, {} missing, {} extra)",
+                self.co_optimal.len(),
+                self.rust_better.len(),
                 self.rust_worse.len(),
                 self.missings.len(),
                 self.extras.len()
@@ -327,8 +380,11 @@ pub fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize
 }
 
 /// Check if two hits overlap in both query and target coordinates.
+/// Also requires same query_id and target_id to be meaningful.
 pub fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
-    a.strand == b.strand
+    a.query_id == b.query_id
+        && a.target_id == b.target_id
+        && a.strand == b.strand
         && ranges_overlap(
             a.output_t_start,
             a.output_t_end,
@@ -522,8 +578,8 @@ impl<'a> ParityComparator<'a> {
             // Collect missings
             for (i, c) in c_remaining.iter().enumerate() {
                 if !c_rem_matched[i] {
-                    let (reason, _) = classify_missing(c, &all_rust_refs);
-                    result.missings.push(((*c).clone(), reason));
+                    let (reason, overlap) = classify_missing(c, &all_rust_refs);
+                    result.missings.push(((*c).clone(), reason, overlap.cloned()));
                 }
             }
         }

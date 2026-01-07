@@ -41,15 +41,20 @@ pub fn render_summary_table(rows: Vec<SummaryRow>) -> String {
 #[derive(Debug)]
 #[allow(dead_code)] // Some variants used only in detailed debugging
 pub enum ParityKind<'a> {
-    /// Mismatch between Rust and C results
+    /// Mismatch between Rust and C results (same coordinates, different content)
     Mismatch {
         rust: &'a SearchHit,
         c: &'a SearchHit,
     },
     /// Hit only in Rust output
     RustOnly(&'a SearchHit),
-    /// Hit only in C output
+    /// Hit only in C output (no overlapping Rust hit)
     COnly(&'a SearchHit),
+    /// C hit covered by overlapping Rust hit (different coordinates)
+    CoveredBy {
+        c: &'a SearchHit,
+        rust: &'a SearchHit,
+    },
 }
 
 // =============================================================================
@@ -291,6 +296,7 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
             ParityKind::Mismatch { c, .. } => &c.strand,
             ParityKind::RustOnly(r) => &r.strand,
             ParityKind::COnly(c) => &c.strand,
+            ParityKind::CoveredBy { c, .. } => &c.strand,
         };
 
         let headers: Vec<String> = self
@@ -344,7 +350,7 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
             }
             ParityKind::Mismatch { rust: r, c } => {
                 let p_c = ParsedInteraction::from_hit(c);
-                let p_r = ParsedInteraction::from_hit_with_range(r, c.seed_start(), c.seed_end());
+                let p_r = ParsedInteraction::from_hit(r); // Use Rust's own seed range
 
                 let diff_l = build_diff(&p_c.ext_5, &p_r.ext_5);
                 let diff_s = build_diff(&p_c.seed, &p_r.seed);
@@ -368,6 +374,32 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
                 add_row(&mut builder, RowLabel::CompCQuery, &p_c_qry);
                 add_row(&mut builder, RowLabel::CompCFP, &p_c);
                 add_row(&mut builder, RowLabel::CompDiff, &p_diff);
+                add_row(&mut builder, RowLabel::CompRFP, &p_r);
+                add_row(&mut builder, RowLabel::CompRQuery, &p_r_qry);
+                add_row(&mut builder, RowLabel::CompRTarget, &p_r_tgt);
+            }
+            ParityKind::CoveredBy { c, rust: r } => {
+                // Show C hit (missing), then separator, then overlapping Rust hit
+                let p_c = ParsedInteraction::from_hit(c);
+                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c);
+
+                let p_r = ParsedInteraction::from_hit(r);
+                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r);
+                let p_r_qry = ParsedInteraction::from_hit_query(r, &p_r);
+
+                // C hit rows
+                add_row(&mut builder, RowLabel::CompCTarget, &p_c_tgt);
+                add_row(&mut builder, RowLabel::CompCFP, &p_c);
+                // Separator row (simple divider)
+                let sep = ParsedInteraction {
+                    ctx_5: "".into(),
+                    ext_5: "───────".into(),
+                    seed: "OVERLAP".into(),
+                    ext_3: "───────".into(),
+                    ctx_3: "".into(),
+                };
+                add_row(&mut builder, RowLabel::CompDiff, &sep);
+                // Rust hit rows
                 add_row(&mut builder, RowLabel::CompRFP, &p_r);
                 add_row(&mut builder, RowLabel::CompRQuery, &p_r_qry);
                 add_row(&mut builder, RowLabel::CompRTarget, &p_r_tgt);
