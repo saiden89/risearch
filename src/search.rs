@@ -14,7 +14,7 @@ use crate::types::{Base, Energy, QueryId, SeedPairing, Strand, TargetId};
 
 use std::collections::HashMap;
 
-const MAX_DP_EXT: usize = 30;
+const MAX_DP_EXT: usize = 50;
 
 /// High-level algorithm stages for structured logging
 #[derive(Debug, Clone, Copy)]
