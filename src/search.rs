@@ -876,12 +876,12 @@ pub fn run_search_collect(
 /// If dedup_shadow is true, filters both exact matches AND contained hits.
 /// If dedup_shadow is false (C behavior), only filters exact matches.
 fn shadows(k: &SearchHit, h: &SearchHit, dedup_shadow: bool) -> Option<FilterReason> {
-    // Different strands are never duplicates
-    if k.strand != h.strand {
+    // Different targets or strands are never duplicates
+    if k.target_id != h.target_id || k.strand != h.strand {
         return None;
     }
 
-    // Exact match - identical coordinates AND strand
+    // Exact match - identical coordinates AND strand AND target
     if k.q_start == h.q_start && k.q_end == h.q_end && k.t_start == h.t_start && k.t_end == h.t_end
     {
         return Some(FilterReason::DedupExactMatch);
