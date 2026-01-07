@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::common::c_runner::{CRunner, NoIndex as CNoIndex};
-use crate::common::comparison::{LogTag, ParityComparator, analyze_hit_pairs};
+use crate::common::comparison::{LogTag, ParityComparator};
 use crate::common::status::ParityMode;
 use crate::common::{init_test_logging, parse_output, workspace_root};
 
@@ -192,40 +192,6 @@ impl ParityRunner {
             );
         }
     }
-
-    /// Run detailed comparison with verbose logging.
-    pub fn assert_pass_detailed(&self, query: &Path, test_name: &str, args: &[&str]) {
-        let (rust_recs, c_recs) = self.compare(query, args);
-
-        let result = ParityComparator::new(&rust_recs, &c_recs).compare();
-
-        info!(
-            "{} {} - Rust={} hits, C={} hits",
-            LogTag::Parity,
-            test_name,
-            rust_recs.len(),
-            c_recs.len()
-        );
-
-        // Detailed logging for extras and missings
-        let extras: Vec<&risearch::SearchHit> = result.extras.iter().collect();
-        let missings: Vec<&risearch::SearchHit> = result.missings.iter().map(|(r, _)| r).collect();
-
-        if !extras.is_empty() || !missings.is_empty() {
-            analyze_hit_pairs(&extras, &missings);
-        }
-
-        if !result.is_pass(ParityMode::default()) {
-            panic!(
-                "\n{} FAILED: {} ({} rust-worse, {} missing, {} extra)\n",
-                LogTag::Parity,
-                test_name,
-                result.rust_worse.len(),
-                result.missings.len(),
-                result.extras.len()
-            );
-        }
-    }
 }
 
 // =============================================================================
@@ -271,12 +237,6 @@ impl SingleSeqRunner {
     /// Run comparison and assert parity passes.
     pub fn assert_pass(&self, test_name: &str, args: &[&str]) {
         self.runner.assert_pass(&self.query_path, test_name, args);
-    }
-
-    /// Run detailed comparison with CLI output.
-    pub fn assert_pass_detailed(&self, test_name: &str, args: &[&str]) {
-        self.runner
-            .assert_pass_detailed(&self.query_path, test_name, args);
     }
 }
 

@@ -81,12 +81,15 @@ pub fn parse_output(output: &str) -> (Vec<risearch::SearchHit>, usize) {
         .filter_map(risearch::SearchHit::from_c_output)
         .collect();
     let parsed_count = hits.len();
-    // Sort by group_key, coords for deterministic comparison
+    // Sort by group_key, then all coordinates for deterministic dedup
+    // Must sort by ALL coordinate fields to ensure true duplicates are adjacent
     hits.sort_by(|a, b| {
         a.group_key()
             .cmp(&b.group_key())
             .then(a.q_start.cmp(&b.q_start))
+            .then(a.q_end.cmp(&b.q_end))
             .then(a.output_t_start.cmp(&b.output_t_start))
+            .then(a.output_t_end.cmp(&b.output_t_end))
     });
     hits.dedup_by(|a, b| {
         a.coords_match(b) && (a.energy.as_f64() - b.energy.as_f64()).abs() < 0.001

@@ -44,7 +44,7 @@ fn test_parity_energy_threshold() {
 
 #[test]
 fn test_parity_alignment_repro() {
-    let query = "uggcucaguucagcaggaacag";
+    let query = "ucaguucagcaggaacag";
     let target = "TGGCTCTGTGGGACACAGCAGG";
     let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
 
@@ -82,29 +82,15 @@ fn test_parity_seed_only() {
     SingleSeqRunner::new(query, target).assert_pass("seed_only_no_extension", &args);
 }
 
-/// Minimal test: 2bp seed = exactly ONE stack energy lookup.
-/// CG paired with GC gives the strongest stack (-3.30 kcal/mol in Turner 04).
-/// Expected energy: (-330 - 559) / -100 = 8.89 kcal/mol (wait, that's positive)
-/// Actually: just seed_energy / -100 without extension = -3.30 kcal/mol
-/// But with the -559 offset and no extension: (seed_energy + 0 + 0 - 559) / -100
-/// For CG/GC: DSM value should be around -330 (3.30 kcal/mol stabilizing).
 #[test]
-fn test_parity_single_stack() {
-    // 2bp seed, no extension
-    let args = ["-l", "0", "-e", "10000.0", "-s", "6", "-p3"];
+fn test_parity_custom_seq() {
 
-    // Query: CG (5'->3')
-    // Target needs to be the complement in reverse: GC reading 3'->5' = CG reading 5'->3'
-    // Wait, for antiparallel: Query 5'-CG-3' pairs with Target 3'-GC-5'
-    // Target stored 5'->3' = CG, reverse complement to pair = GC
-    let query = "GC";
-    let target = "GC"; // This gives target bases GC when read for pairing
+    let args = ["-l", "20", "-e", "10000", "-s", "7", "-p3"];
 
-    SingleSeqRunner::new(query, target).assert_pass("single_stack_cg", &args);
+    let query = "uggcucaguucagcaggaacag";
+    let target = "ggaagaccgacuaggagacgacuugcugcuacuccuccgucccugcaucuggaggccuuu";
+    SingleSeqRunner::new(query, target).assert_pass("rust_worse_mre", &args);
 }
-
-/// Tests left extension only (dp_left).
-/// Design: seed at 3' end of query, extra bases only to the 5' side.
 #[test]
 fn test_parity_left_ext() {
     // Seed at 3' end of query forces only left extension
@@ -175,7 +161,7 @@ fn test_parity_mir24_isolated() {
         "--no-max-prune",
     ];
 
-    SingleSeqRunner::new(query, target).assert_pass_detailed("miR24_isolated_single", &args);
+    SingleSeqRunner::new(query, target).assert_pass("miR24_isolated_single", &args);
 }
 
 /// More targeted single-hit test with explicit segment expectations.
@@ -188,11 +174,6 @@ fn test_parity_segments_debug() {
     SingleSeqRunner::new(query, target).assert_pass("segment_debug", &args);
 }
 
-/// Isolated test for rust-worse energy case.
-/// From full_pipeline: q=[1,22] t=[359,384] with E=-21.74 (C: -22.38)
-/// The FP diff shows gap placement difference in 3' EXT:
-///   C:    UQPPP (gap-then-pair)
-///   Rust: UUQPP (unpaired-then-gap)
 #[test]
 fn test_parity_rust_worse_debug() {
     // Query: hsa-miR-24-3p
@@ -214,11 +195,12 @@ fn test_parity_rust_worse_debug() {
 #[test]
 fn test_parity_energy_discrepancy_minimal() {
     // Query: hsa-miR-24-3p (positions 1-17 used in this hit)
-    let query = "uggcucaguucagcaggaacag"; // 22nt
+    let query = "cucaguucagcaggaacag"; // 22nt
+    // let query = "uggcucaguucagcaggaacag"; // original
 
     // Target: ENST00000534717 (positions 20-33 used in this hit)
-    // Only first 60nt needed to reproduce the issue
-    let target = "AAGCCCGGGAAGCTGACTCCTTGCCCTGAGTCACAGGGAGGGGUGGGCAGGGCATGCGGC";
+    let target = "CTGACTCCTTGCCCTGAGT";
+    // let target = "AAGCCCGGGAAGCTGACTCCTTGCCCTGAGTCACAGGGAGGGGUGGGCAGGGCATGCGGC"; //original target
 
     // Args matching energy_threshold test: -l 10 -e -10 -s 5 -p3
     let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];

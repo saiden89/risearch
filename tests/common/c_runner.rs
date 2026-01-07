@@ -100,6 +100,14 @@ impl CRunner<Indexed> {
             );
         }
 
+        // Print C binary's debug output (stderr) for parity debugging
+        let c_stderr = String::from_utf8_lossy(&out.stderr);
+        if !c_stderr.is_empty() {
+            for line in c_stderr.lines() {
+                log::trace!("[C] {}", line);
+            }
+        }
+
         let mut out_files: Vec<PathBuf> = fs::read_dir(tmpdir.path())
             .expect("read legacy C output dir")
             .filter_map(|e| e.ok())
