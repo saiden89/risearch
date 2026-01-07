@@ -668,57 +668,21 @@ impl DpExtender {
         let mut state = DpOp::Match;
 
         while i > 0 || j > 0 {
-            match state {
+            let (next, di, dj) = match state {
                 DpOp::Stop => break,
-                DpOp::Match => {
-                    if i == 0 || j == 0 {
-                        break;
-                    }
-                    trace_vec.push(DpOp::Match);
-                    let next_state = m.tb(i, j);
-                    trace!("{} TB M({},{}): next={:?}", view.dir, i, j, next_state);
-                    i -= 1;
-                    j -= 1;
-                    state = match next_state {
-                        DpOp::Stop => break,
-                        DpOp::Match => DpOp::Match,
-                        DpOp::GapQ => DpOp::GapQ,
-                        DpOp::GapT => DpOp::GapT,
-                    };
-                }
-                DpOp::GapQ => {
-                    trace_vec.push(DpOp::GapQ);
-                    let next_state = bq.tb(i, j);
-                    trace!("{} TB Bq({},{}): next={:?}", view.dir, i, j, next_state);
-                    if i > 0 {
-                        i -= 1;
-                    } else {
-                        break;
-                    }
-                    state = match next_state {
-                        DpOp::Stop => break,
-                        DpOp::Match => DpOp::Match,
-                        DpOp::GapQ => DpOp::GapQ,
-                        DpOp::GapT => DpOp::GapT,
-                    };
-                }
-                DpOp::GapT => {
-                    trace_vec.push(DpOp::GapT);
-                    let next_state = bt.tb(i, j);
-                    trace!("{} TB Bt({},{}): next={:?}", view.dir, i, j, next_state);
-                    if j > 0 {
-                        j -= 1;
-                    } else {
-                        break;
-                    }
-                    state = match next_state {
-                        DpOp::Stop => break,
-                        DpOp::Match => DpOp::Match,
-                        DpOp::GapQ => DpOp::GapQ,
-                        DpOp::GapT => DpOp::GapT,
-                    };
-                }
+                DpOp::Match if i > 0 && j > 0 => (m.tb(i, j), 1, 1),
+                DpOp::GapQ if i > 0 => (bq.tb(i, j), 1, 0),
+                DpOp::GapT if j > 0 => (bt.tb(i, j), 0, 1),
+                _ => break,
+            };
+            trace_vec.push(state);
+            trace!("{} TB {:?}({},{}): next={:?}", view.dir, state, i, j, next);
+            i -= di;
+            j -= dj;
+            if next == DpOp::Stop {
+                break;
             }
+            state = next;
         }
 
         trace!(
