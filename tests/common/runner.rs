@@ -23,7 +23,7 @@ pub struct NoIndex;
 pub struct Indexed {
     index_path: PathBuf,
     #[allow(dead_code)]
-    index_file: risearch::sa::IndexFile,
+    index_file: risearch::sa::SaIndexFile,
 }
 
 // =============================================================================

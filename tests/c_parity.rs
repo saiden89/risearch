@@ -184,6 +184,25 @@ fn test_parity_rust_worse_debug() {
     SingleSeqRunner::new(query, target).assert_pass("rust_worse_debug", &args);
 }
 
+/// Debug test for missing hit at t=[544,569] on minus strand.
+/// C finds this hit but Rust has NO_OVERLAP - investigating why.
+/// Uses ENST00000285735 positions 504-609 (hit region 544-569 with 40bp flanking).
+#[test]
+fn test_parity_missing_544_debug() {
+    // Query: hsa-miR-24-3p (full 22nt)
+    let query = "uggcucaguucagcaggaacag";
+
+    // Target: ENST00000285735 positions 504-609 (106bp)
+    // The hit is at positions 544-569 (relative positions 41-66 in this excerpt)
+    // Hit is on minus strand (S=-), so query aligns to reverse complement
+    let target = "TGATTGCCCTCCATCAACACTGCCCACCCCAGGTTGGGGCTACCCCAGCCCATCTTTACAAAACAGGGCAAGGTGAACTAATGGAGTGGGTGGAGGAGTTGGAAGA";
+
+    // Same params as the failing matrix test: s=6, l=20
+    let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
+
+    SingleSeqRunner::new(query, target).assert_pass("missing_544_debug", &args);
+}
+
 /// Minimal reproducible test for identical-alignment-different-energy issue.
 /// q[1,17] t[20,33]: Rust=-15.04, C=-15.35 (31 centiunit difference)
 /// Both produce identical alignment: Seed=PPWPPPPP, 3'EXT=UQQQPPPWP

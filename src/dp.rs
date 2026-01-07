@@ -148,13 +148,15 @@ pub struct DpExtender {
     matrices: DpMatrices,
 }
 
+// TODO: Refactoring to reduce code duplication between left/right extension
+
 impl DpExtender {
     pub fn new() -> Self {
         Self {
             matrices: DpMatrices::new(200, 200),
         }
     }
-
+    // TODO: Split in smaller sections for readability (initialize, main loop, traceback, etc.)
     /// Extend to the left (query 5', target 3') - Legacy algorithm with C parity
     pub fn extend_left(
         &mut self,

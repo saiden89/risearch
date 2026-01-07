@@ -7,7 +7,7 @@ use std::str::FromStr;
 use crate::args::SearchArgs;
 use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT};
-use crate::sa::IndexFile;
+use crate::sa::SaIndexFile;
 use crate::seed::SeedSpec;
 use crate::seq::Seq;
 use crate::types::{Base, Energy, QueryId, SeedPairing, Strand, TargetId};
@@ -145,7 +145,7 @@ use std::ops::Range;
 
 /// Represents a full biological alignment between Query and Target.
 /// Stores the sequence of interactions and metadata about the seed location.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alignment {
     /// The complete sequence of pairing steps (5' -> 3' of Query).
     steps: Vec<Pairing>,
@@ -302,14 +302,14 @@ pub struct SearchHit {
     pub query_id: QueryId,
     pub target_id: TargetId,
 
-    pub q_start: usize,          // 0-based internal
-    pub q_end: usize,            // 0-based internal
-    pub t_start: usize,          // 0-based internal
-    pub t_end: usize,            // 0-based internal
-    pub output_q_start: usize,   // 1-based for output/comparison
-    pub output_q_end: usize,     // 1-based for output/comparison
-    pub output_t_start: usize,   // 1-based, strand-aware
-    pub output_t_end: usize,     // 1-based, strand-aware
+    pub q_start: usize,        // 0-based internal
+    pub q_end: usize,          // 0-based internal
+    pub t_start: usize,        // 0-based internal
+    pub t_end: usize,          // 0-based internal
+    pub output_q_start: usize, // 1-based for output/comparison
+    pub output_q_end: usize,   // 1-based for output/comparison
+    pub output_t_start: usize, // 1-based, strand-aware
+    pub output_t_end: usize,   // 1-based, strand-aware
     pub strand: Strand,
     pub energy: Energy,
     pub alignment: Alignment,
@@ -493,7 +493,7 @@ impl SearchHit {
 // Reimplementing mapping locally for safety and speed
 
 pub struct SaIndex<'a> {
-    pub index: &'a IndexFile,
+    pub index: &'a SaIndexFile,
 }
 
 impl<'a> SaIndex<'a> {
@@ -906,13 +906,16 @@ fn shadows(k: &SearchHit, h: &SearchHit, dedup_shadow: bool) -> Option<FilterRea
     // NOTE: C does NOT filter exact coordinate matches with different energies.
     // Multiple extension paths can produce hits at the same coordinates with
     // different energies. We preserve all of them for C parity.
-    // The DedupExactMatch filter below only removes true duplicates (same coords
-    // AND same energy, which would be redundant output).
+    // The DedupExactMatch filter below only removes true duplicates (same coords,
+    // same energy, AND same alignment, which would be redundant output).
+    // Hits with same coords/energy but different fingerprints are co-optimal
+    // alignments and should be kept.
     if k.q_start == h.q_start
         && k.q_end == h.q_end
         && k.t_start == h.t_start
         && k.t_end == h.t_end
         && (k.energy.as_f64() - h.energy.as_f64()).abs() < 0.001
+        && k.alignment == h.alignment
     {
         return Some(FilterReason::DedupExactMatch);
     }

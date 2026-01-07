@@ -39,7 +39,7 @@ pub struct SeedArgs {
         value_name = "start:end/length",
         default_value = "6"
     )]
-    pub seed: Option<String>,
+    pub seed: Option<String>, // TODO: this should be a SeedSpec
 
     /// Consider G-U wobble pairs as mismatch within the seed (only for locating seeds, energy model is not affected)
     #[arg(
@@ -61,7 +61,7 @@ pub struct SeedArgs {
         value_name = "c:p",
         default_value = "0:0"
     )]
-    pub mismatch_seed: Option<String>,
+    pub mismatch_seed: Option<String>, // TODO: this should be a MismatchSpec
 }
 
 /// Arguments for seed extension and scoring
@@ -74,7 +74,7 @@ pub struct ExtendArgs {
         value_name = "LENGTH",
         default_value_t = 20
     )]
-    pub max_extension: u8,
+    pub max_extension: u8, // TODO: should be strictly positive
 
     /// Set deltaG energy threshold (in kcal/mol) to filter predictions
     #[arg(
@@ -103,7 +103,7 @@ pub struct ExtendArgs {
     #[arg(long = "seed-energy", value_name = "THRESHOLD", default_value_t = 0.0)]
     pub seed_energy: f64,
 
-    /// Disable maximality check (allows redundant seeds, for compatibility/debugging)
+    /// Disable maximality check (allows redundant seeds)
     #[arg(long = "no-max-prune", action = clap::ArgAction::SetTrue)]
     pub no_max_prune: bool,
 

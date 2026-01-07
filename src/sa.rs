@@ -23,7 +23,7 @@ pub struct SequenceIndex {
 
 /// Structure representing the entire index file containing multiple sequences.
 #[derive(Serialize, Deserialize)]
-pub struct IndexFile {
+pub struct SaIndexFile {
     /// List of sequence indices in the index file.
     pub sequences: Vec<SequenceIndex>,
 }
@@ -56,6 +56,8 @@ fn validate_output_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+
+// TODO: this should adheto to Rust patterns, deuplicated code
 fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<u8>, NormalizationStats)> {
     let mut out = Vec::with_capacity(seq.len());
     let mut stats = NormalizationStats::default();
@@ -88,6 +90,8 @@ fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<u8>, Normalizatio
     Ok((out, stats))
 }
 
+
+// TODO: This probablu belongs in some trait
 pub fn create_suffix_array(
     input_file: impl AsRef<Path>,
     output_file: impl AsRef<Path>,
@@ -101,7 +105,7 @@ pub fn create_suffix_array(
     Ok(())
 }
 
-pub fn process_sequences(filename: impl AsRef<Path>) -> Result<IndexFile> {
+pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
     validate_readable_file(filename.as_ref())?;
 
     let sequences = read_fasta_sequences(&filename).context("Failed to read FASTA sequences")?;
@@ -189,20 +193,23 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<IndexFile> {
         );
     }
 
-    Ok(IndexFile {
+    Ok(SaIndexFile {
         sequences: sequence_indices,
     })
 }
 
-pub fn write_index_file(index: &IndexFile, output_file: impl AsRef<Path>) -> Result<()> {
+// TODO: trait for indices
+
+pub fn write_index_file(index: &SaIndexFile, output_file: impl AsRef<Path>) -> Result<()> {
     let encoded = bincode::serialize(index).context("Failed to serialize index")?;
     std::fs::write(&output_file, encoded).context("Failed to write index file")?;
     Ok(())
 }
 
-pub fn load_index_file(input_file: impl AsRef<Path>) -> Result<IndexFile> {
+// TODO: trait for indices
+pub fn load_index_file(input_file: impl AsRef<Path>) -> Result<SaIndexFile> {
     let data = std::fs::read(&input_file).context("Failed to read index file")?;
-    let index: IndexFile = bincode::deserialize(&data).context("Failed to deserialize index")?;
+    let index: SaIndexFile = bincode::deserialize(&data).context("Failed to deserialize index")?;
     Ok(index)
 }
 
@@ -320,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_index_file_empty() {
-        let index_file = IndexFile {
+        let index_file = SaIndexFile {
             sequences: Vec::new(),
         };
         assert!(index_file.sequences.is_empty());
@@ -328,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_index_file_multiple_sequences() {
-        let index_file = IndexFile {
+        let index_file = SaIndexFile {
             sequences: vec![
                 SequenceIndex {
                     name: "seq1".to_string(),
@@ -351,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_index_file_serialization() {
-        let index_file = IndexFile {
+        let index_file = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "test".to_string(),
                 forward_sa: vec![0, 1],
@@ -361,7 +368,7 @@ mod tests {
         };
 
         let encoded = bincode::serialize(&index_file).expect("Serialization failed");
-        let decoded: IndexFile = bincode::deserialize(&encoded).expect("Deserialization failed");
+        let decoded: SaIndexFile = bincode::deserialize(&encoded).expect("Deserialization failed");
 
         assert_eq!(decoded.sequences.len(), 1);
         assert_eq!(decoded.sequences[0].name, "test");
@@ -464,7 +471,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let output_path = temp_dir.path().join("test.idx");
 
-        let index = IndexFile {
+        let index = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "test".to_string(),
                 forward_sa: vec![0, 1, 2],
@@ -480,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_write_index_file_invalid_path() {
-        let index = IndexFile {
+        let index = SaIndexFile {
             sequences: Vec::new(),
         };
 
@@ -493,7 +500,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let output_path = temp_dir.path().join("empty.idx");
 
-        let index = IndexFile {
+        let index = SaIndexFile {
             sequences: Vec::new(),
         };
 
@@ -513,7 +520,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let file_path = temp_dir.path().join("test.idx");
 
-        let original = IndexFile {
+        let original = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "loaded_seq".to_string(),
                 forward_sa: vec![3, 0, 1, 2],
@@ -644,7 +651,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let file_path = temp_dir.path().join("roundtrip.idx");
 
-        let original = IndexFile {
+        let original = SaIndexFile {
             sequences: vec![
                 SequenceIndex {
                     name: "first".to_string(),
