@@ -570,10 +570,9 @@ impl<'a> SaIndex<'a> {
         &self.index.sequences[seq_idx].sequence
     }
 
-    pub fn get_sequence_rc(&self, seq_idx: usize) -> Vec<u8> {
-        self.index.sequences[seq_idx]
-            .sequence
-            .reverse_complement_dna()
+    /// Get pre-computed reverse complement (O(1), no allocation)
+    pub fn get_sequence_rc(&self, seq_idx: usize) -> &[u8] {
+        &self.index.sequences[seq_idx].sequence_rc
     }
 
     pub fn get_id(&self, seq_idx: usize) -> &str {
@@ -1082,11 +1081,11 @@ fn process_candidate(
     ctx: &mut SearchContext<'_>,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
-    let t_seq_cow = match candidate.strand {
-        Strand::Reverse => std::borrow::Cow::Owned(ctx.index.get_sequence_rc(t_idx)),
-        Strand::Forward => std::borrow::Cow::Borrowed(ctx.index.get_sequence(t_idx)),
+    // Both forward and RC sequences are pre-computed in index (no allocation)
+    let t_seq: &[u8] = match candidate.strand {
+        Strand::Reverse => ctx.index.get_sequence_rc(t_idx),
+        Strand::Forward => ctx.index.get_sequence(t_idx),
     };
-    let t_seq = &t_seq_cow;
     let t_start_idx = candidate.target_start;
     let seed_len = candidate.len;
     let q_pos = candidate.query_pos;
@@ -1398,18 +1397,16 @@ fn extend_seed(
         .energy
         .seed_energy(&query, &target, q_pos, t_match_end, len);
 
-    // Build interaction string for debugging/output (separate from energy)
-    let mut seed_int_str = String::with_capacity(len);
-    for k in 0..len {
-        let qc = query.base(q_pos + k);
-        let tc = target.base(t_match_end - k);
-        seed_int_str.push(qc.pairing_class(tc));
+    // Only build interaction string when trace logging is enabled
+    if log::log_enabled!(log::Level::Trace) {
+        let seed_int_str: String = (0..len)
+            .map(|k| query.base(q_pos + k).pairing_class(target.base(t_match_end - k)))
+            .collect();
+        trace!(
+            "[SEED] energy_raw={} q_pos={} t_end={} len={} interaction={}",
+            seed_energy_raw, q_pos, t_match_end, len, seed_int_str
+        );
     }
-
-    trace!(
-        "[SEED] energy_raw={} q_pos={} t_end={} len={} interaction={}",
-        seed_energy_raw, q_pos, t_match_end, len, seed_int_str
-    );
 
     // If not entering extension, return seed-only result
     // Need to add terminal penalties at both ends of the seed

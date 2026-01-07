@@ -19,6 +19,8 @@ pub struct SequenceIndex {
     pub reverse_sa: Vec<i64>,
     /// Normalized RNA sequence (lowercase, gaps removed, ambiguous bases as 'n')
     pub sequence: Vec<u8>,
+    /// Pre-computed reverse complement (avoids allocation on every access)
+    pub sequence_rc: Vec<u8>,
 }
 
 /// Structure representing the entire index file containing multiple sequences.
@@ -161,14 +163,14 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
                 );
             }
 
-            let seq_rev = seq_norm.as_slice().reverse_complement();
+            let seq_rc = seq_norm.as_slice().reverse_complement();
             let sa_fwd = SuffixArrayConstruction::for_text(&seq_norm)
                 .in_owned_buffer()
                 .single_threaded()
                 .run()
                 .map_err(|e| anyhow!("Suffix array construction failed for '{}': {e:?}", id))?
                 .into_vec();
-            let sa_rev = SuffixArrayConstruction::for_text(&seq_rev)
+            let sa_rev = SuffixArrayConstruction::for_text(&seq_rc)
                 .in_owned_buffer()
                 .single_threaded()
                 .run()
@@ -180,6 +182,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
                 forward_sa: sa_fwd,
                 reverse_sa: sa_rev,
                 sequence: seq_norm,
+                sequence_rc: seq_rc,
             }))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -296,6 +299,7 @@ mod tests {
             forward_sa: vec![0, 1, 2],
             reverse_sa: vec![2, 1, 0],
             sequence: b"acgt".to_vec(),
+            sequence_rc: b"acgt".to_vec(), // RC of acgt is acgt
         };
 
         assert_eq!(index.name, "test_seq");
@@ -311,6 +315,7 @@ mod tests {
             forward_sa: vec![3, 0, 1, 2],
             reverse_sa: vec![0, 3, 2, 1],
             sequence: b"acgt".to_vec(),
+            sequence_rc: b"acgt".to_vec(),
         };
 
         let encoded = bincode::serialize(&index).expect("Serialization failed");
@@ -342,12 +347,14 @@ mod tests {
                     forward_sa: vec![0],
                     reverse_sa: vec![0],
                     sequence: b"a".to_vec(),
+                    sequence_rc: b"t".to_vec(), // RC of a is t
                 },
                 SequenceIndex {
                     name: "seq2".to_string(),
                     forward_sa: vec![0, 1],
                     reverse_sa: vec![1, 0],
                     sequence: b"ac".to_vec(),
+                    sequence_rc: b"gt".to_vec(), // RC of ac is gt
                 },
             ],
         };
@@ -364,6 +371,7 @@ mod tests {
                 forward_sa: vec![0, 1],
                 reverse_sa: vec![1, 0],
                 sequence: b"at".to_vec(),
+                sequence_rc: b"at".to_vec(), // RC of at is at
             }],
         };
 
@@ -477,6 +485,7 @@ mod tests {
                 forward_sa: vec![0, 1, 2],
                 reverse_sa: vec![2, 1, 0],
                 sequence: b"acg".to_vec(),
+                sequence_rc: b"cgt".to_vec(), // RC of acg is cgt
             }],
         };
 
@@ -525,7 +534,8 @@ mod tests {
                 name: "loaded_seq".to_string(),
                 forward_sa: vec![3, 0, 1, 2],
                 reverse_sa: vec![0, 3, 2, 1],
-                sequence: b"test".to_vec(),
+                sequence: b"acgt".to_vec(),
+                sequence_rc: b"acgt".to_vec(), // RC of acgt is acgt
             }],
         };
 
@@ -537,7 +547,7 @@ mod tests {
         assert_eq!(loaded.sequences[0].name, "loaded_seq");
         assert_eq!(loaded.sequences[0].forward_sa, vec![3, 0, 1, 2]);
         assert_eq!(loaded.sequences[0].reverse_sa, vec![0, 3, 2, 1]);
-        assert_eq!(loaded.sequences[0].sequence, b"test".to_vec());
+        assert_eq!(loaded.sequences[0].sequence, b"acgt".to_vec());
     }
 
     #[test]
@@ -658,12 +668,14 @@ mod tests {
                     forward_sa: vec![5, 4, 3, 2, 1, 0],
                     reverse_sa: vec![0, 1, 2, 3, 4, 5],
                     sequence: b"aaaaaa".to_vec(),
+                    sequence_rc: b"tttttt".to_vec(), // RC of all a's is all t's
                 },
                 SequenceIndex {
                     name: "second".to_string(),
                     forward_sa: vec![0],
                     reverse_sa: vec![0],
                     sequence: b"c".to_vec(),
+                    sequence_rc: b"g".to_vec(), // RC of c is g
                 },
             ],
         };

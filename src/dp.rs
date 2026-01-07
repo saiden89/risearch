@@ -92,8 +92,14 @@ impl<T: Clone + Copy + Default> Grid<T> {
         self.get(i, j - 1)
     }
 
+    /// Resize grid, reusing buffer when possible to avoid reallocation.
     pub fn resize(&mut self, width: usize, height: usize) {
         let new_len = width * height;
+        // Only reallocate if capacity is insufficient
+        if self.data.capacity() < new_len {
+            self.data.reserve(new_len - self.data.len());
+        }
+        // Reset to default values without reallocation
         self.data.clear();
         self.data.resize(new_len, T::default());
         self.width = width;
@@ -603,7 +609,8 @@ impl DpExtender {
             "{} TB start: best=({},{}) score={}",
             DIR, best_i, best_j, best_e
         );
-        let mut trace_vec = Vec::new();
+        // Pre-allocate: traceback length is at most best_i + best_j moves
+        let mut trace_vec = Vec::with_capacity(best_i + best_j);
         let (mut i, mut j) = (best_i, best_j);
         let mut state = DpOp::Match;
 
@@ -1134,7 +1141,8 @@ impl DpExtender {
         }
 
         // Traceback
-        let mut trace_vec = Vec::new();
+        // Pre-allocate: traceback length is at most best_i + best_j moves
+        let mut trace_vec = Vec::with_capacity(best_i + best_j);
         let (mut i, mut j) = (best_i, best_j);
         let mut state = DpOp::Match;
 

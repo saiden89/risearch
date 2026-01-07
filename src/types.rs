@@ -15,18 +15,30 @@ pub enum Base {
     N = 5,
 }
 
+/// Static lookup table for byte-to-Base conversion (256 entries, O(1) access).
+/// Avoids branch prediction misses from match chain in hot paths.
+static BYTE_TO_BASE: [Base; 256] = {
+    let mut table = [Base::N; 256];
+    table[b'A' as usize] = Base::A;
+    table[b'a' as usize] = Base::A;
+    table[b'G' as usize] = Base::G;
+    table[b'g' as usize] = Base::G;
+    table[b'C' as usize] = Base::C;
+    table[b'c' as usize] = Base::C;
+    table[b'U' as usize] = Base::U;
+    table[b'u' as usize] = Base::U;
+    table[b'T' as usize] = Base::U;
+    table[b't' as usize] = Base::U;
+    table[b'-' as usize] = Base::Gap;
+    table[b'.' as usize] = Base::Gap;
+    table
+};
+
 impl Base {
-    /// Convert ASCII nucleotide byte to Base enum
-    #[inline]
+    /// Convert ASCII nucleotide byte to Base enum via lookup table.
+    #[inline(always)]
     pub fn from_byte(b: u8) -> Self {
-        match b {
-            b'A' | b'a' => Base::A,
-            b'G' | b'g' => Base::G,
-            b'C' | b'c' => Base::C,
-            b'U' | b'u' | b'T' | b't' => Base::U,
-            b'-' | b'.' => Base::Gap,
-            _ => Base::N,
-        }
+        BYTE_TO_BASE[b as usize]
     }
 
     /// Convert to array index
