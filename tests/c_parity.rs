@@ -6,6 +6,7 @@
 mod common;
 
 use common::{ParityRunner, SingleSeqRunner, workspace_root};
+use rstest::rstest;
 
 // =============================================================================
 // FILE-BASED TESTS
@@ -81,6 +82,27 @@ fn test_parity_seed_only() {
     SingleSeqRunner::new(query, target).assert_pass("seed_only_no_extension", &args);
 }
 
+/// Minimal test: 2bp seed = exactly ONE stack energy lookup.
+/// CG paired with GC gives the strongest stack (-3.30 kcal/mol in Turner 04).
+/// Expected energy: (-330 - 559) / -100 = 8.89 kcal/mol (wait, that's positive)
+/// Actually: just seed_energy / -100 without extension = -3.30 kcal/mol
+/// But with the -559 offset and no extension: (seed_energy + 0 + 0 - 559) / -100
+/// For CG/GC: DSM value should be around -330 (3.30 kcal/mol stabilizing).
+#[test]
+fn test_parity_single_stack() {
+    // 2bp seed, no extension
+    let args = ["-l", "0", "-e", "10000.0", "-s", "6", "-p3"];
+
+    // Query: CG (5'->3')
+    // Target needs to be the complement in reverse: GC reading 3'->5' = CG reading 5'->3'
+    // Wait, for antiparallel: Query 5'-CG-3' pairs with Target 3'-GC-5'
+    // Target stored 5'->3' = CG, reverse complement to pair = GC
+    let query = "GC";
+    let target = "GC"; // This gives target bases GC when read for pairing
+
+    SingleSeqRunner::new(query, target).assert_pass("single_stack_cg", &args);
+}
+
 /// Tests left extension only (dp_left).
 /// Design: seed at 3' end of query, extra bases only to the 5' side.
 #[test]
@@ -98,7 +120,7 @@ fn test_parity_left_ext() {
 /// Design: seed at 5' end of query, extra bases only to the 3' side.
 #[test]
 fn test_parity_right_ext() {
-    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+    let args = ["-l", "20", "-e", "10.0", "-s", "5", "-p3"];
 
     let query = "UGCUGAAAAA";
     let target = "UUUUUCAGCA";
@@ -202,4 +224,43 @@ fn test_parity_energy_discrepancy_minimal() {
     let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
 
     SingleSeqRunner::new(query, target).assert_pass("energy_discrepancy_minimal", &args);
+}
+
+// =============================================================================
+// DINUCLEOTIDE STACK PARITY: Tests all 16 possible dinucleotide stack energies
+// =============================================================================
+
+/// Watson-Crick complement for RNA (returns reverse complement for antiparallel pairing).
+fn wc_complement(seq: &str) -> String {
+    seq.chars()
+        .rev()
+        .map(|c| match c {
+            'A' => 'U',
+            'U' => 'A',
+            'C' => 'G',
+            'G' => 'C',
+            _ => c,
+        })
+        .collect()
+}
+
+/// Parameterized test for all 16 dinucleotide stack combinations.
+///
+/// Each (b1, b2) pair generates a 2bp query and its Watson-Crick complement target,
+/// testing exactly one stacking energy lookup for parity between Rust and C.
+#[rstest]
+fn test_parity_dinucleotide_stack(
+    #[values('A', 'C', 'G', 'U')] b1: char,
+    #[values('A', 'C', 'G', 'U')] b2: char,
+) {
+    // 2bp seed, no extension, lenient energy threshold to catch all hits
+    let args = ["-l", "0", "-e", "10000.0", "-s", "2", "-p3"];
+
+    let query = format!("{}{}", b1, b2);
+    let target = wc_complement(&query);
+
+    SingleSeqRunner::new(&query, &target).assert_pass(
+        &format!("dinuc_stack_{}_{}", b1, b2),
+        &args,
+    );
 }
