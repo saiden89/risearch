@@ -106,6 +106,11 @@ pub struct ExtendArgs {
     /// Disable maximality check (allows redundant seeds, for compatibility/debugging)
     #[arg(long = "no-max-prune", action = clap::ArgAction::SetTrue)]
     pub no_max_prune: bool,
+
+    /// Disable shadow dedup filtering (keep hits contained by better hits)
+    /// Default: true (filters contained hits). Set --no-dedup-shadow for C-compatible behavior.
+    #[arg(long = "no-dedup-shadow", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    pub dedup_shadow: bool,
 }
 
 /// Options that apply to the `search` subcommand

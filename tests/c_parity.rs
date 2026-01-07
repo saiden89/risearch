@@ -259,8 +259,85 @@ fn test_parity_dinucleotide_stack(
     let query = format!("{}{}", b1, b2);
     let target = wc_complement(&query);
 
-    SingleSeqRunner::new(&query, &target).assert_pass(
-        &format!("dinuc_stack_{}_{}", b1, b2),
-        &args,
-    );
+    SingleSeqRunner::new(&query, &target).assert_pass(&format!("dinuc_stack_{}_{}", b1, b2), &args);
+}
+
+/// Parameterized test for all 64 trinucleotide combinations.
+///
+/// Each (b1, b2, b3) triple generates a 3bp query testing TWO stacking
+/// interactions for parity between Rust and C.
+#[rstest]
+fn test_parity_trinucleotide_stack(
+    #[values('A', 'C', 'G', 'U')] b1: char,
+    #[values('A', 'C', 'G', 'U')] b2: char,
+    #[values('A', 'C', 'G', 'U')] b3: char,
+) {
+    // 3bp seed, no extension
+    let args = ["-l", "0", "-e", "10000.0", "-s", "3", "-p3"];
+
+    let query = format!("{}{}{}", b1, b2, b3);
+    let target = wc_complement(&query);
+
+    SingleSeqRunner::new(&query, &target)
+        .assert_pass(&format!("trinuc_stack_{}_{}_{}", b1, b2, b3), &args);
+}
+
+/// Parameterized test for minimal right extension: 2bp seed + 1bp extension.
+///
+/// Query is 3bp: first 2bp form the seed, last 1bp triggers dp_right extension.
+/// This tests the simplest possible DP extension path.
+#[rstest]
+fn test_parity_minimal_ext_right(
+    #[values('A', 'C', 'G', 'U')] s1: char, // seed base 1
+    #[values('A', 'C', 'G', 'U')] s2: char, // seed base 2
+    #[values('A', 'C', 'G', 'U')] e1: char, // extension base
+) {
+    // 2bp seed, with extension enabled
+    let args = ["-l", "10", "-e", "10000.0", "-s", "2", "-p3"];
+
+    let query = format!("{}{}{}", s1, s2, e1); // seed at 5', ext at 3'
+    let target = wc_complement(&query);
+
+    SingleSeqRunner::new(&query, &target)
+        .assert_pass(&format!("min_ext_r_{}_{}_{}", s1, s2, e1), &args);
+}
+
+/// Parameterized test for minimal left extension: 1bp extension + 2bp seed.
+///
+/// Query is 3bp: first 1bp triggers dp_left extension, last 2bp form the seed.
+#[rstest]
+fn test_parity_minimal_ext_left(
+    #[values('A', 'C', 'G', 'U')] e1: char, // extension base
+    #[values('A', 'C', 'G', 'U')] s1: char, // seed base 1
+    #[values('A', 'C', 'G', 'U')] s2: char, // seed base 2
+) {
+    // 2bp seed, with extension enabled
+    let args = ["-l", "10", "-e", "10000.0", "-s", "2", "-p3"];
+
+    let query = format!("{}{}{}", e1, s1, s2); // ext at 5', seed at 3'
+    let target = wc_complement(&query);
+
+    SingleSeqRunner::new(&query, &target)
+        .assert_pass(&format!("min_ext_l_{}_{}_{}", e1, s1, s2), &args);
+}
+
+/// Parameterized test for extension on both sides: 1bp left + 2bp seed + 1bp right.
+///
+/// Query is 4bp: first 1bp triggers dp_left, middle 2bp is seed, last 1bp triggers dp_right.
+/// This tests both DP extension paths simultaneously.
+#[rstest]
+fn test_parity_ext_both_sides(
+    #[values('A', 'C', 'G', 'U')] el: char, // left extension
+    #[values('A', 'C', 'G', 'U')] s1: char, // seed base 1
+    #[values('A', 'C', 'G', 'U')] s2: char, // seed base 2
+    #[values('A', 'C', 'G', 'U')] er: char, // right extension
+) {
+    // 2bp seed, with extension enabled on both sides
+    let args = ["-l", "10", "-e", "10000.0", "-s", "2", "-p3"];
+
+    let query = format!("{}{}{}{}", el, s1, s2, er);
+    let target = wc_complement(&query);
+
+    SingleSeqRunner::new(&query, &target)
+        .assert_pass(&format!("ext_both_{}_{}{}_{}", el, s1, s2, er), &args);
 }

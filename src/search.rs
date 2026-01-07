@@ -772,18 +772,13 @@ impl<T: Clone + Copy + Default> Grid<T> {
 /// Type alias for score grids - uses Option<i32> instead of sentinel value
 type ScoreGrid = Grid<Option<i32>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DpMove {
+    #[default]
     Stop,
     Match, // From M(i-1, j-1)
     GapQ,  // From Bq(i, j)
     GapT,  // From Bt(i, j)
-}
-
-impl Default for DpMove {
-    fn default() -> Self {
-        Self::Stop
-    }
 }
 
 pub struct DpContext {
@@ -904,7 +899,7 @@ pub fn run_search(
 
     // Deduplicate logic
     ctx.stats.hits_before_dedup = all_hits.len();
-    let deduped = deduplicate_hits(all_hits, &mut ctx.stats);
+    let deduped = deduplicate_hits(all_hits, &mut ctx.stats, ctx.args.extend.dedup_shadow);
     ctx.stats.hits_final = deduped.len();
 
     // Log filter stats
@@ -983,7 +978,7 @@ pub fn run_search_collect(
 
     // Deduplicate logic
     ctx.stats.hits_before_dedup = all_hits.len();
-    let deduped = deduplicate_hits(all_hits, &mut ctx.stats);
+    let deduped = deduplicate_hits(all_hits, &mut ctx.stats, ctx.args.extend.dedup_shadow);
     ctx.stats.hits_final = deduped.len();
 
     // Log filter stats
@@ -1004,9 +999,10 @@ pub fn run_search_collect(
     Ok(deduped)
 }
 
-/// Check if hit `k` shadows hit `h` (only exact duplicates)
-/// Note: C has no containment-based filtering, only exact match dedup.
-fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
+/// Check if hit `k` shadows hit `h`.
+/// If dedup_shadow is true, filters both exact matches AND contained hits.
+/// If dedup_shadow is false (C behavior), only filters exact matches.
+fn shadows(k: &SearchHit, h: &SearchHit, dedup_shadow: bool) -> Option<FilterReason> {
     // Different strands are never duplicates
     if k.strand != h.strand {
         return None;
@@ -1018,11 +1014,24 @@ fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
         return Some(FilterReason::DedupExactMatch);
     }
 
-    // C does NOT filter contained hits - removed DedupContainedByShadow
+    // Containment-based filtering (optional, not in C)
+    if dedup_shadow {
+        let q_contained = k.q_start <= h.q_start && k.q_end >= h.q_end;
+        let t_contained = k.t_start <= h.t_start && k.t_end >= h.t_end;
+
+        if q_contained && t_contained && h.q_start != k.q_start {
+            return Some(FilterReason::DedupContainedByShadow);
+        }
+    }
+
     None
 }
 
-fn deduplicate_hits(mut hits: Vec<SearchHit>, stats: &mut SearchStats) -> Vec<SearchHit> {
+fn deduplicate_hits(
+    mut hits: Vec<SearchHit>,
+    stats: &mut SearchStats,
+    dedup_shadow: bool,
+) -> Vec<SearchHit> {
     debug!("{} input_count={}", SearchStage::Dedup, hits.len());
 
     if hits.is_empty() {
@@ -1040,7 +1049,7 @@ fn deduplicate_hits(mut hits: Vec<SearchHit>, stats: &mut SearchStats) -> Vec<Se
     let mut kept: Vec<SearchHit> = Vec::new();
 
     for h in hits {
-        if let Some(reason) = kept.iter().find_map(|k| shadows(k, &h)) {
+        if let Some(reason) = kept.iter().find_map(|k| shadows(k, &h, dedup_shadow)) {
             stats.record_filter(reason);
             trace!(
                 "{} FILTERED q{}-{}:t{}-{} reason={:?}",
@@ -1304,7 +1313,7 @@ fn process_candidate(
         energy: score.into(),
         alignment: ext.alignment,
         flank_5,
-        flank_3: flank_3,
+        flank_3,
     })
 }
 
@@ -1337,7 +1346,7 @@ fn build_seed_alignment(
     let mut seed_alignment = Vec::with_capacity(len);
     for n in 0..len {
         let q_idx = q_pos + n;
-        let t_idx = if t_match_end >= n { t_match_end - n } else { 0 };
+        let t_idx = t_match_end.saturating_sub(n);
         let q_b = query.base(q_idx);
         let t_b = target.base(t_idx);
         seed_alignment.push(Pairing::from_bases(q_b, t_b));
@@ -1603,42 +1612,30 @@ fn extend_seed(
                     let q_b = query.left(candidate.query_pos, i);
                     let t_b = target.base_or_gap(t_match_end + j);
                     left_alignment.push(Pairing::from_bases(q_b, t_b));
-                    if i > 0 {
-                        i -= 1;
-                    }
-                    if j > 0 {
-                        j -= 1;
-                    }
+                    i = i.saturating_sub(1);
+                    j = j.saturating_sub(1);
                 }
                 DpMove::Stop => {
                     // Stop: same as Match semantically
                     let q_b = query.left(candidate.query_pos, i);
                     let t_b = target.base_or_gap(t_match_end + j);
                     left_alignment.push(Pairing::from_bases(q_b, t_b));
-                    if i > 0 {
-                        i -= 1;
-                    }
-                    if j > 0 {
-                        j -= 1;
-                    }
+                    i = i.saturating_sub(1);
+                    j = j.saturating_sub(1);
                 }
                 DpMove::GapQ => {
                     // GapQ means Bq matrix (from dp_left). Query has base. Target has Gap.
                     // So Pairing::GapTarget.
                     let q_b = query.left(candidate.query_pos, i);
                     left_alignment.push(Pairing::GapTarget(q_b));
-                    if i > 0 {
-                        i -= 1;
-                    }
+                    i = i.saturating_sub(1);
                 }
                 DpMove::GapT => {
                     // GapT means Bt matrix. Target has base. Query has Gap.
                     // So Pairing::GapQuery.
                     let t_b = target.base_or_gap(t_match_end + j);
                     left_alignment.push(Pairing::GapQuery(t_b));
-                    if j > 0 {
-                        j -= 1;
-                    }
+                    j = j.saturating_sub(1);
                 }
             }
         }

@@ -83,10 +83,9 @@ impl MissingReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParityMode {
     /// Require exact match - no differences acceptable
-    #[allow(dead_code)]
+    #[default]
     Strict,
     /// Accept improvements and co-optimal traces
-    #[default]
     Relaxed,
 }
 
@@ -121,6 +120,6 @@ mod tests {
 
     #[test]
     fn test_parity_mode_default() {
-        assert_eq!(ParityMode::default(), ParityMode::Relaxed);
+        assert_eq!(ParityMode::default(), ParityMode::Strict);
     }
 }

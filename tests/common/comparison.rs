@@ -298,7 +298,7 @@ impl ParityResult {
             && self
                 .missings
                 .iter()
-                .all(|(_, r)| r.is_acceptable(ParityMode::Relaxed));
+                .all(|(_, r)| r.is_acceptable(ParityMode::default()));
         let verdict = if is_pass {
             "✓ PASS".to_string()
         } else {
@@ -735,7 +735,7 @@ mod tests {
 
         // With identical hits, should be exact match
         assert!(
-            result.exact_matches >= 1 || result.co_optimal.len() >= 0,
+            result.exact_matches >= 1 || !result.co_optimal.is_empty(),
             "should handle equal hits"
         );
 

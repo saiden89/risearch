@@ -7,6 +7,13 @@ use crate::dsm::StackPair;
 use crate::seq::Seq;
 use crate::types::Base;
 
+/// Extension direction - determines terminal stacking order
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ExtendDir {
+    Left,  // Terminal: Gap→Q, Gap→T (extending into sequence from gap)
+    Right, // Terminal: Q→Gap, T→Gap (extending out of sequence into gap)
+}
+
 /// Extend alignment to the left (query 5', target 3')
 ///
 /// Query extends toward 5' (decreasing index), Target extends toward 3' (increasing index).
@@ -25,6 +32,7 @@ pub fn extend_left(
         |j| target.right(t_start, j),
         q_len,
         t_len,
+        ExtendDir::Left,
     )
 }
 
@@ -46,6 +54,7 @@ pub fn extend_right(
         |j| target.left(t_end, j),
         q_len,
         t_len,
+        ExtendDir::Right,
     )
 }
 
@@ -67,15 +76,20 @@ pub enum DpOp {
 }
 
 /// Core DP extension function
-pub fn extend<Q, T>(q: Q, t: T, q_len: usize, t_len: usize) -> DpExtension
+#[allow(clippy::needless_range_loop)] // Index i is used for matrix access across multiple arrays
+pub fn extend<Q, T>(q: Q, t: T, q_len: usize, t_len: usize, dir: ExtendDir) -> DpExtension
 where
     Q: Fn(usize) -> Base,
     T: Fn(usize) -> Base,
 {
+    // Terminal stacking order: Gap→Q, Gap→T for both directions (matches C behavior)
+    let terminal_fn = |q_base: Base, t_base: Base| -> i32 {
+        StackPair::new(Base::Gap, q_base, Base::Gap, t_base).energy() as i32
+    };
+
     // Early return if nothing to extend - but still return initial terminal
     if q_len == 0 || t_len == 0 {
-        // Initial terminal: DSM[GAP][q(0)][GAP][t(0)]
-        let initial_terminal = StackPair::new(Base::Gap, q(0), Base::Gap, t(0)).energy() as i32;
+        let initial_terminal = terminal_fn(q(0), t(0));
         return DpExtension {
             score: initial_terminal,
             q_len: 0,
@@ -100,8 +114,7 @@ where
     let mut tb: Vec<Vec<DpOp>> = vec![vec![DpOp::Match; t_len + 1]; q_len + 1];
 
     // Best score tracking - initialize with terminal penalty for zero extension
-    // This matches old DP: best_e = DSM[GAP][Q(0)][GAP][T(0)]
-    let initial_terminal = stack(Base::Gap, q(0), Base::Gap, t(0));
+    let initial_terminal = terminal_fn(q(0), t(0));
     let mut best_score = initial_terminal;
     let mut best_i = 0usize;
     let mut best_j = 0usize;
@@ -155,8 +168,8 @@ where
             let bt_ext = bt_curr[j - 1] + stack(Base::Gap, Base::Gap, t(j - 1), t(j));
             bt_curr[j] = bt_open.max(bt_ext);
 
-            // Update best with terminal penalty
-            let terminal = stack(q(i), Base::Gap, t(j), Base::Gap);
+            // Update best with terminal penalty (direction-dependent)
+            let terminal = terminal_fn(q(i), t(j));
             let score_with_term = m_curr[j] + terminal;
             if score_with_term > best_score {
                 best_score = score_with_term;
@@ -202,8 +215,10 @@ mod tests {
 
     #[test]
     fn test_extend_empty() {
-        let result = extend(|_| Base::A, |_| Base::U, 0, 0);
-        assert_eq!(result.score, 0);
+        let result = extend(|_| Base::A, |_| Base::U, 0, 0, ExtendDir::Right);
+        // Empty extension still returns terminal penalty: DSM[A][Gap][U][Gap]
+        let expected = StackPair::new(Base::A, Base::Gap, Base::U, Base::Gap).energy() as i32;
+        assert_eq!(result.score, expected);
         assert_eq!(result.q_len, 0);
     }
 
@@ -218,7 +233,7 @@ mod tests {
         let q = [Base::A, Base::C];
         let t = [Base::U, Base::G];
 
-        let result = extend(|i| q[i.min(1)], |j| t[j.min(1)], 1, 1);
+        let result = extend(|i| q[i.min(1)], |j| t[j.min(1)], 1, 1, ExtendDir::Right);
 
         // Calculate expected:
         // M[1,1] = M[0,0] + stack(A,C,U,G) = 0 + stack
@@ -260,7 +275,7 @@ mod tests {
         let q = [Base::A, Base::A]; // AA
         let t = [Base::A, Base::A]; // AA (not complementary, should be unfavorable)
 
-        let result = extend(|i| q[i.min(1)], |j| t[j.min(1)], 1, 1);
+        let result = extend(|i| q[i.min(1)], |j| t[j.min(1)], 1, 1, ExtendDir::Right);
 
         let stack_val = StackPair::new(Base::A, Base::A, Base::A, Base::A).energy() as i32;
         let terminal = StackPair::new(Base::A, Base::Gap, Base::A, Base::Gap).energy() as i32;

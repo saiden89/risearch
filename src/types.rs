@@ -239,7 +239,7 @@ impl From<String> for TargetId {
 // =============================================================================
 
 /// Energy value in kcal/mol (newtype for type safety and formatting).
-#[derive(Clone, Copy, PartialEq, PartialOrd, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Energy(pub f64);
 
 impl Energy {
@@ -272,9 +272,17 @@ impl std::fmt::Display for Energy {
 
 impl Eq for Energy {}
 
+impl PartialOrd for Energy {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Ord for Energy {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
+        self.0
+            .partial_cmp(&other.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 

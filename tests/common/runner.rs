@@ -181,7 +181,7 @@ impl ParityRunner {
         // Detailed debug logging (all hit types with tables)
         result.log_details(test_name);
 
-        if !result.is_pass(ParityMode::Relaxed) {
+        if !result.is_pass(ParityMode::default()) {
             panic!(
                 "\n{} FAILED: {} ({} rust-worse, {} missing, {} extra)\nRun with RUST_LOG=debug for detailed diff analysis.\n",
                 LogTag::Parity,
@@ -215,7 +215,7 @@ impl ParityRunner {
             analyze_hit_pairs(&extras, &missings);
         }
 
-        if !result.is_pass(ParityMode::Relaxed) {
+        if !result.is_pass(ParityMode::default()) {
             panic!(
                 "\n{} FAILED: {} ({} rust-worse, {} missing, {} extra)\n",
                 LogTag::Parity,
@@ -285,11 +285,14 @@ impl SingleSeqRunner {
 // =============================================================================
 
 /// Parse CLI-style args into SearchArgs using clap.
+/// Always includes --no-dedup-shadow for C parity (C doesn't filter contained hits).
 pub fn parse_search_args(args: &[&str]) -> risearch::args::SearchArgs {
     use clap::Parser;
 
     let mut cli_args = vec!["risearch"];
     cli_args.extend(args.iter().copied());
+    // C doesn't do shadow dedup, so disable it for parity tests
+    cli_args.push("--no-dedup-shadow");
 
     #[derive(Parser)]
     struct FakeCmd {
