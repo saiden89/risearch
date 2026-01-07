@@ -152,30 +152,6 @@ impl<'a> DpView<'a> {
         self.e(self.q(i - 1), self.q(i), self.t(j - 1), self.t(j))
     }
 
-    /// Query gap open: entering Bq state from M at (i-1, j)
-    #[inline(always)]
-    pub fn gap_q_open(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, self.t(j))
-    }
-
-    /// Query gap extend: staying in Bq state
-    #[inline(always)]
-    pub fn gap_q_ext(&self, i: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, GAP)
-    }
-
-    /// Target gap open: entering Bt state from M at (i, j-1)
-    #[inline(always)]
-    pub fn gap_t_open(&self, i: usize, j: usize) -> i32 {
-        self.e(GAP, self.q(i), self.t(j - 1), self.t(j))
-    }
-
-    /// Target gap extend: staying in Bt state
-    #[inline(always)]
-    pub fn gap_t_ext(&self, j: usize) -> i32 {
-        self.e(GAP, GAP, self.t(j - 1), self.t(j))
-    }
-
     // =========================================================================
     // DP TRANSITION HELPERS - exactly match the DP recurrence semantics
     // =========================================================================
