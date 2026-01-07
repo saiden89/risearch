@@ -38,24 +38,6 @@ impl std::fmt::Display for SearchStage {
     }
 }
 
-/// DP cell-level tracing (very verbose, trace level only)
-#[derive(Debug, Clone, Copy)]
-enum DpCell {
-    Left,  // dp_left function
-    Right, // dp_right function
-    Cell,  // Per-cell updates (most verbose)
-}
-
-impl std::fmt::Display for DpCell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Left => write!(f, "[DP_LEFT]"),
-            Self::Right => write!(f, "[DP_RIGHT]"),
-            Self::Cell => write!(f, "[DP_CELL]"),
-        }
-    }
-}
-
 /// Reasons why a seed, candidate, or hit was filtered out
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FilterReason {
@@ -706,119 +688,10 @@ impl<'a> SaIndex<'a> {
     }
 }
 
-// --- DP Structure ---
-
-/// DP alignment state - replaces magic integers (0=M, 1=Bq, 2=Bt)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DpState {
-    Match, // M - Match/Mismatch state (paired bases)
-    GapQ,  // Bq - Query Bulge state (gap in target, query base unpaired)
-    GapT,  // Bt - Target Bulge state (gap in query, target base unpaired)
-}
-
-#[derive(Clone, Debug)]
-pub struct Grid<T> {
-    data: Vec<T>,
-    width: usize,
-    height: usize,
-}
-
-impl<T: Clone + Copy + Default> Grid<T> {
-    fn new(width: usize, height: usize) -> Self {
-        Self {
-            data: vec![T::default(); width * height],
-            width,
-            height,
-        }
-    }
-
-    #[inline(always)]
-    fn get(&self, r: usize, c: usize) -> T {
-        self.data[r * self.width + c]
-    }
-
-    /// Access the diagonal neighbor (i-1, j-1)
-    #[inline(always)]
-    pub fn diag(&self, i: usize, j: usize) -> T {
-        self.get(i - 1, j - 1)
-    }
-
-    /// Access the upper neighbor (i-1, j) - Gap in Target
-    #[inline(always)]
-    pub fn up(&self, i: usize, j: usize) -> T {
-        self.get(i - 1, j)
-    }
-
-    /// Access the left neighbor (i, j-1) - Gap in Query
-    #[inline(always)]
-    pub fn left(&self, i: usize, j: usize) -> T {
-        self.get(i, j - 1)
-    }
-
-    #[inline(always)]
-    fn set(&mut self, r: usize, c: usize, val: T) {
-        self.data[r * self.width + c] = val;
-    }
-
-    fn resize(&mut self, width: usize, height: usize) {
-        let new_len = width * height;
-        self.data.clear();
-        self.data.resize(new_len, T::default());
-        self.width = width;
-        self.height = height;
-    }
-}
-
-/// Type alias for score grids - uses Option<i32> instead of sentinel value
-type ScoreGrid = Grid<Option<i32>>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum DpMove {
-    #[default]
-    Stop,
-    Match, // From M(i-1, j-1)
-    GapQ,  // From Bq(i, j)
-    GapT,  // From Bt(i, j)
-}
-
-pub struct DpContext {
-    // Score matrices (None = not reachable, Some(score) = reachable with score)
-    m: ScoreGrid,
-    bq: ScoreGrid,
-    bt: ScoreGrid,
-
-    // Traceback matrices
-    tb_m: Grid<DpMove>,
-    tb_bq: Grid<DpMove>,
-    tb_bt: Grid<DpMove>,
-}
-
-impl DpContext {
-    fn new(width: usize, height: usize) -> Self {
-        Self {
-            m: ScoreGrid::new(width, height),
-            bq: ScoreGrid::new(width, height),
-            bt: ScoreGrid::new(width, height),
-            tb_m: Grid::new(width, height),
-            tb_bq: Grid::new(width, height),
-            tb_bt: Grid::new(width, height),
-        }
-    }
-
-    fn resize(&mut self, width: usize, height: usize) {
-        self.m.resize(width, height);
-        self.bq.resize(width, height);
-        self.bt.resize(width, height);
-        self.tb_m.resize(width, height);
-        self.tb_bq.resize(width, height);
-        self.tb_bt.resize(width, height);
-    }
-}
-
 pub struct SearchContext<'a> {
     pub index: &'a SaIndex<'a>,
     pub args: &'a SearchArgs,
-    pub dp_ctx: DpContext,
+    pub extender: dp::DpExtender,
     pub stats: SearchStats,
     pub energy: EnergyModel,
 }
@@ -828,7 +701,7 @@ impl<'a> SearchContext<'a> {
         Self {
             index,
             args,
-            dp_ctx: DpContext::new(200, 200),
+            extender: dp::DpExtender::new(),
             stats: SearchStats::default(),
             energy: EnergyModel::T04,
         }
@@ -1317,13 +1190,6 @@ fn process_candidate(
     })
 }
 
-pub struct DpResult {
-    pub score: i32,
-    pub ext_q_len: usize,
-    pub ext_t_len: usize,
-    pub trace: Vec<DpMove>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ExtensionResult {
     pub score: f64,
@@ -1537,40 +1403,14 @@ fn extend_seed(
     }
 
     // DP Left: Extend Query Left (5'), Target Right (3')
-    // Start at: q_pos (5' Q), t_match_end (3' T)
-    let left_res = dp_left(&mut ctx.dp_ctx, q_seq, t_seq, q_pos, t_match_end, safe_ext);
-
-    // NEW DP comparison
-    let new_left = dp::extend_left(&query, &target, q_pos, t_match_end, safe_ext);
-    if left_res.score != new_left.score {
-        trace!(
-            "DP_LEFT DIFF: old={} new={} q_pos={} t_end={}",
-            left_res.score, new_left.score, q_pos, t_match_end
-        );
-    }
+    let left_res = ctx
+        .extender
+        .extend_left(&query, &target, q_pos, t_match_end, safe_ext);
 
     // DP Right: Extend Query Right (3'), Target Left (5')
-    // Start at: q_pos + len - 1 (3' Q), t_pos (5' T)
-    let right_res = dp_right(
-        &mut ctx.dp_ctx,
-        q_seq,
-        t_seq,
-        q_pos + len - 1,
-        t_pos,
-        safe_ext,
-    );
-
-    // NEW DP comparison
-    let new_right = dp::extend_right(&query, &target, q_pos + len - 1, t_pos, safe_ext);
-    if right_res.score != new_right.score {
-        trace!(
-            "DP_RIGHT DIFF: old={} new={} q_end={} t_pos={}",
-            right_res.score,
-            new_right.score,
-            q_pos + len - 1,
-            t_pos
-        );
-    }
+    let right_res = ctx
+        .extender
+        .extend_right(&query, &target, q_pos + len - 1, t_pos, safe_ext);
 
     // Use OLD embedded DP scores for C parity (new dp module has differences)
     let final_score = ctx
@@ -1584,10 +1424,10 @@ fn extend_seed(
         seed_energy_raw as f64 / -100.0,
         left_res.score,
         right_res.score,
-        left_res.ext_q_len,
-        left_res.ext_t_len,
-        right_res.ext_q_len,
-        right_res.ext_t_len
+        left_res.q_len,
+        left_res.t_len,
+        right_res.q_len,
+        right_res.t_len
     );
 
     let mut left_alignment = Vec::new();
@@ -1600,14 +1440,14 @@ fn extend_seed(
     // Ideally we reconstruct by iterating trace and tracking (i, j).
     // Start at best_i, best_j.
     {
-        let mut i = left_res.ext_q_len;
-        let mut j = left_res.ext_t_len;
+        let mut i = left_res.q_len;
+        let mut j = left_res.t_len;
         // left_res.trace is ordered from [step at best_i] ... [step at 1].
         // So iterating it naturally goes from 5' end toward seed.
 
         for step in &left_res.trace {
             match step {
-                DpMove::Match => {
+                dp::DpOp::Match => {
                     // Match: both Q and T advance
                     let q_b = query.left(candidate.query_pos, i);
                     let t_b = target.base_or_gap(t_match_end + j);
@@ -1615,7 +1455,7 @@ fn extend_seed(
                     i = i.saturating_sub(1);
                     j = j.saturating_sub(1);
                 }
-                DpMove::Stop => {
+                dp::DpOp::Stop => {
                     // Stop: same as Match semantically
                     let q_b = query.left(candidate.query_pos, i);
                     let t_b = target.base_or_gap(t_match_end + j);
@@ -1623,14 +1463,14 @@ fn extend_seed(
                     i = i.saturating_sub(1);
                     j = j.saturating_sub(1);
                 }
-                DpMove::GapQ => {
+                dp::DpOp::GapQ => {
                     // GapQ means Bq matrix (from dp_left). Query has base. Target has Gap.
                     // So Pairing::GapTarget.
                     let q_b = query.left(candidate.query_pos, i);
                     left_alignment.push(Pairing::GapTarget(q_b));
                     i = i.saturating_sub(1);
                 }
-                DpMove::GapT => {
+                dp::DpOp::GapT => {
                     // GapT means Bt matrix. Target has base. Query has Gap.
                     // So Pairing::GapQuery.
                     let t_b = target.base_or_gap(t_match_end + j);
@@ -1653,7 +1493,7 @@ fn extend_seed(
         // We iterate reversed trace (Start -> End)
         for step in right_res.trace.iter().rev() {
             match step {
-                DpMove::Match | DpMove::Stop => {
+                dp::DpOp::Match | dp::DpOp::Stop => {
                     curr_i += 1;
                     curr_j += 1;
                     // Query extends right (3'), target extends left (5')
@@ -1661,8 +1501,8 @@ fn extend_seed(
                     let t_b = target.left(t_pos, curr_j);
                     right_alignment.push(Pairing::from_bases(q_b, t_b));
                 }
-                DpMove::GapQ => {
-                    // DpMove::GapQ in dp_right.
+                dp::DpOp::GapQ => {
+                    // dp::DpOp::GapQ in dp_right.
                     // i increases (Query). j same.
                     // Query has Base. Target Gap.
                     // Pairing::GapTarget.
@@ -1670,8 +1510,8 @@ fn extend_seed(
                     let q_b = query.base_or_gap(candidate.query_pos + len - 1 + curr_i);
                     right_alignment.push(Pairing::GapTarget(q_b));
                 }
-                DpMove::GapT => {
-                    // DpMove::GapT in dp_right.
+                dp::DpOp::GapT => {
+                    // dp::DpOp::GapT in dp_right.
                     // j increases (Target 5'). i same.
                     // Target Base. Query Gap.
                     curr_j += 1;
@@ -1688,793 +1528,16 @@ fn extend_seed(
         score: final_score,
         alignment,
 
-        l_q: left_res.ext_q_len,
-        l_t: left_res.ext_t_len,
-        r_q: right_res.ext_q_len,
-        r_t: right_res.ext_t_len,
+        l_q: left_res.q_len,
+        l_t: left_res.t_len,
+        r_q: right_res.q_len,
+        r_t: right_res.t_len,
     })
-}
-
-fn dp_left(
-    ctx: &mut DpContext,
-    q_seq: &[u8],
-    t_seq: &[u8],
-    q_start: usize,
-    t_start: usize,
-    max_ext: usize,
-) -> DpResult {
-    // DP Left: Extend Query toward 5' (decreasing index), Target toward 3' (increasing index).
-    // q_start: index of first base in seed (query 5' end of seed)
-    // t_start: index of last base in seed (target 3' end of seed, due to antiparallel binding)
-    //
-    // q_len: number of query positions available for extension (indices q_start down to 0)
-    // t_len: number of target positions available for extension (indices t_start+1 to end)
-    let q_len = (q_start + 1).min(max_ext);
-    let t_len = (t_seq.len() - t_start - 1).min(max_ext);
-
-    // Centralized energy lookup via EnergyModel
-    #[inline(always)]
-    fn e(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        EnergyModel::T04.stack_idx(q1, q2, t1, t2)
-    }
-    const GAP: usize = Base::Gap as usize;
-
-    // Wrap sequences for clean base access
-    let query = Seq::forward(q_seq);
-    let target = Seq::forward(t_seq); // Strand already handled by caller
-
-    // Base access using Seq::left/right methods
-    // query.left(q_start, i) -> base at q_start-i (extends 5')
-    // target.right(t_start, j) -> base at t_start+j (extends 3')
-    let q_idx = |i: usize| -> usize { query.left(q_start, i).idx() };
-    let t_idx = |j: usize| -> usize { target.right(t_start, j).idx() };
-
-    // Initial score: terminal penalty for the seed boundary base pair.
-    // This matches C code: best_e = (*S)[GAP][Q(0)][GAP][T(0)]
-
-    let mut best_e = e(GAP, q_idx(0), GAP, t_idx(0));
-    let mut best_i = 0;
-    let mut best_j = 0;
-
-    trace!(
-        "{} START q_start={} t_start={} q_len={} t_len={} Q(0)={} T(0)={} best_e=DSM[0][{}][0][{}]={}",
-        DpCell::Left,
-        q_start,
-        t_start,
-        q_len,
-        t_len,
-        q_idx(0),
-        t_idx(0),
-        q_idx(0),
-        t_idx(0),
-        best_e
-    );
-
-    // C: if (lq <= 1 || lt <= 1) return best_e;
-    if q_len <= 1 || t_len <= 1 {
-        return DpResult {
-            score: best_e,
-            ext_q_len: best_i,
-            ext_t_len: best_j,
-            trace: Vec::new(),
-        };
-    }
-
-    // Resize context grids
-    ctx.resize(t_len + 1, q_len + 1);
-
-    // Create mutable aliases for easier access
-    // Rust allows borrowing disjoint fields mutably
-    let DpContext {
-        m,
-        bq,
-        bt,
-        tb_m,
-        tb_bq,
-        tb_bt,
-    } = ctx;
-
-    m.set(0, 0, Some(0));
-
-    // Init (0,1), (1,0), (1,1)
-    bt.set(0, 1, Some(e(GAP, q_idx(0), t_idx(1), t_idx(0))));
-    bq.set(1, 0, Some(e(q_idx(1), q_idx(0), GAP, t_idx(0))));
-    m.set(1, 1, Some(e(q_idx(1), q_idx(0), t_idx(1), t_idx(0))));
-
-    if let Some(m11) = m.get(1, 1) {
-        let val = m11 + e(GAP, q_idx(1), GAP, t_idx(1));
-        if val > best_e {
-            best_e = val;
-            best_i = 1;
-            best_j = 1;
-        }
-    }
-
-    // Row 0 (j from 2 to t_len-1)
-    for j in 2..t_len {
-        if let Some(prev_bt) = bt.left(0, j) {
-            bt.set(0, j, Some(prev_bt + e(GAP, GAP, t_idx(j), t_idx(j - 1))));
-            tb_bt.set(0, j, DpMove::GapT);
-
-            if q_len >= 1 {
-                let new_m = prev_bt + e(q_idx(1), GAP, t_idx(j), t_idx(j - 1));
-                m.set(1, j, Some(new_m));
-                tb_m.set(1, j, DpMove::GapT);
-                let val = new_m + e(GAP, q_idx(1), GAP, t_idx(j));
-                if val > best_e {
-                    best_e = val;
-                    best_i = 1;
-                    best_j = j;
-                }
-            }
-        }
-    }
-
-    // Col 0 (i from 2 to q_len-1)
-    for i in 2..q_len {
-        if let Some(prev_bq) = bq.up(i, 0) {
-            bq.set(i, 0, Some(prev_bq + e(q_idx(i), q_idx(i - 1), GAP, GAP)));
-            tb_bq.set(i, 0, DpMove::GapQ);
-
-            if t_len >= 1 {
-                let new_m = prev_bq + e(q_idx(i), q_idx(i - 1), t_idx(1), GAP);
-                m.set(i, 1, Some(new_m));
-                tb_m.set(i, 1, DpMove::GapQ);
-                let val = new_m + e(GAP, q_idx(i), GAP, t_idx(1));
-                if val > best_e {
-                    best_e = val;
-                    best_i = i;
-                    best_j = 1;
-                }
-            }
-        }
-    }
-
-    // 2,2 Init (needs at least length 3 to have index 2)
-    if q_len >= 3 && t_len >= 3 {
-        if let Some(m11) = m.diag(2, 2) {
-            bt.set(1, 2, Some(m11 + e(GAP, q_idx(1), t_idx(2), t_idx(1))));
-            tb_bt.set(1, 2, DpMove::Match);
-
-            bq.set(2, 1, Some(m11 + e(q_idx(2), q_idx(1), GAP, t_idx(1))));
-            tb_bq.set(2, 1, DpMove::Match);
-
-            let m22 = m11 + e(q_idx(2), q_idx(1), t_idx(2), t_idx(1));
-            m.set(2, 2, Some(m22));
-            tb_m.set(2, 2, DpMove::Match);
-
-            let val = m22 + e(GAP, q_idx(2), GAP, t_idx(2));
-            if val > best_e {
-                best_e = val;
-                best_i = 2;
-                best_j = 2;
-            }
-        }
-        if let Some(m12) = m.up(2, 2) {
-            bq.set(2, 2, Some(m12 + e(q_idx(2), q_idx(1), GAP, t_idx(2))));
-            tb_bq.set(2, 2, DpMove::Match);
-        }
-        if let Some(m21) = m.left(2, 2) {
-            bt.set(2, 2, Some(m21 + e(GAP, q_idx(2), t_idx(2), t_idx(1))));
-            tb_bt.set(2, 2, DpMove::Match);
-        }
-    }
-
-    // Main DP
-    for i in 2..q_len {
-        for j in 2..t_len {
-            if i == 2 && j == 2 {
-                continue;
-            }
-
-            // Calc M[i,j] - pick best of three sources
-            let s_mm = m
-                .diag(i, j)
-                .map(|v| v + e(q_idx(i), q_idx(i - 1), t_idx(j), t_idx(j - 1)));
-            let s_mq = bq
-                .diag(i, j)
-                .map(|v| v + e(q_idx(i), q_idx(i - 1), t_idx(j), GAP));
-            let s_mt = bt
-                .diag(i, j)
-                .map(|v| v + e(q_idx(i), GAP, t_idx(j), t_idx(j - 1)));
-
-            // Find best value and corresponding traceback step
-            let (val_m, step_m) = [
-                (s_mm, DpMove::Match),
-                (s_mq, DpMove::GapQ),
-                (s_mt, DpMove::GapT),
-            ]
-            .into_iter()
-            .filter_map(|(opt, step)| opt.map(|v| (v, step)))
-            .max_by_key(|(v, _)| *v)
-            .unwrap_or((i32::MIN, DpMove::Stop));
-
-            let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
-            m.set(i, j, val_m);
-            tb_m.set(i, j, step_m);
-
-            trace!(
-                "{} i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
-                DpCell::Cell,
-                i,
-                j,
-                val_m.map_or("-".to_string(), |v| v.to_string()),
-                s_mm.map_or("-".to_string(), |v| v.to_string()),
-                s_mq.map_or("-".to_string(), |v| v.to_string()),
-                s_mt.map_or("-".to_string(), |v| v.to_string()),
-                step_m
-            );
-
-            if let Some(v) = val_m {
-                let curr_e = v + e(GAP, q_idx(i), GAP, t_idx(j));
-                if curr_e > best_e {
-                    trace!(
-                        "{} UPDATE best: i={} j={} curr_e={} (was {})",
-                        DpCell::Left,
-                        i,
-                        j,
-                        curr_e,
-                        best_e
-                    );
-                    best_e = curr_e;
-                    best_i = i;
-                    best_j = j;
-                }
-            }
-
-            // Calc Bq[i,j]
-            if i > 2 || (i == 2 && j > 2) {
-                let s_qm = m
-                    .up(i, j)
-                    .map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, t_idx(j)));
-                let s_qq = bq.up(i, j).map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, GAP));
-
-                // Priority to Match (opening) if tie
-                match (s_qq, s_qm) {
-                    (Some(qq), Some(qm)) if qq > qm => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpMove::GapQ);
-                        trace!("{} i={} j={} Bq={} (from GapQ)", DpCell::Cell, i, j, qq);
-                    }
-                    (_, Some(qm)) => {
-                        bq.set(i, j, Some(qm));
-                        tb_bq.set(i, j, DpMove::Match);
-                        trace!("{} i={} j={} Bq={} (from Match)", DpCell::Cell, i, j, qm);
-                    }
-                    (Some(qq), None) => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpMove::GapQ);
-                        trace!(
-                            "{} i={} j={} Bq={} (from GapQ, no M)",
-                            DpCell::Cell,
-                            i,
-                            j,
-                            qq
-                        );
-                    }
-                    _ => {}
-                }
-            }
-
-            // Calc Bt[i,j]
-            if j > 2 || (j == 2 && i > 2) {
-                let s_tm = m
-                    .left(i, j)
-                    .map(|v| v + e(GAP, q_idx(i), t_idx(j), t_idx(j - 1)));
-                let s_tt = bt
-                    .left(i, j)
-                    .map(|v| v + e(GAP, GAP, t_idx(j), t_idx(j - 1)));
-
-                // Priority to Match (opening) if tie
-                match (s_tt, s_tm) {
-                    (Some(tt), Some(tm)) if tt > tm => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpMove::GapT);
-                        trace!("{} i={} j={} Bt={} (from GapT)", DpCell::Cell, i, j, tt);
-                    }
-                    (_, Some(tm)) => {
-                        bt.set(i, j, Some(tm));
-                        tb_bt.set(i, j, DpMove::Match);
-                        trace!("{} i={} j={} Bt={} (from Match)", DpCell::Cell, i, j, tm);
-                    }
-                    (Some(tt), None) => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpMove::GapT);
-                        trace!(
-                            "{} i={} j={} Bt={} (from GapT, no M)",
-                            DpCell::Cell,
-                            i,
-                            j,
-                            tt
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Backtracking: trace from best position back to seed boundary.
-    // Start in Match state since best_e is always computed from M matrix.
-    let mut i = best_i;
-    let mut j = best_j;
-    let mut trace_vec = Vec::new();
-    let mut state = DpState::Match;
-
-    while i > 0 || j > 0 {
-        match state {
-            DpState::Match => {
-                if i == 0 || j == 0 {
-                    // End of traceback
-                    break;
-                }
-
-                let step = tb_m.get(i, j);
-                i -= 1;
-                j -= 1;
-
-                trace_vec.push(step); // Push DpMove
-
-                match step {
-                    DpMove::Stop => break,
-                    DpMove::Match => state = DpState::Match,
-                    DpMove::GapQ => state = DpState::GapQ,
-                    DpMove::GapT => state = DpState::GapT,
-                }
-            }
-            DpState::GapQ => {
-                let step = tb_bq.get(i, j);
-                trace_vec.push(step);
-
-                if i > 0 {
-                    i -= 1;
-                } else {
-                    break;
-                }
-
-                match step {
-                    DpMove::Stop => break,
-                    DpMove::Match => state = DpState::Match,
-                    DpMove::GapQ => state = DpState::GapQ,
-                    DpMove::GapT => state = DpState::GapT, // Should not occur
-                }
-            }
-            DpState::GapT => {
-                let step = tb_bt.get(i, j);
-                trace_vec.push(step);
-
-                if j > 0 {
-                    j -= 1;
-                } else {
-                    break;
-                }
-
-                match step {
-                    DpMove::Stop => break,
-                    DpMove::Match => state = DpState::Match,
-                    DpMove::GapT => state = DpState::GapT,
-                    DpMove::GapQ => state = DpState::GapQ, // Should not occur
-                }
-            }
-        }
-    }
-
-    trace!(
-        "{} END score={:.2} q_ext={} t_ext={} trace_len={}",
-        DpCell::Left,
-        best_e,
-        best_i,
-        best_j,
-        trace_vec.len()
-    );
-
-    DpResult {
-        score: best_e,
-        ext_q_len: best_i,
-        ext_t_len: best_j,
-        trace: trace_vec,
-    }
-}
-
-fn dp_right(
-    ctx: &mut DpContext,
-    q_seq: &[u8],
-    t_seq: &[u8],
-    q_end: usize,
-    t_end: usize,
-    max_ext: usize,
-) -> DpResult {
-    // DP Right: Extend Query toward 3' (increasing index), Target toward 5' (decreasing index).
-    // q_end: index of last base in seed (query 3' end of seed)
-    // t_end: index of first base in seed (target 5' end of seed, due to antiparallel binding)
-    //
-    // q_len: number of query positions available (indices q_end to end of sequence)
-    // t_len: number of target positions available (indices t_end down to 0)
-    let q_len = (q_seq.len() - q_end).min(max_ext);
-    let t_len = (t_end + 1).min(max_ext);
-
-    // Centralized energy lookup via EnergyModel
-    #[inline(always)]
-    fn e(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        EnergyModel::T04.stack_idx(q1, q2, t1, t2)
-    }
-    const GAP: usize = Base::Gap as usize;
-
-    // Wrap sequences for clean base access
-    let query = Seq::forward(q_seq);
-    let target = Seq::forward(t_seq); // Strand already handled by caller
-
-    // Base access using Seq::left/right methods
-    // query.right(q_end, i) -> base at q_end+i (extends 3')
-    // target.left(t_end, j) -> base at t_end-j (extends 5')
-    let q_idx = |i: usize| -> usize { query.right(q_end, i).idx() };
-    let t_idx = |j: usize| -> usize { target.left(t_end, j).idx() };
-
-    // Initial score from seed boundary
-    // C DP_right uses Q(0)->Gap, T(0)->Gap logic ([Q][Gap][T][Gap])
-    let mut best_e = e(q_idx(0), GAP, t_idx(0), GAP);
-    let mut best_i = 0;
-    let mut best_j = 0;
-
-    trace!(
-        "{} START q_end={} t_end={} q_len={} t_len={} Q(0)={} T(0)={} best_e=DSM[{}][0][{}][0]={}",
-        DpCell::Right,
-        q_end,
-        t_end,
-        q_len,
-        t_len,
-        q_idx(0),
-        t_idx(0),
-        q_idx(0),
-        t_idx(0),
-        best_e
-    );
-
-    // C: if (lq <= 1 || lt <= 1) return best_e;
-    if q_len <= 1 || t_len <= 1 {
-        return DpResult {
-            score: best_e,
-            ext_q_len: best_i,
-            ext_t_len: best_j,
-            trace: Vec::new(),
-        };
-    }
-
-    // Resize context grids
-    ctx.resize(t_len + 1, q_len + 1);
-
-    // Create mutable aliases
-    let DpContext {
-        m,
-        bq,
-        bt,
-        tb_m,
-        tb_bq,
-        tb_bt,
-    } = ctx;
-
-    m.set(0, 0, Some(0));
-
-    // Init (0,1) Bt, (1,0) Bq, (1,1) M
-    bt.set(0, 1, Some(e(q_idx(0), GAP, t_idx(0), t_idx(1))));
-    bq.set(1, 0, Some(e(q_idx(0), q_idx(1), t_idx(0), GAP)));
-    m.set(1, 1, Some(e(q_idx(0), q_idx(1), t_idx(0), t_idx(1))));
-
-    if let Some(m11) = m.get(1, 1) {
-        let val = m11 + e(q_idx(1), GAP, t_idx(1), GAP);
-        if val > best_e {
-            best_e = val;
-            best_i = 1;
-            best_j = 1;
-        }
-    }
-
-    // Row 0 (j from 2 to t_len-1)
-    for j in 2..t_len {
-        if let Some(prev_bt) = bt.left(0, j) {
-            bt.set(0, j, Some(prev_bt + e(GAP, GAP, t_idx(j - 1), t_idx(j))));
-            tb_bt.set(0, j, DpMove::GapT);
-
-            if q_len >= 1 {
-                let new_m = prev_bt + e(GAP, q_idx(1), t_idx(j - 1), t_idx(j));
-                m.set(1, j, Some(new_m));
-                tb_m.set(1, j, DpMove::GapT);
-                let val = new_m + e(q_idx(1), GAP, t_idx(j), GAP);
-                if val > best_e {
-                    best_e = val;
-                    best_i = 1;
-                    best_j = j;
-                }
-            }
-        }
-    }
-
-    // Col 0 (i from 2 to q_len-1)
-    for i in 2..q_len {
-        if let Some(prev_bq) = bq.up(i, 0) {
-            bq.set(i, 0, Some(prev_bq + e(q_idx(i - 1), q_idx(i), GAP, GAP)));
-            tb_bq.set(i, 0, DpMove::GapQ);
-
-            if t_len >= 1 {
-                let new_m = prev_bq + e(q_idx(i - 1), q_idx(i), GAP, t_idx(1));
-                m.set(i, 1, Some(new_m));
-                tb_m.set(i, 1, DpMove::GapQ);
-                let val = new_m + e(q_idx(i), GAP, t_idx(1), GAP);
-                if val > best_e {
-                    best_e = val;
-                    best_i = i;
-                    best_j = 1;
-                }
-            }
-        }
-    }
-
-    // 2,2 Init (needs at least length 3 to have index 2)
-    if q_len >= 3 && t_len >= 3 {
-        if let Some(m11) = m.diag(2, 2) {
-            bt.set(1, 2, Some(m11 + e(q_idx(1), GAP, t_idx(1), t_idx(2))));
-            tb_bt.set(1, 2, DpMove::Match);
-
-            bq.set(2, 1, Some(m11 + e(q_idx(1), q_idx(2), t_idx(1), GAP)));
-            tb_bq.set(2, 1, DpMove::Match);
-
-            let m22 = m11 + e(q_idx(1), q_idx(2), t_idx(1), t_idx(2));
-            m.set(2, 2, Some(m22));
-            tb_m.set(2, 2, DpMove::Match);
-
-            let val = m22 + e(q_idx(2), GAP, t_idx(2), GAP);
-            if val > best_e {
-                best_e = val;
-                best_i = 2;
-                best_j = 2;
-            }
-        }
-        if let Some(m12) = m.up(2, 2) {
-            bq.set(2, 2, Some(m12 + e(q_idx(1), q_idx(2), t_idx(2), GAP)));
-            tb_bq.set(2, 2, DpMove::Match);
-        }
-        if let Some(m21) = m.left(2, 2) {
-            bt.set(2, 2, Some(m21 + e(q_idx(2), GAP, t_idx(1), t_idx(2))));
-            tb_bt.set(2, 2, DpMove::Match);
-        }
-    }
-
-    // Main DP
-    for i in 2..q_len {
-        for j in 2..t_len {
-            if i == 2 && j == 2 {
-                continue;
-            }
-
-            // Calc M[i,j] - pick best of three sources
-            let s_mm = m
-                .diag(i, j)
-                .map(|v| v + e(q_idx(i - 1), q_idx(i), t_idx(j - 1), t_idx(j)));
-            let s_mq = bq
-                .diag(i, j)
-                .map(|v| v + e(q_idx(i - 1), q_idx(i), GAP, t_idx(j)));
-            let s_mt = bt
-                .diag(i, j)
-                .map(|v| v + e(GAP, q_idx(i), t_idx(j - 1), t_idx(j)));
-
-            // Find best value and corresponding traceback step
-            let (val_m, step_m) = [
-                (s_mm, DpMove::Match),
-                (s_mq, DpMove::GapQ),
-                (s_mt, DpMove::GapT),
-            ]
-            .into_iter()
-            .filter_map(|(opt, step)| opt.map(|v| (v, step)))
-            .max_by_key(|(v, _)| *v)
-            .unwrap_or((i32::MIN, DpMove::Stop));
-
-            let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
-            m.set(i, j, val_m);
-            tb_m.set(i, j, step_m);
-
-            trace!(
-                "{} i={} j={} M={} (mm={} mq={} mt={}) step={:?}",
-                DpCell::Cell,
-                i,
-                j,
-                val_m.map_or("-".to_string(), |v| v.to_string()),
-                s_mm.map_or("-".to_string(), |v| v.to_string()),
-                s_mq.map_or("-".to_string(), |v| v.to_string()),
-                s_mt.map_or("-".to_string(), |v| v.to_string()),
-                step_m
-            );
-
-            if let Some(v) = val_m {
-                let term = e(q_idx(i), GAP, t_idx(j), GAP);
-                if v + term > best_e {
-                    trace!(
-                        "{} UPDATE best: i={} j={} M[i,j]={} term=DSM[{}][0][{}][0]={} total={} (was {})",
-                        DpCell::Right,
-                        i,
-                        j,
-                        v,
-                        q_idx(i),
-                        t_idx(j),
-                        term,
-                        v + term,
-                        best_e
-                    );
-                    best_e = v + term;
-                    best_i = i;
-                    best_j = j;
-                }
-            }
-
-            // Calc Bq[i,j]
-            if i > 2 || (i == 2 && j > 2) {
-                let s_qm = m
-                    .up(i, j)
-                    .map(|v| v + e(q_idx(i - 1), q_idx(i), t_idx(j), GAP));
-                let s_qq = bq.up(i, j).map(|v| v + e(q_idx(i - 1), q_idx(i), GAP, GAP));
-
-                match (s_qq, s_qm) {
-                    (Some(qq), Some(qm)) if qq > qm => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpMove::GapQ);
-                    }
-                    (_, Some(qm)) => {
-                        bq.set(i, j, Some(qm));
-                        tb_bq.set(i, j, DpMove::Match);
-                    }
-                    (Some(qq), None) => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpMove::GapQ);
-                    }
-                    _ => {}
-                }
-            }
-
-            // Calc Bt[i,j]
-            if j > 2 || (j == 2 && i > 2) {
-                let s_tm = m
-                    .left(i, j)
-                    .map(|v| v + e(q_idx(i), GAP, t_idx(j - 1), t_idx(j)));
-                let s_tt = bt
-                    .left(i, j)
-                    .map(|v| v + e(GAP, GAP, t_idx(j - 1), t_idx(j)));
-
-                match (s_tt, s_tm) {
-                    (Some(tt), Some(tm)) if tt > tm => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpMove::GapT);
-                    }
-                    (_, Some(tm)) => {
-                        bt.set(i, j, Some(tm));
-                        tb_bt.set(i, j, DpMove::Match);
-                    }
-                    (Some(tt), None) => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpMove::GapT);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Backtracking: trace from best position back to seed boundary.
-    // Start in Match state since best_e is always computed from M matrix.
-    let mut i = best_i;
-    let mut j = best_j;
-    let mut trace_vec = Vec::new(); // Changed to Vec
-    let mut state = DpState::Match;
-
-    while i > 0 || j > 0 {
-        match state {
-            DpState::Match => {
-                // Current state is Match (M[i,j])
-                if i == 0 || j == 0 {
-                    break;
-                }
-
-                let step = tb_m.get(i, j);
-                i -= 1;
-                j -= 1;
-
-                trace_vec.push(step);
-
-                match step {
-                    DpMove::Stop => break,
-                    DpMove::Match => state = DpState::Match,
-                    DpMove::GapQ => state = DpState::GapQ,
-                    DpMove::GapT => state = DpState::GapT,
-                }
-            }
-            DpState::GapQ => {
-                // Current state is GapQ (Bq[i,j])
-                let step = tb_bq.get(i, j);
-                trace_vec.push(step);
-
-                if i > 0 {
-                    i -= 1;
-                } else {
-                    break;
-                }
-                // j stays same
-
-                match step {
-                    DpMove::Stop => break,
-                    DpMove::Match => state = DpState::Match,
-                    DpMove::GapQ => state = DpState::GapQ,
-                    DpMove::GapT => state = DpState::GapT, // Should not occur
-                }
-            }
-            DpState::GapT => {
-                // Current state is GapT (Bt[i,j])
-                let step = tb_bt.get(i, j);
-                trace_vec.push(step);
-
-                if j > 0 {
-                    j -= 1;
-                } else {
-                    break;
-                }
-                // i stays same
-
-                match step {
-                    DpMove::Stop => break,
-                    DpMove::Match => state = DpState::Match,
-                    DpMove::GapT => state = DpState::GapT,
-                    DpMove::GapQ => state = DpState::GapQ, // Should not occur
-                }
-            }
-        }
-    }
-
-    trace!(
-        "{} END score={} q_ext={} t_ext={} trace_len={}",
-        DpCell::Right,
-        best_e,
-        best_i,
-        best_j,
-        trace_vec.len()
-    );
-
-    DpResult {
-        score: best_e,
-        ext_q_len: best_i,
-        ext_t_len: best_j,
-        trace: trace_vec,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-
-    fn test_dp_left_returns_score() {
-        // Verifies dp_left runs without panicking and returns a score tuple
-        let mut ctx = DpContext::new(10, 10);
-        let q = b"AAAA";
-        let t = b"UUUU";
-        let res = dp_left(&mut ctx, q, t, 3, 3, 10);
-        // The actual score depends on the scoring matrix and sequence alignment
-        // For now, just verify the function returns without panicking
-        println!(
-            "dp_left score: {}, i: {}, j: {}",
-            res.score, res.ext_q_len, res.ext_t_len
-        );
-    }
-
-    #[test]
-    fn test_dp_right_returns_score() {
-        // Verifies dp_right runs without panicking and returns a score tuple
-        let mut ctx = DpContext::new(10, 10);
-        let q = b"AAAA";
-        let t = b"UUUU";
-        let res = dp_right(&mut ctx, q, t, 0, 0, 10);
-        println!(
-            "dp_right score: {}, i: {}, j: {}",
-            res.score, res.ext_q_len, res.ext_t_len
-        );
-    }
 
     #[test]
     fn test_search_hit_from_c_output() {
