@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use crate::args::SearchArgs;
 use crate::dp;
-use crate::dsm::{PAIR_MAT, StackPair};
+use crate::dsm::{EnergyModel, PAIR_MAT};
 use crate::sa::IndexFile;
 use crate::seed::SeedSpec;
 use crate::seq::Seq;
@@ -825,6 +825,7 @@ pub struct SearchContext<'a> {
     pub args: &'a SearchArgs,
     pub dp_ctx: DpContext,
     pub stats: SearchStats,
+    pub energy: EnergyModel,
 }
 
 impl<'a> SearchContext<'a> {
@@ -834,6 +835,7 @@ impl<'a> SearchContext<'a> {
             args,
             dp_ctx: DpContext::new(200, 200),
             stats: SearchStats::default(),
+            energy: EnergyModel::T04,
         }
     }
 }
@@ -954,7 +956,6 @@ pub fn run_search_collect(
         let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
         debug!("{} {} candidates found", SearchStage::Input, seeds.len());
         ctx.stats.candidates_processed += seeds.len();
-
         for candidate in &seeds {
             trace!(
                 "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
@@ -1336,6 +1337,25 @@ pub struct ExtensionResult {
     pub r_t: usize,
 }
 
+/// Build alignment for the seed region (used by both extension and seed-only paths)
+fn build_seed_alignment(
+    query: &Seq<'_>,
+    target: &Seq<'_>,
+    q_pos: usize,
+    t_match_end: usize,
+    len: usize,
+) -> Vec<Pairing> {
+    let mut seed_alignment = Vec::with_capacity(len);
+    for n in 0..len {
+        let q_idx = q_pos + n;
+        let t_idx = if t_match_end >= n { t_match_end - n } else { 0 };
+        let q_b = query.base(q_idx);
+        let t_b = target.base(t_idx);
+        seed_alignment.push(Pairing::from_bases(q_b, t_b));
+    }
+    seed_alignment
+}
+
 fn extend_seed(
     ctx: &mut SearchContext<'_>,
     q_seq: &[u8],
@@ -1451,58 +1471,72 @@ fn extend_seed(
         opts.delta_g
     );
 
-    let mut seed_energy = 0.0;
-
-    // Seed energy calculation (antiparallel binding).
-    // q[q_pos + k] pairs with t[t_pos + len - 1 - k]
-
     let t_match_end = t_pos + len - 1;
+    let max_ext = opts.max_extension as usize;
+    let safe_ext = max_ext.min(MAX_DP_EXT);
+
+    // Check extendability: seed is extendable if there's room on at least one side
+    let left_extendable = q_pos > 0 && t_pos + len < t_seq.len();
+    let right_extendable = q_pos + len < q_seq.len() && t_pos > 0;
+    let seed_extendable = left_extendable || right_extendable;
+
+    // Only enter extension if max_extension is nonzero AND seed is extendable
+    let do_extension = max_ext > 0 && seed_extendable;
+
+    if !do_extension {
+        trace!(
+            "{} SKIPPING EXTENSION: max_ext={} extendable={} (L={} R={})",
+            SearchStage::Extend,
+            max_ext,
+            seed_extendable,
+            left_extendable,
+            right_extendable
+        );
+    }
+
+    // Seed energy calculation using centralized EnergyModel
+    let seed_energy_raw = ctx
+        .energy
+        .seed_energy(&query, &target, q_pos, t_match_end, len);
+
+    // Build interaction string for debugging/output (separate from energy)
     let mut seed_int_str = String::with_capacity(len);
-
     for k in 0..len {
-        let q_idx = q_pos + k;
-        let t_idx = t_match_end - k;
-
-        if k < len.saturating_sub(1) {
-            // Get bases using Seq abstraction
-            let q1 = query.base(q_idx);
-            let q2 = query.base(q_idx + 1);
-            let t1 = target.base(t_idx);
-            let t2 = target.base(t_match_end - (k + 1));
-
-            // Use StackPair for energy lookup (no complement - handled by sequence prep)
-            let stack = StackPair::new(q1, q2, t1, t2);
-            let dsm_val = stack.energy();
-
-            trace!(
-                "[SEED_DSM] k={} Q[{}][{}]={}{} T[{}][{}]={}{} DSM[{:?}][{:?}][{:?}][{:?}]={} running={}",
-                k,
-                q_idx,
-                q_idx + 1,
-                q1.as_char(),
-                q2.as_char(),
-                t_idx,
-                t_match_end - (k + 1),
-                t1.as_char(),
-                t2.as_char(),
-                q1,
-                q2,
-                t1,
-                t2,
-                dsm_val,
-                seed_energy + dsm_val as f64
-            );
-            seed_energy += dsm_val as f64;
-        }
-
-        // Build interaction string using Seq
-        let qc = query.base(q_idx);
-        let tc = target.base(t_idx);
+        let qc = query.base(q_pos + k);
+        let tc = target.base(t_match_end - k);
         seed_int_str.push(qc.pairing_class(tc));
     }
 
-    let max_ext = opts.max_extension as usize;
-    let safe_ext = max_ext.min(MAX_DP_EXT);
+    trace!(
+        "[SEED] energy_raw={} q_pos={} t_end={} len={} interaction={}",
+        seed_energy_raw, q_pos, t_match_end, len, seed_int_str
+    );
+
+    // If not entering extension, return seed-only result
+    // Need to add terminal penalties at both ends of the seed
+    if !do_extension {
+        // 5' terminal: Gap->q[0] paired with Gap->t[t_end]
+        let term_5p = ctx
+            .energy
+            .terminal_5p(query.base(q_pos), target.base(t_match_end));
+        // 3' terminal: q[q_end]->Gap paired with t[t_pos]->Gap
+        let term_3p = ctx
+            .energy
+            .terminal_3p(query.base(q_pos + len - 1), target.base(t_pos));
+
+        let total_raw = seed_energy_raw + term_5p + term_3p;
+        let final_score = ctx.energy.to_kcal(total_raw);
+        let seed_alignment = build_seed_alignment(&query, &target, q_pos, t_match_end, len);
+
+        return Some(ExtensionResult {
+            score: final_score,
+            alignment: Alignment::new(Vec::new(), seed_alignment, Vec::new()),
+            l_q: 0,
+            l_t: 0,
+            r_q: 0,
+            r_t: 0,
+        });
+    }
 
     // DP Left: Extend Query Left (5'), Target Right (3')
     // Start at: q_pos (5' Q), t_match_end (3' T)
@@ -1541,14 +1575,15 @@ fn extend_seed(
     }
 
     // Use NEW DP scores
-    let final_score =
-        (seed_energy + new_left.score as f64 + new_right.score as f64 - 559.0) / -100.0;
+    let final_score = ctx
+        .energy
+        .to_kcal(seed_energy_raw + new_left.score + new_right.score);
 
     trace!(
         "{} score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",
         SearchStage::Extend,
         final_score,
-        seed_energy / -100.0,
+        seed_energy_raw as f64 / -100.0,
         left_res.score,
         right_res.score,
         left_res.ext_q_len,
@@ -1621,22 +1656,7 @@ fn extend_seed(
     }
 
     // 2. Seed itself
-    let mut seed_alignment = Vec::new();
-    for n in 0..len {
-        let q_idx = candidate.query_pos + n;
-        // candidate.target_start is start (lowest index).
-        // Since seed is antiparallel: Q binds T.
-        // Q: 5'->3' (idx +n).
-        // T: 3'->5' (idx -n).
-        // t_match_end is the 3' end of target site (matches 5' of query).
-        // So t_match_end corresponds to q_pos.
-        // t_match_end - n corresponds to q_pos + n.
-        let t_idx = if t_match_end >= n { t_match_end - n } else { 0 };
-
-        let q_b = query.base(q_idx);
-        let t_b = target.base(t_idx);
-        seed_alignment.push(Pairing::from_bases(q_b, t_b));
-    }
+    let seed_alignment = build_seed_alignment(&query, &target, q_pos, t_match_end, len);
 
     // 3. Right Trace (Query 3' -> end)
     let mut right_alignment = Vec::new();
@@ -1706,16 +1726,10 @@ fn dp_left(
     let q_len = (q_start + 1).min(max_ext);
     let t_len = (t_seq.len() - t_start - 1).min(max_ext);
 
-    // Type-safe energy lookup using StackPair (replaces raw s_mat[...][...] access)
+    // Centralized energy lookup via EnergyModel
     #[inline(always)]
     fn e(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        StackPair::new(
-            Base::from_idx(q1),
-            Base::from_idx(q2),
-            Base::from_idx(t1),
-            Base::from_idx(t2),
-        )
-        .energy() as i32
+        EnergyModel::T04.stack_idx(q1, q2, t1, t2)
     }
     const GAP: usize = Base::Gap as usize;
 
@@ -2093,16 +2107,10 @@ fn dp_right(
     let q_len = (q_seq.len() - q_end).min(max_ext);
     let t_len = (t_end + 1).min(max_ext);
 
-    // Type-safe energy lookup using StackPair (replaces raw s_mat[...][...] access)
+    // Centralized energy lookup via EnergyModel
     #[inline(always)]
     fn e(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        StackPair::new(
-            Base::from_idx(q1),
-            Base::from_idx(q2),
-            Base::from_idx(t1),
-            Base::from_idx(t2),
-        )
-        .energy() as i32
+        EnergyModel::T04.stack_idx(q1, q2, t1, t2)
     }
     const GAP: usize = Base::Gap as usize;
 

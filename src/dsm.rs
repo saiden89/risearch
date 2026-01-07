@@ -17,6 +17,7 @@ use crate::types::{BASE_COUNT, Base};
 pub type DsmTable = [[[[i16; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
 
 /// Type-safe DSM table accessor
+#[derive(Debug)]
 pub struct Dsm(pub &'static DsmTable);
 
 impl Dsm {
@@ -90,6 +91,84 @@ impl StackPair {
 
 // Legacy constants for backward compatibility
 pub const GAP: i32 = 0;
+
+// =============================================================================
+// ENERGY MODEL - Centralized energy calculation
+// =============================================================================
+
+use crate::seq::Seq;
+
+/// Centralized energy calculation model.
+/// Encapsulates all stacking energy logic including antiparallel indexing.
+#[derive(Clone, Copy)]
+pub struct EnergyModel {
+    dsm: &'static Dsm,
+}
+
+impl EnergyModel {
+    /// Default T04 parameters
+    pub const T04: Self = Self { dsm: &Dsm::T04 };
+
+    /// Create with custom DSM table (for future extensibility)
+    pub fn with_dsm(dsm: &'static Dsm) -> Self {
+        Self { dsm }
+    }
+
+    /// Stacking energy for dinucleotide pair (DSM units).
+    #[inline]
+    pub fn stack(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
+        StackPair::new(q1, q2, t1, t2).energy_with(self.dsm) as i32
+    }
+
+    /// Stacking from indices (for DP functions).
+    #[inline]
+    pub fn stack_idx(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+        self.stack(
+            Base::from_idx(q1),
+            Base::from_idx(q2),
+            Base::from_idx(t1),
+            Base::from_idx(t2),
+        )
+    }
+
+    /// Terminal penalty for 5' extension (left DP). DSM[Gap][q][Gap][t]
+    #[inline]
+    pub fn terminal_5p(&self, q: Base, t: Base) -> i32 {
+        self.stack(Base::Gap, q, Base::Gap, t)
+    }
+
+    /// Terminal penalty for 3' extension (right DP). DSM[q][Gap][t][Gap]
+    #[inline]
+    pub fn terminal_3p(&self, q: Base, t: Base) -> i32 {
+        self.stack(q, Base::Gap, t, Base::Gap)
+    }
+
+    /// Full seed energy calculation with antiparallel indexing.
+    pub fn seed_energy(
+        &self,
+        query: &Seq,
+        target: &Seq,
+        q_pos: usize,
+        t_end: usize,
+        len: usize,
+    ) -> i32 {
+        (0..len.saturating_sub(1))
+            .map(|k| {
+                let q1 = query.base(q_pos + k);
+                let q2 = query.base(q_pos + k + 1);
+                let t1 = target.base(t_end - k);
+                let t2 = target.base(t_end - (k + 1));
+                self.stack(q1, q2, t1, t2)
+            })
+            .sum()
+    }
+
+    /// Convert DSM units → kcal/mol. 559 = terminal penalty offset.
+    #[inline]
+    pub fn to_kcal(&self, raw: i32) -> f64 {
+        (raw as f64 - 559.0) / -100.0
+    }
+}
 
 pub const DSM_T04_POS: DsmTable = [
     [
@@ -1392,5 +1471,57 @@ mod tests {
             gap_energy != 0 || energy != 0,
             "At least one lookup should be non-zero"
         );
+    }
+
+    /// Test specific stacking energies against known Turner 04 values.
+    /// CG/GC is the strongest stack at -3.30 kcal/mol = 330 in centidecimals.
+    #[test]
+    fn test_dsm_known_values() {
+        let dsm = Dsm::T04;
+
+        // Print index mapping for clarity
+        println!("Base indices: Gap=0, A=1, G=2, C=3, U=4, N=5");
+        println!();
+
+        // Test CG/CG stack (query CG, target CG with complement -> query CG, target GC in DSM)
+        // from_bases_complemented(C, G, G, C) -> DSM[C][G][comp(G)][comp(C)] = DSM[3][2][3][2]
+        let cg_gc = StackPair::from_bases_complemented(Base::C, Base::G, Base::G, Base::C);
+        println!("CG paired with GC (raw target GC, complemented to CG):");
+        println!("  from_bases_complemented(C, G, G, C)");
+        println!("  -> DSM[C=3][G=2][comp(G)=C=3][comp(C)=G=2]");
+        println!("  -> DSM[3][2][3][2] = {}", cg_gc.energy());
+
+        // Test without complement
+        let cg_gc_raw = StackPair::new(Base::C, Base::G, Base::C, Base::G);
+        println!();
+        println!("Direct DSM[C][G][C][G] (no complement):");
+        println!("  -> DSM[3][2][3][2] = {}", cg_gc_raw.energy());
+
+        // The strongest stack should be around 330 (3.30 kcal/mol)
+        // Let's find where 330 is in the table
+        println!();
+        println!("Looking for 330 (expected CG/GC):");
+        for q1 in 0..6 {
+            for q2 in 0..6 {
+                for t1 in 0..6 {
+                    for t2 in 0..6 {
+                        let val = dsm.get(
+                            Base::from_idx(q1),
+                            Base::from_idx(q2),
+                            Base::from_idx(t1),
+                            Base::from_idx(t2),
+                        );
+                        if val == 330 {
+                            println!("  DSM[{}][{}][{}][{}] = 330", q1, q2, t1, t2);
+                        }
+                    }
+                }
+            }
+        }
+
+        // The value at DSM[3][2][3][2] should be determinable
+        let actual = dsm.get(Base::C, Base::G, Base::C, Base::G);
+        println!();
+        println!("DSM[C=3][G=2][C=3][G=2] = {}", actual);
     }
 }
