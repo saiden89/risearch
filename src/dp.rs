@@ -468,33 +468,27 @@ impl DpExtender {
         m.set(1, 1, m11);
         update_best(m11, 1, 1);
 
-        // Row 0: Extend Bt along row 0 (gap in query), seed M[1,j]
-        for j in 2..t_len {
-            if let Some(prev_bt) = bt.left(0, j) {
-                bt.set(0, j, Some(prev_bt + view.bt_ext(j)));
-                tb_bt.set(0, j, DpOp::GapT);
-
-                if q_len >= 1 {
-                    let new_m = Some(prev_bt + view.m_from_bt(1, j));
-                    m.set(1, j, new_m);
-                    tb_m.set(1, j, DpOp::GapT);
-                    update_best(new_m, 1, j);
-                }
+        // Boundary init: Row 0 (Bt) and Col 0 (Bq) are symmetric
+        // Row 0: extend Bt via left(), seed M[1,j]
+        // Col 0: extend Bq via up(), seed M[i,1]
+        for k in 2..t_len {
+            if let Some(prev) = bt.left(0, k) {
+                bt.set(0, k, Some(prev + view.bt_ext(k)));
+                tb_bt.set(0, k, DpOp::GapT);
+                let new_m = Some(prev + view.m_from_bt(1, k));
+                m.set(1, k, new_m);
+                tb_m.set(1, k, DpOp::GapT);
+                update_best(new_m, 1, k);
             }
         }
-
-        // Col 0: Extend Bq along col 0 (gap in target), seed M[i,1]
-        for i in 2..q_len {
-            if let Some(prev_bq) = bq.up(i, 0) {
-                bq.set(i, 0, Some(prev_bq + view.bq_ext(i)));
-                tb_bq.set(i, 0, DpOp::GapQ);
-
-                if t_len >= 1 {
-                    let new_m = Some(prev_bq + view.m_from_bq(i, 1));
-                    m.set(i, 1, new_m);
-                    tb_m.set(i, 1, DpOp::GapQ);
-                    update_best(new_m, i, 1);
-                }
+        for k in 2..q_len {
+            if let Some(prev) = bq.up(k, 0) {
+                bq.set(k, 0, Some(prev + view.bq_ext(k)));
+                tb_bq.set(k, 0, DpOp::GapQ);
+                let new_m = Some(prev + view.m_from_bq(k, 1));
+                m.set(k, 1, new_m);
+                tb_m.set(k, 1, DpOp::GapQ);
+                update_best(new_m, k, 1);
             }
         }
 
