@@ -713,98 +713,8 @@ impl<'a> SearchContext<'a> {
     }
 }
 
-pub fn run_search(
-    queries: &[(String, Vec<u8>)],
-    index: &SaIndex<'_>,
-    output: impl AsRef<Path>,
-    opts: &SearchArgs,
-) -> Result<()> {
-    info!(
-        "Starting search: {} queries, seed={:?}, max_ext={}, delta_g={}",
-        queries.len(),
-        opts.seed.seed,
-        opts.extend.max_extension,
-        opts.extend.delta_g
-    );
-
-    // Create output writer
-    let mut writer: Box<dyn Write> = if output.as_ref() == Path::new("-") {
-        Box::new(std::io::stdout())
-    } else {
-        Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
-    };
-
-    debug!("{} output={:?}", SearchStage::Output, output.as_ref());
-
-    // Create Search Context
-    let mut ctx = SearchContext::new(index, opts);
-
-    let mut all_hits = Vec::new();
-
-    for (q_id, q_seq) in queries {
-        trace!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
-        trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
-
-        // Find seeds
-        let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
-        trace!("{} {} candidates found", SearchStage::Input, seeds.len());
-        ctx.stats.candidates_processed += seeds.len();
-
-        for candidate in &seeds {
-            trace!(
-                "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
-                SearchStage::Seed,
-                candidate.query_pos,
-                candidate.target_idx,
-                candidate.target_start,
-                candidate.len,
-                candidate.strand
-            );
-            if let Some(hit) = process_candidate(q_id, q_seq, candidate, &mut ctx) {
-                trace!(
-                    "{} q={}-{} t={}-{} E={:.2}",
-                    SearchStage::Output,
-                    hit.q_start,
-                    hit.q_end,
-                    hit.t_start,
-                    hit.t_end,
-                    hit.energy
-                );
-                all_hits.push(hit);
-            }
-        }
-    }
-
-    // Deduplicate logic
-    ctx.stats.hits_before_dedup = all_hits.len();
-    let deduped = deduplicate_hits(all_hits, &mut ctx.stats, ctx.args.extend.dedup_shadow);
-    ctx.stats.hits_final = deduped.len();
-
-    // Log filter stats
-    info!(
-        "Search complete: {} hits ({} before dedup)",
-        ctx.stats.hits_final, ctx.stats.hits_before_dedup
-    );
-    if !ctx.stats.filtered.is_empty() {
-        let filter_summary: Vec<String> = ctx
-            .stats
-            .filtered
-            .iter()
-            .map(|(r, c)| format!("{:?}={}", r, c))
-            .collect();
-        info!("Filtered: {}", filter_summary.join(", "));
-    }
-
-    for hit in deduped {
-        hit.write(&mut writer)?;
-    }
-
-    Ok(())
-}
-
-/// Run search and return hits directly (for library/test usage).
-/// Unlike `run_search`, this returns the hits instead of writing to a file.
-pub fn run_search_collect(
+/// Core search logic - finds and deduplicates hits for all queries.
+fn search_core(
     queries: &[(String, Vec<u8>)],
     index: &SaIndex<'_>,
     opts: &SearchArgs,
@@ -817,7 +727,6 @@ pub fn run_search_collect(
         opts.extend.delta_g
     );
 
-    // Create Search Context
     let mut ctx = SearchContext::new(index, opts);
     let mut all_hits = Vec::new();
 
@@ -825,10 +734,10 @@ pub fn run_search_collect(
         trace!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
         trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
 
-        // Find seeds
         let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
         trace!("{} {} candidates found", SearchStage::Input, seeds.len());
         ctx.stats.candidates_processed += seeds.len();
+
         for candidate in &seeds {
             trace!(
                 "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
@@ -854,12 +763,10 @@ pub fn run_search_collect(
         }
     }
 
-    // Deduplicate logic
     ctx.stats.hits_before_dedup = all_hits.len();
     let deduped = deduplicate_hits(all_hits, &mut ctx.stats, ctx.args.extend.dedup_shadow);
     ctx.stats.hits_final = deduped.len();
 
-    // Log filter stats
     info!(
         "Search complete: {} hits ({} before dedup)",
         ctx.stats.hits_final, ctx.stats.hits_before_dedup
@@ -875,6 +782,34 @@ pub fn run_search_collect(
     }
 
     Ok(deduped)
+}
+
+pub fn run_search(
+    queries: &[(String, Vec<u8>)],
+    index: &SaIndex<'_>,
+    output: impl AsRef<Path>,
+    opts: &SearchArgs,
+) -> Result<()> {
+    let mut writer: Box<dyn Write> = if output.as_ref() == Path::new("-") {
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
+    };
+    debug!("{} output={:?}", SearchStage::Output, output.as_ref());
+
+    for hit in search_core(queries, index, opts)? {
+        hit.write(&mut writer)?;
+    }
+    Ok(())
+}
+
+/// Run search and return hits directly (for library/test usage).
+pub fn run_search_collect(
+    queries: &[(String, Vec<u8>)],
+    index: &SaIndex<'_>,
+    opts: &SearchArgs,
+) -> Result<Vec<SearchHit>> {
+    search_core(queries, index, opts)
 }
 
 /// Check if hit `k` shadows hit `h`.
@@ -1133,32 +1068,13 @@ fn process_candidate(
         return None;
     }
 
-    let l_q = ext.l_q;
-    let l_t = ext.l_t;
-    let r_q = ext.r_q;
-    let r_t = ext.r_t;
-    let seed_q = q_pos;
-    let seed_t = t_start_idx;
+    // Final coordinates (0-based)
+    let final_q_start = q_pos - ext.l_q;
+    let final_q_end = (q_pos + seed_len - 1) + ext.r_q;
+    let final_t_start = t_start_idx - ext.r_t;
+    let final_t_end = (t_start_idx + seed_len - 1) + ext.l_t;
 
-    // Normalize T -> U for output strings seems to be done in `print_search_hit`.
-    // Let's store raw T strings in `SearchHit` and normalize at print time?
-    // Or normalize here. `SearchHit` usually implies "ready to use".
-    // I'll leave them as is (DNA T) and normalize in print or here.
-    // The `SearchHit` definition has `interaction`.
-
-    // Coordinates
-    let final_q_start = seed_q - l_q;
-    let final_q_end = (seed_q + seed_len - 1) + r_q;
-    let final_t_start = seed_t - r_t; // 0-based index in t_seq
-    let final_t_end = (seed_t + seed_len - 1) + l_t; // 0-based index in t_seq
-
-    // Output Coordinates (Strand Aware)
-    // If it's Forward search: t_start .. t_end relative to Sequence Start.
-    // If it's Reverse Complement search (`is_antisense`):
-    // The `t_seq` we used was the RC of the original.
-    // We need to map `final_t_start` / `final_t_end` back to the original sequence coordinates.
-    // Let N = original len.
-    // RC index i corresponds to forward index (N - 1 - i).
+    // Output coordinates (1-based, strand-aware for target)
 
     let original_len = ctx.index.get_sequence_len(candidate.target_idx);
     let (out_t_start, out_t_end, strand_char) = match candidate.strand {
@@ -1174,33 +1090,17 @@ fn process_candidate(
         }
     };
 
-    // Flanks
+    // Flanks (20bp context, T->U normalized)
     let ctx_len = 20;
-    // 5' Flank (Upstream in the sequence we searched)
-    // For output, we want the flank relative to the interaction or the genome?
-    // C output reports flanks from the Target Sequence.
-    // If we searched RC, the `t_seq` is RC. The flanks come from RC.
-    // `print_detailed_output` took `t_seq` (which was COW) and extracted.
-    // So we invoke `flank` extraction on `t_seq`.
+    let to_rna = |s: &[u8]| String::from_utf8_lossy(s).replace('T', "U").replace('t', "u");
 
-    let t_5_start = final_t_start.saturating_sub(ctx_len);
-    let flank_5 = String::from_utf8_lossy(&t_seq[t_5_start..final_t_start])
-        .replace('T', "U")
-        .replace('t', "u")
+    let flank_5 = to_rna(&t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start])
         .chars()
         .rev()
-        .collect::<String>();
-
-    let t_3_start = final_t_end + 1;
-    let t_3_end = (t_3_start + ctx_len).min(t_seq.len());
-    let flank_3 = if t_3_start < t_seq.len() {
-        String::from_utf8_lossy(&t_seq[t_3_start..t_3_end])
-            .replace('T', "U")
-            .replace('t', "u")
-        // Note: `ctx_3` in `print_detailed_output` was NOT reversed?
-        // Let's check line 1934 in `view_file` output.
-        // "String::from_utf8_lossy... replace...". No rev().
-        // Correct.
+        .collect();
+    let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
+    let flank_3 = if final_t_end + 1 < t_seq.len() {
+        to_rna(&t_seq[final_t_end + 1..t_3_end])
     } else {
         String::new()
     };
@@ -1467,94 +1367,58 @@ fn extend_seed(
 
     let mut left_alignment = Vec::new();
 
-    // 1. Left Trace (Query 5' -> Seed)
-    // l_trace is 5'->3' (from far left to seed start)
-    // Coordinates: q_start - i, t_start + j
-    // trace_vec[k] corresponds to step from (i,j) to (i-1, j) etc.
-    // We need to replay properly.
-    // Ideally we reconstruct by iterating trace and tracking (i, j).
-    // Start at best_i, best_j.
-    {
-        let mut i = left_res.q_len;
-        let mut j = left_res.t_len;
-        // left_res.trace is ordered from [step at best_i] ... [step at 1].
-        // So iterating it naturally goes from 5' end toward seed.
-
-        for step in &left_res.trace {
-            match step {
-                dp::DpOp::Match => {
-                    // Match: both Q and T advance
-                    let q_b = query.left(candidate.query_pos, i);
-                    let t_b = target.base_or_gap(t_match_end + j);
-                    left_alignment.push(Pairing::from_bases(q_b, t_b));
-                    i = i.saturating_sub(1);
-                    j = j.saturating_sub(1);
-                }
-                dp::DpOp::Stop => {
-                    // Stop: same as Match semantically
-                    let q_b = query.left(candidate.query_pos, i);
-                    let t_b = target.base_or_gap(t_match_end + j);
-                    left_alignment.push(Pairing::from_bases(q_b, t_b));
-                    i = i.saturating_sub(1);
-                    j = j.saturating_sub(1);
-                }
-                dp::DpOp::GapQ => {
-                    // GapQ means Bq matrix (from dp_left). Query has base. Target has Gap.
-                    // So Pairing::GapTarget.
-                    let q_b = query.left(candidate.query_pos, i);
-                    left_alignment.push(Pairing::GapTarget(q_b));
-                    i = i.saturating_sub(1);
-                }
-                dp::DpOp::GapT => {
-                    // GapT means Bt matrix. Target has base. Query has Gap.
-                    // So Pairing::GapQuery.
-                    let t_b = target.base_or_gap(t_match_end + j);
-                    left_alignment.push(Pairing::GapQuery(t_b));
-                    j = j.saturating_sub(1);
-                }
+    // Left Trace: replay from extension end back toward seed
+    let mut li = left_res.q_len;
+    let mut lj = left_res.t_len;
+    for step in &left_res.trace {
+        let pairing = match step {
+            dp::DpOp::Match | dp::DpOp::Stop => {
+                let p = Pairing::from_bases(
+                    query.left(candidate.query_pos, li),
+                    target.base_or_gap(t_match_end + lj),
+                );
+                li = li.saturating_sub(1);
+                lj = lj.saturating_sub(1);
+                p
             }
-        }
+            dp::DpOp::GapQ => {
+                let p = Pairing::GapTarget(query.left(candidate.query_pos, li));
+                li = li.saturating_sub(1);
+                p
+            }
+            dp::DpOp::GapT => {
+                let p = Pairing::GapQuery(target.base_or_gap(t_match_end + lj));
+                lj = lj.saturating_sub(1);
+                p
+            }
+        };
+        left_alignment.push(pairing);
     }
 
     // 2. Seed itself
     let seed_alignment = build_seed_alignment(&query, &target, q_pos, t_match_end, len);
 
-    // 3. Right Trace (Query 3' -> end)
+    // Right Trace: replay reversed trace (from seed toward extension end)
     let mut right_alignment = Vec::new();
-    {
-        let mut curr_i = 0;
-        let mut curr_j = 0;
-
-        // We iterate reversed trace (Start -> End)
-        for step in right_res.trace.iter().rev() {
-            match step {
-                dp::DpOp::Match | dp::DpOp::Stop => {
-                    curr_i += 1;
-                    curr_j += 1;
-                    // Query extends right (3'), target extends left (5')
-                    let q_b = query.base_or_gap(candidate.query_pos + len - 1 + curr_i);
-                    let t_b = target.left(t_pos, curr_j);
-                    right_alignment.push(Pairing::from_bases(q_b, t_b));
-                }
-                dp::DpOp::GapQ => {
-                    // dp::DpOp::GapQ in dp_right.
-                    // i increases (Query). j same.
-                    // Query has Base. Target Gap.
-                    // Pairing::GapTarget.
-                    curr_i += 1;
-                    let q_b = query.base_or_gap(candidate.query_pos + len - 1 + curr_i);
-                    right_alignment.push(Pairing::GapTarget(q_b));
-                }
-                dp::DpOp::GapT => {
-                    // dp::DpOp::GapT in dp_right.
-                    // j increases (Target 5'). i same.
-                    // Target Base. Query Gap.
-                    curr_j += 1;
-                    let t_b = target.left(t_pos, curr_j);
-                    right_alignment.push(Pairing::GapQuery(t_b));
-                }
+    let (mut ri, mut rj) = (0, 0);
+    let q_base = candidate.query_pos + len - 1;
+    for step in right_res.trace.iter().rev() {
+        let pairing = match step {
+            dp::DpOp::Match | dp::DpOp::Stop => {
+                ri += 1;
+                rj += 1;
+                Pairing::from_bases(query.base_or_gap(q_base + ri), target.left(t_pos, rj))
             }
-        }
+            dp::DpOp::GapQ => {
+                ri += 1;
+                Pairing::GapTarget(query.base_or_gap(q_base + ri))
+            }
+            dp::DpOp::GapT => {
+                rj += 1;
+                Pairing::GapQuery(target.left(t_pos, rj))
+            }
+        };
+        right_alignment.push(pairing);
     }
 
     let alignment = Alignment::new(left_alignment, seed_alignment, right_alignment);
