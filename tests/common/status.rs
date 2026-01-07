@@ -98,9 +98,9 @@ pub enum ParityMode {
     /// 100% identical to C - no differences at all
     Absolute,
     /// Allow co-optimal alignments (same energy, different trace)
-    #[default]
     Strict,
     /// Allow co-optimal and extras, but no missing or rust-better
+    #[default]
     Balanced,
     /// Accept improvements: co-optimal, better energy, extras, covered missings
     Relaxed,
@@ -120,7 +120,7 @@ pub static TEST_PARITY_MODE: LazyLock<ParityMode> = LazyLock::new(|| {
         Ok("absolute") => ParityMode::Absolute,
         Ok("balanced") => ParityMode::Balanced,
         Ok("relaxed") => ParityMode::Relaxed,
-        _ => ParityMode::Strict,
+        _ => ParityMode::Balanced, // Default: allow extras, reject missing
     }
 });
 
@@ -168,6 +168,6 @@ mod tests {
 
     #[test]
     fn test_parity_mode_default() {
-        assert_eq!(ParityMode::default(), ParityMode::Strict);
+        assert_eq!(ParityMode::default(), ParityMode::Balanced);
     }
 }

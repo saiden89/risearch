@@ -147,10 +147,7 @@ impl CRunner<Indexed> {
         // Empty C output is valid - just means no hits found
         // Comparison logic will handle the case where both C and Rust find 0 hits
         if combined.trim().is_empty() {
-            log::debug!(
-                "[PARITY] C produced 0 hits. Args: {:?}",
-                final_args
-            );
+            log::debug!("[PARITY] C produced 0 hits. Args: {:?}", final_args);
             return String::new();
         }
 

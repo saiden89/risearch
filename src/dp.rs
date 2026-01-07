@@ -64,7 +64,13 @@ const GAP: usize = Base::Gap as usize;
 
 impl<'a> DpView<'a> {
     /// Create a left extension view (query toward 5', target toward 3')
-    pub fn left(query: &'a Seq<'a>, target: &'a Seq<'a>, q_start: usize, t_start: usize, max_ext: usize) -> Self {
+    pub fn left(
+        query: &'a Seq<'a>,
+        target: &'a Seq<'a>,
+        q_start: usize,
+        t_start: usize,
+        max_ext: usize,
+    ) -> Self {
         Self {
             query,
             target,
@@ -77,7 +83,13 @@ impl<'a> DpView<'a> {
     }
 
     /// Create a right extension view (query toward 3', target toward 5')
-    pub fn right(query: &'a Seq<'a>, target: &'a Seq<'a>, q_end: usize, t_end: usize, max_ext: usize) -> Self {
+    pub fn right(
+        query: &'a Seq<'a>,
+        target: &'a Seq<'a>,
+        q_end: usize,
+        t_end: usize,
+        max_ext: usize,
+    ) -> Self {
         Self {
             query,
             target,
@@ -121,10 +133,17 @@ impl<'a> DpView<'a> {
         }
     }
 
-    /// Terminal penalty at position (i, j) - stacking with gap boundary
+    /// Terminal penalty at position (i, j) - stacking with gap boundary.
+    ///
+    /// Terminal energy is direction-specific (cannot use view.e() swap):
+    /// - LEFT: GAP at 5' side, base at 3' → DSM[GAP, q, GAP, t]
+    /// - RIGHT: base at 5' side, GAP at 3' → DSM[q, GAP, t, GAP]
     #[inline(always)]
     pub fn terminal(&self, i: usize, j: usize) -> i32 {
-        self.e(GAP, self.q(i), GAP, self.t(j))
+        match self.dir {
+            ExtendDir::Left => EnergyModel::T04.stack_idx(GAP, self.q(i), GAP, self.t(j)),
+            ExtendDir::Right => EnergyModel::T04.stack_idx(self.q(i), GAP, self.t(j), GAP),
+        }
     }
 
     /// Match/mismatch energy at (i, j) from diagonal (i-1, j-1)
@@ -157,16 +176,46 @@ impl<'a> DpView<'a> {
         self.e(GAP, GAP, self.t(j - 1), self.t(j))
     }
 
-    /// Re-entry from Bq to M: closing query gap
+    // =========================================================================
+    // DP TRANSITION HELPERS - exactly match the DP recurrence semantics
+    // =========================================================================
+    // All methods take arguments in (prev, curr) order; view.e() swaps for LEFT.
+    // These match the actual energy lookups in the DP main loop.
+
+    /// M[i,j] from Bq[i-1,j-1]: re-entry to match from query bulge
     #[inline(always)]
-    pub fn from_bq_to_m(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), self.t(j - 1), GAP)
+    pub fn m_from_bq(&self, i: usize, j: usize) -> i32 {
+        self.e(self.q(i - 1), self.q(i), GAP, self.t(j))
     }
 
-    /// Re-entry from Bt to M: closing target gap
+    /// M[i,j] from Bt[i-1,j-1]: re-entry to match from target bulge
     #[inline(always)]
-    pub fn from_bt_to_m(&self, i: usize, j: usize) -> i32 {
+    pub fn m_from_bt(&self, i: usize, j: usize) -> i32 {
         self.e(GAP, self.q(i), self.t(j - 1), self.t(j))
+    }
+
+    /// Bq[i,j] from M[i-1,j]: open query bulge (gap in target)
+    #[inline(always)]
+    pub fn bq_open(&self, i: usize, j: usize) -> i32 {
+        self.e(self.q(i - 1), self.q(i), self.t(j), GAP)
+    }
+
+    /// Bq[i,j] from Bq[i-1,j]: extend query bulge
+    #[inline(always)]
+    pub fn bq_ext(&self, i: usize) -> i32 {
+        self.e(self.q(i - 1), self.q(i), GAP, GAP)
+    }
+
+    /// Bt[i,j] from M[i,j-1]: open target bulge (gap in query)
+    #[inline(always)]
+    pub fn bt_open(&self, i: usize, j: usize) -> i32 {
+        self.e(self.q(i), GAP, self.t(j - 1), self.t(j))
+    }
+
+    /// Bt[i,j] from Bt[i,j-1]: extend target bulge
+    #[inline(always)]
+    pub fn bt_ext(&self, j: usize) -> i32 {
+        self.e(GAP, GAP, self.t(j - 1), self.t(j))
     }
 }
 
@@ -302,12 +351,7 @@ pub struct DpExtender {
 /// Returns (best_value, which_source).
 /// When both have equal value, prefers `a` (first argument).
 #[inline(always)]
-fn pick_best(
-    a: Option<i32>,
-    b: Option<i32>,
-    step_a: DpOp,
-    step_b: DpOp,
-) -> (Option<i32>, DpOp) {
+fn pick_best(a: Option<i32>, b: Option<i32>, step_a: DpOp, step_b: DpOp) -> (Option<i32>, DpOp) {
     match (a, b) {
         (Some(va), Some(vb)) if va >= vb => (Some(va), step_a),
         (Some(_), Some(vb)) => (Some(vb), step_b),
@@ -323,7 +367,9 @@ impl DpExtender {
             matrices: DpMatrices::new(200, 200),
         }
     }
-    /// Extend to the left (query 5', target 3') - Legacy algorithm with C parity
+    /// Extend to the left (query 5', target 3')
+    ///
+    /// Thin wrapper around `extend()` - creates a LEFT view and delegates.
     pub fn extend_left(
         &mut self,
         query: &Seq,
@@ -332,27 +378,46 @@ impl DpExtender {
         t_start: usize,
         max_ext: usize,
     ) -> DpExtension {
-        // Create view for index abstraction
         let view = DpView::left(query, target, q_start, t_start, max_ext);
+        self.extend(&view)
+    }
+
+    /// Extend to the right (query 3', target 5')
+    ///
+    /// Thin wrapper around `extend()` - creates a RIGHT view and delegates.
+    ///
+    /// NOTE: Both `extend_left` and `extend_right` exist for API compatibility.
+    /// Consider using `extend(&DpView)` directly for new code.
+    pub fn extend_right(
+        &mut self,
+        query: &Seq,
+        target: &Seq,
+        q_end: usize,
+        t_end: usize,
+        max_ext: usize,
+    ) -> DpExtension {
+        let view = DpView::right(query, target, q_end, t_end, max_ext);
+        self.extend(&view)
+    }
+
+    // =========================================================================
+    // UNIFIED EXTEND - Direction-agnostic DP using DpView abstraction
+    // =========================================================================
+
+    /// Unified DP extension using DpView for direction-aware energy calculations.
+    ///
+    /// This method handles both left and right extensions through the DpView
+    /// abstraction, which encapsulates:
+    /// - Index mapping (view.q(i), view.t(j))
+    /// - DSM stacking order (view.e() swaps for LEFT extension)
+    /// - Terminal energy (view.terminal() handles direction-specific gap position)
+    pub fn extend(&mut self, view: &DpView) -> DpExtension {
         let (q_len, t_len) = (view.q_len, view.t_len);
 
-        trace!(
-            "{} q_start={} t_start={} q_len={} t_len={}",
-            view.dir, q_start, t_start, q_len, t_len
-        );
-
-        // Energy lookup using centralized EnergyModel (direct DSM call)
-        #[inline(always)]
-        fn e(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-            EnergyModel::T04.stack_idx(q1, q2, t1, t2)
-        }
-
-        // Base index accessors via view
-        let q_idx = |i: usize| view.q(i);
-        let t_idx = |j: usize| view.t(j);
+        trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
 
         // Initial score: terminal penalty for seed boundary
-        let mut best_e = e(GAP, q_idx(0), GAP, t_idx(0));
+        let mut best_e = view.terminal(0, 0);
         let mut best_i = 0usize;
         let mut best_j = 0usize;
 
@@ -378,245 +443,153 @@ impl DpExtender {
         } = &mut self.matrices;
 
         // =====================================================================
-        // INIT HELPERS (closures for left extension stacking: [curr, prev, curr, prev])
+        // HELPER: Update best score if value + terminal is better
         // =====================================================================
-
-        // Corner init: M[0,0], Bt[0,1], Bq[1,0], M[1,1] and best check
-        // This seeds the DP with the initial stacking energies
-        let init_corner = |m: &mut ScoreGrid, bt: &mut ScoreGrid, bq: &mut ScoreGrid,
-                           best: &mut (i32, usize, usize)| {
-            m.set(0, 0, Some(0));
-            bt.set(0, 1, Some(e(GAP, q_idx(0), t_idx(1), t_idx(0))));
-            bq.set(1, 0, Some(e(q_idx(1), q_idx(0), GAP, t_idx(0))));
-            m.set(1, 1, Some(e(q_idx(1), q_idx(0), t_idx(1), t_idx(0))));
-
-            if let Some(m11) = m.get(1, 1) {
-                let val = m11 + e(GAP, q_idx(1), GAP, t_idx(1));
-                if val > best.0 {
-                    trace!("{} best@(1,1): {} -> {}", view.dir, best.0, val);
-                    *best = (val, 1, 1);
-                }
-            }
-        };
-
-        // Row 0 init: Extend Bt along row 0 (gap in query), seed M[1,j]
-        // Symmetric to col 0 init with q<->t swap
-        let init_row_0 = |bt: &mut ScoreGrid, m: &mut ScoreGrid,
-                          tb_bt: &mut Grid<DpOp>, tb_m: &mut Grid<DpOp>,
-                          best: &mut (i32, usize, usize)| {
-            for j in 2..t_len {
-                if let Some(prev_bt) = bt.left(0, j) {
-                    // Extend Bt: gap-gap stacking along target
-                    bt.set(0, j, Some(prev_bt + e(GAP, GAP, t_idx(j), t_idx(j - 1))));
-                    tb_bt.set(0, j, DpOp::GapT);
-
-                    // Seed M[1,j]: re-entry from Bt to M
-                    if q_len >= 1 {
-                        let new_m = prev_bt + e(q_idx(1), GAP, t_idx(j), t_idx(j - 1));
-                        m.set(1, j, Some(new_m));
-                        tb_m.set(1, j, DpOp::GapT);
-                        let val = new_m + e(GAP, q_idx(1), GAP, t_idx(j));
-                        if val > best.0 {
-                            *best = (val, 1, j);
-                        }
-                    }
-                }
-            }
-        };
-
-        // Col 0 init: Extend Bq along col 0 (gap in target), seed M[i,1]
-        // Symmetric to row 0 init with q<->t swap
-        let init_col_0 = |bq: &mut ScoreGrid, m: &mut ScoreGrid,
-                          tb_bq: &mut Grid<DpOp>, tb_m: &mut Grid<DpOp>,
-                          best: &mut (i32, usize, usize)| {
-            for i in 2..q_len {
-                if let Some(prev_bq) = bq.up(i, 0) {
-                    // Extend Bq: gap-gap stacking along query
-                    bq.set(i, 0, Some(prev_bq + e(q_idx(i), q_idx(i - 1), GAP, GAP)));
-                    tb_bq.set(i, 0, DpOp::GapQ);
-
-                    // Seed M[i,1]: re-entry from Bq to M
-                    if t_len >= 1 {
-                        let new_m = prev_bq + e(q_idx(i), q_idx(i - 1), t_idx(1), GAP);
-                        m.set(i, 1, Some(new_m));
-                        tb_m.set(i, 1, DpOp::GapQ);
-                        let val = new_m + e(GAP, q_idx(i), GAP, t_idx(1));
-                        if val > best.0 {
-                            *best = (val, i, 1);
-                        }
-                    }
-                }
-            }
-        };
-
-        // Cell (2,2) init: Special case for position (2,2) and adjacent gap states
-        // This bridges the corner initialization to the limited rows/cols
-        let init_cell_2_2 = |m: &mut ScoreGrid, bt: &mut ScoreGrid, bq: &mut ScoreGrid,
-                             tb_m: &mut Grid<DpOp>, tb_bt: &mut Grid<DpOp>, tb_bq: &mut Grid<DpOp>,
-                             best: &mut (i32, usize, usize)| {
-            if q_len >= 3 && t_len >= 3 {
-                if let Some(m11) = m.diag(2, 2) {
-                    // Bt[1,2]: gap open from M[1,1]
-                    bt.set(1, 2, Some(m11 + e(GAP, q_idx(1), t_idx(2), t_idx(1))));
-                    tb_bt.set(1, 2, DpOp::Match);
-
-                    // Bq[2,1]: gap open from M[1,1]
-                    bq.set(2, 1, Some(m11 + e(q_idx(2), q_idx(1), GAP, t_idx(1))));
-                    tb_bq.set(2, 1, DpOp::Match);
-
-                    // M[2,2]: diagonal from M[1,1]
-                    let m22 = m11 + e(q_idx(2), q_idx(1), t_idx(2), t_idx(1));
-                    m.set(2, 2, Some(m22));
-                    tb_m.set(2, 2, DpOp::Match);
-
-                    let val = m22 + e(GAP, q_idx(2), GAP, t_idx(2));
-                    if val > best.0 {
-                        *best = (val, 2, 2);
-                    }
-                }
-                // Bq[2,2]: gap open from M[1,2]
-                if let Some(m12) = m.up(2, 2) {
-                    bq.set(2, 2, Some(m12 + e(q_idx(2), q_idx(1), GAP, t_idx(2))));
-                    tb_bq.set(2, 2, DpOp::Match);
-                }
-                // Bt[2,2]: gap open from M[2,1]
-                if let Some(m21) = m.left(2, 2) {
-                    bt.set(2, 2, Some(m21 + e(GAP, q_idx(2), t_idx(2), t_idx(1))));
-                    tb_bt.set(2, 2, DpOp::Match);
+        let mut update_best = |val: Option<i32>, i: usize, j: usize| {
+            if let Some(v) = val {
+                let curr = v + view.terminal(i, j);
+                if curr > best_e {
+                    best_e = curr;
+                    best_i = i;
+                    best_j = j;
                 }
             }
         };
 
         // =====================================================================
-        // APPLY INITIALIZATION
+        // INITIALIZATION using view helper methods
         // =====================================================================
-        let mut best = (best_e, best_i, best_j);
 
-        init_corner(m, bt, bq, &mut best);
-        init_row_0(bt, m, tb_bt, tb_m, &mut best);
-        init_col_0(bq, m, tb_bq, tb_m, &mut best);
-        init_cell_2_2(m, bt, bq, tb_m, tb_bt, tb_bq, &mut best);
+        // Corner: M[0,0], Bt[0,1], Bq[1,0], M[1,1]
+        m.set(0, 0, Some(0));
+        bt.set(0, 1, Some(view.bt_open(0, 1)));
+        bq.set(1, 0, Some(view.bq_open(1, 0)));
+        let m11 = Some(view.match_e(1, 1));
+        m.set(1, 1, m11);
+        update_best(m11, 1, 1);
 
-        (best_e, best_i, best_j) = best;
+        // Row 0: Extend Bt along row 0 (gap in query), seed M[1,j]
+        for j in 2..t_len {
+            if let Some(prev_bt) = bt.left(0, j) {
+                bt.set(0, j, Some(prev_bt + view.bt_ext(j)));
+                tb_bt.set(0, j, DpOp::GapT);
+
+                if q_len >= 1 {
+                    let new_m = Some(prev_bt + view.m_from_bt(1, j));
+                    m.set(1, j, new_m);
+                    tb_m.set(1, j, DpOp::GapT);
+                    update_best(new_m, 1, j);
+                }
+            }
+        }
+
+        // Col 0: Extend Bq along col 0 (gap in target), seed M[i,1]
+        for i in 2..q_len {
+            if let Some(prev_bq) = bq.up(i, 0) {
+                bq.set(i, 0, Some(prev_bq + view.bq_ext(i)));
+                tb_bq.set(i, 0, DpOp::GapQ);
+
+                if t_len >= 1 {
+                    let new_m = Some(prev_bq + view.m_from_bq(i, 1));
+                    m.set(i, 1, new_m);
+                    tb_m.set(i, 1, DpOp::GapQ);
+                    update_best(new_m, i, 1);
+                }
+            }
+        }
+
+        // Cell (2,2) init: bridge corner to limited rows/cols
+        if q_len >= 3 && t_len >= 3 {
+            if let Some(m11_val) = m.diag(2, 2) {
+                bt.set(1, 2, Some(m11_val + view.bt_open(1, 2)));
+                tb_bt.set(1, 2, DpOp::Match);
+
+                bq.set(2, 1, Some(m11_val + view.bq_open(2, 1)));
+                tb_bq.set(2, 1, DpOp::Match);
+
+                let m22 = Some(m11_val + view.match_e(2, 2));
+                m.set(2, 2, m22);
+                tb_m.set(2, 2, DpOp::Match);
+                update_best(m22, 2, 2);
+            }
+            if let Some(m12) = m.up(2, 2) {
+                bq.set(2, 2, Some(m12 + view.bq_open(2, 2)));
+                tb_bq.set(2, 2, DpOp::Match);
+            }
+            if let Some(m21) = m.left(2, 2) {
+                bt.set(2, 2, Some(m21 + view.bt_open(2, 2)));
+                tb_bt.set(2, 2, DpOp::Match);
+            }
+        }
 
         // =======================================================================
-        // LIMITED ROWS/COLUMNS INITIALIZATION (C parity: lines 314-351)
-        // =======================================================================
-        // WHY THIS EXISTS:
-        // The DP has three states: M (match), Bq (query bulge), Bt (target bulge).
-        // Transitions between states have structural constraints:
-        //
-        // 1. At row i=1: Bq is invalid (can't have query bulge with only 1 query base)
-        //    Therefore M[2,j] can only come from M or Bt, never from Bq
-        //
-        // 2. At col j=1: Bt is invalid (can't have target bulge with only 1 target base)
-        //    Therefore M[i,2] can only come from M or Bq, never from Bt
-        //
-        // The main DP loop (i≥3, j≥3) uses the general recurrence that considers
-        // all three states. But rows i=1,2 and cols j=1,2 need special handling
-        // because some transitions are impossible.
-        //
-        // Without this initialization, cells like Bt[1,3], M[2,3], etc. remain
-        // unset, blocking paths through the DP matrix and producing suboptimal
-        // alignments.
+        // LIMITED ROWS/COLUMNS (boundary conditions for i=1,2 and j=1,2)
         // =======================================================================
 
-        // Limited rows: Initialize Bt[1,j], M[2,j], Bq[2,j], Bt[2,j] for j >= 3
-        // Pattern: Bt varies along row (gap in query), Bq can't form at row 1
+        // Limited rows: Bt[1,j], M[2,j], Bq[2,j], Bt[2,j] for j >= 3
         for j in 3..t_len {
-            // Bt[1,j]: extend gap in query along row 1
-            let from_m = m.get(1, j - 1).map(|v| v + e(GAP, q_idx(1), t_idx(j), t_idx(j - 1)));
-            let from_bt = bt.get(1, j - 1).map(|v| v + e(GAP, GAP, t_idx(j), t_idx(j - 1)));
+            let from_m = m.get(1, j - 1).map(|v| v + view.bt_open(1, j));
+            let from_bt = bt.get(1, j - 1).map(|v| v + view.bt_ext(j));
             let (bt_1j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
             bt.set(1, j, bt_1j);
             tb_bt.set(1, j, step);
 
-            // M[2,j]: from M or Bt only (Bq invalid at row 1)
-            let from_m = m.get(1, j - 1).map(|v| v + e(q_idx(2), q_idx(1), t_idx(j), t_idx(j - 1)));
-            let from_bt = bt.get(1, j - 1).map(|v| v + e(q_idx(2), GAP, t_idx(j), t_idx(j - 1)));
+            let from_m = m.get(1, j - 1).map(|v| v + view.match_e(2, j));
+            let from_bt = bt.get(1, j - 1).map(|v| v + view.m_from_bt(2, j));
             let (m_2j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
             m.set(2, j, m_2j);
             tb_m.set(2, j, step);
+            update_best(m_2j, 2, j);
 
-            // Check best for M[2,j]
-            if let Some(v) = m_2j {
-                let val = v + e(GAP, q_idx(2), GAP, t_idx(j));
-                if val > best_e {
-                    best_e = val;
-                    best_i = 2;
-                    best_j = j;
-                }
-            }
-
-            // Bq[2,j]: can only come from M (opening new gap)
             if let Some(m1j) = m.get(1, j) {
-                bq.set(2, j, Some(m1j + e(q_idx(2), q_idx(1), GAP, t_idx(j))));
+                bq.set(2, j, Some(m1j + view.bq_open(2, j)));
                 tb_bq.set(2, j, DpOp::Match);
             }
 
-            // Bt[2,j]: extend gap in query along row 2
-            let from_m = m.get(2, j - 1).map(|v| v + e(GAP, q_idx(2), t_idx(j), t_idx(j - 1)));
-            let from_bt = bt.get(2, j - 1).map(|v| v + e(GAP, GAP, t_idx(j), t_idx(j - 1)));
+            let from_m = m.get(2, j - 1).map(|v| v + view.bt_open(2, j));
+            let from_bt = bt.get(2, j - 1).map(|v| v + view.bt_ext(j));
             let (bt_2j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
             bt.set(2, j, bt_2j);
             tb_bt.set(2, j, step);
         }
 
-        // Limited columns: Initialize Bq[i,1], M[i,2], Bt[i,2], Bq[i,2] for i >= 3
-        // Pattern: Bq varies along col (gap in target), Bt can't form at col 1
-        // NOTE: This is the q↔t symmetric version of limited rows above
+        // Limited columns: Bq[i,1], M[i,2], Bt[i,2], Bq[i,2] for i >= 3
         for i in 3..q_len {
-            // Bq[i,1]: extend gap in target along col 1
-            let from_m = m.get(i - 1, 1).map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, t_idx(1)));
-            let from_bq = bq.get(i - 1, 1).map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, GAP));
+            let from_m = m.get(i - 1, 1).map(|v| v + view.bq_open(i, 1));
+            let from_bq = bq.get(i - 1, 1).map(|v| v + view.bq_ext(i));
             let (bq_i1, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
             bq.set(i, 1, bq_i1);
             tb_bq.set(i, 1, step);
 
-            // M[i,2]: from M or Bq only (Bt invalid at col 1)
-            let from_m = m.get(i - 1, 1).map(|v| v + e(q_idx(i), q_idx(i - 1), t_idx(2), t_idx(1)));
-            let from_bq = bq.get(i - 1, 1).map(|v| v + e(q_idx(i), q_idx(i - 1), t_idx(2), GAP));
+            let from_m = m.get(i - 1, 1).map(|v| v + view.match_e(i, 2));
+            let from_bq = bq.get(i - 1, 1).map(|v| v + view.m_from_bq(i, 2));
             let (m_i2, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
             m.set(i, 2, m_i2);
             tb_m.set(i, 2, step);
+            update_best(m_i2, i, 2);
 
-            // Check best for M[i,2]
-            if let Some(v) = m_i2 {
-                let val = v + e(GAP, q_idx(i), GAP, t_idx(2));
-                if val > best_e {
-                    best_e = val;
-                    best_i = i;
-                    best_j = 2;
-                }
-            }
-
-            // Bt[i,2]: can only come from M (opening new gap)
             if let Some(mi1) = m.get(i, 1) {
-                bt.set(i, 2, Some(mi1 + e(GAP, q_idx(i), t_idx(2), t_idx(1))));
+                bt.set(i, 2, Some(mi1 + view.bt_open(i, 2)));
                 tb_bt.set(i, 2, DpOp::Match);
             }
 
-            // Bq[i,2]: extend gap in target along col 2
-            let from_m = m.get(i - 1, 2).map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, t_idx(2)));
-            let from_bq = bq.get(i - 1, 2).map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, GAP));
+            let from_m = m.get(i - 1, 2).map(|v| v + view.bq_open(i, 2));
+            let from_bq = bq.get(i - 1, 2).map(|v| v + view.bq_ext(i));
             let (bq_i2, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
             bq.set(i, 2, bq_i2);
             tb_bq.set(i, 2, step);
         }
 
-        // Main DP loop (starts at i=3, j=3 since rows/cols 0-2 are initialized above)
+        // =======================================================================
+        // MAIN DP LOOP (i >= 3, j >= 3)
+        // =======================================================================
+
         for i in 3..q_len {
             for j in 3..t_len {
                 // M[i,j] - pick best of three sources
-                let s_mm = m
-                    .diag(i, j)
-                    .map(|v| v + e(q_idx(i), q_idx(i - 1), t_idx(j), t_idx(j - 1)));
-                let s_mq = bq
-                    .diag(i, j)
-                    .map(|v| v + e(q_idx(i), q_idx(i - 1), t_idx(j), GAP));
-                let s_mt = bt
-                    .diag(i, j)
-                    .map(|v| v + e(q_idx(i), GAP, t_idx(j), t_idx(j - 1)));
+                let s_mm = m.diag(i, j).map(|v| v + view.match_e(i, j));
+                let s_mq = bq.diag(i, j).map(|v| v + view.m_from_bq(i, j));
+                let s_mt = bt.diag(i, j).map(|v| v + view.m_from_bt(i, j));
 
                 // Tie-breaking: Match > GapT > GapQ (C's max3 priority)
                 let (val_m, step_m) = [(s_mq, DpOp::GapQ), (s_mt, DpOp::GapT), (s_mm, DpOp::Match)]
@@ -628,67 +601,32 @@ impl DpExtender {
                 let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
                 m.set(i, j, val_m);
                 tb_m.set(i, j, step_m);
-
-                if let Some(v) = val_m {
-                    let curr_e = v + e(GAP, q_idx(i), GAP, t_idx(j));
-                    if curr_e > best_e {
-                        trace!(
-                            "{} best@({},{}): {} -> {} step={:?}",
-                            view.dir, i, j, best_e, curr_e, step_m
-                        );
-                        best_e = curr_e;
-                        best_i = i;
-                        best_j = j;
-                    }
-                }
+                update_best(val_m, i, j);
 
                 // Bq[i,j] - query bulge state (gap in target)
-                let s_qm = m
-                    .up(i, j)
-                    .map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, t_idx(j)));
-                let s_qq = bq.up(i, j).map(|v| v + e(q_idx(i), q_idx(i - 1), GAP, GAP));
-                match (s_qq, s_qm) {
-                    (Some(qq), Some(qm)) if qq > qm => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpOp::GapQ);
-                    }
-                    (_, Some(qm)) => {
-                        bq.set(i, j, Some(qm));
-                        tb_bq.set(i, j, DpOp::Match);
-                    }
-                    (Some(qq), None) => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpOp::GapQ);
-                    }
-                    _ => {}
-                }
+                let s_qm = m.up(i, j).map(|v| v + view.bq_open(i, j));
+                let s_qq = bq.up(i, j).map(|v| v + view.bq_ext(i));
+                let (bq_val, step) = pick_best(s_qm, s_qq, DpOp::Match, DpOp::GapQ);
+                bq.set(i, j, bq_val);
+                tb_bq.set(i, j, step);
 
                 // Bt[i,j] - target bulge state (gap in query)
-                let s_tm = m
-                    .left(i, j)
-                    .map(|v| v + e(GAP, q_idx(i), t_idx(j), t_idx(j - 1)));
-                let s_tt = bt
-                    .left(i, j)
-                    .map(|v| v + e(GAP, GAP, t_idx(j), t_idx(j - 1)));
-                match (s_tt, s_tm) {
-                    (Some(tt), Some(tm)) if tt > tm => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpOp::GapT);
-                    }
-                    (_, Some(tm)) => {
-                        bt.set(i, j, Some(tm));
-                        tb_bt.set(i, j, DpOp::Match);
-                    }
-                    (Some(tt), None) => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpOp::GapT);
-                    }
-                    _ => {}
-                }
+                let s_tm = m.left(i, j).map(|v| v + view.bt_open(i, j));
+                let s_tt = bt.left(i, j).map(|v| v + view.bt_ext(j));
+                let (bt_val, step) = pick_best(s_tm, s_tt, DpOp::Match, DpOp::GapT);
+                bt.set(i, j, bt_val);
+                tb_bt.set(i, j, step);
             }
         }
 
-        // Traceback
+        // =======================================================================
+        // TRACEBACK
+        // =======================================================================
+
+        trace!("{} best: e={} at ({},{})", view.dir, best_e, best_i, best_j);
+        // TRACEBACK
+        // =======================================================================
+
         trace!(
             "{} TB start: best=({},{}) score={}",
             view.dir, best_i, best_j, best_e
@@ -704,7 +642,6 @@ impl DpExtender {
                     if i == 0 || j == 0 {
                         break;
                     }
-                    // Current operation is Match (diagonal move)
                     trace_vec.push(DpOp::Match);
                     let next_state = tb_m.get(i, j);
                     trace!("{} TB M({},{}): next={:?}", view.dir, i, j, next_state);
@@ -718,7 +655,6 @@ impl DpExtender {
                     };
                 }
                 DpOp::GapQ => {
-                    // Current operation is GapQ (query bulge, gap in target)
                     trace_vec.push(DpOp::GapQ);
                     let next_state = tb_bq.get(i, j);
                     trace!("{} TB Bq({},{}): next={:?}", view.dir, i, j, next_state);
@@ -735,465 +671,9 @@ impl DpExtender {
                     };
                 }
                 DpOp::GapT => {
-                    // Current operation is GapT (target bulge, gap in query)
                     trace_vec.push(DpOp::GapT);
                     let next_state = tb_bt.get(i, j);
                     trace!("{} TB Bt({},{}): next={:?}", view.dir, i, j, next_state);
-                    if j > 0 {
-                        j -= 1;
-                    } else {
-                        break;
-                    }
-                    state = match next_state {
-                        DpOp::Stop => break,
-                        DpOp::Match => DpOp::Match,
-                        DpOp::GapQ => DpOp::GapQ,
-                        DpOp::GapT => DpOp::GapT,
-                    };
-                }
-            }
-        }
-
-        trace!(
-            "{} result: score={} q_len={} t_len={} trace={:?}",
-            view.dir, best_e, best_i, best_j, trace_vec
-        );
-        DpExtension {
-            score: best_e,
-            q_len: best_i,
-            t_len: best_j,
-            trace: trace_vec,
-        }
-    }
-
-    /// Extend to the right (query 3', target 5') - Legacy algorithm with C parity
-    pub fn extend_right(
-        &mut self,
-        query: &Seq,
-        target: &Seq,
-        q_end: usize,
-        t_end: usize,
-        max_ext: usize,
-    ) -> DpExtension {
-        // Create view for index abstraction
-        let view = DpView::right(query, target, q_end, t_end, max_ext);
-        let (q_len, t_len) = (view.q_len, view.t_len);
-
-        // Energy lookup
-        #[inline(always)]
-        fn e(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-            EnergyModel::T04.stack_idx(q1, q2, t1, t2)
-        }
-
-        // Base index accessors via view
-        let q_idx = |i: usize| view.q(i);
-        let t_idx = |j: usize| view.t(j);
-
-        // Initial score: terminal penalty (stacking order for right extension)
-        let mut best_e = e(q_idx(0), GAP, t_idx(0), GAP);
-        let mut best_i = 0usize;
-        let mut best_j = 0usize;
-        trace!(
-            "{} q_end={} t_end={} q_len={} t_len={} Q(0)={} T(0)={} init_e=DSM[{}][0][{}][0]={}",
-            view.dir,
-            q_end,
-            t_end,
-            q_len,
-            t_len,
-            q_idx(0),
-            t_idx(0),
-            q_idx(0),
-            t_idx(0),
-            best_e
-        );
-
-        // Early return
-        if q_len <= 1 || t_len <= 1 {
-            return DpExtension {
-                score: best_e,
-                q_len: 0,
-                t_len: 0,
-                trace: Vec::new(),
-            };
-        }
-
-        // Resize matrices
-        self.matrices.resize(t_len + 1, q_len + 1);
-        let DpMatrices {
-            m,
-            bq,
-            bt,
-            tb_m,
-            tb_bq,
-            tb_bt,
-        } = &mut self.matrices;
-
-        // =====================================================================
-        // INIT HELPERS (closures for right extension stacking: [prev, curr, prev, curr])
-        // =====================================================================
-
-        // Corner init: M[0,0], Bt[0,1], Bq[1,0], M[1,1] and best check
-        // This seeds the DP with the initial stacking energies
-        let init_corner = |m: &mut ScoreGrid, bt: &mut ScoreGrid, bq: &mut ScoreGrid,
-                           best: &mut (i32, usize, usize)| {
-            m.set(0, 0, Some(0));
-            bt.set(0, 1, Some(e(q_idx(0), GAP, t_idx(0), t_idx(1))));
-            bq.set(1, 0, Some(e(q_idx(0), q_idx(1), t_idx(0), GAP)));
-            m.set(1, 1, Some(e(q_idx(0), q_idx(1), t_idx(0), t_idx(1))));
-
-            if let Some(m11) = m.get(1, 1) {
-                let val = m11 + e(q_idx(1), GAP, t_idx(1), GAP);
-                if val > best.0 {
-                    *best = (val, 1, 1);
-                }
-            }
-        };
-
-        // Row 0 init: Extend Bt along row 0 (gap in query), seed M[1,j]
-        // Symmetric to col 0 init with q<->t swap
-        let init_row_0 = |bt: &mut ScoreGrid, m: &mut ScoreGrid,
-                          tb_bt: &mut Grid<DpOp>, tb_m: &mut Grid<DpOp>,
-                          best: &mut (i32, usize, usize)| {
-            for j in 2..t_len {
-                if let Some(prev_bt) = bt.left(0, j) {
-                    // Extend Bt: gap-gap stacking along target
-                    bt.set(0, j, Some(prev_bt + e(GAP, GAP, t_idx(j - 1), t_idx(j))));
-                    tb_bt.set(0, j, DpOp::GapT);
-
-                    // Seed M[1,j]: re-entry from Bt to M
-                    if q_len >= 1 {
-                        let new_m = prev_bt + e(GAP, q_idx(1), t_idx(j - 1), t_idx(j));
-                        m.set(1, j, Some(new_m));
-                        tb_m.set(1, j, DpOp::GapT);
-                        let val = new_m + e(q_idx(1), GAP, t_idx(j), GAP);
-                        if val > best.0 {
-                            *best = (val, 1, j);
-                        }
-                    }
-                }
-            }
-        };
-
-        // Col 0 init: Extend Bq along col 0 (gap in target), seed M[i,1]
-        // Symmetric to row 0 init with q<->t swap
-        let init_col_0 = |bq: &mut ScoreGrid, m: &mut ScoreGrid,
-                          tb_bq: &mut Grid<DpOp>, tb_m: &mut Grid<DpOp>,
-                          best: &mut (i32, usize, usize)| {
-            for i in 2..q_len {
-                if let Some(prev_bq) = bq.up(i, 0) {
-                    // Extend Bq: gap-gap stacking along query
-                    bq.set(i, 0, Some(prev_bq + e(q_idx(i - 1), q_idx(i), GAP, GAP)));
-                    tb_bq.set(i, 0, DpOp::GapQ);
-
-                    // Seed M[i,1]: re-entry from Bq to M
-                    if t_len >= 1 {
-                        let new_m = prev_bq + e(q_idx(i - 1), q_idx(i), GAP, t_idx(1));
-                        m.set(i, 1, Some(new_m));
-                        tb_m.set(i, 1, DpOp::GapQ);
-                        let val = new_m + e(q_idx(i), GAP, t_idx(1), GAP);
-                        if val > best.0 {
-                            *best = (val, i, 1);
-                        }
-                    }
-                }
-            }
-        };
-
-        // Cell (2,2) init: Special case for position (2,2) and adjacent gap states
-        // This bridges the corner initialization to the limited rows/cols
-        let init_cell_2_2 = |m: &mut ScoreGrid, bt: &mut ScoreGrid, bq: &mut ScoreGrid,
-                             tb_m: &mut Grid<DpOp>, tb_bt: &mut Grid<DpOp>, tb_bq: &mut Grid<DpOp>,
-                             best: &mut (i32, usize, usize)| {
-            if q_len >= 3 && t_len >= 3 {
-                if let Some(m11) = m.diag(2, 2) {
-                    // Bt[1,2]: gap open from M[1,1]
-                    bt.set(1, 2, Some(m11 + e(q_idx(1), GAP, t_idx(1), t_idx(2))));
-                    tb_bt.set(1, 2, DpOp::Match);
-
-                    // Bq[2,1]: gap open from M[1,1]
-                    bq.set(2, 1, Some(m11 + e(q_idx(1), q_idx(2), t_idx(1), GAP)));
-                    tb_bq.set(2, 1, DpOp::Match);
-
-                    // M[2,2]: diagonal from M[1,1]
-                    let m22 = m11 + e(q_idx(1), q_idx(2), t_idx(1), t_idx(2));
-                    m.set(2, 2, Some(m22));
-                    tb_m.set(2, 2, DpOp::Match);
-
-                    let val = m22 + e(q_idx(2), GAP, t_idx(2), GAP);
-                    if val > best.0 {
-                        *best = (val, 2, 2);
-                    }
-                }
-                // Bq[2,2]: gap open from M[1,2]
-                if let Some(m12) = m.up(2, 2) {
-                    bq.set(2, 2, Some(m12 + e(q_idx(1), q_idx(2), t_idx(2), GAP)));
-                    tb_bq.set(2, 2, DpOp::Match);
-                }
-                // Bt[2,2]: gap open from M[2,1]
-                if let Some(m21) = m.left(2, 2) {
-                    bt.set(2, 2, Some(m21 + e(q_idx(2), GAP, t_idx(1), t_idx(2))));
-                    tb_bt.set(2, 2, DpOp::Match);
-                }
-            }
-        };
-
-        // =====================================================================
-        // APPLY INITIALIZATION
-        // =====================================================================
-        let mut best = (best_e, best_i, best_j);
-
-        init_corner(m, bt, bq, &mut best);
-        init_row_0(bt, m, tb_bt, tb_m, &mut best);
-        init_col_0(bq, m, tb_bq, tb_m, &mut best);
-        init_cell_2_2(m, bt, bq, tb_m, tb_bt, tb_bq, &mut best);
-
-        (best_e, best_i, best_j) = best;
-
-        // =======================================================================
-        // LIMITED ROWS/COLUMNS INITIALIZATION (C parity)
-        // =======================================================================
-        // Same rationale as extend_left - boundary rows/cols need special handling
-        // because some DP state transitions are impossible at the edges.
-        // Stacking order for right extension: [q(i-1)][q(i)][t(j-1)][t(j)]
-        // =======================================================================
-
-        // Limited rows: Initialize Bt[1,j], M[2,j], Bq[2,j], Bt[2,j] for j >= 3
-        // Pattern: Bt varies along row (gap in query), Bq can't form at row 1
-        for j in 3..t_len {
-            // Bt[1,j]: extend gap in query along row 1
-            let from_m = m.get(1, j - 1).map(|v| v + e(q_idx(1), GAP, t_idx(j - 1), t_idx(j)));
-            let from_bt = bt.get(1, j - 1).map(|v| v + e(GAP, GAP, t_idx(j - 1), t_idx(j)));
-            let (bt_1j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
-            bt.set(1, j, bt_1j);
-            tb_bt.set(1, j, step);
-
-            // M[2,j]: from M or Bt only (Bq invalid at row 1)
-            let from_m = m.get(1, j - 1).map(|v| v + e(q_idx(1), q_idx(2), t_idx(j - 1), t_idx(j)));
-            let from_bt = bt.get(1, j - 1).map(|v| v + e(GAP, q_idx(2), t_idx(j - 1), t_idx(j)));
-            let (m_2j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
-            m.set(2, j, m_2j);
-            tb_m.set(2, j, step);
-
-            // Check best for M[2,j]
-            if let Some(v) = m_2j {
-                let val = v + e(q_idx(2), GAP, t_idx(j), GAP);
-                if val > best_e {
-                    best_e = val;
-                    best_i = 2;
-                    best_j = j;
-                }
-            }
-
-            // Bq[2,j]: can only come from M (opening new gap)
-            if let Some(m1j) = m.get(1, j) {
-                bq.set(2, j, Some(m1j + e(q_idx(1), q_idx(2), t_idx(j), GAP)));
-                tb_bq.set(2, j, DpOp::Match);
-            }
-
-            // Bt[2,j]: extend gap in query along row 2
-            let from_m = m.get(2, j - 1).map(|v| v + e(q_idx(2), GAP, t_idx(j - 1), t_idx(j)));
-            let from_bt = bt.get(2, j - 1).map(|v| v + e(GAP, GAP, t_idx(j - 1), t_idx(j)));
-            let (bt_2j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
-            bt.set(2, j, bt_2j);
-            tb_bt.set(2, j, step);
-        }
-
-        // Limited columns: Initialize Bq[i,1], M[i,2], Bt[i,2], Bq[i,2] for i >= 3
-        // Pattern: Bq varies along col (gap in target), Bt can't form at col 1
-        // NOTE: This is the q↔t symmetric version of limited rows above
-        for i in 3..q_len {
-            // Bq[i,1]: extend gap in target along col 1
-            let from_m = m.get(i - 1, 1).map(|v| v + e(q_idx(i - 1), q_idx(i), t_idx(1), GAP));
-            let from_bq = bq.get(i - 1, 1).map(|v| v + e(q_idx(i - 1), q_idx(i), GAP, GAP));
-            let (bq_i1, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
-            bq.set(i, 1, bq_i1);
-            tb_bq.set(i, 1, step);
-
-            // M[i,2]: from M or Bq only (Bt invalid at col 1)
-            let from_m = m.get(i - 1, 1).map(|v| v + e(q_idx(i - 1), q_idx(i), t_idx(1), t_idx(2)));
-            let from_bq = bq.get(i - 1, 1).map(|v| v + e(q_idx(i - 1), q_idx(i), GAP, t_idx(2)));
-            let (m_i2, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
-            m.set(i, 2, m_i2);
-            tb_m.set(i, 2, step);
-
-            // Check best for M[i,2]
-            if let Some(v) = m_i2 {
-                let val = v + e(q_idx(i), GAP, t_idx(2), GAP);
-                if val > best_e {
-                    best_e = val;
-                    best_i = i;
-                    best_j = 2;
-                }
-            }
-
-            // Bt[i,2]: can only come from M (opening new gap)
-            if let Some(mi1) = m.get(i, 1) {
-                bt.set(i, 2, Some(mi1 + e(q_idx(i), GAP, t_idx(1), t_idx(2))));
-                tb_bt.set(i, 2, DpOp::Match);
-            }
-
-            // Bq[i,2]: extend gap in target along col 2
-            let from_m = m.get(i - 1, 2).map(|v| v + e(q_idx(i - 1), q_idx(i), t_idx(2), GAP));
-            let from_bq = bq.get(i - 1, 2).map(|v| v + e(q_idx(i - 1), q_idx(i), GAP, GAP));
-            let (bq_i2, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
-            bq.set(i, 2, bq_i2);
-            tb_bq.set(i, 2, step);
-        }
-
-        // Main DP loop (starts at i=3, j=3 since rows/cols 0-2 are initialized above)
-        for i in 3..q_len {
-            for j in 3..t_len {
-
-                // M[i,j] - reversed stacking order for right extension
-                let s_mm = m
-                    .diag(i, j)
-                    .map(|v| v + e(q_idx(i - 1), q_idx(i), t_idx(j - 1), t_idx(j)));
-                let s_mq = bq
-                    .diag(i, j)
-                    .map(|v| v + e(q_idx(i - 1), q_idx(i), GAP, t_idx(j)));
-                let s_mt = bt
-                    .diag(i, j)
-                    .map(|v| v + e(GAP, q_idx(i), t_idx(j - 1), t_idx(j)));
-
-                // Debug trace for specific cells
-                if (i == 5 && j == 7)
-                    || (i == 4 && j == 6)
-                    || (i == 3 && j == 5)
-                    || (i == 2 && j == 4)
-                {
-                    let stack_e = e(q_idx(i - 1), q_idx(i), t_idx(j - 1), t_idx(j));
-                    trace!(
-                        "{} M[{},{}] stack=DSM[{}][{}][{}][{}]={} diag_m={:?} s_mm={:?}",
-                        view.dir,
-                        i,
-                        j,
-                        q_idx(i - 1),
-                        q_idx(i),
-                        t_idx(j - 1),
-                        t_idx(j),
-                        stack_e,
-                        m.diag(i, j),
-                        s_mm
-                    );
-                }
-
-                // Tie-breaking: Match > GapT > GapQ (C's max3 priority)
-                let (val_m, step_m) = [(s_mq, DpOp::GapQ), (s_mt, DpOp::GapT), (s_mm, DpOp::Match)]
-                    .into_iter()
-                    .filter_map(|(opt, step)| opt.map(|v| (v, step)))
-                    .max_by_key(|(v, _)| *v)
-                    .unwrap_or((i32::MIN, DpOp::Stop));
-
-                let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
-                m.set(i, j, val_m);
-                tb_m.set(i, j, step_m);
-
-                if let Some(v) = val_m {
-                    let qi = q_idx(i);
-                    let tj = t_idx(j);
-                    let term_e = e(qi, GAP, tj, GAP);
-                    let curr_e = v + term_e;
-                    if curr_e > best_e {
-                        trace!(
-                            "{} best@({},{}): {} -> {} M={} term=DSM[{}][0][{}][0]={}",
-                            view.dir, i, j, best_e, curr_e, v, qi, tj, term_e
-                        );
-                        best_e = curr_e;
-                        best_i = i;
-                        best_j = j;
-                    }
-                }
-
-                // Bq[i,j] - query bulge state (gap in target)
-                let s_qm = m
-                    .up(i, j)
-                    .map(|v| v + e(q_idx(i - 1), q_idx(i), t_idx(j), GAP));
-                let s_qq = bq.up(i, j).map(|v| v + e(q_idx(i - 1), q_idx(i), GAP, GAP));
-                match (s_qq, s_qm) {
-                    (Some(qq), Some(qm)) if qq > qm => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpOp::GapQ);
-                    }
-                    (_, Some(qm)) => {
-                        bq.set(i, j, Some(qm));
-                        tb_bq.set(i, j, DpOp::Match);
-                    }
-                    (Some(qq), None) => {
-                        bq.set(i, j, Some(qq));
-                        tb_bq.set(i, j, DpOp::GapQ);
-                    }
-                    _ => {}
-                }
-
-                // Bt[i,j] - target bulge state (gap in query)
-                let s_tm = m
-                    .left(i, j)
-                    .map(|v| v + e(q_idx(i), GAP, t_idx(j - 1), t_idx(j)));
-                let s_tt = bt
-                    .left(i, j)
-                    .map(|v| v + e(GAP, GAP, t_idx(j - 1), t_idx(j)));
-                match (s_tt, s_tm) {
-                    (Some(tt), Some(tm)) if tt > tm => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpOp::GapT);
-                    }
-                    (_, Some(tm)) => {
-                        bt.set(i, j, Some(tm));
-                        tb_bt.set(i, j, DpOp::Match);
-                    }
-                    (Some(tt), None) => {
-                        bt.set(i, j, Some(tt));
-                        tb_bt.set(i, j, DpOp::GapT);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Traceback
-        let mut trace_vec = Vec::new();
-        let (mut i, mut j) = (best_i, best_j);
-        let mut state = DpOp::Match;
-
-        while i > 0 || j > 0 {
-            match state {
-                DpOp::Stop => break,
-                DpOp::Match => {
-                    if i == 0 || j == 0 {
-                        break;
-                    }
-                    // Current operation is Match (diagonal move)
-                    trace_vec.push(DpOp::Match);
-                    let next_state = tb_m.get(i, j);
-                    i -= 1;
-                    j -= 1;
-                    state = match next_state {
-                        DpOp::Stop => break,
-                        DpOp::Match => DpOp::Match,
-                        DpOp::GapQ => DpOp::GapQ,
-                        DpOp::GapT => DpOp::GapT,
-                    };
-                }
-                DpOp::GapQ => {
-                    // Current operation is GapQ (query bulge, gap in target)
-                    trace_vec.push(DpOp::GapQ);
-                    let next_state = tb_bq.get(i, j);
-                    if i > 0 {
-                        i -= 1;
-                    } else {
-                        break;
-                    }
-                    state = match next_state {
-                        DpOp::Stop => break,
-                        DpOp::Match => DpOp::Match,
-                        DpOp::GapQ => DpOp::GapQ,
-                        DpOp::GapT => DpOp::GapT,
-                    };
-                }
-                DpOp::GapT => {
-                    // Current operation is GapT (target bulge, gap in query)
-                    trace_vec.push(DpOp::GapT);
-                    let next_state = tb_bt.get(i, j);
                     if j > 0 {
                         j -= 1;
                     } else {

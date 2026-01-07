@@ -13,7 +13,6 @@ pub enum Matrix {
     // ========================================================================
     // TODO: Placeholder matrix types from C implementation - not yet implemented
     // ========================================================================
-
     /// TODO: SantaLucia 1995 RNA-DNA duplex parameters
     #[value(name = "su95")]
     Su95,
@@ -48,7 +47,6 @@ pub enum OutputFormat {
     // ========================================================================
     // TODO: Placeholder output format from C implementation - not yet implemented
     // ========================================================================
-
     /// TODO: Minimal format - target, start, strand, and energy only (C: -p4)
     Minimal,
 }
@@ -148,7 +146,6 @@ pub struct ExtendArgs {
     // ========================================================================
     // TODO: Placeholder flags from C implementation - not yet implemented
     // ========================================================================
-
     /// TODO: Banded search - limits the search for bulged matches.
     /// In C: `-b band, --band=band` - Integer size of bands limiting bulge search.
     /// The minimum size is 1; use seed option to avoid any bulge.
@@ -201,7 +198,6 @@ pub struct SearchArgs {
     // ========================================================================
     // TODO: Placeholder flags from C implementation - not yet implemented
     // ========================================================================
-
     /// TODO: One-vs-one mode - only print results where query name matches target name.
     /// In C: `-1, --one_vs_one` - Filters results to matching query/target names.
     #[arg(short = '1', long = "one-vs-one", action = clap::ArgAction::SetTrue, hide = true)]
@@ -211,13 +207,23 @@ pub struct SearchArgs {
     /// In C: `-3 <reg>, --three_prime_match=PC` - Regex for 3' PAM forward complement.
     /// Example for cas9: `^(.cc|.uc|.cu)` matching NGG/NAG/NGA 3' PAMs.
     /// Requires output format 3 or 4 (binding_site).
-    #[arg(short = '3', long = "three-prime-match", value_name = "REGEX", hide = true)]
+    #[arg(
+        short = '3',
+        long = "three-prime-match",
+        value_name = "REGEX",
+        hide = true
+    )]
     pub three_prime_match: Option<String>,
 
     /// TODO: 5' PAM filter - report only predictions matching a 5' PAM pattern.
     /// In C: `-5 <reg>, --five_prime_match=PC` - Regex for 5' PAM reverse complement.
     /// Example for cas12a: `^([^a]aaa)` matching TTTV 5' PAMs.
     /// Requires output format 3 or 4 (binding_site).
-    #[arg(short = '5', long = "five-prime-match", value_name = "REGEX", hide = true)]
+    #[arg(
+        short = '5',
+        long = "five-prime-match",
+        value_name = "REGEX",
+        hide = true
+    )]
     pub five_prime_match: Option<String>,
 }

@@ -72,9 +72,7 @@ impl ParityResult {
             }
             ParityMode::Strict => {
                 // Allow co-optimal (same energy, different trace)
-                self.extras.is_empty()
-                    && self.missings.is_empty()
-                    && self.rust_better.is_empty()
+                self.extras.is_empty() && self.missings.is_empty() && self.rust_better.is_empty()
             }
             ParityMode::Balanced => {
                 // Allow co-optimal and extras, but no missing or rust-better
@@ -209,7 +207,10 @@ impl ParityResult {
                         rust_hit.fmt_coords(),
                         energy_diff
                     );
-                    let table = render_table(ParityKind::CoveredBy { c: missing, rust: rust_hit });
+                    let table = render_table(ParityKind::CoveredBy {
+                        c: missing,
+                        rust: rust_hit,
+                    });
                     (label, table)
                 }
                 None => {
@@ -595,7 +596,9 @@ impl<'a> ParityComparator<'a> {
             for (i, c) in c_remaining.iter().enumerate() {
                 if !c_rem_matched[i] {
                     let (reason, overlap) = classify_missing(c, &all_rust_refs);
-                    result.missings.push(((*c).clone(), reason, overlap.cloned()));
+                    result
+                        .missings
+                        .push(((*c).clone(), reason, overlap.cloned()));
                 }
             }
         }

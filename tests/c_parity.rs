@@ -80,7 +80,6 @@ fn test_parity_seed_only() {
 
 #[test]
 fn test_parity_custom_seq() {
-
     let args = ["-l", "20", "-e", "10000", "-s", "7", "-p3"];
 
     let query = "uggcucaguucagcaggaacag";

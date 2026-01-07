@@ -1,6 +1,6 @@
+use assert_cmd::cargo::cargo_bin_cmd;
 use std::io::Write;
 use tempfile::NamedTempFile;
-use assert_cmd::cargo::cargo_bin_cmd;
 
 #[test]
 fn test_search_stdout_output() -> Result<(), Box<dyn std::error::Error>> {

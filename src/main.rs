@@ -106,6 +106,7 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)] // CLI parsing - allocation overhead is negligible
 enum Commands {
     /// Create index for target sequence(s)
     Index {

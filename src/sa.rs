@@ -56,7 +56,6 @@ fn validate_output_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-
 // TODO: this should adheto to Rust patterns, deuplicated code
 fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<u8>, NormalizationStats)> {
     let mut out = Vec::with_capacity(seq.len());
@@ -89,7 +88,6 @@ fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<u8>, Normalizatio
 
     Ok((out, stats))
 }
-
 
 // TODO: This probablu belongs in some trait
 pub fn create_suffix_array(
