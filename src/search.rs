@@ -1004,7 +1004,8 @@ pub fn run_search_collect(
     Ok(deduped)
 }
 
-/// Check if hit `k` shadows hit `h` (k is better and contains h)
+/// Check if hit `k` shadows hit `h` (only exact duplicates)
+/// Note: C has no containment-based filtering, only exact match dedup.
 fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
     // Different strands are never duplicates
     if k.strand != h.strand {
@@ -1017,20 +1018,8 @@ fn shadows(k: &SearchHit, h: &SearchHit) -> Option<FilterReason> {
         return Some(FilterReason::DedupExactMatch);
     }
 
-    // Check containment
-    let q_contained = k.q_start <= h.q_start && k.q_end >= h.q_end;
-    let t_contained = k.t_start <= h.t_start && k.t_end >= h.t_end;
-
-    if !q_contained || !t_contained {
-        return None;
-    }
-
-    // h must start strictly after k (not share same start)
-    if h.q_start == k.q_start {
-        return None;
-    }
-
-    Some(FilterReason::DedupContainedByShadow)
+    // C does NOT filter contained hits - removed DedupContainedByShadow
+    None
 }
 
 fn deduplicate_hits(mut hits: Vec<SearchHit>, stats: &mut SearchStats) -> Vec<SearchHit> {
@@ -1574,10 +1563,10 @@ fn extend_seed(
         );
     }
 
-    // Use NEW DP scores
+    // Use OLD embedded DP scores for C parity (new dp module has differences)
     let final_score = ctx
         .energy
-        .to_kcal(seed_energy_raw + new_left.score + new_right.score);
+        .to_kcal(seed_energy_raw + left_res.score + right_res.score);
 
     trace!(
         "{} score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",
