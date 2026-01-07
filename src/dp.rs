@@ -300,31 +300,77 @@ impl<T: Clone + Copy + Default> Grid<T> {
 pub type ScoreGrid = Grid<Option<i32>>;
 
 // =============================================================================
+// DP STATE GRID - Paired score + traceback
+// =============================================================================
+
+/// Paired score and traceback grid for a single DP state (M, Bq, or Bt).
+pub struct DpStateGrid {
+    score: ScoreGrid,
+    tb: Grid<DpOp>,
+}
+
+impl DpStateGrid {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self {
+            score: ScoreGrid::new(width, height),
+            tb: Grid::new(width, height),
+        }
+    }
+
+    pub fn resize(&mut self, width: usize, height: usize) {
+        self.score.resize(width, height);
+        self.tb.resize(width, height);
+    }
+
+    #[inline(always)]
+    pub fn get(&self, i: usize, j: usize) -> Option<i32> {
+        self.score.get(i, j)
+    }
+
+    #[inline(always)]
+    pub fn set(&mut self, i: usize, j: usize, val: Option<i32>, step: DpOp) {
+        self.score.set(i, j, val);
+        self.tb.set(i, j, step);
+    }
+
+    #[inline(always)]
+    pub fn diag(&self, i: usize, j: usize) -> Option<i32> {
+        self.score.diag(i, j)
+    }
+
+    #[inline(always)]
+    pub fn up(&self, i: usize, j: usize) -> Option<i32> {
+        self.score.up(i, j)
+    }
+
+    #[inline(always)]
+    pub fn left(&self, i: usize, j: usize) -> Option<i32> {
+        self.score.left(i, j)
+    }
+
+    #[inline(always)]
+    pub fn tb(&self, i: usize, j: usize) -> DpOp {
+        self.tb.get(i, j)
+    }
+}
+
+// =============================================================================
 // DP EXTENDER - Stateful extension with reusable matrices
 // =============================================================================
 
 /// DP matrices for extension (reusable to avoid allocations)
 pub struct DpMatrices {
-    // Score matrices (None = not reachable)
-    pub m: ScoreGrid,  // Match/mismatch state
-    pub bq: ScoreGrid, // Query bulge (gap in target)
-    pub bt: ScoreGrid, // Target bulge (gap in query)
-
-    // Traceback matrices
-    pub tb_m: Grid<DpOp>,
-    pub tb_bq: Grid<DpOp>,
-    pub tb_bt: Grid<DpOp>,
+    pub m: DpStateGrid,  // Match/mismatch state
+    pub bq: DpStateGrid, // Query bulge (gap in target)
+    pub bt: DpStateGrid, // Target bulge (gap in query)
 }
 
 impl DpMatrices {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
-            m: ScoreGrid::new(width, height),
-            bq: ScoreGrid::new(width, height),
-            bt: ScoreGrid::new(width, height),
-            tb_m: Grid::new(width, height),
-            tb_bq: Grid::new(width, height),
-            tb_bt: Grid::new(width, height),
+            m: DpStateGrid::new(width, height),
+            bq: DpStateGrid::new(width, height),
+            bt: DpStateGrid::new(width, height),
         }
     }
 
@@ -332,9 +378,6 @@ impl DpMatrices {
         self.m.resize(width, height);
         self.bq.resize(width, height);
         self.bt.resize(width, height);
-        self.tb_m.resize(width, height);
-        self.tb_bq.resize(width, height);
-        self.tb_bt.resize(width, height);
     }
 }
 
@@ -359,6 +402,48 @@ fn pick_best(a: Option<i32>, b: Option<i32>, step_a: DpOp, step_b: DpOp) -> (Opt
         (None, Some(vb)) => (Some(vb), step_b),
         (None, None) => (None, DpOp::Stop),
     }
+}
+
+/// Initialize limited rows or columns - unified via macro.
+/// Row axis: Bt primary, Bq secondary, indices (fixed, k)
+/// Col axis: Bq primary, Bt secondary, indices (k, fixed)
+macro_rules! init_limited_axis {
+    ($len:expr, $view:expr, $m:expr, $update_best:expr,
+     $primary:expr, $secondary:expr, $gap_op:expr,
+     $idx:expr, $prev_idx:expr,
+     $b_open:expr, $b_ext:expr, $match_e:expr, $m_from_b:expr, $s_open:expr) => {
+        for k in 3..$len {
+            let (pi1, pj1) = $prev_idx(1, k);
+            let (i1, j1) = $idx(1, k);
+            let (i2, j2) = $idx(2, k);
+            let (pi2, pj2) = $prev_idx(2, k);
+            let (i2p, j2p) = $idx(2, k - 1);
+
+            // Primary[1,k]
+            let from_m = $m.get(pi1, pj1).map(|v| v + $b_open($view, 1, k));
+            let from_b = $primary.get(pi1, pj1).map(|v| v + $b_ext($view, k));
+            let (val, step) = pick_best(from_m, from_b, DpOp::Match, $gap_op);
+            $primary.set(i1, j1, val, step);
+
+            // M[2,k]
+            let from_m = $m.get(pi1, pj1).map(|v| v + $match_e($view, 2, k));
+            let from_b = $primary.get(pi1, pj1).map(|v| v + $m_from_b($view, 2, k));
+            let (val, step) = pick_best(from_m, from_b, DpOp::Match, $gap_op);
+            $m.set(i2, j2, val, step);
+            $update_best(val, i2, j2);
+
+            // Secondary[2,k]
+            if let Some(m1k) = $m.get(i1, j1) {
+                $secondary.set(i2, j2, Some(m1k + $s_open($view, 2, k)), DpOp::Match);
+            }
+
+            // Primary[2,k]
+            let from_m = $m.get(pi2, pj2).map(|v| v + $b_open($view, 2, k));
+            let from_b = $primary.get(i2p, j2p).map(|v| v + $b_ext($view, k));
+            let (val, step) = pick_best(from_m, from_b, DpOp::Match, $gap_op);
+            $primary.set(i2, j2, val, step);
+        }
+    };
 }
 
 impl DpExtender {
@@ -433,14 +518,7 @@ impl DpExtender {
 
         // Resize matrices
         self.matrices.resize(t_len + 1, q_len + 1);
-        let DpMatrices {
-            m,
-            bq,
-            bt,
-            tb_m,
-            tb_bq,
-            tb_bt,
-        } = &mut self.matrices;
+        let DpMatrices { m, bq, bt } = &mut self.matrices;
 
         // =====================================================================
         // HELPER: Update best score if value + terminal is better
@@ -461,33 +539,27 @@ impl DpExtender {
         // =====================================================================
 
         // Corner: M[0,0], Bt[0,1], Bq[1,0], M[1,1]
-        m.set(0, 0, Some(0));
-        bt.set(0, 1, Some(view.bt_open(0, 1)));
-        bq.set(1, 0, Some(view.bq_open(1, 0)));
+        m.set(0, 0, Some(0), DpOp::Stop);
+        bt.set(0, 1, Some(view.bt_open(0, 1)), DpOp::Stop);
+        bq.set(1, 0, Some(view.bq_open(1, 0)), DpOp::Stop);
         let m11 = Some(view.match_e(1, 1));
-        m.set(1, 1, m11);
+        m.set(1, 1, m11, DpOp::Stop);
         update_best(m11, 1, 1);
 
         // Boundary init: Row 0 (Bt) and Col 0 (Bq) are symmetric
-        // Row 0: extend Bt via left(), seed M[1,j]
-        // Col 0: extend Bq via up(), seed M[i,1]
         for k in 2..t_len {
             if let Some(prev) = bt.left(0, k) {
-                bt.set(0, k, Some(prev + view.bt_ext(k)));
-                tb_bt.set(0, k, DpOp::GapT);
+                bt.set(0, k, Some(prev + view.bt_ext(k)), DpOp::GapT);
                 let new_m = Some(prev + view.m_from_bt(1, k));
-                m.set(1, k, new_m);
-                tb_m.set(1, k, DpOp::GapT);
+                m.set(1, k, new_m, DpOp::GapT);
                 update_best(new_m, 1, k);
             }
         }
         for k in 2..q_len {
             if let Some(prev) = bq.up(k, 0) {
-                bq.set(k, 0, Some(prev + view.bq_ext(k)));
-                tb_bq.set(k, 0, DpOp::GapQ);
+                bq.set(k, 0, Some(prev + view.bq_ext(k)), DpOp::GapQ);
                 let new_m = Some(prev + view.m_from_bq(k, 1));
-                m.set(k, 1, new_m);
-                tb_m.set(k, 1, DpOp::GapQ);
+                m.set(k, 1, new_m, DpOp::GapQ);
                 update_best(new_m, k, 1);
             }
         }
@@ -495,84 +567,57 @@ impl DpExtender {
         // Cell (2,2) init: bridge corner to limited rows/cols
         if q_len >= 3 && t_len >= 3 {
             if let Some(m11_val) = m.diag(2, 2) {
-                bt.set(1, 2, Some(m11_val + view.bt_open(1, 2)));
-                tb_bt.set(1, 2, DpOp::Match);
-
-                bq.set(2, 1, Some(m11_val + view.bq_open(2, 1)));
-                tb_bq.set(2, 1, DpOp::Match);
-
+                bt.set(1, 2, Some(m11_val + view.bt_open(1, 2)), DpOp::Match);
+                bq.set(2, 1, Some(m11_val + view.bq_open(2, 1)), DpOp::Match);
                 let m22 = Some(m11_val + view.match_e(2, 2));
-                m.set(2, 2, m22);
-                tb_m.set(2, 2, DpOp::Match);
+                m.set(2, 2, m22, DpOp::Match);
                 update_best(m22, 2, 2);
             }
             if let Some(m12) = m.up(2, 2) {
-                bq.set(2, 2, Some(m12 + view.bq_open(2, 2)));
-                tb_bq.set(2, 2, DpOp::Match);
+                bq.set(2, 2, Some(m12 + view.bq_open(2, 2)), DpOp::Match);
             }
             if let Some(m21) = m.left(2, 2) {
-                bt.set(2, 2, Some(m21 + view.bt_open(2, 2)));
-                tb_bt.set(2, 2, DpOp::Match);
+                bt.set(2, 2, Some(m21 + view.bt_open(2, 2)), DpOp::Match);
             }
         }
 
         // =======================================================================
-        // LIMITED ROWS/COLUMNS (boundary conditions for i=1,2 and j=1,2)
+        // LIMITED ROWS/COLUMNS - unified via macro
         // =======================================================================
 
-        // Limited rows: Bt[1,j], M[2,j], Bq[2,j], Bt[2,j] for j >= 3
-        for j in 3..t_len {
-            let from_m = m.get(1, j - 1).map(|v| v + view.bt_open(1, j));
-            let from_bt = bt.get(1, j - 1).map(|v| v + view.bt_ext(j));
-            let (bt_1j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
-            bt.set(1, j, bt_1j);
-            tb_bt.set(1, j, step);
+        init_limited_axis!(
+            t_len,
+            view,
+            m,
+            update_best,
+            bt,
+            bq,
+            DpOp::GapT,
+            |f, k| (f, k),
+            |f, k| (f, k - 1),
+            |v: &DpView, f, k| v.bt_open(f, k),
+            |v: &DpView, k| v.bt_ext(k),
+            |v: &DpView, f, k| v.match_e(f, k),
+            |v: &DpView, f, k| v.m_from_bt(f, k),
+            |v: &DpView, f, k| v.bq_open(f, k)
+        );
 
-            let from_m = m.get(1, j - 1).map(|v| v + view.match_e(2, j));
-            let from_bt = bt.get(1, j - 1).map(|v| v + view.m_from_bt(2, j));
-            let (m_2j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
-            m.set(2, j, m_2j);
-            tb_m.set(2, j, step);
-            update_best(m_2j, 2, j);
-
-            if let Some(m1j) = m.get(1, j) {
-                bq.set(2, j, Some(m1j + view.bq_open(2, j)));
-                tb_bq.set(2, j, DpOp::Match);
-            }
-
-            let from_m = m.get(2, j - 1).map(|v| v + view.bt_open(2, j));
-            let from_bt = bt.get(2, j - 1).map(|v| v + view.bt_ext(j));
-            let (bt_2j, step) = pick_best(from_m, from_bt, DpOp::Match, DpOp::GapT);
-            bt.set(2, j, bt_2j);
-            tb_bt.set(2, j, step);
-        }
-
-        // Limited columns: Bq[i,1], M[i,2], Bt[i,2], Bq[i,2] for i >= 3
-        for i in 3..q_len {
-            let from_m = m.get(i - 1, 1).map(|v| v + view.bq_open(i, 1));
-            let from_bq = bq.get(i - 1, 1).map(|v| v + view.bq_ext(i));
-            let (bq_i1, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
-            bq.set(i, 1, bq_i1);
-            tb_bq.set(i, 1, step);
-
-            let from_m = m.get(i - 1, 1).map(|v| v + view.match_e(i, 2));
-            let from_bq = bq.get(i - 1, 1).map(|v| v + view.m_from_bq(i, 2));
-            let (m_i2, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
-            m.set(i, 2, m_i2);
-            tb_m.set(i, 2, step);
-            update_best(m_i2, i, 2);
-
-            if let Some(mi1) = m.get(i, 1) {
-                bt.set(i, 2, Some(mi1 + view.bt_open(i, 2)));
-                tb_bt.set(i, 2, DpOp::Match);
-            }
-
-            let from_m = m.get(i - 1, 2).map(|v| v + view.bq_open(i, 2));
-            let from_bq = bq.get(i - 1, 2).map(|v| v + view.bq_ext(i));
-            let (bq_i2, step) = pick_best(from_m, from_bq, DpOp::Match, DpOp::GapQ);
-            bq.set(i, 2, bq_i2);
-            tb_bq.set(i, 2, step);
-        }
+        init_limited_axis!(
+            q_len,
+            view,
+            m,
+            update_best,
+            bq,
+            bt,
+            DpOp::GapQ,
+            |f, k| (k, f),
+            |f, k| (k - 1, f),
+            |v: &DpView, f, k| v.bq_open(k, f),
+            |v: &DpView, k| v.bq_ext(k),
+            |v: &DpView, f, k| v.match_e(k, f),
+            |v: &DpView, f, k| v.m_from_bq(k, f),
+            |v: &DpView, f, k| v.bt_open(k, f)
+        );
 
         // =======================================================================
         // MAIN DP LOOP (i >= 3, j >= 3)
@@ -593,31 +638,24 @@ impl DpExtender {
                     .unwrap_or((i32::MIN, DpOp::Stop));
 
                 let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
-                m.set(i, j, val_m);
-                tb_m.set(i, j, step_m);
+                m.set(i, j, val_m, step_m);
                 update_best(val_m, i, j);
 
                 // Bq[i,j] - query bulge state (gap in target)
                 let s_qm = m.up(i, j).map(|v| v + view.bq_open(i, j));
                 let s_qq = bq.up(i, j).map(|v| v + view.bq_ext(i));
                 let (bq_val, step) = pick_best(s_qm, s_qq, DpOp::Match, DpOp::GapQ);
-                bq.set(i, j, bq_val);
-                tb_bq.set(i, j, step);
+                bq.set(i, j, bq_val, step);
 
                 // Bt[i,j] - target bulge state (gap in query)
                 let s_tm = m.left(i, j).map(|v| v + view.bt_open(i, j));
                 let s_tt = bt.left(i, j).map(|v| v + view.bt_ext(j));
                 let (bt_val, step) = pick_best(s_tm, s_tt, DpOp::Match, DpOp::GapT);
-                bt.set(i, j, bt_val);
-                tb_bt.set(i, j, step);
+                bt.set(i, j, bt_val, step);
             }
         }
 
         // =======================================================================
-        // TRACEBACK
-        // =======================================================================
-
-        trace!("{} best: e={} at ({},{})", view.dir, best_e, best_i, best_j);
         // TRACEBACK
         // =======================================================================
 
@@ -637,7 +675,7 @@ impl DpExtender {
                         break;
                     }
                     trace_vec.push(DpOp::Match);
-                    let next_state = tb_m.get(i, j);
+                    let next_state = m.tb(i, j);
                     trace!("{} TB M({},{}): next={:?}", view.dir, i, j, next_state);
                     i -= 1;
                     j -= 1;
@@ -650,7 +688,7 @@ impl DpExtender {
                 }
                 DpOp::GapQ => {
                     trace_vec.push(DpOp::GapQ);
-                    let next_state = tb_bq.get(i, j);
+                    let next_state = bq.tb(i, j);
                     trace!("{} TB Bq({},{}): next={:?}", view.dir, i, j, next_state);
                     if i > 0 {
                         i -= 1;
@@ -666,7 +704,7 @@ impl DpExtender {
                 }
                 DpOp::GapT => {
                     trace_vec.push(DpOp::GapT);
-                    let next_state = tb_bt.get(i, j);
+                    let next_state = bt.tb(i, j);
                     trace!("{} TB Bt({},{}): next={:?}", view.dir, i, j, next_state);
                     if j > 0 {
                         j -= 1;
