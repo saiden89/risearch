@@ -717,7 +717,7 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
         ctx.args.seed.pairing
     );
 
-    Ok(seed::find_seeds(q_seq, &ctx.index.index, &ctx.args.seed))
+    Ok(seed::find_seeds(q_seq, ctx.index.index, &ctx.args.seed))
 }
 
 fn process_candidate(

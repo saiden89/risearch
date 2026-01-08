@@ -305,7 +305,7 @@ pub fn find_seeds_in_target(
         return Vec::new();
     };
     let start0 = start1 - 1;
-    let end0 = end1 - 1;
+    let _end0 = end1 - 1;
 
     // Build query RC and its SA
     let q_rc = reverse_complement_dna(&q_norm);

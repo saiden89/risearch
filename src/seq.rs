@@ -167,7 +167,7 @@ impl AlignedSeq {
         let mut buffer = Vec::with_capacity(LOOKBEHIND_PAD + data.len() + SIMD_PAD);
 
         // Leading sentinels (N for unknown base)
-        buffer.extend(std::iter::repeat(b'N').take(LOOKBEHIND_PAD));
+        buffer.extend(std::iter::repeat_n(b'N', LOOKBEHIND_PAD));
         let data_start = buffer.len();
 
         // Actual sequence
@@ -175,7 +175,7 @@ impl AlignedSeq {
         let data_len = data.len();
 
         // Trailing sentinels
-        buffer.extend(std::iter::repeat(b'N').take(SIMD_PAD));
+        buffer.extend(std::iter::repeat_n(b'N', SIMD_PAD));
 
         Self {
             buffer,
