@@ -468,19 +468,65 @@ impl<'a> ParallelSaSearcher<'a> {
         }
 
         let start = interval.start;
-        let sa_slice = &sa[start..interval.end];
+        let end = interval.end;
 
-        // Find boundaries for each base transition
-        // SA is sorted lexicographically, bases appear in order: a < c < g < n < t < sentinel(255)
-        let a_start = start;
-        let c_start = start + partition_point(sa_slice, seq, offset, b'c');
-        let g_start = start + partition_point(sa_slice, seq, offset, b'g');
-        let n_start = start + partition_point(sa_slice, seq, offset, b'n');
-        let u_start = start + partition_point(sa_slice, seq, offset, b't'); // t represents u
-        // Find where sentinel (OOB) positions start - they should be excluded from U interval
-        let sentinel_start = start + partition_point(sa_slice, seq, offset, 255);
+        // For suffixes where pos + offset >= seq.len(), the character is undefined.
+        // We need to exclude these from valid base intervals.
+        //
+        // Key insight: SA is sorted by suffix content, not position. Short suffixes
+        // can appear BEFORE or AFTER longer ones depending on the sequence content.
+        // We use a sentinel approach: OOB positions map to byte 0 (sorts before 'a'),
+        // so they get excluded from the A interval start.
+        //
+        // Find where valid entries start (first suffix long enough for this offset)
+        let valid_start = start
+            + (start..end)
+                .position(|i| {
+                    let pos = sa[i] as usize;
+                    pos + offset < seq.len()
+                })
+                .unwrap_or(end - start);
 
-        BaseIntervals::from_bounds([a_start, c_start, g_start, n_start, u_start, sentinel_start])
+        // Find where valid entries end (last valid + 1)
+        let valid_end = start
+            + (start..end)
+                .rposition(|i| {
+                    let pos = sa[i] as usize;
+                    pos + offset < seq.len()
+                })
+                .map(|p| p + 1)
+                .unwrap_or(0);
+
+        if valid_start >= valid_end {
+            return BaseIntervals::default();
+        }
+
+        let sa_slice = &sa[valid_start..valid_end];
+
+        // Now partition only the valid range
+        let a_start = valid_start;
+        let c_start = valid_start
+            + sa_slice.partition_point(|&idx| {
+                let c = seq[idx as usize + offset];
+                c < b'c'
+            });
+        let g_start = valid_start
+            + sa_slice.partition_point(|&idx| {
+                let c = seq[idx as usize + offset];
+                c < b'g'
+            });
+        let n_start = valid_start
+            + sa_slice.partition_point(|&idx| {
+                let c = seq[idx as usize + offset];
+                c < b'n'
+            });
+        let u_start = valid_start
+            + sa_slice.partition_point(|&idx| {
+                let c = seq[idx as usize + offset];
+                c < b't'
+            });
+
+        BaseIntervals::from_bounds([a_start, c_start, g_start, n_start, u_start, valid_end])
     }
 }
 
@@ -528,7 +574,7 @@ pub fn build_suffix_array(seq: &[u8]) -> Vec<u32> {
         .expect("SA construction should not fail for valid sequences")
         .into_vec()
         .into_iter()
-        .map(|x| x as u32)
+        .map(|x: i64| x as u32)
         .collect()
 }
 
@@ -595,12 +641,21 @@ impl SeedFinder {
         let matches = searcher.find_seeds(seed_len);
 
         // Expand matches to concrete positions
+        // Filter out positions where suffix is shorter than seed_len
         let mut positions = Vec::new();
         for m in &matches {
             for qi in m.query_interval.start..m.query_interval.end {
                 let q_pos = query_sa[qi] as usize;
+                // Skip if query suffix too short
+                if q_pos + seed_len > query_seq.len() {
+                    continue;
+                }
                 for ti in m.target_interval.start..m.target_interval.end {
                     let t_pos = target_comp_sa[ti] as usize;
+                    // Skip if target suffix too short
+                    if t_pos + seed_len > target_comp.len() {
+                        continue;
+                    }
                     positions.push((q_pos, t_pos));
                 }
             }
@@ -636,6 +691,41 @@ mod tests {
         assert_eq!(parts.get(Base::C).len(), 1);
         assert_eq!(parts.get(Base::G).len(), 1);
         assert_eq!(parts.get(Base::U).len(), 1);
+    }
+
+    #[test]
+    fn test_homopolymer_debug() {
+        // Debug test for the aaa/ttt case
+        let query = b"aaa";
+        let target = b"ttt";
+
+        // Step 1: Check complement
+        let target_comp = complement_sequence(target);
+        eprintln!("Query: {:?}", String::from_utf8_lossy(query));
+        eprintln!("Target: {:?}", String::from_utf8_lossy(target));
+        eprintln!(
+            "Target complement: {:?}",
+            String::from_utf8_lossy(&target_comp)
+        );
+        assert_eq!(&target_comp, b"aaa", "complement(ttt) should be aaa");
+
+        // Step 2: Build SAs
+        let q_sa = build_suffix_array(query);
+        let t_sa = build_suffix_array(&target_comp);
+        eprintln!("Query SA: {:?}", q_sa);
+        eprintln!("Target comp SA: {:?}", t_sa);
+
+        // Step 3: Create searcher and find seeds
+        let searcher =
+            ParallelSaSearcher::new(&q_sa, query, &t_sa, &target_comp, SeedPairing::Strict);
+        let matches = searcher.find_seeds(3);
+        eprintln!("Raw matches: {:?}", matches);
+
+        // The key assertion
+        assert!(
+            !matches.is_empty(),
+            "Should find at least one 3bp match for aaa vs aaa"
+        );
     }
 
     #[test]
@@ -741,10 +831,11 @@ mod tests {
 
     use rstest::rstest;
 
-    /// Watson-Crick reverse complement for antiparallel RNA pairing
-    fn wc_revcomp(seq: &[u8]) -> Vec<u8> {
+    /// Watson-Crick complement (no reverse) for parallel SA matching.
+    /// The algorithm uses same-character matching on complement:
+    /// Query A matches target_comp A → target has U → A-U pair
+    fn wc_complement(seq: &[u8]) -> Vec<u8> {
         seq.iter()
-            .rev()
             .map(|&c| match c {
                 b'a' | b'A' => b't',
                 b't' | b'T' | b'u' | b'U' => b'a',
@@ -756,14 +847,14 @@ mod tests {
     }
 
     /// Test all 16 canonical dinucleotide seed combinations.
-    /// Query XY should find seed at (0,0) when target is reverse-complement of XY.
+    /// Query XY should find seed at (0,0) when target is complement of XY.
     #[rstest]
     fn test_dinuc_canonical(
         #[values(b'a', b'c', b'g', b't')] b1: u8,
         #[values(b'a', b'c', b'g', b't')] b2: u8,
     ) {
         let query = vec![b1, b2];
-        let target = wc_revcomp(&query);
+        let target = wc_complement(&query);
 
         let finder = SeedFinder::new(SeedPairing::Strict);
         let seeds = finder.find_all_seeds(&query, &target, 2);
@@ -794,7 +885,7 @@ mod tests {
         #[values(b'a', b'c', b'g', b't')] b3: u8,
     ) {
         let query = vec![b1, b2, b3];
-        let target = wc_revcomp(&query);
+        let target = wc_complement(&query);
 
         let finder = SeedFinder::new(SeedPairing::Strict);
         let seeds = finder.find_all_seeds(&query, &target, 3);

@@ -4,6 +4,7 @@ pub mod dsm;
 #[cfg(feature = "fm-index")]
 pub mod fm;
 pub mod io;
+pub mod parallel_sa;
 pub mod sa;
 pub mod search;
 pub mod seed;
