@@ -171,11 +171,11 @@ struct SearchState {
 /// - Same-character matching finds complementary base pairs
 pub struct ParallelSaSearcher<'a> {
     /// Query suffix array
-    query_sa: &'a [i64],
+    query_sa: &'a [u32],
     /// Query sequence (for base lookup)
     query_seq: &'a [u8],
     /// Target suffix array (built on COMPLEMENT of target)
-    target_comp_sa: &'a [i64],
+    target_comp_sa: &'a [u32],
     /// Target complement sequence (for base lookup)
     target_comp_seq: &'a [u8],
     /// Whether to allow G-U wobble pairs in seeds
@@ -190,9 +190,9 @@ impl<'a> ParallelSaSearcher<'a> {
     /// IMPORTANT: `target_comp_sa` and `target_comp_seq` should be built on the
     /// COMPLEMENT (not reverse complement) of the target sequence.
     pub fn new(
-        query_sa: &'a [i64],
+        query_sa: &'a [u32],
         query_seq: &'a [u8],
-        target_comp_sa: &'a [i64],
+        target_comp_sa: &'a [u32],
         target_comp_seq: &'a [u8],
         pairing: SeedPairing,
     ) -> Self {
@@ -458,7 +458,7 @@ impl<'a> ParallelSaSearcher<'a> {
     /// which sorts after all valid bases and are excluded from the U interval.
     fn partition_interval(
         &self,
-        sa: &[i64],
+        sa: &[u32],
         seq: &[u8],
         interval: SaInterval,
         offset: usize,
@@ -490,7 +490,7 @@ impl<'a> ParallelSaSearcher<'a> {
 /// value that sorts AFTER all valid bases. This ensures short suffixes don't appear
 /// in any valid base interval during partitioning.
 #[inline]
-fn partition_point(sa: &[i64], seq: &[u8], offset: usize, target: u8) -> usize {
+fn partition_point(sa: &[u32], seq: &[u8], offset: usize, target: u8) -> usize {
     sa.partition_point(|&idx| {
         let pos = idx as usize + offset;
         // Use 255 as sentinel for out-of-bounds (sorts after all bases)
@@ -520,13 +520,16 @@ pub fn complement_sequence(seq: &[u8]) -> Vec<u8> {
 }
 
 /// Build suffix array for a sequence
-pub fn build_suffix_array(seq: &[u8]) -> Vec<i64> {
+pub fn build_suffix_array(seq: &[u8]) -> Vec<u32> {
     SuffixArrayConstruction::for_text(seq)
         .in_owned_buffer()
         .single_threaded()
         .run()
         .expect("SA construction should not fail for valid sequences")
         .into_vec()
+        .into_iter()
+        .map(|x| x as u32)
+        .collect()
 }
 
 /// High-level seed finder that handles SA construction

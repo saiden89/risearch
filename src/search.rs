@@ -589,7 +589,7 @@ impl<'a> SaIndex<'a> {
     #[allow(clippy::too_many_arguments)]
     fn search_sa_simple(
         &self,
-        sa: &[i64],
+        sa: &[u32],
         text: &[u8],
         seed: &[u8],
         pairing: SeedPairing,
@@ -667,7 +667,7 @@ impl<'a> SaIndex<'a> {
     /// Helper to find range in SA for a specific character at offset
     fn get_sa_interval(
         &self,
-        sa: &[i64],
+        sa: &[u32],
         text: &[u8],
         start: usize,
         end: usize,

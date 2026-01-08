@@ -13,12 +13,12 @@ use needletail::Sequence;
 pub struct SequenceIndex {
     /// Sequence identifier.
     pub name: String,
-    /// Suffix array for the forward strand.
-    pub forward_sa: Vec<i64>,
-    /// Suffix array for the reverse strand.
-    pub reverse_sa: Vec<i64>,
+    /// Suffix array for the forward strand (u32 for 50% memory reduction).
+    pub forward_sa: Vec<u32>,
+    /// Suffix array for the reverse strand (u32 for 50% memory reduction).
+    pub reverse_sa: Vec<u32>,
     /// Normalized RNA sequence (lowercase, gaps removed, ambiguous bases as 'n')
-    pub sequence: Vec<u8>,
+    pub sequence: Vec<u8>, //TODO: seq abstraction
     /// Pre-computed reverse complement (avoids allocation on every access)
     pub sequence_rc: Vec<u8>,
 }
@@ -161,19 +161,37 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
                 );
             }
 
+            // TODO: Add feature flag for u64 SA to support sequences > 4.2B bases (e.g. some plant genomes)
+            if seq_norm.len() > u32::MAX as usize {
+                bail!(
+                    "Sequence '{}' too long for u32 suffix array ({} bases > {} max). \
+                     Consider chunking the sequence or using a future u64-enabled build.",
+                    id,
+                    seq_norm.len(),
+                    u32::MAX
+                );
+            }
+
             let seq_rc = seq_norm.as_slice().reverse_complement();
-            let sa_fwd = SuffixArrayConstruction::for_text(&seq_norm)
+
+            let sa_fwd: Vec<u32> = SuffixArrayConstruction::for_text(&seq_norm)
                 .in_owned_buffer()
                 .single_threaded()
                 .run()
                 .map_err(|e| anyhow!("Suffix array construction failed for '{}': {e:?}", id))?
-                .into_vec();
-            let sa_rev = SuffixArrayConstruction::for_text(&seq_rc)
+                .into_vec()
+                .into_iter()
+                .map(|x: i64| x as u32)
+                .collect();
+            let sa_rev: Vec<u32> = SuffixArrayConstruction::for_text(&seq_rc)
                 .in_owned_buffer()
                 .single_threaded()
                 .run()
                 .map_err(|e| anyhow!("Suffix array construction failed for '{}' (revcomp): {e:?}", id))?
-                .into_vec();
+                .into_vec()
+                .into_iter()
+                .map(|x: i64| x as u32)
+                .collect();
 
             Ok(Some(SequenceIndex {
                 name: id,
@@ -182,6 +200,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
                 sequence: seq_norm,
                 sequence_rc: seq_rc,
             }))
+
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -460,14 +479,14 @@ mod tests {
         let seq_idx = &result.sequences[0];
 
         // Check forward SA contains all indices
-        let mut forward_sorted: Vec<i64> = seq_idx.forward_sa.clone();
+        let mut forward_sorted: Vec<u32> = seq_idx.forward_sa.clone();
         forward_sorted.sort();
-        assert_eq!(forward_sorted, vec![0, 1, 2, 3]);
+        assert_eq!(forward_sorted, vec![0u32, 1, 2, 3]);
 
         // Check reverse SA contains all indices
-        let mut reverse_sorted: Vec<i64> = seq_idx.reverse_sa.clone();
+        let mut reverse_sorted: Vec<u32> = seq_idx.reverse_sa.clone();
         reverse_sorted.sort();
-        assert_eq!(reverse_sorted, vec![0, 1, 2, 3]);
+        assert_eq!(reverse_sorted, vec![0u32, 1, 2, 3]);
     }
 
     // ==================== write_index_file Tests ====================
