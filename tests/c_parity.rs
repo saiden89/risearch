@@ -47,6 +47,45 @@ fn test_parity(
     ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
 }
 
+/// Test SeedSpec interval format: -s start:end
+/// This tests the seed position (1-based) and length range within the query.
+/// TODO: Fix seedspec interval semantics - C and Rust differ
+#[rstest]
+#[ignore = "SeedSpec interval format not fully implemented yet"]
+fn test_parity_seedspec_interval(
+    #[values("1:8", "1:12", "2:10", "1:15")] seed_spec: &str,
+    #[values(0, 10, 20)] l: usize,
+) {
+    let root = workspace_root();
+    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+
+    let l_str = l.to_string();
+    let args = ["-l", &l_str, "-e", "100.0", "-s", seed_spec, "-p3"];
+
+    let test_name = format!("seedspec_{}_l{}", seed_spec.replace(':', "_"), l);
+    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+}
+
+/// Test SeedSpec interval with length: -s start:end/length
+/// TODO: Fix seedspec interval semantics - C and Rust differ
+#[rstest]
+#[ignore = "SeedSpec interval format not fully implemented yet"]
+fn test_parity_seedspec_interval_len(
+    #[values("1:12/6", "2:10/5", "1:15/7")] seed_spec: &str,
+    #[values(0, 10, 20)] l: usize,
+) {
+    let root = workspace_root();
+    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+
+    let l_str = l.to_string();
+    let args = ["-l", &l_str, "-e", "100.0", "-s", seed_spec, "-p3"];
+
+    let test_name = format!("seedspec_{}_l{}", seed_spec.replace([':', '/'], "_"), l);
+    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+}
+
 #[test]
 fn test_parity_alignment_repro() {
     let query = "ucaguucagcaggaacag";
