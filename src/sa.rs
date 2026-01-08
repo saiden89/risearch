@@ -58,7 +58,7 @@ fn validate_output_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-// TODO: this should adheto to Rust patterns, deuplicated code
+// TODO: This function should adhere to Rust patterns (e.g., move to seq.rs with trait)
 fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<u8>, NormalizationStats)> {
     let mut out = Vec::with_capacity(seq.len());
     let mut stats = NormalizationStats::default();
@@ -91,7 +91,7 @@ fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<u8>, Normalizatio
     Ok((out, stats))
 }
 
-// TODO: This probablu belongs in some trait
+// TODO: This probably belongs in some trait (IndexBuilder or similar)
 pub fn create_suffix_array(
     input_file: impl AsRef<Path>,
     output_file: impl AsRef<Path>,
