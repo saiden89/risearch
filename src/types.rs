@@ -508,6 +508,19 @@ impl From<String> for QueryId {
     }
 }
 
+/// Query with ID and sequence (borrowed for processing).
+#[derive(Debug, Clone, Copy)]
+pub struct Query<'a> {
+    pub id: &'a str,
+    pub seq: &'a [u8],
+}
+
+impl<'a> Query<'a> {
+    pub fn new(id: &'a str, seq: &'a [u8]) -> Self {
+        Self { id, seq }
+    }
+}
+
 /// Target sequence identifier (newtype for type safety).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct TargetId(pub String);

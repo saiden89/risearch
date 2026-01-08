@@ -546,7 +546,9 @@ fn search_core(
                 candidate.len,
                 candidate.strand
             );
-            if let Some(hit) = process_candidate(q_id, q_seq, candidate, &mut ctx) {
+            if let Some(hit) =
+                process_candidate(crate::types::Query::new(q_id, q_seq), candidate, &mut ctx)
+            {
                 trace!(
                     "{} q={}-{} t={}-{} E={:.2}",
                     SearchStage::Output,
@@ -719,8 +721,7 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
 }
 
 fn process_candidate(
-    q_id: &str,
-    q_seq: &[u8],
+    query: crate::types::Query<'_>,
     candidate: &SeedCandidate,
     ctx: &mut SearchContext<'_>,
 ) -> Option<SearchHit> {
@@ -741,7 +742,7 @@ fn process_candidate(
     trace!(
         "{} q_id={} t_idx={} q_pos={} t_start={} seed_len={} strand={:?}",
         SearchStage::Extend,
-        q_id,
+        query.id,
         t_idx,
         q_pos,
         t_start_idx,
@@ -763,7 +764,7 @@ fn process_candidate(
     }
 
     // Call extend_seed (or essentially reproduce its valuable logic).
-    let extension_result = extend_seed(ctx, q_seq, t_seq, candidate)?;
+    let extension_result = extend_seed(ctx, query.seq, t_seq, candidate)?;
 
     let ext = extension_result;
     let score = ext.score;
@@ -822,7 +823,7 @@ fn process_candidate(
     };
 
     Some(SearchHit {
-        query_id: q_id.into(),
+        query_id: query.id.into(),
         target_id: ctx.index.get_id(t_idx).into(),
 
         q_start: final_q_start,
