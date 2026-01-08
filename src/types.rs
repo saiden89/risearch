@@ -108,7 +108,102 @@ impl Base {
 /// Number of nucleotide types (Gap, A, G, C, U, N)
 pub const BASE_COUNT: usize = 6;
 
+// =============================================================================
+// PAIRING - Base pair classification for alignments
+// =============================================================================
+
+/// Classification of a query-target base pair in an alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pairing {
+    Match(Base, Base),    // Watson-Crick pair (A-U, G-C)
+    Wobble(Base, Base),   // G-U wobble pair
+    Mismatch(Base, Base), // Non-complementary bases
+    GapQuery(Base),       // Gap in Query, Base in Target
+    GapTarget(Base),      // Gap in Target, Base in Query
+}
+
+impl Pairing {
+    /// Construct from raw bytes (convenience for callsites that have bytes)
+    #[inline]
+    pub fn from_bytes(q_byte: u8, t_byte: u8) -> Self {
+        Self::from_bases(Base::from_byte(q_byte), Base::from_byte(t_byte))
+    }
+
+    /// Construct from Base enums (preferred)
+    #[inline]
+    pub fn from_bases(q: Base, t: Base) -> Self {
+        match (q, t) {
+            (Base::G, Base::C) | (Base::C, Base::G) | (Base::A, Base::U) | (Base::U, Base::A) => {
+                Pairing::Match(q, t)
+            }
+            (Base::G, Base::U) | (Base::U, Base::G) => Pairing::Wobble(q, t),
+            _ => Pairing::Mismatch(q, t),
+        }
+    }
+
+    /// Get the fingerprint character for this pairing
+    #[inline]
+    pub fn to_char(&self) -> char {
+        match self {
+            Pairing::Match(_, _) => 'P',
+            Pairing::Wobble(_, _) => 'W',
+            Pairing::Mismatch(_, _) => 'U',
+            Pairing::GapQuery(_) => 'T',  // Gap in Query = Target Bulge
+            Pairing::GapTarget(_) => 'Q', // Gap in Target = Query Bulge
+        }
+    }
+
+    /// Get the target base character for alignment display
+    #[inline]
+    pub fn target_char(&self) -> char {
+        match self {
+            Pairing::Match(_, t)
+            | Pairing::Wobble(_, t)
+            | Pairing::Mismatch(_, t)
+            | Pairing::GapQuery(t) => t.as_char().to_ascii_lowercase(),
+            Pairing::GapTarget(_) => '-',
+        }
+    }
+
+    /// Get the query base character for alignment display
+    #[inline]
+    pub fn query_char(&self) -> char {
+        match self {
+            Pairing::Match(q, _)
+            | Pairing::Wobble(q, _)
+            | Pairing::Mismatch(q, _)
+            | Pairing::GapTarget(q) => q.as_char().to_ascii_lowercase(),
+            Pairing::GapQuery(_) => '-',
+        }
+    }
+
+    /// Get query base (if present)
+    #[inline]
+    pub fn query_base(&self) -> Option<Base> {
+        match self {
+            Pairing::Match(q, _)
+            | Pairing::Wobble(q, _)
+            | Pairing::Mismatch(q, _)
+            | Pairing::GapTarget(q) => Some(*q),
+            Pairing::GapQuery(_) => None,
+        }
+    }
+
+    /// Get target base (if present)
+    #[inline]
+    pub fn target_base(&self) -> Option<Base> {
+        match self {
+            Pairing::Match(_, t)
+            | Pairing::Wobble(_, t)
+            | Pairing::Mismatch(_, t)
+            | Pairing::GapQuery(t) => Some(*t),
+            Pairing::GapTarget(_) => None,
+        }
+    }
+}
+
 /// Strand direction for search
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
     Forward,

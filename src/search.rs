@@ -9,7 +9,7 @@ use crate::dsm::{EnergyModel, PAIR_MAT};
 use crate::sa::SaIndexFile;
 use crate::seed::SeedCandidate;
 use crate::seq::Seq;
-use crate::types::{Base, Energy, QueryId, SeedPairing, Strand, TargetId};
+use crate::types::{Base, Energy, Pairing, QueryId, SeedPairing, Strand, TargetId};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -57,88 +57,6 @@ pub enum FilterReason {
     // Deduplication (deduplicate_hits)
     DedupExactMatch,
     DedupContainedByShadow,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pairing {
-    Match(Base, Base),    // e.g. (G, C)
-    Wobble(Base, Base),   // e.g. (G, U)
-    Mismatch(Base, Base), // e.g. (A, A)
-    GapQuery(Base),       // Gap in Query, Base in Target
-    GapTarget(Base),      // Gap in Target, Base in Query
-}
-
-impl Pairing {
-    /// Construct from raw bytes (convenience for callsites that have bytes)
-    pub fn from_bytes(q_byte: u8, t_byte: u8) -> Self {
-        Self::from_bases(Base::from_byte(q_byte), Base::from_byte(t_byte))
-    }
-
-    /// Construct from Base enums (preferred)
-    pub fn from_bases(q: Base, t: Base) -> Self {
-        match (q, t) {
-            (Base::G, Base::C) | (Base::C, Base::G) | (Base::A, Base::U) | (Base::U, Base::A) => {
-                Pairing::Match(q, t)
-            }
-            (Base::G, Base::U) | (Base::U, Base::G) => Pairing::Wobble(q, t),
-            _ => Pairing::Mismatch(q, t),
-        }
-    }
-
-    /// Get the fingerprint character for this pairing
-    pub fn to_char(&self) -> char {
-        match self {
-            Pairing::Match(_, _) => 'P',
-            Pairing::Wobble(_, _) => 'W',
-            Pairing::Mismatch(_, _) => 'U',
-            Pairing::GapQuery(_) => 'T', // Gap in Query = Target Bulge ('T')
-            Pairing::GapTarget(_) => 'Q', // Gap in Target = Query Bulge ('Q')
-        }
-    }
-
-    /// Get the target base character for alignment display
-    pub fn target_char(&self) -> char {
-        match self {
-            Pairing::Match(_, t)
-            | Pairing::Wobble(_, t)
-            | Pairing::Mismatch(_, t)
-            | Pairing::GapQuery(t) => t.as_char().to_ascii_lowercase(),
-            Pairing::GapTarget(_) => '-',
-        }
-    }
-
-    /// Get the query base character for alignment display
-    pub fn query_char(&self) -> char {
-        match self {
-            Pairing::Match(q, _)
-            | Pairing::Wobble(q, _)
-            | Pairing::Mismatch(q, _)
-            | Pairing::GapTarget(q) => q.as_char().to_ascii_lowercase(),
-            Pairing::GapQuery(_) => '-',
-        }
-    }
-
-    /// Get query base (if present)
-    pub fn query_base(&self) -> Option<Base> {
-        match self {
-            Pairing::Match(q, _)
-            | Pairing::Wobble(q, _)
-            | Pairing::Mismatch(q, _)
-            | Pairing::GapTarget(q) => Some(*q),
-            Pairing::GapQuery(_) => None,
-        }
-    }
-
-    /// Get target base (if present)
-    pub fn target_base(&self) -> Option<Base> {
-        match self {
-            Pairing::Match(_, t)
-            | Pairing::Wobble(_, t)
-            | Pairing::Mismatch(_, t)
-            | Pairing::GapQuery(t) => Some(*t),
-            Pairing::GapTarget(_) => None,
-        }
-    }
 }
 
 use std::ops::Range;
