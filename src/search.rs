@@ -737,9 +737,7 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
         .normalize(q_seq.len())
         .map_err(|e| anyhow!("Invalid seed spec for query length: {}", e))?;
 
-    let mut candidates = Vec::new();
     let q_len = q_seq.len();
-
     let (start, end, mi_len) = seed_len_specs;
     let start0 = start - 1;
     let end0 = end - 1;
@@ -763,9 +761,181 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
             mi_len,
             q_len
         );
-        return Ok(candidates);
+        return Ok(Vec::new());
     }
 
+    // Use parallel SA when SA_PARALLEL=1
+    if use_parallel_sa() {
+        return find_seeds_parallel_sa(q_seq, ctx, mi_len, start0, end0);
+    }
+
+    // Original iterative path
+    find_seeds_iterative(q_seq, ctx, mi_len, start0, end0)
+}
+
+/// Parallel SA seed finding (SA_PARALLEL=1)
+/// Builds query SA once and uses ParallelSaSearcher for each target
+fn find_seeds_parallel_sa(
+    q_seq: &[u8],
+    ctx: &mut SearchContext<'_>,
+    mi_len: usize,
+    start0: usize,
+    end0: usize,
+) -> Result<Vec<SeedCandidate>> {
+    use crate::parallel_sa::{ParallelSaSearcher, build_suffix_array, complement_sequence};
+
+    let q_len = q_seq.len();
+    let mut candidates = Vec::new();
+    let pairing = ctx.args.seed.pairing;
+
+    // Normalize query to lowercase DNA (t not u) for SA construction
+    // This matches the index format
+    let q_norm: Vec<u8> = q_seq
+        .iter()
+        .map(|&b| {
+            let lower = b.to_ascii_lowercase();
+            if lower == b'u' { b't' } else { lower }
+        })
+        .collect();
+
+    // IMPORTANT: RNA pairing is antiparallel. The original search takes seed RC
+    // and searches target. For parallel SA to work correctly, we need to use
+    // the REVERSE COMPLEMENT of the query so that position matches align.
+    // Query RC position i matches target position j means:
+    // query[q_len - i - seed_len] pairs with target[j]
+    let q_rc = reverse_complement_dna(&q_norm);
+    let q_rc_sa = build_suffix_array(&q_rc);
+
+    trace!(
+        "[SA_PARALLEL] Built query RC SA, len={} q_rc={:?}",
+        q_rc_sa.len(),
+        String::from_utf8_lossy(&q_rc)
+    );
+
+    // For each target sequence
+    for (t_idx, seq_entry) in ctx.index.index.sequences.iter().enumerate() {
+        // Forward strand: match query RC against target directly
+        // This mirrors C's approach: RC(seed) searched in target
+        trace!(
+            "[SA_PARALLEL] Target: {:?}",
+            String::from_utf8_lossy(&seq_entry.sequence)
+        );
+        let t_sa = build_suffix_array(&seq_entry.sequence);
+
+        // Search all seed lengths
+        for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
+            let searcher =
+                ParallelSaSearcher::new(&q_rc_sa, &q_rc, &t_sa, &seq_entry.sequence, pairing);
+
+            let matches = searcher.find_seeds(seed_len);
+
+            // Convert matches to candidates
+            // Note: q_rc_pos is position in RC sequence. To get original query position:
+            // If seed starts at q_rc_pos in RC, it corresponds to position (q_len - q_rc_pos - seed_len) in original
+            for m in &matches {
+                for qi in m.query_interval.start..m.query_interval.end {
+                    let q_rc_pos = q_rc_sa[qi] as usize;
+                    // Bounds check on RC sequence
+                    if q_rc_pos + seed_len > q_len {
+                        continue;
+                    }
+                    // Convert RC position to original query position
+                    let q_pos = q_len - q_rc_pos - seed_len;
+
+                    // Filter: q_pos must be in valid seed range
+                    if q_pos < start0 || q_pos > end0.saturating_sub(seed_len.saturating_sub(1)) {
+                        continue;
+                    }
+                    // Filter: skip seeds with N (check original query)
+                    if q_norm[q_pos..q_pos + seed_len].contains(&b'N')
+                        || q_norm[q_pos..q_pos + seed_len].contains(&b'n')
+                    {
+                        ctx.stats.record_filter(FilterReason::SeedContainsN);
+                        continue;
+                    }
+
+                    for ti in m.target_interval.start..m.target_interval.end {
+                        let t_pos = t_sa[ti] as usize;
+                        if t_pos + seed_len > seq_entry.sequence.len() {
+                            continue;
+                        }
+                        candidates.push(SeedCandidate {
+                            query_pos: q_pos,
+                            target_idx: t_idx,
+                            target_start: t_pos,
+                            len: seed_len,
+                            strand: Strand::Forward,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Reverse strand: match query RC against target RC directly
+        let t_rc = reverse_complement_dna(&seq_entry.sequence);
+        let t_rc_sa = build_suffix_array(&t_rc);
+
+        for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
+            let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, &t_rc_sa, &t_rc, pairing);
+
+            let matches = searcher.find_seeds(seed_len);
+
+            for m in &matches {
+                for qi in m.query_interval.start..m.query_interval.end {
+                    let q_rc_pos = q_rc_sa[qi] as usize;
+                    if q_rc_pos + seed_len > q_len {
+                        continue;
+                    }
+                    // Convert RC position to original query position
+                    let q_pos = q_len - q_rc_pos - seed_len;
+
+                    if q_pos < start0 || q_pos > end0.saturating_sub(seed_len.saturating_sub(1)) {
+                        continue;
+                    }
+                    if q_norm[q_pos..q_pos + seed_len].contains(&b'N')
+                        || q_norm[q_pos..q_pos + seed_len].contains(&b'n')
+                    {
+                        ctx.stats.record_filter(FilterReason::SeedContainsN);
+                        continue;
+                    }
+
+                    for ti in m.target_interval.start..m.target_interval.end {
+                        let t_pos = t_rc_sa[ti] as usize;
+                        if t_pos + seed_len > t_rc.len() {
+                            continue;
+                        }
+                        candidates.push(SeedCandidate {
+                            query_pos: q_pos,
+                            target_idx: t_idx,
+                            target_start: t_pos,
+                            len: seed_len,
+                            strand: Strand::Reverse,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    debug!(
+        "[SA_PARALLEL] {} generated {} candidates",
+        SearchStage::Seed,
+        candidates.len()
+    );
+
+    Ok(candidates)
+}
+
+/// Original iterative seed finding
+fn find_seeds_iterative(
+    q_seq: &[u8],
+    ctx: &mut SearchContext<'_>,
+    mi_len: usize,
+    start0: usize,
+    end0: usize,
+) -> Result<Vec<SeedCandidate>> {
+    let mut candidates = Vec::new();
+    let q_len = q_seq.len();
     let last_start = end0.saturating_sub(mi_len - 1);
     let n_skipped = 0usize;
     let pairing = ctx.args.seed.pairing;
