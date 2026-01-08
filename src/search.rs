@@ -7,7 +7,7 @@ use crate::args::SearchArgs;
 use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT};
 use crate::sa::SaIndexFile;
-use crate::seed::SeedCandidate;
+use crate::seed::{SeedCandidate, build_seed_alignment};
 use crate::seq::Seq;
 use crate::types::{Base, Energy, Pairing, QueryId, SeedPairing, Strand, TargetId};
 
@@ -841,7 +841,7 @@ fn deduplicate_hits(
     kept
 }
 
-//TODO: this also belongs to seed
+//TODO: this also belongs to seed (requires decoupling from SearchContext)
 
 fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec<SeedCandidate>> {
     let seed_len_specs = ctx
@@ -1074,26 +1074,6 @@ pub struct ExtensionResult {
     pub l_t: usize,
     pub r_q: usize,
     pub r_t: usize,
-}
-
-// TODO this probably belongs to seed.rs
-/// Build alignment for the seed region (used by both extension and seed-only paths)
-fn build_seed_alignment(
-    query: &Seq<'_>,
-    target: &Seq<'_>,
-    q_pos: usize,
-    t_match_end: usize,
-    len: usize,
-) -> Vec<Pairing> {
-    let mut seed_alignment = Vec::with_capacity(len);
-    for n in 0..len {
-        let q_idx = q_pos + n;
-        let t_idx = t_match_end.saturating_sub(n);
-        let q_b = query.base(q_idx);
-        let t_b = target.base(t_idx);
-        seed_alignment.push(Pairing::from_bases(q_b, t_b));
-    }
-    seed_alignment
 }
 
 fn extend_seed(
