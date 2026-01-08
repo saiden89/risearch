@@ -1,5 +1,22 @@
 use std::str::FromStr;
 
+use crate::types::Strand;
+
+/// A candidate seed match found during suffix array search.
+#[derive(Debug, Clone)]
+pub struct SeedCandidate {
+    /// Position in query sequence (0-based)
+    pub query_pos: usize,
+    /// Index of target sequence in the index
+    pub target_idx: usize,
+    /// Start position in target sequence (0-based)
+    pub target_start: usize,
+    /// Length of the seed match
+    pub len: usize,
+    /// Strand of the match (forward or reverse)
+    pub strand: Strand,
+}
+
 /// Representation of the `-s` flag:
 /// - `-s l`              => SeedSpec::Length(l)
 /// - `-s m:n`            => SeedSpec::Interval { start: m, end: n, length: None }
@@ -8,9 +25,9 @@ use std::str::FromStr;
 pub enum SeedSpec {
     Length(i64),
     Interval {
-        start: i64,
+        start: i64, //TODO: this is probbly a range
         end: i64,
-        length: Option<i64>,
+        length: Option<i64>, // TODO: strictly positive
     },
 }
 

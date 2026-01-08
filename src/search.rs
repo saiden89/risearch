@@ -2,13 +2,12 @@ use anyhow::{Context, Result, anyhow};
 use log::{debug, info, trace, warn};
 use std::io::Write;
 use std::path::Path;
-use std::str::FromStr;
 
 use crate::args::SearchArgs;
 use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT};
 use crate::sa::SaIndexFile;
-use crate::seed::SeedSpec;
+use crate::seed::SeedCandidate;
 use crate::seq::Seq;
 use crate::types::{Base, Energy, QueryId, SeedPairing, Strand, TargetId};
 
@@ -287,14 +286,6 @@ impl Sequence for [u8] {
             .map(|&b| Base::from_byte(b).complement().to_u8_upper())
             .collect()
     }
-}
-
-pub struct SeedCandidate {
-    pub query_pos: usize,
-    pub target_idx: usize,
-    pub target_start: usize, // 0-based index in target
-    pub len: usize,
-    pub strand: Strand,
 }
 
 #[derive(Debug, Clone)]
@@ -935,9 +926,10 @@ fn deduplicate_hits(
 //TODO: this also belongs to seed
 
 fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec<SeedCandidate>> {
-    let seed_spec_str = ctx.args.seed.seed.as_deref().unwrap_or("17");
-    let seed_len_specs = SeedSpec::from_str(seed_spec_str)
-        .map_err(|e| anyhow!("Failed to parse seed specification: {}", e))?
+    let seed_len_specs = ctx
+        .args
+        .seed
+        .seed
         .normalize(q_seq.len())
         .map_err(|e| anyhow!("Invalid seed spec for query length: {}", e))?;
 
@@ -949,9 +941,9 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
     let end0 = end - 1;
 
     trace!(
-        "{} spec={} q_len={} range=({},{}) mi_len={} pairing={:?}",
+        "{} spec={:?} q_len={} range=({},{}) mi_len={} pairing={:?}",
         SearchStage::Seed,
-        seed_spec_str,
+        ctx.args.seed.seed,
         q_len,
         start,
         end,

@@ -60,6 +60,8 @@ pub enum Backend {
     Sa,
 }
 
+use crate::seed::SeedSpec;
+
 /// Arguments for seed generation
 #[derive(clap::Args, Debug, Clone)]
 pub struct SeedArgs {
@@ -70,7 +72,7 @@ pub struct SeedArgs {
         value_name = "start:end/length",
         default_value = "6"
     )]
-    pub seed: Option<String>, // TODO: this should be a SeedSpec
+    pub seed: SeedSpec,
 
     /// Consider G-U wobble pairs as mismatch within the seed (only for locating seeds, energy model is not affected)
     #[arg(
