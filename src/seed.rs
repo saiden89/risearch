@@ -316,7 +316,8 @@ pub fn find_seeds_in_target(
 
     // Forward strand: use pre-built forward_sa
     let t_sa = &target.forward_sa;
-    for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
+    // Iterate all seed lengths from mi_len to q_len; position filter handles interval
+    for seed_len in mi_len..=q_len {
         let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_sa, &target.sequence, pairing);
         let matches = searcher.find_seeds(seed_len);
 
@@ -327,7 +328,9 @@ pub fn find_seeds_in_target(
                     continue;
                 }
                 let q_pos = q_len - q_rc_pos - seed_len;
-                if q_pos < start0 || q_pos > end0.saturating_sub(seed_len.saturating_sub(1)) {
+                // Check: seed must start >= start0 AND end <= end0
+                // seed_end = q_pos + seed_len - 1, so check q_pos + seed_len <= end0 + 1 = end1
+                if q_pos < start0 || q_pos + seed_len > end1 {
                     continue;
                 }
                 if q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
@@ -354,7 +357,7 @@ pub fn find_seeds_in_target(
     // Reverse strand: use pre-built reverse_sa and sequence_rc
     let t_rc_sa = &target.reverse_sa;
     let t_rc = &target.sequence_rc;
-    for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
+    for seed_len in mi_len..=q_len {
         let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_rc_sa, t_rc, pairing);
         let matches = searcher.find_seeds(seed_len);
 
@@ -365,7 +368,8 @@ pub fn find_seeds_in_target(
                     continue;
                 }
                 let q_pos = q_len - q_rc_pos - seed_len;
-                if q_pos < start0 || q_pos > end0.saturating_sub(seed_len.saturating_sub(1)) {
+                // Check: seed must start >= start0 AND end <= end0
+                if q_pos < start0 || q_pos + seed_len > end1 {
                     continue;
                 }
                 if q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
