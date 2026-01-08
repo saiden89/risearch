@@ -322,8 +322,8 @@ pub fn find_seeds_in_target(
         let matches = searcher.find_seeds(seed_len);
 
         for m in &matches {
-            for qi in m.query_interval.start..m.query_interval.end {
-                let q_rc_pos = q_rc_sa[qi] as usize;
+            for &q_rc_pos_i32 in &q_rc_sa[m.query_interval.start..m.query_interval.end] {
+                let q_rc_pos = q_rc_pos_i32 as usize;
                 if q_rc_pos + seed_len > q_len {
                     continue;
                 }
@@ -337,8 +337,8 @@ pub fn find_seeds_in_target(
                     continue;
                 }
 
-                for ti in m.target_interval.start..m.target_interval.end {
-                    let t_pos = t_sa[ti] as usize;
+                for &t_pos_i32 in &t_sa[m.target_interval.start..m.target_interval.end] {
+                    let t_pos = t_pos_i32 as usize;
                     if t_pos + seed_len > target.sequence.len() {
                         continue;
                     }
@@ -362,8 +362,8 @@ pub fn find_seeds_in_target(
         let matches = searcher.find_seeds(seed_len);
 
         for m in &matches {
-            for qi in m.query_interval.start..m.query_interval.end {
-                let q_rc_pos = q_rc_sa[qi] as usize;
+            for &q_rc_pos_i32 in &q_rc_sa[m.query_interval.start..m.query_interval.end] {
+                let q_rc_pos = q_rc_pos_i32 as usize;
                 if q_rc_pos + seed_len > q_len {
                     continue;
                 }
@@ -376,8 +376,8 @@ pub fn find_seeds_in_target(
                     continue;
                 }
 
-                for ti in m.target_interval.start..m.target_interval.end {
-                    let t_pos = t_rc_sa[ti] as usize;
+                for &t_pos_i32 in &t_rc_sa[m.target_interval.start..m.target_interval.end] {
+                    let t_pos = t_pos_i32 as usize;
                     if t_pos + seed_len > t_rc.len() {
                         continue;
                     }

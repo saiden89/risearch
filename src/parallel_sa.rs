@@ -594,14 +594,14 @@ impl SeedFinder {
         // Filter out positions where suffix is shorter than seed_len
         let mut positions = Vec::new();
         for m in &matches {
-            for qi in m.query_interval.start..m.query_interval.end {
-                let q_pos = query_sa[qi] as usize;
+            for &q_pos_i32 in &query_sa[m.query_interval.start..m.query_interval.end] {
+                let q_pos = q_pos_i32 as usize;
                 // Skip if query suffix too short
                 if q_pos + seed_len > query_seq.len() {
                     continue;
                 }
-                for ti in m.target_interval.start..m.target_interval.end {
-                    let t_pos = target_comp_sa[ti] as usize;
+                for &t_pos_i32 in &target_comp_sa[m.target_interval.start..m.target_interval.end] {
+                    let t_pos = t_pos_i32 as usize;
                     // Skip if target suffix too short
                     if t_pos + seed_len > target_comp.len() {
                         continue;
