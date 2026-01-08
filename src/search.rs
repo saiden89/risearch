@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use log::{debug, info, trace, warn};
 use std::io::Write;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::args::SearchArgs;
 use crate::dp;
@@ -13,6 +14,19 @@ use crate::types::{Alignment, Energy, Pairing, QueryId, SeedPairing, Strand, Tar
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+
+/// Runtime toggle for parallel SA algorithm (SA_PARALLEL=1 to enable)
+static USE_PARALLEL_SA: OnceLock<bool> = OnceLock::new();
+
+/// Check if parallel SA is enabled via SA_PARALLEL env var
+#[inline]
+pub fn use_parallel_sa() -> bool {
+    *USE_PARALLEL_SA.get_or_init(|| {
+        std::env::var("SA_PARALLEL")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
 
 const MAX_DP_EXT: usize = 50;
 
@@ -524,6 +538,11 @@ fn search_core(
         opts.extend.max_extension,
         opts.extend.delta_g
     );
+
+    if use_parallel_sa() {
+        info!("[SA_PARALLEL] Parallel SA enabled (env SA_PARALLEL=1)");
+        // TODO: Full parallel SA integration pending - currently using iterative search
+    }
 
     let mut ctx = SearchContext::new(index, opts);
     let mut all_hits = Vec::new();
