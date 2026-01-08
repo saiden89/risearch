@@ -530,21 +530,6 @@ impl<'a> ParallelSaSearcher<'a> {
     }
 }
 
-/// Binary search to find first position where character at offset >= target
-///
-/// When a suffix is too short (position + offset >= seq.len()), we use 255 as a sentinel
-/// value that sorts AFTER all valid bases. This ensures short suffixes don't appear
-/// in any valid base interval during partitioning.
-#[inline]
-fn partition_point(sa: &[u32], seq: &[u8], offset: usize, target: u8) -> usize {
-    sa.partition_point(|&idx| {
-        let pos = idx as usize + offset;
-        // Use 255 as sentinel for out-of-bounds (sorts after all bases)
-        let c = if pos < seq.len() { seq[pos] } else { 255 };
-        c < target
-    })
-}
-
 // ============================================================================
 // HIGH-LEVEL API
 // ============================================================================
