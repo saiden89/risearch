@@ -500,8 +500,8 @@ impl<'a> ParallelSaSearcher<'a> {
 // ============================================================================
 /// Compute the complement of a sequence (A<->U, C<->G)
 pub fn complement_sequence(seq: &[u8]) -> Vec<u8> {
-    use crate::types::BYTE_COMPLEMENT;
-    seq.iter().map(|&b| BYTE_COMPLEMENT[b as usize]).collect()
+    use crate::types::COMPLEMENT;
+    seq.iter().map(|&b| COMPLEMENT[b as usize]).collect()
 }
 
 /// Build suffix array for a sequence

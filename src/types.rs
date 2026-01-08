@@ -84,7 +84,7 @@ static BASE_COMPLEMENT: [Base; 6] = [Base::Gap, Base::U, Base::C, Base::G, Base:
 
 /// Byte → complement byte (256-entry LUT for direct ASCII lookup)
 /// A<->U/T, C<->G, N->N, others->N (all lowercase output)
-pub static BYTE_COMPLEMENT: [u8; 256] = {
+pub static COMPLEMENT: [u8; 256] = {
     let mut lut = [b'n'; 256];
     lut[b'a' as usize] = b't';
     lut[b'A' as usize] = b't';
