@@ -8,8 +8,8 @@ use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT};
 use crate::sa::SaIndexFile;
 use crate::seed::{SeedCandidate, build_seed_alignment};
-use crate::seq::Seq;
-use crate::types::{Alignment, Base, Energy, Pairing, QueryId, SeedPairing, Strand, TargetId};
+use crate::seq::{Seq, reverse_complement_dna, reverse_complement_rna};
+use crate::types::{Alignment, Energy, Pairing, QueryId, SeedPairing, Strand, TargetId};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -72,33 +72,6 @@ pub struct SearchStats {
 impl SearchStats {
     pub fn record_filter(&mut self, reason: FilterReason) {
         *self.filtered.entry(reason).or_insert(0) += 1;
-    }
-}
-
-pub trait Sequence {
-    fn reverse_complement_dna(&self) -> Vec<u8>;
-    fn reverse_complement_rna(&self) -> Vec<u8>;
-}
-
-impl Sequence for [u8] {
-    fn reverse_complement_dna(&self) -> Vec<u8> {
-        self.iter()
-            .rev()
-            .map(|&b| {
-                let c = Base::from_byte(b).complement();
-                match c {
-                    Base::U => b't',
-                    _ => c.to_u8_upper().to_ascii_lowercase(),
-                }
-            })
-            .collect()
-    }
-
-    fn reverse_complement_rna(&self) -> Vec<u8> {
-        self.iter()
-            .rev()
-            .map(|&b| Base::from_byte(b).complement().to_u8_upper())
-            .collect()
     }
 }
 
@@ -339,7 +312,7 @@ impl<'a> SaIndex<'a> {
             let fwd_count = candidates.len() - fwd_count_before;
 
             // 2. Search REVERSE COMPLEMENT
-            let rc_seq = seq_idx.sequence.reverse_complement_dna();
+            let rc_seq = reverse_complement_dna(&seq_idx.sequence);
             let rc_count_before = candidates.len();
 
             self.search_sa_simple(
@@ -377,9 +350,7 @@ impl<'a> SaIndex<'a> {
     }
 
     pub fn get_sequence_rc(&self, seq_idx: usize) -> Vec<u8> {
-        self.index.sequences[seq_idx]
-            .sequence
-            .reverse_complement_dna()
+        reverse_complement_dna(&self.index.sequences[seq_idx].sequence)
     }
 
     pub fn get_id(&self, seq_idx: usize) -> &str {
@@ -799,7 +770,7 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
             }
 
             // Index search (RC of seed)
-            let seed_rc = seed_seq.reverse_complement_rna();
+            let seed_rc = reverse_complement_rna(seed_seq);
             // find_candidates returns Vec<SeedCandidate> now
 
             let mut hits = ctx.index.find_candidates(&seed_rc, pairing);

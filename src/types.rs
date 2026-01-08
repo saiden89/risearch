@@ -34,6 +34,44 @@ static BYTE_TO_BASE: [Base; 256] = {
     table
 };
 
+/// Static lookup table for RNA reverse complement (byte → complemented byte).
+/// Single lookup, no enum conversion, SIMD-vectorizable.
+/// A↔U, G↔C, unknown→N, outputs uppercase.
+pub static RC_RNA_TABLE: [u8; 256] = {
+    let mut t = [b'N'; 256];
+    t[b'A' as usize] = b'U';
+    t[b'a' as usize] = b'U';
+    t[b'U' as usize] = b'A';
+    t[b'u' as usize] = b'A';
+    t[b'T' as usize] = b'A';
+    t[b't' as usize] = b'A';
+    t[b'G' as usize] = b'C';
+    t[b'g' as usize] = b'C';
+    t[b'C' as usize] = b'G';
+    t[b'c' as usize] = b'G';
+    t[b'-' as usize] = b'-';
+    t[b'.' as usize] = b'-';
+    t
+};
+
+/// DNA reverse complement LUT: byte → complemented lowercase byte (T not U).
+pub static RC_DNA_TABLE: [u8; 256] = {
+    let mut t = [b'n'; 256];
+    t[b'A' as usize] = b't';
+    t[b'a' as usize] = b't';
+    t[b'U' as usize] = b'a';
+    t[b'u' as usize] = b'a';
+    t[b'T' as usize] = b'a';
+    t[b't' as usize] = b'a';
+    t[b'G' as usize] = b'c';
+    t[b'g' as usize] = b'c';
+    t[b'C' as usize] = b'g';
+    t[b'c' as usize] = b'g';
+    t[b'-' as usize] = b'-';
+    t[b'.' as usize] = b'-';
+    t
+};
+
 impl Base {
     /// Convert ASCII nucleotide byte to Base enum via lookup table.
     #[inline(always)]
@@ -107,6 +145,51 @@ impl Base {
 
 /// Number of nucleotide types (Gap, A, G, C, U, N)
 pub const BASE_COUNT: usize = 6;
+
+// =============================================================================
+// SPAN - Lightweight region reference
+// =============================================================================
+
+/// Lightweight, Copy-able reference to a sequence region.
+///
+/// 16 bytes total: no lifetime, cache-optimal for batch processing.
+/// Use `seq_id` to look up actual sequence data from an index.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Span {
+    /// Start position in sequence (0-based, inclusive)
+    pub start: u32,
+    /// End position in sequence (0-based, exclusive)
+    pub end: u32,
+    /// Index into sequence database (e.g., target index)
+    pub seq_id: u32,
+    /// Strand direction
+    pub strand: Strand,
+}
+
+impl Span {
+    /// Create a new Span
+    #[inline]
+    pub const fn new(seq_id: u32, start: u32, end: u32, strand: Strand) -> Self {
+        Self {
+            start,
+            end,
+            seq_id,
+            strand,
+        }
+    }
+
+    /// Length of the region
+    #[inline]
+    pub const fn len(&self) -> u32 {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Check if span is empty
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.start >= self.end
+    }
+}
 
 // =============================================================================
 // PAIRING - Base pair classification for alignments
@@ -331,7 +414,7 @@ impl Alignment {
 
 /// Strand direction for search
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Strand {
     Forward,
     Reverse,
