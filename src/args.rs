@@ -60,7 +60,7 @@ pub enum Backend {
     Sa,
 }
 
-use crate::seed::SeedSpec;
+use crate::seed::{MismatchSpec, SeedSpec};
 
 /// Arguments for seed generation
 #[derive(clap::Args, Debug, Clone)]
@@ -94,7 +94,7 @@ pub struct SeedArgs {
         value_name = "c:p",
         default_value = "0:0"
     )]
-    pub mismatch_seed: Option<String>, // TODO: this should be a MismatchSpec
+    pub mismatch_seed: MismatchSpec,
 }
 
 /// Arguments for seed extension and scoring

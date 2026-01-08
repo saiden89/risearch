@@ -17,6 +17,52 @@ pub struct SeedCandidate {
     pub strand: Strand,
 }
 
+/// Representation of the `-m` (mismatch) flag.
+///
+/// Format: `c:p` where:
+/// - `c` = max number of mismatches allowed in seed
+/// - `p` = min number of consecutive matches required at seed start/end
+///
+/// Example: `-m 1:3` allows 1 mismatch with 3 consecutive matches at ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MismatchSpec {
+    /// Maximum number of mismatches allowed in seed
+    pub max_mismatches: u32,
+    /// Minimum consecutive matches required at seed start/end
+    pub min_consecutive: u32,
+}
+
+impl FromStr for MismatchSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err("empty mismatch spec".into());
+        }
+
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 2 {
+            return Err(format!(
+                "invalid mismatch spec '{}': expected 'c:p' format",
+                s
+            ));
+        }
+
+        let max_mismatches = parts[0]
+            .parse::<u32>()
+            .map_err(|e| format!("invalid max mismatches: {}", e))?;
+        let min_consecutive = parts[1]
+            .parse::<u32>()
+            .map_err(|e| format!("invalid min consecutive: {}", e))?;
+
+        Ok(MismatchSpec {
+            max_mismatches,
+            min_consecutive,
+        })
+    }
+}
+
 /// Representation of the `-s` flag:
 /// - `-s l`              => SeedSpec::Length(l)
 /// - `-s m:n`            => SeedSpec::Interval { start: m, end: n, length: None }
@@ -25,9 +71,9 @@ pub struct SeedCandidate {
 pub enum SeedSpec {
     Length(i64),
     Interval {
-        start: i64, //TODO: this is probbly a range
+        start: i64, // TODO: consider using RangeInclusive<i64>
         end: i64,
-        length: Option<i64>, // TODO: strictly positive
+        length: Option<i64>, // TODO: enforce strictly positive via newtype
     },
 }
 
