@@ -864,6 +864,17 @@ fn extend_seed(
     let len = candidate.len;
     let opts = &ctx.args.extend;
 
+    // Get interval bounds from SeedSpec for maximality constraint
+    // For -s 8: interval is [0, q_len), maximality check uses full query
+    // For -s 1:8: interval is [0, 8), seeds at edges are maximal within interval
+    let (interval_start, interval_end) = ctx
+        .args
+        .seed
+        .seed
+        .normalize(q_seq.len())
+        .map(|(s1, e1, _)| (s1 - 1, e1)) // Convert to 0-based start, exclusive end
+        .unwrap_or((0, q_seq.len())); // Fallback: full query
+
     // Wrap sequences for clean base access (used throughout function)
     let query = Seq::forward(q_seq);
     let target = Seq::new(t_seq, candidate.strand);
@@ -889,8 +900,9 @@ fn extend_seed(
         opts.delta_g
     );
 
-    // 1. Left extendable?
-    if q_pos > 0 && t_pos + len < t_seq.len() {
+    // 1. Left extendable? Check if q[q_pos-1] pairs with t[t_pos+len]
+    // Use interval_start to constrain: seed touching interval left edge is maximal on left
+    if q_pos > interval_start && t_pos + len < t_seq.len() {
         let q_prev = query.base(q_pos - 1).idx();
         let t_next = target.base(t_pos + len).idx();
         let p_class = pair_mat[q_prev][t_next];
@@ -929,7 +941,8 @@ fn extend_seed(
     }
 
     // 2. Right extendable? Check if q[q_pos+len] pairs with t[t_pos-1]
-    if q_pos + len < q_seq.len() && t_pos > 0 {
+    // Use interval_end to constrain: seed touching interval right edge is maximal on right
+    if q_pos + len < interval_end && t_pos > 0 {
         let q_next = query.base(q_pos + len).idx();
         let t_prev = target.base(t_pos - 1).idx();
         let p_class = pair_mat[q_next][t_prev];

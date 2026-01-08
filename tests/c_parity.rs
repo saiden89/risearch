@@ -49,9 +49,7 @@ fn test_parity(
 
 /// Test SeedSpec interval format: -s start:end
 /// This tests the seed position (1-based) and length range within the query.
-/// TODO: Fix seedspec interval semantics - C and Rust differ
 #[rstest]
-#[ignore = "SeedSpec interval format not fully implemented yet"]
 fn test_parity_seedspec_interval(
     #[values("1:8", "1:12", "2:10", "1:15")] seed_spec: &str,
     #[values(0, 10, 20)] l: usize,
@@ -68,9 +66,7 @@ fn test_parity_seedspec_interval(
 }
 
 /// Test SeedSpec interval with length: -s start:end/length
-/// TODO: Fix seedspec interval semantics - C and Rust differ
 #[rstest]
-#[ignore = "SeedSpec interval format not fully implemented yet"]
 fn test_parity_seedspec_interval_len(
     #[values("1:12/6", "2:10/5", "1:15/7")] seed_spec: &str,
     #[values(0, 10, 20)] l: usize,
