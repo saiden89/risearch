@@ -498,21 +498,10 @@ impl<'a> ParallelSaSearcher<'a> {
 // ============================================================================
 // HIGH-LEVEL API
 // ============================================================================
-
 /// Compute the complement of a sequence (A<->U, C<->G)
-///
-/// This produces the sequence needed for the target SA in C-style parallel search.
 pub fn complement_sequence(seq: &[u8]) -> Vec<u8> {
-    seq.iter()
-        .map(|&b| match b {
-            b'a' | b'A' => b't',               // A -> U (stored as t)
-            b't' | b'T' | b'u' | b'U' => b'a', // U/T -> A
-            b'c' | b'C' => b'g',               // C -> G
-            b'g' | b'G' => b'c',               // G -> C
-            b'n' | b'N' => b'n',               // N stays N
-            _ => b'n',                         // Unknown -> N
-        })
-        .collect()
+    use crate::types::BYTE_COMPLEMENT;
+    seq.iter().map(|&b| BYTE_COMPLEMENT[b as usize]).collect()
 }
 
 /// Build suffix array for a sequence
