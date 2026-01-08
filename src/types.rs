@@ -72,6 +72,19 @@ pub static RC_DNA_TABLE: [u8; 256] = {
     t
 };
 
+// =============================================================================
+// BASE CONVERSION LUTS - Constant-time lookups for Base enum
+// =============================================================================
+
+/// Base → uppercase ASCII byte
+static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'G', b'C', b'U', b'N'];
+
+/// Base → complement Base (indexed by Base as usize)
+static BASE_COMPLEMENT: [Base; 6] = [Base::Gap, Base::U, Base::C, Base::G, Base::A, Base::N];
+
+/// Index → Base (for from_idx)
+static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::G, Base::C, Base::U, Base::N];
+
 impl Base {
     /// Convert ASCII nucleotide byte to Base enum via lookup table.
     #[inline(always)]
@@ -88,28 +101,17 @@ impl Base {
     /// Convert from usize index to Base
     #[inline]
     pub fn from_idx(i: usize) -> Self {
-        match i {
-            0 => Base::Gap,
-            1 => Base::A,
-            2 => Base::G,
-            3 => Base::C,
-            4 => Base::U,
-            5 => Base::N,
-            _ => panic!("Invalid Base index: {}", i),
+        if i < 6 {
+            IDX_TO_BASE[i]
+        } else {
+            panic!("Invalid Base index: {}", i)
         }
     }
 
     /// Get standard uppercase ASCII byte (A, G, C, U, N)
     #[inline]
     pub fn to_u8_upper(self) -> u8 {
-        match self {
-            Base::A => b'A',
-            Base::G => b'G',
-            Base::C => b'C',
-            Base::U => b'U',
-            Base::Gap => b'-',
-            Base::N => b'N',
-        }
+        BASE_TO_UPPER[self as usize]
     }
 
     /// Get char representation
@@ -121,13 +123,7 @@ impl Base {
     /// Watson-Crick complement (A <-> U/T, G <-> C)
     #[inline]
     pub fn complement(self) -> Self {
-        match self {
-            Base::A => Base::U,
-            Base::U => Base::A,
-            Base::G => Base::C,
-            Base::C => Base::G,
-            _ => self,
-        }
+        BASE_COMPLEMENT[self as usize]
     }
 
     /// Get fingerprint character for this pair (P=Paired, W=Wobble, U=Unpaired)
