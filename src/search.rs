@@ -782,7 +782,7 @@ fn find_seeds_parallel_sa(
     start0: usize,
     end0: usize,
 ) -> Result<Vec<SeedCandidate>> {
-    use crate::parallel_sa::{ParallelSaSearcher, build_suffix_array, complement_sequence};
+    use crate::parallel_sa::{ParallelSaSearcher, build_suffix_array};
 
     let q_len = q_seq.len();
     let mut candidates = Vec::new();
@@ -816,11 +816,8 @@ fn find_seeds_parallel_sa(
     for (t_idx, seq_entry) in ctx.index.index.sequences.iter().enumerate() {
         // Forward strand: match query RC against target directly
         // This mirrors C's approach: RC(seed) searched in target
-        trace!(
-            "[SA_PARALLEL] Target: {:?}",
-            String::from_utf8_lossy(&seq_entry.sequence)
-        );
-        let t_sa = build_suffix_array(&seq_entry.sequence);
+        // CRITICAL: Use pre-built SA from index, NOT build_suffix_array on-the-fly!
+        let t_sa = &seq_entry.forward_sa;
 
         // Search all seed lengths
         for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
@@ -871,12 +868,12 @@ fn find_seeds_parallel_sa(
             }
         }
 
-        // Reverse strand: match query RC against target RC directly
-        let t_rc = reverse_complement_dna(&seq_entry.sequence);
-        let t_rc_sa = build_suffix_array(&t_rc);
+        // Reverse strand: use pre-built target RC and its SA from index
+        let t_rc = &seq_entry.sequence_rc;
+        let t_rc_sa = &seq_entry.reverse_sa;
 
         for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
-            let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, &t_rc_sa, &t_rc, pairing);
+            let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_rc_sa, t_rc, pairing);
 
             let matches = searcher.find_seeds(seed_len);
 
