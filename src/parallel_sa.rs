@@ -319,17 +319,20 @@ impl<'a> ParallelSaSearcher<'a> {
         }
 
         // === WOBBLE PAIRS ===
+        // For direct matching (query_RC vs target, both NOT complemented):
+        // - G-U wobble: query G (query_RC has C) pairs with target U (T)
+        //   → match query_RC C with target T (U)
+        // - U-G wobble: query U (query_RC has A) pairs with target G
+        //   → match query_RC A with target G
         if self.allow_wobble {
-            // G-U wobble: query G with target_comp A (target has U)
-            // C code: qint[2] (G) with sint[0] (A)
-            if !q_g.is_empty() && !s_a.is_empty() {
-                self.recurse_match(q_g, s_a, next_depth, &state, seed_len, results);
+            // G-U wobble: query_RC C with target U (stored as T)
+            if !q_c.is_empty() && !s_u.is_empty() {
+                self.recurse_match(q_c, s_u, next_depth, &state, seed_len, results);
             }
 
-            // U-G wobble: query U with target_comp C (target has G)
-            // C code: qint[4] (U) with sint[1] (C)
-            if !q_u.is_empty() && !s_c.is_empty() {
-                self.recurse_match(q_u, s_c, next_depth, &state, seed_len, results);
+            // U-G wobble: query_RC A with target G
+            if !q_a.is_empty() && !s_g.is_empty() {
+                self.recurse_match(q_a, s_g, next_depth, &state, seed_len, results);
             }
         }
 
