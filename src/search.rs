@@ -751,6 +751,10 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
     let n_skipped = 0usize;
     let pairing = ctx.args.seed.pairing;
 
+    // Pre-compute query RC once (query canonicalization)
+    // For seed at q_seq[q_pos..q_pos+seed_len], its RC is q_rc[q_len-q_pos-seed_len..q_len-q_pos]
+    let q_rc = reverse_complement_rna(q_seq);
+
     for q_pos in start0..=last_start {
         // Max seed length from this position
         let max_seed_len = (end0 + 1).saturating_sub(q_pos).min(q_len - q_pos);
@@ -769,8 +773,10 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
                 continue;
             }
 
-            // Index search (RC of seed)
-            let seed_rc = reverse_complement_rna(seed_seq);
+            // Get seed RC from pre-computed query RC (slice, no allocation)
+            let rc_start = q_len - q_pos - seed_len;
+            let rc_end = q_len - q_pos;
+            let seed_rc = &q_rc[rc_start..rc_end];
             // find_candidates returns Vec<SeedCandidate> now
 
             let mut hits = ctx.index.find_candidates(&seed_rc, pairing);
