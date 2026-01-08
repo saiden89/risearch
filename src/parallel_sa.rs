@@ -22,6 +22,7 @@
 //! Level s:  When depth == seed_length, collect matches
 //! ```
 
+use crate::seed::MismatchSpec;
 use crate::types::{Base, SeedPairing};
 use libsais::SuffixArrayConstruction;
 
@@ -112,46 +113,7 @@ impl ParallelSeedMatch {
     }
 }
 
-/// Configuration for mismatch handling in seed search
-#[derive(Debug, Clone, Copy)]
-pub struct MismatchConfig {
-    /// Maximum number of mismatches allowed
-    pub max_mismatches: usize,
-    /// Minimum position (1-indexed) where mismatch can occur
-    pub min_position: usize,
-    /// Minimum consecutive matches required after last mismatch
-    pub min_matches_after: usize,
-}
-
-impl Default for MismatchConfig {
-    fn default() -> Self {
-        Self {
-            max_mismatches: 0,
-            min_position: 1,
-            min_matches_after: 0,
-        }
-    }
-}
-
-impl MismatchConfig {
-    /// No mismatches allowed (exact matching)
-    pub const fn exact() -> Self {
-        Self {
-            max_mismatches: 0,
-            min_position: 1,
-            min_matches_after: 0,
-        }
-    }
-
-    /// Allow mismatches with C-style parameters
-    pub const fn new(max: usize, min_pos: usize, min_after: usize) -> Self {
-        Self {
-            max_mismatches: max,
-            min_position: min_pos,
-            min_matches_after: min_after,
-        }
-    }
-}
+// MismatchSpec deleted - use MismatchSpec from crate::seed instead
 
 /// Search state during parallel SA traversal
 #[derive(Debug, Clone, Copy)]
@@ -181,7 +143,7 @@ pub struct ParallelSaSearcher<'a> {
     /// Whether to allow G-U wobble pairs in seeds
     allow_wobble: bool,
     /// Mismatch configuration
-    mismatch_config: MismatchConfig,
+    mismatch_config: MismatchSpec,
 }
 
 impl<'a> ParallelSaSearcher<'a> {
@@ -202,12 +164,12 @@ impl<'a> ParallelSaSearcher<'a> {
             target_comp_sa,
             target_comp_seq,
             allow_wobble: matches!(pairing, SeedPairing::AllowWobble),
-            mismatch_config: MismatchConfig::exact(),
+            mismatch_config: MismatchSpec::exact(),
         }
     }
 
     /// Set mismatch configuration
-    pub fn with_mismatches(mut self, config: MismatchConfig) -> Self {
+    pub fn with_mismatches(mut self, config: MismatchSpec) -> Self {
         self.mismatch_config = config;
         self
     }
@@ -574,14 +536,14 @@ pub struct SeedFinder {
     /// Whether to allow G-U wobble pairs
     pub allow_wobble: bool,
     /// Mismatch configuration
-    pub mismatch_config: MismatchConfig,
+    pub mismatch_config: MismatchSpec,
 }
 
 impl Default for SeedFinder {
     fn default() -> Self {
         Self {
             allow_wobble: true,
-            mismatch_config: MismatchConfig::exact(),
+            mismatch_config: MismatchSpec::exact(),
         }
     }
 }
@@ -590,11 +552,11 @@ impl SeedFinder {
     pub fn new(pairing: SeedPairing) -> Self {
         Self {
             allow_wobble: matches!(pairing, SeedPairing::AllowWobble),
-            mismatch_config: MismatchConfig::exact(),
+            mismatch_config: MismatchSpec::exact(),
         }
     }
 
-    pub fn with_mismatches(mut self, config: MismatchConfig) -> Self {
+    pub fn with_mismatches(mut self, config: MismatchSpec) -> Self {
         self.mismatch_config = config;
         self
     }

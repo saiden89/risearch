@@ -27,9 +27,31 @@ pub struct SeedCandidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MismatchSpec {
     /// Maximum number of mismatches allowed in seed
-    pub max_mismatches: u32,
-    /// Minimum consecutive matches required at seed start/end
-    pub min_consecutive: u32,
+    pub max_mismatches: usize,
+    /// Minimum position (1-indexed) where mismatch can occur
+    pub min_position: usize,
+    /// Minimum consecutive matches required after last mismatch
+    pub min_matches_after: usize,
+}
+
+impl MismatchSpec {
+    /// No mismatches allowed (exact matching)
+    pub const fn exact() -> Self {
+        Self {
+            max_mismatches: 0,
+            min_position: 1,
+            min_matches_after: 0,
+        }
+    }
+
+    /// Create with specific parameters
+    pub const fn new(max: usize, min_pos: usize, min_after: usize) -> Self {
+        Self {
+            max_mismatches: max,
+            min_position: min_pos,
+            min_matches_after: min_after,
+        }
+    }
 }
 
 impl FromStr for MismatchSpec {
@@ -50,15 +72,17 @@ impl FromStr for MismatchSpec {
         }
 
         let max_mismatches = parts[0]
-            .parse::<u32>()
+            .parse::<usize>()
             .map_err(|e| format!("invalid max mismatches: {}", e))?;
         let min_consecutive = parts[1]
-            .parse::<u32>()
+            .parse::<usize>()
             .map_err(|e| format!("invalid min consecutive: {}", e))?;
 
+        // CLI format c:p maps to: max=c, min_position=p, min_after=p
         Ok(MismatchSpec {
             max_mismatches,
-            min_consecutive,
+            min_position: min_consecutive,
+            min_matches_after: min_consecutive,
         })
     }
 }
@@ -242,6 +266,143 @@ pub fn build_seed_alignment(
         seed_alignment.push(Pairing::from_bases(q_b, t_b));
     }
     seed_alignment
+}
+
+// =============================================================================
+// SEED SEARCH API - Two-level design for parallelization
+// =============================================================================
+
+use crate::args::SeedArgs;
+use crate::parallel_sa::{ParallelSaSearcher, build_suffix_array};
+use crate::sa::{SaIndexFile, SequenceIndex};
+use crate::seq::reverse_complement_dna;
+
+/// Find all seed matches between a query and a single target sequence.
+///
+/// This is the low-level, parallelizable unit of work. Callers can use Rayon
+/// to parallelize over queries or targets as needed.
+///
+/// Returns candidates with positions in original coordinates.
+pub fn find_seeds_in_target(
+    query: &[u8],
+    target: &SequenceIndex,
+    target_idx: usize,
+    config: &SeedArgs,
+) -> Vec<SeedCandidate> {
+    let q_len = query.len();
+
+    // Normalize query to lowercase DNA (t not u)
+    let q_norm: Vec<u8> = query
+        .iter()
+        .map(|&b| {
+            let lower = b.to_ascii_lowercase();
+            if lower == b'u' { b't' } else { lower }
+        })
+        .collect();
+
+    // Get seed interval bounds
+    let Ok((start1, end1, mi_len)) = config.seed.normalize(q_len) else {
+        return Vec::new();
+    };
+    let start0 = start1 - 1;
+    let end0 = end1 - 1;
+
+    // Build query RC and its SA
+    let q_rc = reverse_complement_dna(&q_norm);
+    let q_rc_sa = build_suffix_array(&q_rc);
+
+    let pairing = config.pairing;
+    let mut candidates = Vec::new();
+
+    // Forward strand: use pre-built forward_sa
+    let t_sa = &target.forward_sa;
+    for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
+        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_sa, &target.sequence, pairing);
+        let matches = searcher.find_seeds(seed_len);
+
+        for m in &matches {
+            for qi in m.query_interval.start..m.query_interval.end {
+                let q_rc_pos = q_rc_sa[qi] as usize;
+                if q_rc_pos + seed_len > q_len {
+                    continue;
+                }
+                let q_pos = q_len - q_rc_pos - seed_len;
+                if q_pos < start0 || q_pos > end0.saturating_sub(seed_len.saturating_sub(1)) {
+                    continue;
+                }
+                if q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
+                    continue;
+                }
+
+                for ti in m.target_interval.start..m.target_interval.end {
+                    let t_pos = t_sa[ti] as usize;
+                    if t_pos + seed_len > target.sequence.len() {
+                        continue;
+                    }
+                    candidates.push(SeedCandidate {
+                        query_pos: q_pos,
+                        target_idx,
+                        target_start: t_pos,
+                        len: seed_len,
+                        strand: Strand::Forward,
+                    });
+                }
+            }
+        }
+    }
+
+    // Reverse strand: use pre-built reverse_sa and sequence_rc
+    let t_rc_sa = &target.reverse_sa;
+    let t_rc = &target.sequence_rc;
+    for seed_len in mi_len..=(end0 - start0 + 1).min(q_len) {
+        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_rc_sa, t_rc, pairing);
+        let matches = searcher.find_seeds(seed_len);
+
+        for m in &matches {
+            for qi in m.query_interval.start..m.query_interval.end {
+                let q_rc_pos = q_rc_sa[qi] as usize;
+                if q_rc_pos + seed_len > q_len {
+                    continue;
+                }
+                let q_pos = q_len - q_rc_pos - seed_len;
+                if q_pos < start0 || q_pos > end0.saturating_sub(seed_len.saturating_sub(1)) {
+                    continue;
+                }
+                if q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
+                    continue;
+                }
+
+                for ti in m.target_interval.start..m.target_interval.end {
+                    let t_pos = t_rc_sa[ti] as usize;
+                    if t_pos + seed_len > t_rc.len() {
+                        continue;
+                    }
+                    candidates.push(SeedCandidate {
+                        query_pos: q_pos,
+                        target_idx,
+                        target_start: t_pos,
+                        len: seed_len,
+                        strand: Strand::Reverse,
+                    });
+                }
+            }
+        }
+    }
+
+    candidates
+}
+
+/// Find all seed matches between a query and all targets in an index.
+///
+/// Convenience wrapper that iterates over all targets. For parallelization,
+/// use `find_seeds_in_target` directly with Rayon.
+pub fn find_seeds(query: &[u8], index: &SaIndexFile, config: &SeedArgs) -> Vec<SeedCandidate> {
+    index
+        .sequences
+        .iter()
+        .enumerate()
+        .flat_map(|(idx, target)| find_seeds_in_target(query, target, idx, config))
+        .collect()
 }
 
 #[cfg(test)]
