@@ -25,6 +25,7 @@ use rstest::rstest;
 fn test_parity(
     #[values(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)] s: usize,
     #[values(0, 5, 10, 15, 20, 25, 30, 35, 40)] l: usize,
+    #[values(false, true)] w_strict: bool,
 ) {
     let root = workspace_root();
     let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
@@ -33,9 +34,17 @@ fn test_parity(
     let l_str = l.to_string();
     let s_str = s.to_string();
     // Use high energy threshold to not filter hits by energy (test alignment parity)
-    let args = ["-l", &l_str, "-e", "100.0", "-s", &s_str, "-p3"];
+    let mut args = vec!["-l", &l_str, "-e", "100.0", "-s", &s_str, "-p3"];
+    if w_strict {
+        args.push("-w");
+    }
 
-    ParityRunner::new(&target).assert_pass(&query, &format!("s{}_l{}", s, l), &args);
+    let test_name = if w_strict {
+        format!("s{}_l{}_w", s, l)
+    } else {
+        format!("s{}_l{}", s, l)
+    };
+    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
 }
 
 #[test]

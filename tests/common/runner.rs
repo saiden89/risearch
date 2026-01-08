@@ -150,11 +150,15 @@ impl ParityRunner {
         let search_args = parse_search_args(args);
         let rust_hits = self.rust.search(query, &search_args);
 
-        let c_args: Vec<&str> = args
-            .iter()
-            .filter(|&&a| a != "--no-max-prune")
-            .cloned()
-            .collect();
+        // Translate Rust args to C args
+        let mut c_args: Vec<&str> = Vec::new();
+        for &arg in args.iter() {
+            match arg {
+                "--no-max-prune" => continue,                   // Rust-only flag
+                "-w" | "--wobble" => c_args.push("--noGUseed"), // Map -w to C flag
+                _ => c_args.push(arg),
+            }
+        }
         let c_out = self.c.search(query, &c_args);
         let (c_hits, _) = parse_output(&c_out);
 
