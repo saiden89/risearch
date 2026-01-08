@@ -2,31 +2,17 @@ use anyhow::{Context, Result, anyhow};
 use log::{debug, info, trace, warn};
 use std::io::Write;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use crate::args::SearchArgs;
 use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT};
 use crate::sa::SaIndexFile;
 use crate::seed::{SeedCandidate, build_seed_alignment};
-use crate::seq::{Seq, reverse_complement_dna, reverse_complement_rna};
+use crate::seq::{Seq, reverse_complement_dna};
 use crate::types::{Alignment, Energy, Pairing, QueryId, SeedPairing, Strand, TargetId};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-
-/// Runtime toggle for parallel SA algorithm (SA_PARALLEL=1 to enable)
-static USE_PARALLEL_SA: OnceLock<bool> = OnceLock::new();
-
-/// Check if parallel SA is enabled via SA_PARALLEL env var
-#[inline]
-pub fn use_parallel_sa() -> bool {
-    *USE_PARALLEL_SA.get_or_init(|| {
-        std::env::var("SA_PARALLEL")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-    })
-}
 
 const MAX_DP_EXT: usize = 50;
 
@@ -539,11 +525,6 @@ fn search_core(
         opts.extend.delta_g
     );
 
-    if use_parallel_sa() {
-        info!("[SA_PARALLEL] Parallel SA enabled (env SA_PARALLEL=1)");
-        // TODO: Full parallel SA integration pending - currently using iterative search
-    }
-
     let mut ctx = SearchContext::new(index, opts);
     let mut all_hits = Vec::new();
 
@@ -740,7 +721,7 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
     let q_len = q_seq.len();
     let (start, end, mi_len) = seed_len_specs;
     let start0 = start - 1;
-    let end0 = end - 1;
+    let _end0 = end - 1;
 
     trace!(
         "{} spec={:?} q_len={} range=({},{}) mi_len={} pairing={:?}",
@@ -764,112 +745,9 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
         return Ok(Vec::new());
     }
 
-    // Use parallel SA when SA_PARALLEL=1
-    if use_parallel_sa() {
-        return find_seeds_parallel_sa(q_seq, ctx, mi_len, start0, end0);
-    }
-
-    // Original iterative path
-    find_seeds_iterative(q_seq, ctx, mi_len, start0, end0)
-}
-
-/// Parallel SA seed finding (SA_PARALLEL=1)
-/// Uses the clean seed::find_seeds API which encapsulates all SA logic
-fn find_seeds_parallel_sa(
-    q_seq: &[u8],
-    ctx: &mut SearchContext<'_>,
-    _mi_len: usize,
-    _start0: usize,
-    _end0: usize,
-) -> Result<Vec<SeedCandidate>> {
+    // Use parallel SA (the only implementation)
     use crate::seed;
-
     let candidates = seed::find_seeds(q_seq, &ctx.index.index, &ctx.args.seed);
-
-    debug!(
-        "[SA_PARALLEL] {} generated {} candidates",
-        SearchStage::Seed,
-        candidates.len()
-    );
-
-    Ok(candidates)
-}
-
-/// Original iterative seed finding
-fn find_seeds_iterative(
-    q_seq: &[u8],
-    ctx: &mut SearchContext<'_>,
-    mi_len: usize,
-    start0: usize,
-    end0: usize,
-) -> Result<Vec<SeedCandidate>> {
-    let mut candidates = Vec::new();
-    let q_len = q_seq.len();
-    let last_start = end0.saturating_sub(mi_len - 1);
-    let n_skipped = 0usize;
-    let pairing = ctx.args.seed.pairing;
-
-    // Pre-compute query RC once (query canonicalization)
-    // For seed at q_seq[q_pos..q_pos+seed_len], its RC is q_rc[q_len-q_pos-seed_len..q_len-q_pos]
-    let q_rc = reverse_complement_rna(q_seq);
-
-    for q_pos in start0..=last_start {
-        // Max seed length from this position
-        let max_seed_len = (end0 + 1).saturating_sub(q_pos).min(q_len - q_pos);
-
-        for seed_len in mi_len..=max_seed_len {
-            let seed_seq = &q_seq[q_pos..q_pos + seed_len];
-            if seed_seq.contains(&b'N') || seed_seq.contains(&b'n') {
-                ctx.stats.record_filter(FilterReason::SeedContainsN);
-                trace!(
-                    "{} FILTERED q_pos={} len={} reason={:?}",
-                    SearchStage::Seed,
-                    q_pos,
-                    seed_len,
-                    FilterReason::SeedContainsN
-                );
-                continue;
-            }
-
-            // Get seed RC from pre-computed query RC (slice, no allocation)
-            let rc_start = q_len - q_pos - seed_len;
-            let rc_end = q_len - q_pos;
-            let seed_rc = &q_rc[rc_start..rc_end];
-            // find_candidates returns Vec<SeedCandidate> now
-
-            let mut hits = ctx.index.find_candidates(&seed_rc, pairing);
-
-            trace!(
-                "{} q_pos={} len={} seed={} rc={} hits={}",
-                SearchStage::Seed,
-                q_pos,
-                seed_len,
-                String::from_utf8_lossy(seed_seq),
-                String::from_utf8_lossy(&seed_rc),
-                hits.len()
-            );
-
-            for h in &mut hits {
-                h.query_pos = q_pos;
-                h.len = seed_len;
-                candidates.push(SeedCandidate {
-                    query_pos: q_pos,
-                    target_idx: h.target_idx,
-                    target_start: h.target_start,
-                    len: seed_len,
-                    strand: h.strand,
-                });
-            }
-        }
-    }
-
-    debug!(
-        "{} generated {} candidates ({} skipped for N)",
-        SearchStage::Seed,
-        candidates.len(),
-        n_skipped
-    );
-
     Ok(candidates)
 }
 
