@@ -17,6 +17,6 @@ pub use seq::{AlignedSeq, Seq, reverse_complement_dna, reverse_complement_rna};
 pub use types::{BASE_COUNT, Base, Energy, QueryId, SeedPairing, Span, Strand, TargetId};
 
 // Search API re-exports for library usage
-pub use search::{SearchHit, run_search_collect};
+pub use search::{SearchHit, run_search, write_results};
 pub use seed::{SeedCandidate, SeedSpec};
 pub use types::{Alignment, Pairing};

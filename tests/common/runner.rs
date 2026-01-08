@@ -87,7 +87,7 @@ impl RustRunner<Indexed> {
             index: &self.state.index_file,
         };
         let queries = risearch::io::read_fasta_sequences(query_path).expect("read query FASTA");
-        let hits = risearch::run_search_collect(&queries, &index, args).expect("search");
+        let hits = risearch::run_search(&queries, &index, args).expect("search");
 
         // Normalize to 1-based coordinates to match C output format for comparison
         hits.into_iter()

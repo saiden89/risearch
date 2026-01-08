@@ -222,7 +222,8 @@ fn main() -> Result<()> {
 
                     let wrapper = search::SaIndex { index: &idx };
                     debug!("Starting search...");
-                    search::run_search(&queries, &wrapper, output, opts)?;
+                    let hits = search::run_search(&queries, &wrapper, opts)?;
+                    search::write_results(&hits, output)?;
                     info!("Search completed successfully");
                 }
             }

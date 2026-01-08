@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use log::{debug, info, trace, warn};
 use std::io::Write;
 use std::path::Path;
@@ -582,12 +582,17 @@ fn search_core(
     Ok(deduped)
 }
 
+/// Run search and return hits.
 pub fn run_search(
     queries: &[(String, Vec<u8>)],
     index: &SaIndex<'_>,
-    output: impl AsRef<Path>,
     opts: &SearchArgs,
-) -> Result<()> {
+) -> Result<Vec<SearchHit>> {
+    search_core(queries, index, opts)
+}
+
+/// Write search hits to output (file or stdout).
+pub fn write_results(hits: &[SearchHit], output: impl AsRef<Path>) -> Result<()> {
     let mut writer: Box<dyn Write> = if output.as_ref() == Path::new("-") {
         Box::new(std::io::stdout())
     } else {
@@ -595,19 +600,10 @@ pub fn run_search(
     };
     debug!("{} output={:?}", SearchStage::Output, output.as_ref());
 
-    for hit in search_core(queries, index, opts)? {
+    for hit in hits {
         hit.write(&mut writer)?;
     }
     Ok(())
-}
-
-/// Run search and return hits directly (for library/test usage).
-pub fn run_search_collect(
-    queries: &[(String, Vec<u8>)],
-    index: &SaIndex<'_>,
-    opts: &SearchArgs,
-) -> Result<Vec<SearchHit>> {
-    search_core(queries, index, opts)
 }
 
 /// Check if hit `k` shadows hit `h`.
@@ -708,47 +704,18 @@ fn deduplicate_hits(
     kept
 }
 
-//TODO: this also belongs to seed (requires decoupling from SearchContext)
-
 fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec<SeedCandidate>> {
-    let seed_len_specs = ctx
-        .args
-        .seed
-        .seed
-        .normalize(q_seq.len())
-        .map_err(|e| anyhow!("Invalid seed spec for query length: {}", e))?;
-
-    let q_len = q_seq.len();
-    let (start, end, mi_len) = seed_len_specs;
-    let start0 = start - 1;
-    let _end0 = end - 1;
+    use crate::seed;
 
     trace!(
-        "{} spec={:?} q_len={} range=({},{}) mi_len={} pairing={:?}",
+        "{} q_len={} spec={:?} pairing={:?}",
         SearchStage::Seed,
+        q_seq.len(),
         ctx.args.seed.seed,
-        q_len,
-        start,
-        end,
-        mi_len,
         ctx.args.seed.pairing
     );
 
-    if start0 + mi_len > q_len {
-        warn!(
-            "{} seed range too long for query: start0={} mi_len={} q_len={}",
-            SearchStage::Seed,
-            start0,
-            mi_len,
-            q_len
-        );
-        return Ok(Vec::new());
-    }
-
-    // Use parallel SA (the only implementation)
-    use crate::seed;
-    let candidates = seed::find_seeds(q_seq, &ctx.index.index, &ctx.args.seed);
-    Ok(candidates)
+    Ok(seed::find_seeds(q_seq, &ctx.index.index, &ctx.args.seed))
 }
 
 fn process_candidate(
