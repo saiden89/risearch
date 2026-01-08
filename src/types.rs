@@ -202,6 +202,133 @@ impl Pairing {
     }
 }
 
+// =============================================================================
+// ALIGNMENT - Full query-target alignment structure
+// =============================================================================
+
+use std::ops::Range;
+
+/// Represents a full biological alignment between Query and Target.
+/// Stores the sequence of interactions and metadata about the seed location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alignment {
+    /// The complete sequence of pairing steps (5' -> 3' of Query).
+    steps: Vec<Pairing>,
+
+    /// The range of indices in `steps` that corresponds to the initial Seed match.
+    /// This allows easy extraction of the "core" interaction vs extensions.
+    seed_range: Range<usize>,
+}
+
+impl Alignment {
+    /// Constructor from the three phases of extension.
+    /// This fits naturally into `extend_seed` which generates these 3 parts.
+    pub fn new(left: Vec<Pairing>, seed: Vec<Pairing>, right: Vec<Pairing>) -> Self {
+        let left_len = left.len();
+        let seed_len = seed.len();
+
+        let mut steps = Vec::with_capacity(left_len + seed_len + right.len());
+        steps.extend(left);
+        steps.extend(seed);
+        steps.extend(right);
+
+        Self {
+            steps,
+            seed_range: left_len..(left_len + seed_len),
+        }
+    }
+
+    /// Returns the full alignment steps
+    pub fn steps(&self) -> &[Pairing] {
+        &self.steps
+    }
+
+    /// Returns only the seed region steps
+    pub fn seed(&self) -> &[Pairing] {
+        &self.steps[self.seed_range.clone()]
+    }
+
+    /// Returns the 5' extension (Left of seed)
+    pub fn left_extension(&self) -> &[Pairing] {
+        &self.steps[..self.seed_range.start]
+    }
+
+    /// Returns the 3' extension (Right of seed)
+    pub fn right_extension(&self) -> &[Pairing] {
+        &self.steps[self.seed_range.end..]
+    }
+
+    /// Generates the interaction string (e.g. "PPPWUUU")
+    pub fn fingerprint(&self) -> String {
+        self.steps.iter().map(|p| p.to_char()).collect()
+    }
+
+    /// Generates the target sequence string (e.g. "accu--cg")
+    pub fn target_sequence(&self) -> String {
+        self.steps.iter().map(|p| p.target_char()).collect()
+    }
+
+    /// Generates the query sequence string (e.g. "gc--uuca")
+    pub fn query_sequence(&self) -> String {
+        self.steps.iter().map(|p| p.query_char()).collect()
+    }
+
+    /// Create from C output (fingerprint + target sequence + seed markers).
+    /// C output uses 'y' and 'x' markers to delimit seed region.
+    pub fn from_c_output(
+        fingerprint: &str,
+        target_seq: &str,
+        seed_start: Option<usize>,
+        seed_end: Option<usize>,
+    ) -> Self {
+        let fp_chars: Vec<char> = fingerprint.chars().collect();
+        let tgt_chars: Vec<char> = target_seq.chars().collect();
+
+        let mut steps = Vec::with_capacity(fp_chars.len());
+
+        for (i, fp_char) in fp_chars.iter().enumerate() {
+            let t_base = tgt_chars.get(i).copied().unwrap_or('-');
+            let t = Base::from_byte(t_base as u8);
+
+            // We don't have query bases from C output, use N as placeholder
+            let pairing = match fp_char {
+                'P' => Pairing::Match(Base::N, t),
+                'W' => Pairing::Wobble(Base::N, t),
+                'U' => Pairing::Mismatch(Base::N, t),
+                'T' => Pairing::GapQuery(t),        // Gap in query
+                'Q' => Pairing::GapTarget(Base::N), // Gap in target
+                _ => Pairing::Mismatch(Base::N, t),
+            };
+            steps.push(pairing);
+        }
+
+        let seed_range = match (seed_start, seed_end) {
+            (Some(s), Some(e)) => s..e,
+            _ => 0..steps.len(), // If no markers, treat entire thing as seed
+        };
+
+        Self { steps, seed_range }
+    }
+
+    /// Get seed start index
+    pub fn seed_start(&self) -> Option<usize> {
+        if self.seed_range.start < self.steps.len() {
+            Some(self.seed_range.start)
+        } else {
+            None
+        }
+    }
+
+    /// Get seed end index
+    pub fn seed_end(&self) -> Option<usize> {
+        if self.seed_range.end <= self.steps.len() {
+            Some(self.seed_range.end)
+        } else {
+            None
+        }
+    }
+}
+
 /// Strand direction for search
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
