@@ -2,6 +2,22 @@
 
 This document explains the algorithms and strategies used in `risearch`. It is written to be accessible to readers who may not be experts in bioinformatics algorithms, breaking down the *how* and *why* of each step.
 
+## Table of Contents
+
+- [1. The Core Problem](#1-the-core-problem)
+- [2. Seeding Strategy](#2-seeding-strategy)
+  - [2.1 The Suffix Array Index](#21-the-suffix-array-index-srcsars)
+  - [2.2 Generating Seeds](#22-generating-seeds-srcseedrs)
+  - [2.3 Searching the Index](#23-searching-the-index-srcsearchrs)
+- [3. Extension Strategy (Dynamic Programming)](#3-extension-strategy-dynamic-programming)
+  - [3.1 The Energy Model](#31-the-energy-model-srcdsmrs)
+  - [3.2 Dynamic Programming (DP)](#32-dynamic-programming-dp)
+  - [3.3 The X-Drop Heuristic](#33-the-x-drop-heuristic)
+- [4. Pruning and Optimization](#4-pruning-and-optimization)
+  - [4.1 The Maximality Check](#41-the-maximality-check)
+  - [4.2 Deduplication](#42-deduplication)
+- [5. Future Work & TODOs](#5-future-work--todos)
+
 ## 1. The Core Problem
 
 The goal of `risearch` is to find where a short RNA molecule (the **Query**, e.g., a microRNA) binds to a long RNA molecule (the **Target**, e.g., a messenger RNA).

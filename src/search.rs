@@ -12,6 +12,7 @@ use crate::seed::SeedSpec;
 use crate::seq::Seq;
 use crate::types::{Base, Energy, QueryId, SeedPairing, Strand, TargetId};
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 const MAX_DP_EXT: usize = 50;
@@ -699,17 +700,38 @@ pub struct SearchContext<'a> {
     pub extender: dp::DpExtender,
     pub stats: SearchStats,
     pub energy: EnergyModel,
+    /// Cache for target reverse complements (lazy-initialized per target).
+    /// Uses RefCell for interior mutability to avoid borrow conflicts.
+    target_rc_cache: RefCell<Vec<Option<Vec<u8>>>>,
 }
 
 impl<'a> SearchContext<'a> {
     pub fn new(index: &'a SaIndex<'a>, args: &'a SearchArgs) -> Self {
+        let num_targets = index.index.sequences.len();
         Self {
             index,
             args,
             extender: dp::DpExtender::new(),
             stats: SearchStats::default(),
             energy: EnergyModel::T04,
+            target_rc_cache: RefCell::new(vec![None; num_targets]),
         }
+    }
+
+    /// Get (or compute and cache) the reverse complement for a target sequence.
+    /// This avoids recomputing RC for every candidate hit against the same target.
+    /// Returns a cloned Vec to avoid borrow conflicts with other ctx fields.
+    fn get_target_rc_cached(&self, target_idx: usize) -> Vec<u8> {
+        {
+            let cache = self.target_rc_cache.borrow();
+            if let Some(ref rc) = cache[target_idx] {
+                return rc.clone();
+            }
+        }
+        // Not cached - compute and store
+        let rc = self.index.get_sequence_rc(target_idx);
+        self.target_rc_cache.borrow_mut()[target_idx] = Some(rc.clone());
+        rc
     }
 }
 
@@ -910,7 +932,7 @@ fn deduplicate_hits(
     kept
 }
 
-//TODO: improve performance via better search strategies!
+//TODO: this also belongs to seed
 
 fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec<SeedCandidate>> {
     let seed_spec_str = ctx.args.seed.seed.as_deref().unwrap_or("17");
@@ -1017,11 +1039,15 @@ fn process_candidate(
     ctx: &mut SearchContext<'_>,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
-    let t_seq_cow = match candidate.strand {
-        Strand::Reverse => std::borrow::Cow::Owned(ctx.index.get_sequence_rc(t_idx)),
-        Strand::Forward => std::borrow::Cow::Borrowed(ctx.index.get_sequence(t_idx)),
+    let t_seq_owned;
+    let t_seq: &[u8] = match candidate.strand {
+        Strand::Reverse => {
+            t_seq_owned = ctx.get_target_rc_cached(t_idx);
+            &t_seq_owned
+        }
+        Strand::Forward => ctx.index.get_sequence(t_idx),
     };
-    let t_seq = &t_seq_cow;
+
     let t_start_idx = candidate.target_start;
     let seed_len = candidate.len;
     let q_pos = candidate.query_pos;
@@ -1092,7 +1118,11 @@ fn process_candidate(
 
     // Flanks (20bp context, T->U normalized)
     let ctx_len = 20;
-    let to_rna = |s: &[u8]| String::from_utf8_lossy(s).replace('T', "U").replace('t', "u");
+    let to_rna = |s: &[u8]| {
+        String::from_utf8_lossy(s)
+            .replace('T', "U")
+            .replace('t', "u")
+    };
 
     let flank_5 = to_rna(&t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start])
         .chars()
@@ -1136,6 +1166,7 @@ pub struct ExtensionResult {
     pub r_t: usize,
 }
 
+// TODO this probably belongs to seed.rs
 /// Build alignment for the seed region (used by both extension and seed-only paths)
 fn build_seed_alignment(
     query: &Seq<'_>,

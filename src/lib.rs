@@ -17,3 +17,4 @@ pub use types::{BASE_COUNT, Base, Energy, QueryId, SeedPairing, Strand, TargetId
 
 // Search API re-exports for library usage
 pub use search::{Alignment, Pairing, SearchHit, run_search_collect};
+pub use seed::SeedSpec;
