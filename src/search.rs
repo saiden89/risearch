@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::args::SearchArgs;
 use crate::dp;
-use crate::dsm::{EnergyModel, PAIR_MAT};
+use crate::dsm::{EnergyModel, PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::sa::SaIndexFile;
 use crate::seed::{SeedCandidate, build_seed_alignment};
 use crate::seq::{Seq, reverse_complement_dna};
@@ -868,6 +868,14 @@ fn extend_seed(
     let query = Seq::forward(q_seq);
     let target = Seq::new(t_seq, candidate.strand);
 
+    // Select pair matrix based on wobble mode:
+    // - AllowWobble: use PAIR_MAT (G-U wobble pairs are valid)
+    // - Strict: use PAIR_MAT_NO_GU (G-U wobble pairs are NOT valid)
+    let pair_mat = match ctx.args.seed.pairing {
+        SeedPairing::AllowWobble => &PAIR_MAT,
+        SeedPairing::Strict => &PAIR_MAT_NO_GU,
+    };
+
     // MAXIMALITY CHECK
     // Skip non-maximal seeds: if the seed can be extended by a valid base pair
     // on either end, it's a sub-seed of a longer match and will
@@ -885,7 +893,7 @@ fn extend_seed(
     if q_pos > 0 && t_pos + len < t_seq.len() {
         let q_prev = query.base(q_pos - 1).idx();
         let t_next = target.base(t_pos + len).idx();
-        let p_class = PAIR_MAT[q_prev][t_next];
+        let p_class = pair_mat[q_prev][t_next];
 
         trace!(
             "{} Left Check q_pos={} t_pos={} len={} q_prev={} t_next={} pair={}",
@@ -924,7 +932,7 @@ fn extend_seed(
     if q_pos + len < q_seq.len() && t_pos > 0 {
         let q_next = query.base(q_pos + len).idx();
         let t_prev = target.base(t_pos - 1).idx();
-        let p_class = PAIR_MAT[q_next][t_prev];
+        let p_class = pair_mat[q_next][t_prev];
 
         trace!(
             "{} Right Check q_pos={} t_pos={} len={} q_next={} t_prev={} pair={}",
