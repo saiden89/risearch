@@ -608,56 +608,6 @@ impl<'a> ParityComparator<'a> {
 }
 
 // =============================================================================
-// ANALYZE HIT PAIRS
-// =============================================================================
-
-/// Detailed analysis for focused tests with few hits.
-pub fn analyze_hit_pairs(extras: &[&SearchHit], missings: &[&SearchHit]) {
-    if extras.is_empty() || missings.is_empty() {
-        return;
-    }
-
-    info!(
-        "{} Paired hit analysis ({} extras, {} missings)",
-        LogTag::Pair,
-        extras.len(),
-        missings.len()
-    );
-
-    for extra in extras {
-        let best_match = missings.iter().min_by_key(|missing| {
-            let q_start_diff = (extra.q_start as i32 - missing.q_start as i32).abs();
-            let q_end_diff = (extra.q_end as i32 - missing.q_end as i32).abs();
-            let t_start_diff = (extra.output_t_start as i32 - missing.output_t_start as i32).abs();
-            let t_end_diff = (extra.output_t_end as i32 - missing.output_t_end as i32).abs();
-            q_start_diff + q_end_diff + t_start_diff + t_end_diff
-        });
-
-        if let Some(m) = best_match {
-            let score = (extra.q_start as i32 - m.q_start as i32).abs()
-                + (extra.q_end as i32 - m.q_end as i32).abs()
-                + (extra.output_t_start as i32 - m.output_t_start as i32).abs()
-                + (extra.output_t_end as i32 - m.output_t_end as i32).abs();
-
-            debug!("{} Likely pair (distance={})", LogTag::Pair, score);
-
-            if extra.fingerprint() == m.fingerprint() {
-                debug!("{} [NOTE] Interactions Identical!", LogTag::Pair);
-            }
-
-            // Note: ParityTable will need to be updated to work with SearchHit
-            // For now, just log the coordinates
-            debug!(
-                "{} EXTRA: {} vs MISSING: {}",
-                LogTag::Pair,
-                extra.fmt_coords(),
-                m.fmt_coords()
-            );
-        }
-    }
-}
-
-// =============================================================================
 // UNIT TESTS
 // =============================================================================
 

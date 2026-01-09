@@ -382,3 +382,34 @@ fn test_parity_ext_both_sides(
     SingleSeqRunner::new(&query, &target)
         .assert_pass(&format!("ext_both_{}_{}{}_{}", el, s1, s2, er), &args);
 }
+
+/// Test MismatchSpec: -m c:p
+/// c = max mismatches
+/// p = min consecutive matches at ends
+#[rstest]
+fn test_parity_mismatches(
+    #[values("1:0", "1:3", "2:2")] mismatch_spec: &str,
+    #[values(6, 8, 10)] s: usize,
+    #[values(0, 10)] l: usize,
+) {
+    let root = workspace_root();
+    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+
+    let l_str = l.to_string();
+    let s_str = s.to_string();
+    let args = [
+        "-l",
+        &l_str,
+        "-e",
+        "100.0",
+        "-s",
+        &s_str,
+        "-m",
+        mismatch_spec,
+        "-p3",
+    ];
+
+    let test_name = format!("mismatch_{}_s{}_l{}", mismatch_spec.replace(':', "_"), s, l);
+    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+}
