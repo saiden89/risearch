@@ -35,3 +35,8 @@ rstest = "0.24"
 [[bench]]
 name = "seed_search"
 harness = false
+
+[profile.release]
+debug = 2
+lto = false         # Preserve function boundaries
+codegen-units = 1   # Consistent symbol resolution

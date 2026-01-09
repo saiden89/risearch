@@ -8,10 +8,9 @@ use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::sa::SaIndexFile;
 use crate::seed::{SeedCandidate, build_seed_alignment};
-use crate::seq::{Seq, reverse_complement_dna};
+use crate::seq::Seq;
 use crate::types::{Alignment, Energy, Pairing, QueryId, SeedPairing, Strand, TargetId};
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 const MAX_DP_EXT: usize = 50;
@@ -311,8 +310,8 @@ impl<'a> SaIndex<'a> {
 
             let fwd_count = candidates.len() - fwd_count_before;
 
-            // 2. Search REVERSE COMPLEMENT
-            let rc_seq = reverse_complement_dna(&seq_idx.sequence);
+            // 2. Search REVERSE COMPLEMENT (use pre-computed from index)
+            let rc_seq = &seq_idx.sequence_rc;
             let rc_count_before = candidates.len();
 
             self.search_sa_simple(
@@ -349,8 +348,8 @@ impl<'a> SaIndex<'a> {
         &self.index.sequences[seq_idx].sequence
     }
 
-    pub fn get_sequence_rc(&self, seq_idx: usize) -> Vec<u8> {
-        reverse_complement_dna(&self.index.sequences[seq_idx].sequence)
+    pub fn get_sequence_rc(&self, seq_idx: usize) -> &[u8] {
+        &self.index.sequences[seq_idx].sequence_rc
     }
 
     pub fn get_id(&self, seq_idx: usize) -> &str {
@@ -476,38 +475,17 @@ pub struct SearchContext<'a> {
     pub extender: dp::DpExtender,
     pub stats: SearchStats,
     pub energy: EnergyModel,
-    /// Cache for target reverse complements (lazy-initialized per target).
-    /// Uses RefCell for interior mutability to avoid borrow conflicts.
-    target_rc_cache: RefCell<Vec<Option<Vec<u8>>>>,
 }
 
 impl<'a> SearchContext<'a> {
     pub fn new(index: &'a SaIndex<'a>, args: &'a SearchArgs) -> Self {
-        let num_targets = index.index.sequences.len();
         Self {
             index,
             args,
             extender: dp::DpExtender::new(),
             stats: SearchStats::default(),
             energy: EnergyModel::T04,
-            target_rc_cache: RefCell::new(vec![None; num_targets]),
         }
-    }
-
-    /// Get (or compute and cache) the reverse complement for a target sequence.
-    /// This avoids recomputing RC for every candidate hit against the same target.
-    /// Returns a cloned Vec to avoid borrow conflicts with other ctx fields.
-    fn get_target_rc_cached(&self, target_idx: usize) -> Vec<u8> {
-        {
-            let cache = self.target_rc_cache.borrow();
-            if let Some(ref rc) = cache[target_idx] {
-                return rc.clone();
-            }
-        }
-        // Not cached - compute and store
-        let rc = self.index.get_sequence_rc(target_idx);
-        self.target_rc_cache.borrow_mut()[target_idx] = Some(rc.clone());
-        rc
     }
 }
 
@@ -683,10 +661,16 @@ fn deduplicate_hits(
             .then_with(|| a.q_start.cmp(&b.q_start))
     });
 
-    let mut kept: Vec<SearchHit> = Vec::new();
+    // Bucket hits by (target_id, strand) to reduce O(n²) to O(n * bucket_size)
+    // Since shadows() early-exits for different target/strand, this is semantically equivalent
+    let mut buckets: HashMap<(TargetId, Strand), Vec<SearchHit>> = HashMap::new();
 
     for h in hits {
-        if let Some(reason) = kept.iter().find_map(|k| shadows(k, &h, dedup_shadow)) {
+        let key = (h.target_id.clone(), h.strand);
+        let bucket = buckets.entry(key).or_default();
+
+        // Only check against hits in the same bucket
+        if let Some(reason) = bucket.iter().find_map(|k| shadows(k, &h, dedup_shadow)) {
             stats.record_filter(reason);
             trace!(
                 "{} FILTERED q{}-{}:t{}-{} reason={:?}",
@@ -698,9 +682,18 @@ fn deduplicate_hits(
                 reason
             );
         } else {
-            kept.push(h);
+            bucket.push(h);
         }
     }
+
+    // Flatten buckets back into a single Vec, preserving energy sort order
+    let mut kept: Vec<SearchHit> = buckets.into_values().flatten().collect();
+    kept.sort_by(|a, b| {
+        a.energy
+            .partial_cmp(&b.energy)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.q_start.cmp(&b.q_start))
+    });
 
     trace!("{} output_count={}", SearchStage::Dedup, kept.len());
     kept
@@ -726,12 +719,8 @@ fn process_candidate(
     ctx: &mut SearchContext<'_>,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
-    let t_seq_owned;
     let t_seq: &[u8] = match candidate.strand {
-        Strand::Reverse => {
-            t_seq_owned = ctx.get_target_rc_cached(t_idx);
-            &t_seq_owned
-        }
+        Strand::Reverse => ctx.index.get_sequence_rc(t_idx),
         Strand::Forward => ctx.index.get_sequence(t_idx),
     };
 

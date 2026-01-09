@@ -201,6 +201,7 @@ impl<'a> ParallelSaSearcher<'a> {
     }
 
     /// Recursive parallel search (mirrors C's sa_parallel_match_neg)
+    #[inline(never)] // Keep separate for flamegraph
     fn search_recursive(
         &self,
         seed_len: usize,
@@ -241,57 +242,91 @@ impl<'a> ParallelSaSearcher<'a> {
         let next_depth = state.depth + 1;
 
         // === CANONICAL MATCHES (same character = complementary base pair) ===
+        self.explore_canonical_matches(&qint, &sint, next_depth, &state, seed_len, results);
+
+        // === WOBBLE PAIRS ===
+        if matches!(self.seed_config.pairing, SeedPairing::AllowWobble) {
+            self.explore_wobble_matches(&qint, &sint, next_depth, &state, seed_len, results);
+        }
+
+        // === MISMATCH EXPLORATION ===
+        if self.should_explore_mismatches(&state, seed_len) {
+            self.explore_mismatches(&qint, &sint, next_depth, &state, seed_len, results);
+        }
+    }
+
+    /// Explore canonical base pair matches (A-U, C-G, G-C, U-A)
+    ///
+    /// Always inlined since this is called on every recursion.
+    /// For profiling wobble/mismatch overhead, these remain #[inline(never)].
+    #[inline(always)]
+    fn explore_canonical_matches(
+        &self,
+        qint: &BaseIntervals,
+        sint: &BaseIntervals,
+        next_depth: usize,
+        state: &SearchState,
+        seed_len: usize,
+        results: &mut Vec<ParallelSeedMatch>,
+    ) {
         // C code: query 'a' matches target_comp 'a' → target has 'u' → A-U pair
 
         // A matches (query A with target_comp A)
         let q_a = qint.get(Base::A);
         let s_a = sint.get(Base::A);
         if !q_a.is_empty() && !s_a.is_empty() {
-            self.recurse_match(q_a, s_a, next_depth, &state, seed_len, results);
+            self.recurse_match(q_a, s_a, next_depth, state, seed_len, results);
         }
 
         // C matches (query C with target_comp C)
         let q_c = qint.get(Base::C);
         let s_c = sint.get(Base::C);
         if !q_c.is_empty() && !s_c.is_empty() {
-            self.recurse_match(q_c, s_c, next_depth, &state, seed_len, results);
+            self.recurse_match(q_c, s_c, next_depth, state, seed_len, results);
         }
 
         // G matches (query G with target_comp G)
         let q_g = qint.get(Base::G);
         let s_g = sint.get(Base::G);
         if !q_g.is_empty() && !s_g.is_empty() {
-            self.recurse_match(q_g, s_g, next_depth, &state, seed_len, results);
+            self.recurse_match(q_g, s_g, next_depth, state, seed_len, results);
         }
 
         // U matches (query U with target_comp U)
         let q_u = qint.get(Base::U);
         let s_u = sint.get(Base::U);
         if !q_u.is_empty() && !s_u.is_empty() {
-            self.recurse_match(q_u, s_u, next_depth, &state, seed_len, results);
+            self.recurse_match(q_u, s_u, next_depth, state, seed_len, results);
         }
+    }
 
-        // === WOBBLE PAIRS ===
+    /// Explore wobble base pair matches (G-U, U-G)
+    #[inline(never)] // Keep separate for flamegraph
+    fn explore_wobble_matches(
+        &self,
+        qint: &BaseIntervals,
+        sint: &BaseIntervals,
+        next_depth: usize,
+        state: &SearchState,
+        seed_len: usize,
+        results: &mut Vec<ParallelSeedMatch>,
+    ) {
         // For direct matching (query_RC vs target, both NOT complemented):
         // - G-U wobble: query G (query_RC has C) pairs with target U (T)
-        //   → match query_RC C with target T (U)
         // - U-G wobble: query U (query_RC has A) pairs with target G
-        //   → match query_RC A with target G
-        if matches!(self.seed_config.pairing, SeedPairing::AllowWobble) {
-            // G-U wobble: query_RC C with target U (stored as T)
-            if !q_c.is_empty() && !s_u.is_empty() {
-                self.recurse_match(q_c, s_u, next_depth, &state, seed_len, results);
-            }
 
-            // U-G wobble: query_RC A with target G
-            if !q_a.is_empty() && !s_g.is_empty() {
-                self.recurse_match(q_a, s_g, next_depth, &state, seed_len, results);
-            }
+        // G-U wobble: query_RC C with target U (stored as T)
+        let q_c = qint.get(Base::C);
+        let s_u = sint.get(Base::U);
+        if !q_c.is_empty() && !s_u.is_empty() {
+            self.recurse_match(q_c, s_u, next_depth, state, seed_len, results);
         }
 
-        // === MISMATCH EXPLORATION ===
-        if self.should_explore_mismatches(&state, seed_len) {
-            self.explore_mismatches(&qint, &sint, next_depth, &state, seed_len, results);
+        // U-G wobble: query_RC A with target G
+        let q_a = qint.get(Base::A);
+        let s_g = sint.get(Base::G);
+        if !q_a.is_empty() && !s_g.is_empty() {
+            self.recurse_match(q_a, s_g, next_depth, state, seed_len, results);
         }
     }
 
@@ -326,6 +361,7 @@ impl<'a> ParallelSaSearcher<'a> {
     }
 
     /// Explore mismatch branches (non-complementary pairs)
+    #[inline(never)] // Keep separate for flamegraph
     fn explore_mismatches(
         &self,
         qint: &BaseIntervals,
@@ -426,23 +462,39 @@ impl<'a> ParallelSaSearcher<'a> {
             return BaseIntervals::default();
         }
 
+        // Step 1: Find valid suffix range (O(n) linear scan)
+        let (valid_start, valid_end) = self.find_valid_suffix_range(sa, seq, interval, offset);
+
+        if valid_start >= valid_end {
+            return BaseIntervals::default();
+        }
+
+        // Step 2: Partition valid range by base (O(log n) binary search)
+        self.partition_by_base(sa, seq, valid_start, valid_end, offset)
+    }
+
+    /// Find the range of suffixes long enough for this offset (O(n) scan)
+    ///
+    /// Returns (valid_start, valid_end) - the range of valid suffix indices.
+    /// This is the bottleneck for performance - see C's sa[n]=0 sentinel approach.
+    #[inline(never)] // Keep separate for flamegraph
+    fn find_valid_suffix_range(
+        &self,
+        sa: &[u32],
+        seq: &[u8],
+        interval: SaInterval,
+        offset: usize,
+    ) -> (usize, usize) {
         let start = interval.start;
         let end = interval.end;
+        let seq_len = seq.len();
 
-        // For suffixes where pos + offset >= seq.len(), the character is undefined.
-        // We need to exclude these from valid base intervals.
-        //
-        // Key insight: SA is sorted by suffix content, not position. Short suffixes
-        // can appear BEFORE or AFTER longer ones depending on the sequence content.
-        // We use a sentinel approach: OOB positions map to byte 0 (sorts before 'a'),
-        // so they get excluded from the A interval start.
-        //
         // Find where valid entries start (first suffix long enough for this offset)
         let valid_start = start
             + (start..end)
                 .position(|i| {
                     let pos = sa[i] as usize;
-                    pos + offset < seq.len()
+                    pos + offset < seq_len
                 })
                 .unwrap_or(end - start);
 
@@ -451,41 +503,42 @@ impl<'a> ParallelSaSearcher<'a> {
             + (start..end)
                 .rposition(|i| {
                     let pos = sa[i] as usize;
-                    pos + offset < seq.len()
+                    pos + offset < seq_len
                 })
                 .map(|p| p + 1)
                 .unwrap_or(0);
 
-        if valid_start >= valid_end {
-            return BaseIntervals::default();
-        }
+        (valid_start, valid_end)
+    }
 
+    /// Partition a valid SA range by base character (O(log n) binary search)
+    ///
+    /// Assumes all suffixes in [valid_start..valid_end] have pos + offset < seq.len()
+    #[inline(never)] // Keep separate for flamegraph
+    fn partition_by_base(
+        &self,
+        sa: &[u32],
+        seq: &[u8],
+        valid_start: usize,
+        valid_end: usize,
+        offset: usize,
+    ) -> BaseIntervals {
         let sa_slice = &sa[valid_start..valid_end];
 
-        // Now partition only the valid range
+        // Find partition points for each base boundary
         let a_start = valid_start;
-        let c_start = valid_start
-            + sa_slice.partition_point(|&idx| {
-                let c = seq[idx as usize + offset];
-                c < b'c'
-            });
-        let g_start = valid_start
-            + sa_slice.partition_point(|&idx| {
-                let c = seq[idx as usize + offset];
-                c < b'g'
-            });
-        let n_start = valid_start
-            + sa_slice.partition_point(|&idx| {
-                let c = seq[idx as usize + offset];
-                c < b'n'
-            });
-        let u_start = valid_start
-            + sa_slice.partition_point(|&idx| {
-                let c = seq[idx as usize + offset];
-                c < b't'
-            });
+        let c_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b'c');
+        let g_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b'g');
+        let n_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b'n');
+        let u_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b't');
 
         BaseIntervals::from_bounds([a_start, c_start, g_start, n_start, u_start, valid_end])
+    }
+
+    /// Binary search to find leftmost position where character >= target
+    #[inline]
+    fn find_base_boundary(&self, sa_slice: &[u32], seq: &[u8], offset: usize, target: u8) -> usize {
+        sa_slice.partition_point(|&idx| seq[idx as usize + offset] < target)
     }
 }
 

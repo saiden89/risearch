@@ -14,6 +14,10 @@ SOURCES := $(filter-out dump_dsm.c,$(wildcard *.c))
 ../bin/risearch2.dbg.x: $(SOURCES) *.h
 	$(CC) $(CFLAGS) -ggdb -g3 -O0 -DDEBUG -DVERBOSE=2 $(SOURCES) ../libdivsufsort-2.0.1/build/lib/libdivsufsort64.a $(CLIBS) -o $@
 
+# Profiling build: optimized with debug symbols for flamegraph
+../bin/risearch2.prof.x: $(SOURCES) *.h
+	$(CC) $(CFLAGS) -g -O3 $(SOURCES) ../libdivsufsort-2.0.1/build/lib/libdivsufsort64.a $(CLIBS) -o $@
+
 .PHONY: clean
 
 clean:
