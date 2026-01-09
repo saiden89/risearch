@@ -64,19 +64,31 @@ impl FromStr for MismatchSpec {
         }
 
         let parts: Vec<&str> = s.split(':').collect();
-        if parts.len() != 2 {
-            return Err(format!(
-                "invalid mismatch spec '{}': expected 'c:p' format",
-                s
-            ));
-        }
 
-        let max_mismatches = parts[0]
-            .parse::<usize>()
-            .map_err(|e| format!("invalid max mismatches: {}", e))?;
-        let min_consecutive = parts[1]
-            .parse::<usize>()
-            .map_err(|e| format!("invalid min consecutive: {}", e))?;
+        let (max_mismatches, min_consecutive) = match parts.len() {
+            1 => {
+                // Allow "c" as shorthand for "c:0" (matches C behavior)
+                let max = parts[0]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid max mismatches: {}", e))?;
+                (max, 0)
+            }
+            2 => {
+                let max = parts[0]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid max mismatches: {}", e))?;
+                let min = parts[1]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid min consecutive: {}", e))?;
+                (max, min)
+            }
+            _ => {
+                return Err(format!(
+                    "invalid mismatch spec '{}': expected 'c' or 'c:p' format",
+                    s
+                ));
+            }
+        };
 
         // CLI format c:p maps to: max=c, min_position=p, min_after=p
         Ok(MismatchSpec {
