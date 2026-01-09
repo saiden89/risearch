@@ -545,6 +545,17 @@ impl DpExtender {
             }
         }
 
+        // Early return when either axis is too small for row/col 2 cells
+        // (matches C code: `if (lq <= 2 || lt <= 2) return best_e;`)
+        if q_len <= 2 || t_len <= 2 {
+            return DpExtension {
+                score: best_e,
+                q_len: best_i,
+                t_len: best_j,
+                trace: Vec::new(),
+            };
+        }
+
         // Cell (2,2) init: bridge corner to limited rows/cols
         if q_len >= 3 && t_len >= 3 {
             if let Some(m11_val) = m.diag(2, 2) {
