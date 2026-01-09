@@ -311,14 +311,13 @@ pub fn find_seeds_in_target(
     let q_rc = reverse_complement_dna(&q_norm);
     let q_rc_sa = build_suffix_array(&q_rc);
 
-    let pairing = config.pairing;
     let mut candidates = Vec::new();
 
     // Forward strand: use pre-built forward_sa
     let t_sa = &target.forward_sa;
     // Iterate all seed lengths from mi_len to q_len; position filter handles interval
     for seed_len in mi_len..=q_len {
-        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_sa, &target.sequence, pairing);
+        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_sa, &target.sequence, config);
         let matches = searcher.find_seeds(seed_len);
 
         for m in &matches {
@@ -358,7 +357,7 @@ pub fn find_seeds_in_target(
     let t_rc_sa = &target.reverse_sa;
     let t_rc = &target.sequence_rc;
     for seed_len in mi_len..=q_len {
-        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_rc_sa, t_rc, pairing);
+        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_rc_sa, t_rc, config);
         let matches = searcher.find_seeds(seed_len);
 
         for m in &matches {
