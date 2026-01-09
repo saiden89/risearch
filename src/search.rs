@@ -571,18 +571,26 @@ pub fn run_search(
     search_core(queries, index, opts)
 }
 
-/// Write search hits to output (file or stdout).
 pub fn write_results(hits: &[SearchHit], output: impl AsRef<Path>) -> Result<()> {
-    let mut writer: Box<dyn Write> = if output.as_ref() == Path::new("-") {
+    use std::io::BufWriter;
+
+    let inner: Box<dyn Write> = if output.as_ref() == Path::new("-") {
         Box::new(std::io::stdout())
     } else {
         Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
     };
+
+    // 64KB buffer reduces syscalls by ~1000x for typical hit sizes (~50-100 bytes each)
+    let mut writer = BufWriter::with_capacity(64 * 1024, inner);
+
     debug!("{} output={:?}", SearchStage::Output, output.as_ref());
 
     for hit in hits {
         hit.write(&mut writer)?;
     }
+
+    // BufWriter flushes on drop, but explicit flush ensures errors are caught
+    writer.flush().context("Failed to flush output")?;
     Ok(())
 }
 
