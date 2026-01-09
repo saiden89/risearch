@@ -22,7 +22,7 @@
 //! Level s:  When depth == seed_length, collect matches
 //! ```
 
-use crate::seed::MismatchSpec;
+use crate::args::SeedArgs;
 use crate::types::{Base, SeedPairing};
 use libsais::SuffixArrayConstruction;
 
@@ -140,10 +140,8 @@ pub struct ParallelSaSearcher<'a> {
     target_comp_sa: &'a [u32],
     /// Target complement sequence (for base lookup)
     target_comp_seq: &'a [u8],
-    /// Whether to allow G-U wobble pairs in seeds
-    allow_wobble: bool,
-    /// Mismatch configuration
-    mismatch_config: MismatchSpec,
+    /// Seed configuration (pairing, mismatch spec, etc.)
+    seed_config: &'a SeedArgs,
 }
 
 impl<'a> ParallelSaSearcher<'a> {
@@ -156,22 +154,15 @@ impl<'a> ParallelSaSearcher<'a> {
         query_seq: &'a [u8],
         target_comp_sa: &'a [u32],
         target_comp_seq: &'a [u8],
-        pairing: SeedPairing,
+        seed_config: &'a SeedArgs,
     ) -> Self {
         Self {
             query_sa,
             query_seq,
             target_comp_sa,
             target_comp_seq,
-            allow_wobble: matches!(pairing, SeedPairing::AllowWobble),
-            mismatch_config: MismatchSpec::exact(),
+            seed_config,
         }
-    }
-
-    /// Set mismatch configuration
-    pub fn with_mismatches(mut self, config: MismatchSpec) -> Self {
-        self.mismatch_config = config;
-        self
     }
 
     /// Find all seed matches of given length
@@ -286,7 +277,7 @@ impl<'a> ParallelSaSearcher<'a> {
         //   → match query_RC C with target T (U)
         // - U-G wobble: query U (query_RC has A) pairs with target G
         //   → match query_RC A with target G
-        if self.allow_wobble {
+        if matches!(self.seed_config.pairing, SeedPairing::AllowWobble) {
             // G-U wobble: query_RC C with target U (stored as T)
             if !q_c.is_empty() && !s_u.is_empty() {
                 self.recurse_match(q_c, s_u, next_depth, &state, seed_len, results);
@@ -328,9 +319,9 @@ impl<'a> ParallelSaSearcher<'a> {
     /// Check if we should explore mismatch branches
     #[inline]
     fn should_explore_mismatches(&self, state: &SearchState, seed_len: usize) -> bool {
-        self.mismatch_config.max_mismatches > 0
-            && state.mismatch_count < self.mismatch_config.max_mismatches
-            && state.depth + 1 > self.mismatch_config.min_position
+        self.seed_config.mismatch_seed.max_mismatches > 0
+            && state.mismatch_count < self.seed_config.mismatch_seed.max_mismatches
+            && state.depth + 1 > self.seed_config.mismatch_seed.min_position
             && state.matches_since_mismatch < seed_len
     }
 
@@ -387,14 +378,17 @@ impl<'a> ParallelSaSearcher<'a> {
             return true;
         }
 
-        // Wobble pairs
-        if self.allow_wobble {
-            // Query G with target_comp A (target has U) → G-U wobble
-            if q_base == Base::G && t_comp_base == Base::A {
+        // Wobble pairs - must match canonical wobble exploration above!
+        // We use query_RC, so:
+        // - G-U wobble: query G (query_RC has C) with target U
+        // - U-G wobble: query U (query_RC has A) with target G
+        if matches!(self.seed_config.pairing, SeedPairing::AllowWobble) {
+            // G-U wobble: Query_RC C with Target U
+            if q_base == Base::C && t_comp_base == Base::U {
                 return true;
             }
-            // Query U with target_comp C (target has G) → U-G wobble
-            if q_base == Base::U && t_comp_base == Base::C {
+            // U-G wobble: Query_RC A with Target G
+            if q_base == Base::A && t_comp_base == Base::G {
                 return true;
             }
         }
@@ -409,8 +403,8 @@ impl<'a> ParallelSaSearcher<'a> {
             return true;
         }
         // With mismatches: need sufficient matches after last mismatch
-        state.mismatch_count <= self.mismatch_config.max_mismatches
-            && state.matches_since_mismatch >= self.mismatch_config.min_matches_after
+        state.mismatch_count <= self.seed_config.mismatch_seed.max_mismatches
+            && state.matches_since_mismatch >= self.seed_config.mismatch_seed.min_matches_after
             && state.matches_since_mismatch < seed_len
     }
 
@@ -520,6 +514,17 @@ pub fn build_suffix_array(seq: &[u8]) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::SeedArgs;
+    use crate::seed::{MismatchSpec, SeedSpec};
+
+    /// Create a default SeedArgs for testing with specified pairing mode
+    fn test_seed_args(pairing: SeedPairing) -> SeedArgs {
+        SeedArgs {
+            seed: SeedSpec::Length(6),
+            pairing,
+            mismatch_seed: MismatchSpec::exact(),
+        }
+    }
 
     #[test]
     fn test_complement_sequence() {
@@ -532,8 +537,9 @@ mod tests {
     fn test_partition_basic() {
         let seq = b"acgt";
         let sa = build_suffix_array(seq);
+        let seed_args = test_seed_args(SeedPairing::AllowWobble);
 
-        let searcher = ParallelSaSearcher::new(&sa, seq, &sa, seq, SeedPairing::AllowWobble);
+        let searcher = ParallelSaSearcher::new(&sa, seq, &sa, seq, &seed_args);
 
         let interval = SaInterval::new(0, sa.len());
         let parts = searcher.partition_interval(&sa, seq, interval, 0);
@@ -568,8 +574,8 @@ mod tests {
         eprintln!("Target comp SA: {:?}", t_sa);
 
         // Step 3: Create searcher and find seeds
-        let searcher =
-            ParallelSaSearcher::new(&q_sa, query, &t_sa, &target_comp, SeedPairing::Strict);
+        let seed_args = test_seed_args(SeedPairing::Strict);
+        let searcher = ParallelSaSearcher::new(&q_sa, query, &t_sa, &target_comp, &seed_args);
         let matches = searcher.find_seeds(3);
         eprintln!("Raw matches: {:?}", matches);
 
@@ -579,5 +585,4 @@ mod tests {
             "Should find at least one 3bp match for aaa vs aaa"
         );
     }
-
 }
