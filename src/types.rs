@@ -361,6 +361,19 @@ impl Alignment {
         self.steps.iter().map(|p| p.to_char()).collect()
     }
 
+    /// Compute a fast hash of the fingerprint for O(1) equality pre-check.
+    /// Uses FNV-1a hash for speed (no allocation, just iterates over Pairings).
+    #[inline]
+    pub fn fingerprint_hash(&self) -> u64 {
+        // FNV-1a hash constants for 64-bit
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+
+        self.steps.iter().fold(FNV_OFFSET, |hash, p| {
+            (hash ^ (p.to_char() as u64)).wrapping_mul(FNV_PRIME)
+        })
+    }
+
     /// Generates the target sequence string (e.g. "accu--cg")
     pub fn target_sequence(&self) -> String {
         self.steps.iter().map(|p| p.target_char()).collect()

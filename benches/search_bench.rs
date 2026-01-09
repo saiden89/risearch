@@ -166,6 +166,10 @@ fn bench_heavy_mismatch(c: &mut Criterion) {
     group.finish();
 }
 
+// =============================================================================
+// BENCHMARK GROUPS
+// =============================================================================
+
 criterion_group!(
     benches,
     bench_exact_match,
