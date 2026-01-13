@@ -1133,6 +1133,7 @@ dependencies = [
  "rstest",
  "savefile",
  "serde",
+ "smallvec",
  "tabled",
  "tempfile",
 ]

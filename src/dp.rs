@@ -1,18 +1,16 @@
-//! Clean DP extension implementation from first principles.
-//!
-//! Uses nearest-neighbor stacking energy (DSM tables) with affine gap penalties.
-//! Based on rust-bio patterns but adapted for RNA duplex alignment.
-//!
-//! # Architecture
-//!
-//! The key abstraction is `DpView` which encapsulates direction-specific index
-//! mapping and DSM stacking order. This allows a single DP implementation to
-//! handle both left and right extensions.
-
-use crate::dsm::EnergyModel;
+use crate::dsm::{EnergyModel, dsm_lookup_raw};
 use crate::seq::Seq;
 use crate::types::Base;
 use log::trace;
+use smallvec::SmallVec;
+
+/// Stack-allocated trace buffer. 64 ops covers most extensions without heap allocation.
+/// DpOp is 1 byte, so 64 * 1 = 64 bytes on stack.
+pub type TraceVec = SmallVec<[DpOp; 64]>;
+
+/// Maximum extension length for precomputed index arrays.
+/// Matches the typical max_ext parameter (100-200 bases).
+const MAX_EXT: usize = 256;
 
 /// Extension direction - determines terminal stacking order
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -201,7 +199,7 @@ pub struct DpExtension {
     pub score: i32,
     pub q_len: usize,
     pub t_len: usize,
-    pub trace: Vec<DpOp>,
+    pub trace: TraceVec,
 }
 
 /// Alignment operation for traceback
@@ -214,144 +212,104 @@ pub enum DpOp {
     GapT,  // Gap in target, query base unpaired
 }
 
+/// Sentinel value for invalid/uninitialized score (~ -1 billion).
+/// Safe for arithmetic: MIN_SCORE + energy (±2000) will not overflow/underflow i32.
+const MIN_SCORE: i32 = -1_000_000_000;
+
 // =============================================================================
-// GRID TYPES - Reusable DP matrix storage
+// SCORE-ONLY GRID - Optimized for DP hot loop (matches C implementation)
 // =============================================================================
 
-/// 2D grid for DP matrix storage
-#[derive(Clone, Debug)]
-pub struct Grid<T> {
-    data: Vec<T>,
+/// Score-only grid for DP. No traceback storage - reconstructed post-hoc.
+/// This matches the C implementation which stores only M, Bq, Bt scores.
+pub struct ScoreOnlyGrid {
+    data: Vec<i32>,
     width: usize,
-    height: usize,
 }
 
-impl<T: Clone + Copy + Default> Grid<T> {
+impl ScoreOnlyGrid {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
-            data: vec![T::default(); width * height],
+            data: vec![MIN_SCORE; width * height],
             width,
-            height,
         }
     }
 
-    #[inline(always)]
-    pub fn get(&self, r: usize, c: usize) -> T {
-        self.data[r * self.width + c]
-    }
-
-    #[inline(always)]
-    pub fn set(&mut self, r: usize, c: usize, val: T) {
-        self.data[r * self.width + c] = val;
-    }
-
-    /// Access diagonal neighbor (i-1, j-1)
-    #[inline(always)]
-    pub fn diag(&self, i: usize, j: usize) -> T {
-        self.get(i - 1, j - 1)
-    }
-
-    /// Access upper neighbor (i-1, j) - Gap in Target
-    #[inline(always)]
-    pub fn up(&self, i: usize, j: usize) -> T {
-        self.get(i - 1, j)
-    }
-
-    /// Access left neighbor (i, j-1) - Gap in Query
-    #[inline(always)]
-    pub fn left(&self, i: usize, j: usize) -> T {
-        self.get(i, j - 1)
-    }
-
-    /// Resize grid, reusing buffer when possible to avoid reallocation.
+    /// Resize without clearing. Caller must ensure all accessed cells are initialized.
+    /// This matches C behavior where matrices are allocated once and reused.
+    #[inline]
     pub fn resize(&mut self, width: usize, height: usize) {
         let new_len = width * height;
-        // Only reallocate if capacity is insufficient
-        if self.data.capacity() < new_len {
-            self.data.reserve(new_len - self.data.len());
+        if self.data.len() < new_len {
+            self.data.resize(new_len, MIN_SCORE);
         }
-        self.data.clear();
-        self.data.resize(new_len, T::default());
         self.width = width;
-        self.height = height;
-    }
-}
-
-/// Score grid using Option<i32> instead of sentinel values
-pub type ScoreGrid = Grid<Option<i32>>;
-
-// =============================================================================
-// DP STATE GRID - Paired score + traceback
-// =============================================================================
-
-/// Paired score and traceback grid for a single DP state (M, Bq, or Bt).
-pub struct DpStateGrid {
-    score: ScoreGrid,
-    tb: Grid<DpOp>,
-}
-
-impl DpStateGrid {
-    pub fn new(width: usize, height: usize) -> Self {
-        Self {
-            score: ScoreGrid::new(width, height),
-            tb: Grid::new(width, height),
-        }
-    }
-
-    pub fn resize(&mut self, width: usize, height: usize) {
-        self.score.resize(width, height);
-        self.tb.resize(width, height);
+        // NOTE: No fill() - cells are initialized on demand during DP.
+        // This is critical for performance (avoids O(n²) overhead per extension).
     }
 
     #[inline(always)]
-    pub fn get(&self, i: usize, j: usize) -> Option<i32> {
-        self.score.get(i, j)
+    pub fn idx(&self, i: usize, j: usize) -> usize {
+        i * self.width + j
     }
 
     #[inline(always)]
-    pub fn set(&mut self, i: usize, j: usize, val: Option<i32>, step: DpOp) {
-        self.score.set(i, j, val);
-        self.tb.set(i, j, step);
+    pub fn get(&self, i: usize, j: usize) -> i32 {
+        let idx = i * self.width + j;
+        debug_assert!(
+            idx < self.data.len(),
+            "ScoreOnlyGrid::get out of bounds: ({}, {}) idx={} len={}",
+            i,
+            j,
+            idx,
+            self.data.len()
+        );
+        unsafe { *self.data.get_unchecked(idx) }
     }
 
     #[inline(always)]
-    pub fn diag(&self, i: usize, j: usize) -> Option<i32> {
-        self.score.diag(i, j)
+    pub fn set(&mut self, i: usize, j: usize, val: i32) {
+        let idx = i * self.width + j;
+        debug_assert!(
+            idx < self.data.len(),
+            "ScoreOnlyGrid::set out of bounds: ({}, {}) idx={} len={}",
+            i,
+            j,
+            idx,
+            self.data.len()
+        );
+        unsafe { *self.data.get_unchecked_mut(idx) = val }
     }
 
     #[inline(always)]
-    pub fn up(&self, i: usize, j: usize) -> Option<i32> {
-        self.score.up(i, j)
+    pub fn ptr(&mut self) -> *mut i32 {
+        self.data.as_mut_ptr()
     }
 
     #[inline(always)]
-    pub fn left(&self, i: usize, j: usize) -> Option<i32> {
-        self.score.left(i, j)
-    }
-
-    #[inline(always)]
-    pub fn tb(&self, i: usize, j: usize) -> DpOp {
-        self.tb.get(i, j)
+    pub fn width(&self) -> usize {
+        self.width
     }
 }
 
 // =============================================================================
-// DP EXTENDER - Stateful extension with reusable matrices
+// DP EXTENDER - Stateful extension with reusable matrices (score-only)
 // =============================================================================
 
-/// DP matrices for extension (reusable to avoid allocations)
+/// Score-only DP matrices for extension (matches C implementation).
+/// Traceback is reconstructed post-hoc by comparing scores.
 pub struct DpMatrices {
-    pub m: DpStateGrid,  // Match/mismatch state
-    pub bq: DpStateGrid, // Query bulge (gap in target)
-    pub bt: DpStateGrid, // Target bulge (gap in query)
+    pub m: ScoreOnlyGrid,  // Match/mismatch state
+    pub bq: ScoreOnlyGrid, // Query bulge (gap in target)
+    pub bt: ScoreOnlyGrid, // Target bulge (gap in query)
 }
 
 impl DpMatrices {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
-            m: DpStateGrid::new(width, height),
-            bq: DpStateGrid::new(width, height),
-            bt: DpStateGrid::new(width, height),
+            m: ScoreOnlyGrid::new(width, height),
+            bq: ScoreOnlyGrid::new(width, height),
+            bt: ScoreOnlyGrid::new(width, height),
         }
     }
 
@@ -365,32 +323,49 @@ impl DpMatrices {
 /// Stateful DP extender with reusable matrices
 pub struct DpExtender {
     matrices: DpMatrices,
+    /// Reusable traceback buffer - cleared and reused on each extend() call.
+    trace_buf: TraceVec,
 }
 
 // =============================================================================
 // INIT HELPERS - Reduce code duplication in DP initialization
 // =============================================================================
 
-/// Pick best value from two optional sources with tie-breaking.
-/// Returns (best_value, which_source).
-/// When both have equal value, prefers `a` (first argument).
+/// Pick best value from two sources.
+/// Uses std::cmp::max which LLVM compiles to branchless CMOV.
 #[inline(always)]
-fn pick_best(a: Option<i32>, b: Option<i32>, step_a: DpOp, step_b: DpOp) -> (Option<i32>, DpOp) {
-    match (a, b) {
-        (Some(va), Some(vb)) if va >= vb => (Some(va), step_a),
-        (Some(_), Some(vb)) => (Some(vb), step_b),
-        (Some(va), None) => (Some(va), step_a),
-        (None, Some(vb)) => (Some(vb), step_b),
-        (None, None) => (None, DpOp::Stop),
+fn pick_best(val_a: i32, val_b: i32) -> i32 {
+    std::cmp::max(val_a, val_b)
+}
+
+/// Helper: add energy if base is valid (not MIN_SCORE).
+/// Simple branch - LLVM optimizes to CMOV when beneficial.
+#[inline(always)]
+fn add_e(base: i32, energy: i32) -> i32 {
+    if base > MIN_SCORE {
+        base + energy
+    } else {
+        MIN_SCORE
     }
 }
 
-/// Initialize limited rows or columns - unified via macro.
-/// Row axis: Bt primary, Bq secondary, indices (fixed, k)
-/// Col axis: Bq primary, Bt secondary, indices (k, fixed)
+/// max of 2 values - branchless via std::cmp::max (compiles to CMOV)
+#[inline(always)]
+fn max2(a: i32, b: i32) -> i32 {
+    std::cmp::max(a, b)
+}
+
+/// max of 3 values - branchless
+#[inline(always)]
+fn max3(a: i32, b: i32, c: i32) -> i32 {
+    std::cmp::max(std::cmp::max(a, b), c)
+}
+
+/// Initialize limited rows or columns - unified via macro (score-only version).
+/// All writes are unconditional to avoid reading stale data.
 macro_rules! init_limited_axis {
     ($len:expr, $view:expr, $m:expr, $update_best:expr,
-     $primary:expr, $secondary:expr, $gap_op:expr,
+     $primary:expr, $secondary:expr,
      $idx:expr, $prev_idx:expr,
      $b_open:expr, $b_ext:expr, $match_e:expr, $m_from_b:expr, $s_open:expr) => {
         for k in 3..$len {
@@ -401,28 +376,25 @@ macro_rules! init_limited_axis {
             let (i2p, j2p) = $idx(2, k - 1);
 
             // Primary[1,k]
-            let from_m = $m.get(pi1, pj1).map(|v| v + $b_open($view, 1, k));
-            let from_b = $primary.get(pi1, pj1).map(|v| v + $b_ext($view, k));
-            let (val, step) = pick_best(from_m, from_b, DpOp::Match, $gap_op);
-            $primary.set(i1, j1, val, step);
+            let from_m = add_e($m.get(pi1, pj1), $b_open($view, 1, k));
+            let from_b = add_e($primary.get(pi1, pj1), $b_ext($view, k));
+            $primary.set(i1, j1, pick_best(from_m, from_b));
 
             // M[2,k]
-            let from_m = $m.get(pi1, pj1).map(|v| v + $match_e($view, 2, k));
-            let from_b = $primary.get(pi1, pj1).map(|v| v + $m_from_b($view, 2, k));
-            let (val, step) = pick_best(from_m, from_b, DpOp::Match, $gap_op);
-            $m.set(i2, j2, val, step);
+            let from_m = add_e($m.get(pi1, pj1), $match_e($view, 2, k));
+            let from_b = add_e($primary.get(pi1, pj1), $m_from_b($view, 2, k));
+            let val = pick_best(from_m, from_b);
+            $m.set(i2, j2, val);
             $update_best(val, i2, j2);
 
-            // Secondary[2,k]
-            if let Some(m1k) = $m.get(i1, j1) {
-                $secondary.set(i2, j2, Some(m1k + $s_open($view, 2, k)), DpOp::Match);
-            }
+            // Secondary[2,k] - unconditional write using add_e
+            let m1k = $m.get(i1, j1);
+            $secondary.set(i2, j2, add_e(m1k, $s_open($view, 2, k)));
 
             // Primary[2,k]
-            let from_m = $m.get(pi2, pj2).map(|v| v + $b_open($view, 2, k));
-            let from_b = $primary.get(i2p, j2p).map(|v| v + $b_ext($view, k));
-            let (val, step) = pick_best(from_m, from_b, DpOp::Match, $gap_op);
-            $primary.set(i2, j2, val, step);
+            let from_m = add_e($m.get(pi2, pj2), $b_open($view, 2, k));
+            let from_b = add_e($primary.get(i2p, j2p), $b_ext($view, k));
+            $primary.set(i2, j2, pick_best(from_m, from_b));
         }
     };
 }
@@ -431,11 +403,11 @@ impl DpExtender {
     pub fn new() -> Self {
         Self {
             matrices: DpMatrices::new(200, 200),
+            // SmallVec doesn't need with_capacity for inline storage
+            trace_buf: TraceVec::new(),
         }
     }
     /// Extend to the left (query 5', target 3')
-    ///
-    /// Thin wrapper around `extend()` - creates a LEFT view and delegates.
     pub fn extend_left(
         &mut self,
         query: &Seq,
@@ -449,11 +421,6 @@ impl DpExtender {
     }
 
     /// Extend to the right (query 3', target 5')
-    ///
-    /// Thin wrapper around `extend()` - creates a RIGHT view and delegates.
-    ///
-    /// NOTE: Both `extend_left` and `extend_right` exist for API compatibility.
-    /// Consider using `extend(&DpView)` directly for new code.
     pub fn extend_right(
         &mut self,
         query: &Seq,
@@ -470,13 +437,6 @@ impl DpExtender {
     // UNIFIED EXTEND - Direction-agnostic DP using DpView abstraction
     // =========================================================================
 
-    /// Unified DP extension using DpView for direction-aware energy calculations.
-    ///
-    /// This method handles both left and right extensions through the DpView
-    /// abstraction, which encapsulates:
-    /// - Index mapping (view.q(i), view.t(j))
-    /// - DSM stacking order (view.e() swaps for LEFT extension)
-    /// - Terminal energy (view.terminal() handles direction-specific gap position)
     pub fn extend(&mut self, view: &DpView) -> DpExtension {
         let (q_len, t_len) = (view.q_len, view.t_len);
 
@@ -493,7 +453,7 @@ impl DpExtender {
                 score: best_e,
                 q_len: 0,
                 t_len: 0,
-                trace: Vec::new(),
+                trace: TraceVec::new(),
             };
         }
 
@@ -504,9 +464,9 @@ impl DpExtender {
         // =====================================================================
         // HELPER: Update best score if value + terminal is better
         // =====================================================================
-        let mut update_best = |val: Option<i32>, i: usize, j: usize| {
-            if let Some(v) = val {
-                let curr = v + view.terminal(i, j);
+        let mut update_best = |val: i32, i: usize, j: usize| {
+            if val > MIN_SCORE {
+                let curr = val + view.terminal(i, j);
                 if curr > best_e {
                     best_e = curr;
                     best_i = i;
@@ -516,65 +476,110 @@ impl DpExtender {
         };
 
         // =====================================================================
-        // INITIALIZATION using view helper methods
+        // PRECOMPUTE Q/T BASE INDICES (used by init AND main loop)
         // =====================================================================
+        // This eliminates repeated `view.q(i)` and `view.t(j)` calls
+        // which have a match on direction each time.
 
-        // Corner: M[0,0], Bt[0,1], Bq[1,0], M[1,1]
-        m.set(0, 0, Some(0), DpOp::Stop);
-        bt.set(0, 1, Some(view.bt_open(0, 1)), DpOp::Stop);
-        bq.set(1, 0, Some(view.bq_open(1, 0)), DpOp::Stop);
-        let m11 = Some(view.match_e(1, 1));
-        m.set(1, 1, m11, DpOp::Stop);
+        let mut q_idx = [0usize; MAX_EXT];
+        let mut t_idx = [0usize; MAX_EXT];
+
+        // Also precompute DSM offset components to eliminate multiplies in inner loop
+        // DSM index = q1*216 + q2*36 + t1*6 + t2
+        let mut q_off_216 = [0usize; MAX_EXT]; // q * 216 (for q1 position)
+        let mut q_off_36 = [0usize; MAX_EXT]; // q * 36  (for q2 position)
+        let mut t_off_6 = [0usize; MAX_EXT]; // t * 6   (for t1 position)
+
+        for i in 0..q_len.min(MAX_EXT) {
+            let qi = view.q(i);
+            q_idx[i] = qi;
+            q_off_216[i] = qi * 216;
+            q_off_36[i] = qi * 36;
+        }
+        for j in 0..t_len.min(MAX_EXT) {
+            let tj = view.t(j);
+            t_idx[j] = tj;
+            t_off_6[j] = tj * 6;
+        }
+
+        // =====================================================================
+        // INITIALIZATION - Unconditional writes to avoid stale data
+        // =====================================================================
+        // Unlike C which uses calloc (zeroed memory), we reuse buffers.
+        // We must explicitly set ALL cells that might be read, including NA cells.
+
+        // Corner cells: explicit NA values (like C code)
+        m.set(0, 0, 0);
+        bq.set(0, 0, MIN_SCORE);
+        bt.set(0, 0, MIN_SCORE);
+        m.set(0, 1, MIN_SCORE);
+        bq.set(0, 1, MIN_SCORE);
+        m.set(1, 0, MIN_SCORE);
+        bt.set(1, 0, MIN_SCORE);
+        bq.set(1, 1, MIN_SCORE);
+        bt.set(1, 1, MIN_SCORE);
+
+        // Valid corner values
+        bt.set(0, 1, view.bt_open(0, 1));
+        bq.set(1, 0, view.bq_open(1, 0));
+        let m11 = view.match_e(1, 1);
+        m.set(1, 1, m11);
         update_best(m11, 1, 1);
 
-        // Boundary init: Row 0 (Bt) and Col 0 (Bq) are symmetric
+        // Row 0 (Bt only) and Row 1 (M) - unconditional writes
         for k in 2..t_len {
-            if let Some(prev) = bt.left(0, k) {
-                bt.set(0, k, Some(prev + view.bt_ext(k)), DpOp::GapT);
-                let new_m = Some(prev + view.m_from_bt(1, k));
-                m.set(1, k, new_m, DpOp::GapT);
-                update_best(new_m, 1, k);
-            }
+            let prev = bt.get(0, k - 1);
+            // Always write - use add_e to propagate MIN_SCORE
+            let bt_val = add_e(prev, view.bt_ext(k));
+            let m_val = add_e(prev, view.m_from_bt(1, k));
+            bt.set(0, k, bt_val);
+            m.set(0, k, MIN_SCORE); // M[0,k] is NA
+            bq.set(0, k, MIN_SCORE); // Bq[0,k] is NA
+            bq.set(1, k, MIN_SCORE); // Bq[1,k] is NA
+            m.set(1, k, m_val);
+            update_best(m_val, 1, k);
         }
+
+        // Col 0 (Bq only) and Col 1 (M) - unconditional writes
         for k in 2..q_len {
-            if let Some(prev) = bq.up(k, 0) {
-                bq.set(k, 0, Some(prev + view.bq_ext(k)), DpOp::GapQ);
-                let new_m = Some(prev + view.m_from_bq(k, 1));
-                m.set(k, 1, new_m, DpOp::GapQ);
-                update_best(new_m, k, 1);
-            }
+            let prev = bq.get(k - 1, 0);
+            let bq_val = add_e(prev, view.bq_ext(k));
+            let m_val = add_e(prev, view.m_from_bq(k, 1));
+            bq.set(k, 0, bq_val);
+            m.set(k, 0, MIN_SCORE); // M[k,0] is NA
+            bt.set(k, 0, MIN_SCORE); // Bt[k,0] is NA
+            bt.set(k, 1, MIN_SCORE); // Bt[k,1] is NA
+            m.set(k, 1, m_val);
+            update_best(m_val, k, 1);
         }
 
         // Early return when either axis is too small for row/col 2 cells
-        // (matches C code: `if (lq <= 2 || lt <= 2) return best_e;`)
         if q_len <= 2 || t_len <= 2 {
             return DpExtension {
                 score: best_e,
                 q_len: best_i,
                 t_len: best_j,
-                trace: Vec::new(),
+                trace: TraceVec::new(),
             };
         }
 
         // Cell (2,2) init: bridge corner to limited rows/cols
-        if q_len >= 3 && t_len >= 3 {
-            if let Some(m11_val) = m.diag(2, 2) {
-                bt.set(1, 2, Some(m11_val + view.bt_open(1, 2)), DpOp::Match);
-                bq.set(2, 1, Some(m11_val + view.bq_open(2, 1)), DpOp::Match);
-                let m22 = Some(m11_val + view.match_e(2, 2));
-                m.set(2, 2, m22, DpOp::Match);
-                update_best(m22, 2, 2);
-            }
-            if let Some(m12) = m.up(2, 2) {
-                bq.set(2, 2, Some(m12 + view.bq_open(2, 2)), DpOp::Match);
-            }
-            if let Some(m21) = m.left(2, 2) {
-                bt.set(2, 2, Some(m21 + view.bt_open(2, 2)), DpOp::Match);
-            }
-        }
+        let m11_val = m.get(1, 1);
+        let bt12 = add_e(m11_val, view.bt_open(1, 2));
+        let bq21 = add_e(m11_val, view.bq_open(2, 1));
+        let m22 = add_e(m11_val, view.match_e(2, 2));
+        bt.set(1, 2, bt12);
+        bq.set(2, 1, bq21);
+        m.set(2, 2, m22);
+        update_best(m22, 2, 2);
+
+        let m12 = m.get(1, 2);
+        let m21 = m.get(2, 1);
+        bq.set(2, 2, add_e(m12, view.bq_open(2, 2)));
+        bt.set(2, 2, add_e(m21, view.bt_open(2, 2)));
 
         // =======================================================================
-        // LIMITED ROWS/COLUMNS - unified via macro
+        // LIMITED ROWS/COLUMNS - unified via macro (score-only)
         // =======================================================================
 
         init_limited_axis!(
@@ -584,7 +589,6 @@ impl DpExtender {
             update_best,
             bt,
             bq,
-            DpOp::GapT,
             |f, k| (f, k),
             |f, k| (f, k - 1),
             |v: &DpView, f, k| v.bt_open(f, k),
@@ -601,7 +605,6 @@ impl DpExtender {
             update_best,
             bq,
             bt,
-            DpOp::GapQ,
             |f, k| (k, f),
             |f, k| (k - 1, f),
             |v: &DpView, f, k| v.bq_open(k, f),
@@ -612,81 +615,223 @@ impl DpExtender {
         );
 
         // =======================================================================
-        // MAIN DP LOOP (i >= 3, j >= 3)
+        // MAIN DP LOOP (i >= 3, j >= 3) - OPTIMIZED
         // =======================================================================
+        //
+        // Optimizations applied:
+        // 1. Precompute Q/T base indices into stack arrays (eliminates branch per access)
+        // 2. Cache row offsets (eliminates multiplication per cell)
+        // 3. Direct slice access (eliminates method call overhead)
+        // 4. Raw DSM lookup (bypasses abstraction layers)
 
-        for i in 3..q_len {
-            for j in 3..t_len {
-                // M[i,j] - pick best of three sources
-                let s_mm = m.diag(i, j).map(|v| v + view.match_e(i, j));
-                let s_mq = bq.diag(i, j).map(|v| v + view.m_from_bq(i, j));
-                let s_mt = bt.diag(i, j).map(|v| v + view.m_from_bt(i, j));
+        // Skip if too short for main loop
+        if q_len >= 3 && t_len >= 3 {
+            // Get direct pointer access to score data - eliminates struct indirection
+            let width = m.width();
 
-                // Tie-breaking: Match > GapT > GapQ (C's max3 priority)
-                let (val_m, step_m) = [(s_mq, DpOp::GapQ), (s_mt, DpOp::GapT), (s_mm, DpOp::Match)]
-                    .into_iter()
-                    .filter_map(|(opt, step)| opt.map(|v| (v, step)))
-                    .max_by_key(|(v, _)| *v)
-                    .unwrap_or((i32::MIN, DpOp::Stop));
+            // =================================================================
+            // DIRECTION-SPECIFIC MAIN LOOP (SCORES ONLY - like C)
+            // =================================================================
+            // C stores only scores, reconstructs traceback from scores post-hoc.
+            // This reduces memory bandwidth: 3 i32 per cell instead of 6.
 
-                let val_m = if val_m == i32::MIN { None } else { Some(val_m) };
-                m.set(i, j, val_m, step_m);
-                update_best(val_m, i, j);
+            macro_rules! dp_main_loop {
+                ($match_e:expr, $m_from_bq:expr, $m_from_bt:expr, $term:expr,
+                 $bq_open:expr, $bq_ext:expr, $bt_open:expr, $bt_ext:expr) => {
+                    // SAFETY: All indices are bounded by grid dimensions.
+                    unsafe {
+                        let m_ptr = m.ptr();
+                        let bq_ptr = bq.ptr();
+                        let bt_ptr = bt.ptr();
+                        let q_ptr = q_idx.as_ptr();
+                        let t_ptr = t_idx.as_ptr();
 
-                // Bq[i,j] - query bulge state (gap in target)
-                let s_qm = m.up(i, j).map(|v| v + view.bq_open(i, j));
-                let s_qq = bq.up(i, j).map(|v| v + view.bq_ext(i));
-                let (bq_val, step) = pick_best(s_qm, s_qq, DpOp::Match, DpOp::GapQ);
-                bq.set(i, j, bq_val, step);
+                        for i in 3..q_len {
+                            let row_i = i * width;
+                            let row_prev = (i - 1) * width;
+                            let qi = *q_ptr.add(i);
+                            let qi_prev = *q_ptr.add(i - 1);
 
-                // Bt[i,j] - target bulge state (gap in query)
-                let s_tm = m.left(i, j).map(|v| v + view.bt_open(i, j));
-                let s_tt = bt.left(i, j).map(|v| v + view.bt_ext(j));
-                let (bt_val, step) = pick_best(s_tm, s_tt, DpOp::Match, DpOp::GapT);
-                bt.set(i, j, bt_val, step);
+                            for j in 3..t_len {
+                                let diag_idx = row_prev + j - 1;
+                                let up_idx = row_prev + j;
+                                let left_idx = row_i + j - 1;
+                                let curr_idx = row_i + j;
+                                let tj = *t_ptr.add(j);
+                                let tj_prev = *t_ptr.add(j - 1);
+
+                                // M[i,j] = max3(M[i-1,j-1]+match, Bq[i-1,j-1]+m_from_bq, Bt[i-1,j-1]+m_from_bt)
+                                let m_diag = *m_ptr.add(diag_idx);
+                                let bq_diag = *bq_ptr.add(diag_idx);
+                                let bt_diag = *bt_ptr.add(diag_idx);
+
+                                let s_mm = add_e(m_diag, $match_e(qi, qi_prev, tj, tj_prev));
+                                let s_mq = add_e(bq_diag, $m_from_bq(qi, qi_prev, tj));
+                                let s_mt = add_e(bt_diag, $m_from_bt(qi, tj, tj_prev));
+
+                                // max3 like C - no traceback storage
+                                let val_m = max3(s_mm, s_mq, s_mt);
+
+                                // Update best (with terminal penalty)
+                                if val_m > MIN_SCORE {
+                                    let curr = val_m + $term(qi, tj);
+                                    if curr > best_e {
+                                        best_e = curr;
+                                        best_i = i;
+                                        best_j = j;
+                                    }
+                                }
+
+                                *m_ptr.add(curr_idx) = val_m;
+
+                                // Bq[i,j] = max(M[i-1,j]+bq_open, Bq[i-1,j]+bq_ext)
+                                let m_up = *m_ptr.add(up_idx);
+                                let bq_up = *bq_ptr.add(up_idx);
+                                let s_qm = add_e(m_up, $bq_open(qi, qi_prev, tj));
+                                let s_qq = add_e(bq_up, $bq_ext(qi, qi_prev));
+                                *bq_ptr.add(curr_idx) = max2(s_qm, s_qq);
+
+                                // Bt[i,j] = max(M[i,j-1]+bt_open, Bt[i,j-1]+bt_ext)
+                                let m_left = *m_ptr.add(left_idx);
+                                let bt_left = *bt_ptr.add(left_idx);
+                                let s_tm = add_e(m_left, $bt_open(qi, tj, tj_prev));
+                                let s_tt = add_e(bt_left, $bt_ext(tj, tj_prev));
+                                *bt_ptr.add(curr_idx) = max2(s_tm, s_tt);
+                            }
+                        }
+                    }
+                };
+            }
+
+            if view.dir == ExtendDir::Left {
+                // LEFT: DSM[curr, prev, curr, prev]
+                dp_main_loop!(
+                    |qi, qi_prev, tj, tj_prev| dsm_lookup_raw(qi, qi_prev, tj, tj_prev),
+                    |qi, qi_prev, tj| dsm_lookup_raw(qi, qi_prev, tj, GAP),
+                    |qi, tj, tj_prev| dsm_lookup_raw(qi, GAP, tj, tj_prev),
+                    |qi, tj| dsm_lookup_raw(GAP, qi, GAP, tj),
+                    |qi, qi_prev, tj| dsm_lookup_raw(qi, qi_prev, GAP, tj),
+                    |qi, qi_prev| dsm_lookup_raw(qi, qi_prev, GAP, GAP),
+                    |qi, tj, tj_prev| dsm_lookup_raw(GAP, qi, tj, tj_prev),
+                    |tj, tj_prev| dsm_lookup_raw(GAP, GAP, tj, tj_prev)
+                );
+            } else {
+                // RIGHT: DSM[prev, curr, prev, curr]
+                dp_main_loop!(
+                    |qi, qi_prev, tj, tj_prev| dsm_lookup_raw(qi_prev, qi, tj_prev, tj),
+                    |qi, qi_prev, tj| dsm_lookup_raw(qi_prev, qi, GAP, tj),
+                    |qi, tj, tj_prev| dsm_lookup_raw(GAP, qi, tj_prev, tj),
+                    |qi, tj| dsm_lookup_raw(qi, GAP, tj, GAP),
+                    |qi, qi_prev, tj| dsm_lookup_raw(qi_prev, qi, tj, GAP),
+                    |qi, qi_prev| dsm_lookup_raw(qi_prev, qi, GAP, GAP),
+                    |qi, tj, tj_prev| dsm_lookup_raw(qi, GAP, tj_prev, tj),
+                    |tj, tj_prev| dsm_lookup_raw(GAP, GAP, tj_prev, tj)
+                );
             }
         }
 
         // =======================================================================
-        // TRACEBACK
+        // TRACEBACK - Reconstructed from scores (like C implementation)
         // =======================================================================
+        // C doesn't store traceback during DP. It reconstructs the path by
+        // comparing scores to determine which transition was taken.
 
         trace!(
             "{} TB start: best=({},{}) score={}",
             view.dir, best_i, best_j, best_e
         );
-        // Pre-allocate: traceback length is at most best_i + best_j moves
-        let mut trace_vec = Vec::with_capacity(best_i + best_j);
+
+        // Reuse traceback buffer (cleared each call, capacity preserved)
+        self.trace_buf.clear();
         let (mut i, mut j) = (best_i, best_j);
         let mut state = DpOp::Match;
 
         while i > 0 || j > 0 {
-            let (next, di, dj) = match state {
+            match state {
                 DpOp::Stop => break,
-                DpOp::Match if i > 0 && j > 0 => (m.tb(i, j), 1, 1),
-                DpOp::GapQ if i > 0 => (bq.tb(i, j), 1, 0),
-                DpOp::GapT if j > 0 => (bt.tb(i, j), 0, 1),
+                DpOp::Match if i > 0 && j > 0 => {
+                    self.trace_buf.push(DpOp::Match);
+                    let m_val = m.get(i, j);
+                    let m_diag = m.get(i - 1, j - 1);
+                    let bq_diag = bq.get(i - 1, j - 1);
+                    let bt_diag = bt.get(i - 1, j - 1);
+
+                    // Check which transition produced this M value
+                    let match_e = view.match_e(i, j);
+                    let m_from_bq = view.m_from_bq(i, j);
+                    let m_from_bt = view.m_from_bt(i, j);
+
+                    let next = if m_diag > MIN_SCORE && m_val == m_diag + match_e {
+                        DpOp::Match
+                    } else if bq_diag > MIN_SCORE && m_val == bq_diag + m_from_bq {
+                        DpOp::GapQ
+                    } else if bt_diag > MIN_SCORE && m_val == bt_diag + m_from_bt {
+                        DpOp::GapT
+                    } else {
+                        DpOp::Stop
+                    };
+
+                    trace!("{} TB Match({},{}): next={:?}", view.dir, i, j, next);
+                    i -= 1;
+                    j -= 1;
+                    state = next;
+                }
+                DpOp::GapQ if i > 0 => {
+                    self.trace_buf.push(DpOp::GapQ);
+                    let bq_val = bq.get(i, j);
+                    let m_up = m.get(i - 1, j);
+                    let bq_up = bq.get(i - 1, j);
+
+                    let bq_open = view.bq_open(i, j);
+                    let bq_ext = view.bq_ext(i);
+
+                    let next = if m_up > MIN_SCORE && bq_val == m_up + bq_open {
+                        DpOp::Match
+                    } else if bq_up > MIN_SCORE && bq_val == bq_up + bq_ext {
+                        DpOp::GapQ
+                    } else {
+                        DpOp::Stop
+                    };
+
+                    trace!("{} TB GapQ({},{}): next={:?}", view.dir, i, j, next);
+                    i -= 1;
+                    state = next;
+                }
+                DpOp::GapT if j > 0 => {
+                    self.trace_buf.push(DpOp::GapT);
+                    let bt_val = bt.get(i, j);
+                    let m_left = m.get(i, j - 1);
+                    let bt_left = bt.get(i, j - 1);
+
+                    let bt_open = view.bt_open(i, j);
+                    let bt_ext = view.bt_ext(j);
+
+                    let next = if m_left > MIN_SCORE && bt_val == m_left + bt_open {
+                        DpOp::Match
+                    } else if bt_left > MIN_SCORE && bt_val == bt_left + bt_ext {
+                        DpOp::GapT
+                    } else {
+                        DpOp::Stop
+                    };
+
+                    trace!("{} TB GapT({},{}): next={:?}", view.dir, i, j, next);
+                    j -= 1;
+                    state = next;
+                }
                 _ => break,
-            };
-            trace_vec.push(state);
-            trace!("{} TB {:?}({},{}): next={:?}", view.dir, state, i, j, next);
-            i -= di;
-            j -= dj;
-            if next == DpOp::Stop {
-                break;
             }
-            state = next;
         }
 
         trace!(
             "{} result: score={} q_len={} t_len={} trace={:?}",
-            view.dir, best_e, best_i, best_j, trace_vec
+            view.dir, best_e, best_i, best_j, self.trace_buf
         );
+        // Move trace out using mem::take (zero-copy) - SmallVec::default() is inline-empty
         DpExtension {
             score: best_e,
             q_len: best_i,
             t_len: best_j,
-            trace: trace_vec,
+            trace: std::mem::take(&mut self.trace_buf),
         }
     }
 }

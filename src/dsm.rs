@@ -24,11 +24,44 @@ impl Dsm {
     /// Turner 2004 parameters (positive strand)
     pub const T04: Self = Self(&DSM_T04_POS);
 
-    /// Get stacking energy for dinucleotide pair
-    #[inline]
     pub fn get(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i16 {
         self.0[q1.idx()][q2.idx()][t1.idx()][t2.idx()]
     }
+}
+
+/// Flattened DSM table for single-lookup access.
+/// Index = q1*216 + q2*36 + t1*6 + t2 where each dim is 0..6.
+static DSM_FLAT: [i32; 1296] = {
+    let mut flat = [0i32; 1296];
+    let mut q1 = 0;
+    while q1 < 6 {
+        let mut q2 = 0;
+        while q2 < 6 {
+            let mut t1 = 0;
+            while t1 < 6 {
+                let mut t2 = 0;
+                while t2 < 6 {
+                    let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+                    flat[idx] = DSM_T04_POS[q1][q2][t1][t2] as i32;
+                    t2 += 1;
+                }
+                t1 += 1;
+            }
+            q2 += 1;
+        }
+        q1 += 1;
+    }
+    flat
+};
+
+/// Raw DSM lookup function for hot path DP.
+/// Single flat array access - faster than 4 nested lookups.
+#[inline(always)]
+pub fn dsm_lookup_raw(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+    // Safety: Indices are guaranteed < 6 by caller logic (Base::idx())
+    // Single lookup: q1*216 + q2*36 + t1*6 + t2
+    let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+    unsafe { *DSM_FLAT.get_unchecked(idx) }
 }
 
 /// Represents a stacked base pair for energy calculation.

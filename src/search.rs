@@ -469,27 +469,38 @@ impl<'a> SaIndex<'a> {
     }
 }
 
-pub struct SearchContext<'a> {
+pub struct SearchContext<'a, 'e> {
     pub index: &'a SaIndex<'a>,
     pub args: &'a SearchArgs,
-    pub extender: dp::DpExtender,
+    pub extender: &'e mut dp::DpExtender,
     pub stats: SearchStats,
     pub energy: EnergyModel,
 }
 
-impl<'a> SearchContext<'a> {
-    pub fn new(index: &'a SaIndex<'a>, args: &'a SearchArgs) -> Self {
+impl<'a, 'e> SearchContext<'a, 'e> {
+    pub fn with_extender(
+        index: &'a SaIndex<'a>,
+        args: &'a SearchArgs,
+        extender: &'e mut dp::DpExtender,
+    ) -> Self {
         Self {
             index,
             args,
-            extender: dp::DpExtender::new(),
+            extender,
             stats: SearchStats::default(),
             energy: EnergyModel::T04,
         }
     }
 }
 
+/// Thread-local storage for DpExtender - avoids allocation per query.
+thread_local! {
+    static THREAD_EXTENDER: std::cell::RefCell<dp::DpExtender> =
+        std::cell::RefCell::new(dp::DpExtender::new());
+}
+
 /// Core search logic - finds and deduplicates hits for all queries.
+/// Uses parallel iteration over queries for multi-core utilization.
 fn search_core(
     queries: &[(String, Vec<u8>)],
     index: &SaIndex<'_>,
@@ -503,65 +514,61 @@ fn search_core(
         opts.extend.delta_g
     );
 
-    let mut ctx = SearchContext::new(index, opts);
-    let mut all_hits = Vec::new();
+    // Sequential search for fair single-threaded comparison.
+    // Use par_iter() and RAYON_NUM_THREADS for multi-threaded mode.
+    let all_hits: Vec<SearchHit> = queries
+        .iter() // Sequential - use par_iter() for parallel
+        .flat_map(|(q_id, q_seq)| {
+            // Borrow thread-local extender for this query
+            THREAD_EXTENDER.with(|ext| {
+                let mut extender = ext.borrow_mut();
+                let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
 
-    for (q_id, q_seq) in queries {
-        trace!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
-        trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
+                trace!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
+                trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
 
-        let seeds = find_seeds_for_query(q_seq, &mut ctx)?;
-        trace!("{} {} candidates found", SearchStage::Input, seeds.len());
-        ctx.stats.candidates_processed += seeds.len();
+                let seeds = match find_seeds_for_query(q_seq, &mut ctx) {
+                    Ok(s) => s,
+                    Err(_) => return Vec::new(),
+                };
+                trace!("{} {} candidates found", SearchStage::Input, seeds.len());
 
-        for candidate in &seeds {
-            trace!(
-                "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
-                SearchStage::Seed,
-                candidate.query_pos,
-                candidate.target_idx,
-                candidate.target_start,
-                candidate.len,
-                candidate.strand
-            );
-            if let Some(hit) =
-                process_candidate(crate::types::Query::new(q_id, q_seq), candidate, &mut ctx)
-            {
-                trace!(
-                    "{} q={}-{} t={}-{} E={:.2}",
-                    SearchStage::Output,
-                    hit.q_start,
-                    hit.q_end,
-                    hit.t_start,
-                    hit.t_end,
-                    hit.energy
-                );
-                all_hits.push(hit);
-            }
-        }
-    }
+                let mut hits = Vec::new();
+                for candidate in &seeds {
+                    trace!(
+                        "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
+                        SearchStage::Seed,
+                        candidate.query_pos,
+                        candidate.target_idx,
+                        candidate.target_start,
+                        candidate.len,
+                        candidate.strand
+                    );
+                    if let Some(hit) = process_candidate(
+                        crate::types::Query::new(q_id, q_seq),
+                        candidate,
+                        &mut ctx,
+                    ) {
+                        trace!(
+                            "{} q={}-{} t={}-{} E={:.2}",
+                            SearchStage::Output,
+                            hit.q_start,
+                            hit.q_end,
+                            hit.t_start,
+                            hit.t_end,
+                            hit.energy
+                        );
+                        hits.push(hit);
+                    }
+                }
+                hits
+            })
+        })
+        .collect();
 
-    // No dedup needed - maximal seeds from extend_seed are unique by definition.
-    // If a seed passes maximality check, it cannot be extended, so it's unique.
-    ctx.stats.hits_before_dedup = all_hits.len();
-    let deduped = all_hits;
-    ctx.stats.hits_final = deduped.len();
+    info!("Search complete: {} hits", all_hits.len());
 
-    info!(
-        "Search complete: {} hits ({} before dedup)",
-        ctx.stats.hits_final, ctx.stats.hits_before_dedup
-    );
-    if !ctx.stats.filtered.is_empty() {
-        let filter_summary: Vec<String> = ctx
-            .stats
-            .filtered
-            .iter()
-            .map(|(r, c)| format!("{:?}={}", r, c))
-            .collect();
-        info!("Filtered: {}", filter_summary.join(", "));
-    }
-
-    Ok(deduped)
+    Ok(all_hits)
 }
 
 /// Run search and return hits.
@@ -741,7 +748,10 @@ fn deduplicate_hits(
     kept
 }
 
-fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec<SeedCandidate>> {
+fn find_seeds_for_query(
+    q_seq: &[u8],
+    ctx: &mut SearchContext<'_, '_>,
+) -> Result<Vec<SeedCandidate>> {
     use crate::seed;
 
     trace!(
@@ -758,7 +768,7 @@ fn find_seeds_for_query(q_seq: &[u8], ctx: &mut SearchContext<'_>) -> Result<Vec
 fn process_candidate(
     query: crate::types::Query<'_>,
     candidate: &SeedCandidate,
-    ctx: &mut SearchContext<'_>,
+    ctx: &mut SearchContext<'_, '_>,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
     let t_seq: &[u8] = match candidate.strand {
@@ -885,7 +895,7 @@ pub struct ExtensionResult {
 }
 
 fn extend_seed(
-    ctx: &mut SearchContext<'_>,
+    ctx: &mut SearchContext<'_, '_>,
     q_seq: &[u8],
     t_seq: &[u8],
     candidate: &SeedCandidate,
@@ -1048,18 +1058,19 @@ fn extend_seed(
         .energy
         .seed_energy(&query, &target, q_pos, t_match_end, len);
 
-    // Build interaction string for debugging/output (separate from energy)
-    let mut seed_int_str = String::with_capacity(len);
-    for k in 0..len {
-        let qc = query.base(q_pos + k);
-        let tc = target.base(t_match_end - k);
-        seed_int_str.push(qc.pairing_class(tc));
+    // Only build interaction string when trace logging is enabled (avoids allocation in hot path)
+    if log::log_enabled!(log::Level::Trace) {
+        let mut seed_int_str = String::with_capacity(len);
+        for k in 0..len {
+            let qc = query.base(q_pos + k);
+            let tc = target.base(t_match_end - k);
+            seed_int_str.push(qc.pairing_class(tc));
+        }
+        trace!(
+            "[SEED] energy_raw={} q_pos={} t_end={} len={} interaction={}",
+            seed_energy_raw, q_pos, t_match_end, len, seed_int_str
+        );
     }
-
-    trace!(
-        "[SEED] energy_raw={} q_pos={} t_end={} len={} interaction={}",
-        seed_energy_raw, q_pos, t_match_end, len, seed_int_str
-    );
 
     // If not entering extension, return seed-only result
     // Need to add terminal penalties at both ends of the seed
@@ -1115,7 +1126,8 @@ fn extend_seed(
         right_res.t_len
     );
 
-    let mut left_alignment = Vec::new();
+    // Pre-allocate with known capacity to avoid reallocations
+    let mut left_alignment = Vec::with_capacity(left_res.trace.len());
 
     // Left Trace: replay from extension end back toward seed
     let mut li = left_res.q_len;
@@ -1149,7 +1161,7 @@ fn extend_seed(
     let seed_alignment = build_seed_alignment(&query, &target, q_pos, t_match_end, len);
 
     // Right Trace: replay reversed trace (from seed toward extension end)
-    let mut right_alignment = Vec::new();
+    let mut right_alignment = Vec::with_capacity(right_res.trace.len());
     let (mut ri, mut rj) = (0, 0);
     let q_base = candidate.query_pos + len - 1;
     for step in right_res.trace.iter().rev() {

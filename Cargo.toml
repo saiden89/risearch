@@ -22,6 +22,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 bincode = "1.3.3"
 rayon = "1.11"
 savefile = "0.20.2"
+smallvec = "1.15.1"
 
 [dev-dependencies]
 assert_cmd = "2.1.1"
@@ -36,7 +37,11 @@ rstest = "0.24"
 name = "seed_search"
 harness = false
 
+[[bench]]
+name = "c_bench"
+harness = false
+
 [profile.release]
-debug = 2
-lto = false         # Preserve function boundaries
+debug = "full"
+lto = "thin"        # Enable LTO for cross-crate inlining
 codegen-units = 1   # Consistent symbol resolution
