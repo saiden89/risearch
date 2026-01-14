@@ -173,18 +173,22 @@ impl<'a> ParallelSaSearcher<'a> {
     /// Note: Short suffixes (length < seed_len) are automatically excluded during
     /// partitioning via the sentinel value (255) which sorts after all valid bases.
     pub fn find_seeds(&self, seed_len: usize) -> Vec<ParallelSeedMatch> {
+        let mut results = Vec::new();
+        self.find_seeds_into(seed_len, &mut results);
+        results
+    }
+
+    /// Find seeds and append to existing Vec (avoids allocation per call)
+    #[inline]
+    pub fn find_seeds_into(&self, seed_len: usize, results: &mut Vec<ParallelSeedMatch>) {
         use log::trace;
 
         trace!(
-            "[PSA] find_seeds seed_len={} q_len={} t_len={} q_seq={:?} t_seq={:?}",
+            "[PSA] find_seeds seed_len={} q_len={} t_len={}",
             seed_len,
             self.query_seq.len(),
             self.target_comp_seq.len(),
-            String::from_utf8_lossy(self.query_seq),
-            String::from_utf8_lossy(self.target_comp_seq)
         );
-
-        let mut results = Vec::new();
 
         let initial_state = SearchState {
             query_interval: SaInterval::new(0, self.query_sa.len()),
@@ -194,10 +198,7 @@ impl<'a> ParallelSaSearcher<'a> {
             mismatch_count: 0,
         };
 
-        self.search_recursive(seed_len, initial_state, &mut results);
-
-        trace!("[PSA] find_seeds returning {} matches", results.len());
-        results
+        self.search_recursive(seed_len, initial_state, results);
     }
 
     /// Recursive parallel search (mirrors C's sa_parallel_match_neg)
@@ -449,8 +450,8 @@ impl<'a> ParallelSaSearcher<'a> {
     /// Uses binary search to find boundaries where bases change.
     /// Returns intervals for [a, c, g, n, u] with end boundary.
     ///
-    /// Suffixes that are too short (OOB at this offset) are assigned sentinel value 255,
-    /// which sorts after all valid bases and are excluded from the U interval.
+    /// Short suffixes (pos + offset >= seq_len) must be filtered out via linear scan
+    /// because they're scattered throughout the SA (sorted by earlier characters).
     fn partition_interval(
         &self,
         sa: &[u32],
@@ -462,7 +463,7 @@ impl<'a> ParallelSaSearcher<'a> {
             return BaseIntervals::default();
         }
 
-        // Step 1: Find valid suffix range (O(n) linear scan)
+        // Step 1: Find valid suffix range - optimized with early exit
         let (valid_start, valid_end) = self.find_valid_suffix_range(sa, seq, interval, offset);
 
         if valid_start >= valid_end {
@@ -473,11 +474,11 @@ impl<'a> ParallelSaSearcher<'a> {
         self.partition_by_base(sa, seq, valid_start, valid_end, offset)
     }
 
-    /// Find the range of suffixes long enough for this offset (O(n) scan)
+    /// Find the range of suffixes long enough for this offset
     ///
-    /// Returns (valid_start, valid_end) - the range of valid suffix indices.
-    /// This is the bottleneck for performance - see C's sa[n]=0 sentinel approach.
-    #[inline(never)] // Keep separate for flamegraph
+    /// Optimized: uses two linear scans from both ends with early exit.
+    /// For typical workloads, most suffixes are valid, so scans terminate quickly.
+    #[inline]
     fn find_valid_suffix_range(
         &self,
         sa: &[u32],
@@ -489,24 +490,30 @@ impl<'a> ParallelSaSearcher<'a> {
         let end = interval.end;
         let seq_len = seq.len();
 
-        // Find where valid entries start (first suffix long enough for this offset)
-        let valid_start = start
-            + (start..end)
-                .position(|i| {
-                    let pos = sa[i] as usize;
-                    pos + offset < seq_len
-                })
-                .unwrap_or(end - start);
+        // For seed lengths (6-22bp) and typical sequences (>1000bp),
+        // almost all suffixes are valid, so scan from start until we find first valid
+        let mut valid_start = start;
+        while valid_start < end {
+            let pos = sa[valid_start] as usize;
+            if pos + offset < seq_len {
+                break;
+            }
+            valid_start += 1;
+        }
 
-        // Find where valid entries end (last valid + 1)
-        let valid_end = start
-            + (start..end)
-                .rposition(|i| {
-                    let pos = sa[i] as usize;
-                    pos + offset < seq_len
-                })
-                .map(|p| p + 1)
-                .unwrap_or(0);
+        if valid_start >= end {
+            return (end, end);
+        }
+
+        // Scan from end to find last valid
+        let mut valid_end = end;
+        while valid_end > valid_start {
+            let pos = sa[valid_end - 1] as usize;
+            if pos + offset < seq_len {
+                break;
+            }
+            valid_end -= 1;
+        }
 
         (valid_start, valid_end)
     }
@@ -514,7 +521,7 @@ impl<'a> ParallelSaSearcher<'a> {
     /// Partition a valid SA range by base character (O(log n) binary search)
     ///
     /// Assumes all suffixes in [valid_start..valid_end] have pos + offset < seq.len()
-    #[inline(never)] // Keep separate for flamegraph
+    #[inline]
     fn partition_by_base(
         &self,
         sa: &[u32],
@@ -527,18 +534,12 @@ impl<'a> ParallelSaSearcher<'a> {
 
         // Find partition points for each base boundary
         let a_start = valid_start;
-        let c_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b'c');
-        let g_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b'g');
-        let n_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b'n');
-        let u_start = valid_start + self.find_base_boundary(sa_slice, seq, offset, b't');
+        let c_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'c');
+        let g_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'g');
+        let n_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'n');
+        let u_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b't');
 
         BaseIntervals::from_bounds([a_start, c_start, g_start, n_start, u_start, valid_end])
-    }
-
-    /// Binary search to find leftmost position where character >= target
-    #[inline]
-    fn find_base_boundary(&self, sa_slice: &[u32], seq: &[u8], offset: usize, target: u8) -> usize {
-        sa_slice.partition_point(|&idx| seq[idx as usize + offset] < target)
     }
 }
 

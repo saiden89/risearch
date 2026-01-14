@@ -285,55 +285,87 @@ pub fn build_seed_alignment(
 // =============================================================================
 
 use crate::args::SeedArgs;
-use crate::parallel_sa::{ParallelSaSearcher, build_suffix_array};
+use crate::parallel_sa::{ParallelSaSearcher, ParallelSeedMatch, build_suffix_array};
 use crate::sa::{SaIndexFile, SequenceIndex};
 use crate::seq::reverse_complement_dna;
+
+/// Pre-computed query data to avoid rebuilding per-target.
+pub struct QueryPrep {
+    /// Normalized query (lowercase DNA, U->T)
+    pub q_norm: Vec<u8>,
+    /// Reverse complement of normalized query
+    pub q_rc: Vec<u8>,
+    /// Suffix array of reverse complement
+    pub q_rc_sa: Vec<u32>,
+    /// Seed interval start (0-based)
+    pub start0: usize,
+    /// Seed interval end (1-based, exclusive)
+    pub end1: usize,
+    /// Minimum seed length
+    pub mi_len: usize,
+}
+
+impl QueryPrep {
+    /// Build query preprocessing data (called once per query)
+    pub fn new(query: &[u8], config: &SeedArgs) -> Option<Self> {
+        let q_len = query.len();
+
+        // Normalize query to lowercase DNA (t not u)
+        let q_norm: Vec<u8> = query
+            .iter()
+            .map(|&b| {
+                let lower = b.to_ascii_lowercase();
+                if lower == b'u' { b't' } else { lower }
+            })
+            .collect();
+
+        // Get seed interval bounds
+        let (start1, end1, mi_len) = config.seed.normalize(q_len).ok()?;
+
+        // Build query RC and its SA once
+        let q_rc = reverse_complement_dna(&q_norm);
+        let q_rc_sa = build_suffix_array(&q_rc);
+
+        Some(Self {
+            q_norm,
+            q_rc,
+            q_rc_sa,
+            start0: start1 - 1,
+            end1,
+            mi_len,
+        })
+    }
+}
 
 /// Find all seed matches between a query and a single target sequence.
 ///
 /// This is the low-level, parallelizable unit of work. Callers can use Rayon
 /// to parallelize over queries or targets as needed.
 ///
-/// Returns candidates with positions in original coordinates.
-pub fn find_seeds_in_target(
-    query: &[u8],
+/// Appends candidates to the provided Vec (avoids allocation per target).
+pub fn find_seeds_in_target_into(
+    prep: &QueryPrep,
     target: &SequenceIndex,
     target_idx: usize,
     config: &SeedArgs,
-) -> Vec<SeedCandidate> {
-    let q_len = query.len();
-
-    // Normalize query to lowercase DNA (t not u)
-    let q_norm: Vec<u8> = query
-        .iter()
-        .map(|&b| {
-            let lower = b.to_ascii_lowercase();
-            if lower == b'u' { b't' } else { lower }
-        })
-        .collect();
-
-    // Get seed interval bounds
-    let Ok((start1, end1, mi_len)) = config.seed.normalize(q_len) else {
-        return Vec::new();
-    };
-    let start0 = start1 - 1;
-    let _end0 = end1 - 1;
-
-    // Build query RC and its SA
-    let q_rc = reverse_complement_dna(&q_norm);
-    let q_rc_sa = build_suffix_array(&q_rc);
-
-    let mut candidates = Vec::new();
+    candidates: &mut Vec<SeedCandidate>,
+    matches: &mut Vec<ParallelSeedMatch>,
+) {
+    let q_len = prep.q_norm.len();
+    let start0 = prep.start0;
+    let end1 = prep.end1;
+    let mi_len = prep.mi_len;
 
     // Forward strand: use pre-built forward_sa
     let t_sa = &target.forward_sa;
     // Iterate all seed lengths from mi_len to q_len; position filter handles interval
     for seed_len in mi_len..=q_len {
-        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_sa, &target.sequence, config);
-        let matches = searcher.find_seeds(seed_len);
+        matches.clear(); // Reuse allocation
+        let searcher = ParallelSaSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_sa, &target.sequence, config);
+        searcher.find_seeds_into(seed_len, matches);
 
-        for m in &matches {
-            for &q_rc_pos_i32 in &q_rc_sa[m.query_interval.start..m.query_interval.end] {
+        for m in matches.iter() {
+            for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
                 let q_rc_pos = q_rc_pos_i32 as usize;
                 if q_rc_pos + seed_len > q_len {
                     continue;
@@ -344,7 +376,7 @@ pub fn find_seeds_in_target(
                 if q_pos < start0 || q_pos + seed_len > end1 {
                     continue;
                 }
-                if q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
+                if prep.q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
                     continue;
                 }
 
@@ -369,11 +401,12 @@ pub fn find_seeds_in_target(
     let t_rc_sa = &target.reverse_sa;
     let t_rc = &target.sequence_rc;
     for seed_len in mi_len..=q_len {
-        let searcher = ParallelSaSearcher::new(&q_rc_sa, &q_rc, t_rc_sa, t_rc, config);
-        let matches = searcher.find_seeds(seed_len);
+        matches.clear(); // Reuse allocation
+        let searcher = ParallelSaSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_rc_sa, t_rc, config);
+        searcher.find_seeds_into(seed_len, matches);
 
-        for m in &matches {
-            for &q_rc_pos_i32 in &q_rc_sa[m.query_interval.start..m.query_interval.end] {
+        for m in matches.iter() {
+            for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
                 let q_rc_pos = q_rc_pos_i32 as usize;
                 if q_rc_pos + seed_len > q_len {
                     continue;
@@ -383,7 +416,7 @@ pub fn find_seeds_in_target(
                 if q_pos < start0 || q_pos + seed_len > end1 {
                     continue;
                 }
-                if q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
+                if prep.q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
                     continue;
                 }
 
@@ -403,7 +436,19 @@ pub fn find_seeds_in_target(
             }
         }
     }
+}
 
+/// Find all seed matches between a query and a single target sequence.
+/// Convenience wrapper that returns a new Vec.
+pub fn find_seeds_in_target(
+    prep: &QueryPrep,
+    target: &SequenceIndex,
+    target_idx: usize,
+    config: &SeedArgs,
+) -> Vec<SeedCandidate> {
+    let mut candidates = Vec::new();
+    let mut matches = Vec::new();
+    find_seeds_in_target_into(prep, target, target_idx, config, &mut candidates, &mut matches);
     candidates
 }
 
@@ -412,12 +457,27 @@ pub fn find_seeds_in_target(
 /// Convenience wrapper that iterates over all targets. For parallelization,
 /// use `find_seeds_in_target` directly with Rayon.
 pub fn find_seeds(query: &[u8], index: &SaIndexFile, config: &SeedArgs) -> Vec<SeedCandidate> {
-    index
-        .sequences
-        .iter()
-        .enumerate()
-        .flat_map(|(idx, target)| find_seeds_in_target(query, target, idx, config))
-        .collect()
+    // Pre-compute query data once (SA, RC, etc.)
+    let Some(prep) = QueryPrep::new(query, config) else {
+        return Vec::new();
+    };
+
+    // Estimate capacity based on target size and query length
+    // Rough heuristic: ~1 candidate per 1000 bases with mismatches enabled
+    let total_target_len: usize = index.sequences.iter().map(|s| s.sequence.len()).sum();
+    let estimated_capacity = if config.mismatch_seed.max_mismatches > 0 {
+        total_target_len / 10 // More candidates with mismatches
+    } else {
+        total_target_len / 1000
+    };
+
+    // Pre-allocate to avoid repeated reallocations
+    let mut all_candidates = Vec::with_capacity(estimated_capacity);
+    let mut matches = Vec::with_capacity(1024);
+    for (idx, target) in index.sequences.iter().enumerate() {
+        find_seeds_in_target_into(&prep, target, idx, config, &mut all_candidates, &mut matches);
+    }
+    all_candidates
 }
 
 #[cfg(test)]

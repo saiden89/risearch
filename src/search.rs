@@ -580,6 +580,54 @@ pub fn run_search(
     search_core(queries, index, opts)
 }
 
+/// Run search with streaming output - writes hits directly instead of collecting.
+/// This avoids memory overhead for large result sets.
+pub fn run_search_streaming<W: std::io::Write>(
+    queries: &[(String, Vec<u8>)],
+    index: &SaIndex<'_>,
+    opts: &SearchArgs,
+    writer: &mut W,
+) -> Result<usize> {
+    info!(
+        "Starting streaming search: {} queries, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.extend.delta_g
+    );
+
+    let mut hit_count = 0;
+
+    for (q_id, q_seq) in queries {
+        // Borrow thread-local extender for this query
+        THREAD_EXTENDER.with(|ext| {
+            let mut extender = ext.borrow_mut();
+            let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
+
+            let seeds = match find_seeds_for_query(q_seq, &mut ctx) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            for candidate in &seeds {
+                if let Some(hit) = process_candidate(
+                    crate::types::Query::new(q_id, q_seq),
+                    candidate,
+                    &mut ctx,
+                ) {
+                    // Write immediately instead of collecting
+                    if hit.write(writer).is_ok() {
+                        hit_count += 1;
+                    }
+                }
+            }
+        });
+    }
+
+    info!("Streaming search complete: {} hits", hit_count);
+    Ok(hit_count)
+}
+
 pub fn write_results(hits: &[SearchHit], output: impl AsRef<Path>) -> Result<()> {
     use std::io::BufWriter;
 

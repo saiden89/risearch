@@ -221,10 +221,21 @@ fn main() -> Result<()> {
                     trace!("Index loaded successfully");
 
                     let wrapper = search::SaIndex { index: &idx };
-                    debug!("Starting search...");
-                    let hits = search::run_search(&queries, &wrapper, opts)?;
-                    search::write_results(&hits, output)?;
-                    info!("Search completed successfully");
+                    debug!("Starting search with streaming output...");
+
+                    // Use streaming output to avoid memory overhead for large result sets
+                    use std::io::{BufWriter, Write};
+                    let output_path: &std::path::Path = output.as_ref();
+                    let inner: Box<dyn std::io::Write> = if output_path == std::path::Path::new("-") {
+                        Box::new(std::io::stdout())
+                    } else {
+                        Box::new(std::fs::File::create(output_path)
+                            .context("Failed to create output file")?)
+                    };
+                    let mut writer = BufWriter::with_capacity(64 * 1024, inner);
+                    let hit_count = search::run_search_streaming(&queries, &wrapper, opts, &mut writer)?;
+                    writer.flush().context("Failed to flush output")?;
+                    info!("Search completed: {} hits written", hit_count);
                 }
             }
         }
