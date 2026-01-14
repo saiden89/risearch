@@ -258,7 +258,7 @@ use crate::types::Pairing;
 ///
 /// # Arguments
 /// * `query` - Query sequence wrapper
-/// * `target` - Target sequence wrapper  
+/// * `target` - Target sequence wrapper
 /// * `q_pos` - Starting position in query (0-based)
 /// * `t_match_end` - Ending position in target (0-based, antiparallel)
 /// * `len` - Length of seed
@@ -268,8 +268,8 @@ pub fn build_seed_alignment(
     q_pos: usize,
     t_match_end: usize,
     len: usize,
-) -> Vec<Pairing> {
-    let mut seed_alignment = Vec::with_capacity(len);
+) -> smallvec::SmallVec<[Pairing; 64]> {
+    let mut seed_alignment = smallvec::SmallVec::new();
     for n in 0..len {
         let q_idx = q_pos + n;
         let t_idx = t_match_end.saturating_sub(n);
@@ -303,6 +303,9 @@ pub struct QueryPrep {
     pub end1: usize,
     /// Minimum seed length
     pub mi_len: usize,
+    /// Bitmap: has_n[i] = true if position i contains 'n'
+    /// Used for O(1) N-checking instead of O(seed_len) scan
+    has_n: Vec<bool>,
 }
 
 impl QueryPrep {
@@ -319,6 +322,9 @@ impl QueryPrep {
             })
             .collect();
 
+        // Precompute N positions for O(1) checking
+        let has_n: Vec<bool> = q_norm.iter().map(|&b| b == b'n').collect();
+
         // Get seed interval bounds
         let (start1, end1, mi_len) = config.seed.normalize(q_len).ok()?;
 
@@ -333,7 +339,14 @@ impl QueryPrep {
             start0: start1 - 1,
             end1,
             mi_len,
+            has_n,
         })
+    }
+
+    /// Check if any position in range [start, start+len) contains 'n'
+    #[inline]
+    pub fn contains_n(&self, start: usize, len: usize) -> bool {
+        self.has_n[start..start + len].iter().any(|&x| x)
     }
 }
 
@@ -376,7 +389,7 @@ pub fn find_seeds_in_target_into(
                 if q_pos < start0 || q_pos + seed_len > end1 {
                     continue;
                 }
-                if prep.q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
+                if prep.contains_n(q_pos, seed_len) {
                     continue;
                 }
 
@@ -416,7 +429,7 @@ pub fn find_seeds_in_target_into(
                 if q_pos < start0 || q_pos + seed_len > end1 {
                     continue;
                 }
-                if prep.q_norm[q_pos..q_pos + seed_len].contains(&b'n') {
+                if prep.contains_n(q_pos, seed_len) {
                     continue;
                 }
 
@@ -457,27 +470,33 @@ pub fn find_seeds_in_target(
 /// Convenience wrapper that iterates over all targets. For parallelization,
 /// use `find_seeds_in_target` directly with Rayon.
 pub fn find_seeds(query: &[u8], index: &SaIndexFile, config: &SeedArgs) -> Vec<SeedCandidate> {
+    let mut candidates = Vec::new();
+    let mut matches = Vec::new();
+    find_seeds_into(query, index, config, &mut candidates, &mut matches);
+    candidates
+}
+
+/// Find all seed matches, reusing provided Vecs to avoid allocation.
+///
+/// Clears `candidates` and `matches` before filling.
+pub fn find_seeds_into(
+    query: &[u8],
+    index: &SaIndexFile,
+    config: &SeedArgs,
+    candidates: &mut Vec<SeedCandidate>,
+    matches: &mut Vec<ParallelSeedMatch>,
+) {
+    candidates.clear();
+    matches.clear();
+
     // Pre-compute query data once (SA, RC, etc.)
     let Some(prep) = QueryPrep::new(query, config) else {
-        return Vec::new();
+        return;
     };
 
-    // Estimate capacity based on target size and query length
-    // Rough heuristic: ~1 candidate per 1000 bases with mismatches enabled
-    let total_target_len: usize = index.sequences.iter().map(|s| s.sequence.len()).sum();
-    let estimated_capacity = if config.mismatch_seed.max_mismatches > 0 {
-        total_target_len / 10 // More candidates with mismatches
-    } else {
-        total_target_len / 1000
-    };
-
-    // Pre-allocate to avoid repeated reallocations
-    let mut all_candidates = Vec::with_capacity(estimated_capacity);
-    let mut matches = Vec::with_capacity(1024);
     for (idx, target) in index.sequences.iter().enumerate() {
-        find_seeds_in_target_into(&prep, target, idx, config, &mut all_candidates, &mut matches);
+        find_seeds_in_target_into(&prep, target, idx, config, candidates, matches);
     }
-    all_candidates
 }
 
 #[cfg(test)]

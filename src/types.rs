@@ -1,6 +1,7 @@
 //! Core domain types used across the codebase
 
 use clap::ValueEnum;
+use smallvec::SmallVec;
 
 /// Nucleotide/gap representation for DSM indexing and sequence operations
 #[repr(u8)]
@@ -308,10 +309,12 @@ use std::ops::Range;
 
 /// Represents a full biological alignment between Query and Target.
 /// Stores the sequence of interactions and metadata about the seed location.
+/// Uses SmallVec to avoid heap allocation for typical alignments (<128 steps).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alignment {
     /// The complete sequence of pairing steps (5' -> 3' of Query).
-    steps: Vec<Pairing>,
+    /// SmallVec keeps small alignments on the stack (128 Pairings ≈ 384 bytes).
+    steps: SmallVec<[Pairing; 128]>,
 
     /// The range of indices in `steps` that corresponds to the initial Seed match.
     /// This allows easy extraction of the "core" interaction vs extensions.
@@ -321,14 +324,15 @@ pub struct Alignment {
 impl Alignment {
     /// Constructor from the three phases of extension.
     /// This fits naturally into `extend_seed` which generates these 3 parts.
-    pub fn new(left: Vec<Pairing>, seed: Vec<Pairing>, right: Vec<Pairing>) -> Self {
+    /// Accepts slices to avoid forcing callers to allocate Vecs.
+    pub fn new(left: &[Pairing], seed: &[Pairing], right: &[Pairing]) -> Self {
         let left_len = left.len();
         let seed_len = seed.len();
 
-        let mut steps = Vec::with_capacity(left_len + seed_len + right.len());
-        steps.extend(left);
-        steps.extend(seed);
-        steps.extend(right);
+        let mut steps = SmallVec::with_capacity(left_len + seed_len + right.len());
+        steps.extend_from_slice(left);
+        steps.extend_from_slice(seed);
+        steps.extend_from_slice(right);
 
         Self {
             steps,
@@ -395,7 +399,7 @@ impl Alignment {
         let fp_chars: Vec<char> = fingerprint.chars().collect();
         let tgt_chars: Vec<char> = target_seq.chars().collect();
 
-        let mut steps = Vec::with_capacity(fp_chars.len());
+        let mut steps = SmallVec::with_capacity(fp_chars.len());
 
         for (i, fp_char) in fp_chars.iter().enumerate() {
             let t_base = tgt_chars.get(i).copied().unwrap_or('-');

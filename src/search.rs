@@ -7,7 +7,8 @@ use crate::args::SearchArgs;
 use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::sa::SaIndexFile;
-use crate::seed::{SeedCandidate, build_seed_alignment};
+use crate::seed::{SeedCandidate, build_seed_alignment, find_seeds_into};
+use crate::parallel_sa::ParallelSeedMatch;
 use crate::seq::Seq;
 use crate::types::{Alignment, Energy, Pairing, QueryId, SeedPairing, Strand, TargetId};
 
@@ -15,13 +16,61 @@ use std::collections::HashMap;
 
 const MAX_DP_EXT: usize = 50;
 
+/// Convert bytes to RNA string (T->U), optionally reversed. Single-pass, one allocation.
+#[inline]
+fn bytes_to_rna_string(s: &[u8], reverse: bool) -> String {
+    let mut result = String::with_capacity(s.len());
+    if reverse {
+        for &b in s.iter().rev() {
+            result.push(match b {
+                b'T' => 'U',
+                b't' => 'u',
+                _ => b as char,
+            });
+        }
+    } else {
+        for &b in s {
+            result.push(match b {
+                b'T' => 'U',
+                b't' => 'u',
+                _ => b as char,
+            });
+        }
+    }
+    result
+}
+
+/// Write bytes as RNA (T->U) directly to writer, optionally reversed. Zero allocation.
+#[inline]
+fn write_bytes_as_rna<W: Write>(w: &mut W, s: &[u8], reverse: bool) -> std::io::Result<()> {
+    if reverse {
+        for &b in s.iter().rev() {
+            let c = match b {
+                b'T' => b'U',
+                b't' => b'u',
+                _ => b,
+            };
+            w.write_all(&[c])?;
+        }
+    } else {
+        for &b in s {
+            let c = match b {
+                b'T' => b'U',
+                b't' => b'u',
+                _ => b,
+            };
+            w.write_all(&[c])?;
+        }
+    }
+    Ok(())
+}
+
 /// High-level algorithm stages for structured logging
 #[derive(Debug, Clone, Copy)]
 enum SearchStage {
     Input,  // Query parsing and processing
     Seed,   // Suffix array search, seed generation
     Extend, // DP extension, maximality checks
-    Dedup,  // Deduplication
     Output, // Final results
 }
 
@@ -31,7 +80,6 @@ impl std::fmt::Display for SearchStage {
             Self::Input => write!(f, "[INPUT]"),
             Self::Seed => write!(f, "[SEED]"),
             Self::Extend => write!(f, "[EXTEND]"),
-            Self::Dedup => write!(f, "[DEDUP]"),
             Self::Output => write!(f, "[OUTPUT]"),
         }
     }
@@ -52,10 +100,6 @@ pub enum FilterReason {
 
     // Energy filtering (process_candidate)
     EnergyAboveThreshold,
-
-    // Deduplication (deduplicate_hits)
-    DedupExactMatch,
-    DedupContainedByShadow,
 }
 
 /// Statistics for search filtering
@@ -63,7 +107,6 @@ pub enum FilterReason {
 pub struct SearchStats {
     pub seeds_tried: usize,
     pub candidates_processed: usize,
-    pub hits_before_dedup: usize,
     pub hits_final: usize,
     pub filtered: HashMap<FilterReason, usize>,
 }
@@ -97,18 +140,10 @@ pub struct SearchHit {
 
 impl SearchHit {
     pub fn write(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        // Normalize strings for output (T->U)
-        // Derive from alignment
-        let norm_fp = self.alignment.fingerprint();
-        let norm_ts = self
-            .alignment
-            .target_sequence()
-            .replace('T', "U")
-            .replace('t', "u");
-
-        writeln!(
+        // Write fixed fields
+        write!(
             w,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t",
             self.query_id.truncated(),
             self.output_q_start,
             self.output_q_end,
@@ -117,11 +152,27 @@ impl SearchHit {
             self.output_t_end,
             self.strand,
             self.energy.as_f64(),
-            norm_fp,
-            norm_ts,
-            self.flank_5,
-            self.flank_3
-        )
+        )?;
+
+        // Write fingerprint directly (no String allocation)
+        for p in self.alignment.steps() {
+            write!(w, "{}", p.to_char())?;
+        }
+        write!(w, "\t")?;
+
+        // Write target sequence with T->U normalization (no intermediate String)
+        for p in self.alignment.steps() {
+            let c = p.target_char();
+            let normalized = match c {
+                'T' => 'U',
+                't' => 'u',
+                other => other,
+            };
+            write!(w, "{}", normalized)?;
+        }
+
+        // Write remaining fields
+        writeln!(w, "\t{}\t{}", self.flank_5, self.flank_3)
     }
 
     /// Parse a SearchHit from C risearch output line.
@@ -493,10 +544,14 @@ impl<'a, 'e> SearchContext<'a, 'e> {
     }
 }
 
-/// Thread-local storage for DpExtender - avoids allocation per query.
+/// Thread-local storage for reusable buffers - avoids allocation per query.
 thread_local! {
     static THREAD_EXTENDER: std::cell::RefCell<dp::DpExtender> =
         std::cell::RefCell::new(dp::DpExtender::new());
+    static THREAD_SEEDS: std::cell::RefCell<Vec<SeedCandidate>> =
+        std::cell::RefCell::new(Vec::with_capacity(100_000));
+    static THREAD_MATCHES: std::cell::RefCell<Vec<ParallelSeedMatch>> =
+        std::cell::RefCell::new(Vec::with_capacity(1024));
 }
 
 /// Core search logic - finds and deduplicates hits for all queries.
@@ -599,28 +654,31 @@ pub fn run_search_streaming<W: std::io::Write>(
     let mut hit_count = 0;
 
     for (q_id, q_seq) in queries {
-        // Borrow thread-local extender for this query
+        // Borrow thread-local buffers for this query
         THREAD_EXTENDER.with(|ext| {
-            let mut extender = ext.borrow_mut();
-            let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
+            THREAD_SEEDS.with(|seeds_cell| {
+                THREAD_MATCHES.with(|matches_cell| {
+                    let mut extender = ext.borrow_mut();
+                    let mut seeds = seeds_cell.borrow_mut();
+                    let mut matches = matches_cell.borrow_mut();
+                    let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
 
-            let seeds = match find_seeds_for_query(q_seq, &mut ctx) {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+                    // Reuse thread-local Vecs instead of allocating new ones
+                    find_seeds_into(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
 
-            for candidate in &seeds {
-                if let Some(hit) = process_candidate(
-                    crate::types::Query::new(q_id, q_seq),
-                    candidate,
-                    &mut ctx,
-                ) {
-                    // Write immediately instead of collecting
-                    if hit.write(writer).is_ok() {
-                        hit_count += 1;
+                    for candidate in seeds.iter() {
+                        // Use streaming variant - zero String allocations
+                        if process_candidate_streaming(
+                            crate::types::Query::new(q_id, q_seq),
+                            candidate,
+                            &mut ctx,
+                            writer,
+                        ) {
+                            hit_count += 1;
+                        }
                     }
-                }
-            }
+                });
+            });
         });
     }
 
@@ -669,132 +727,6 @@ pub fn write_results(hits: &[SearchHit], output: impl AsRef<Path>) -> Result<()>
 /// We match C behavior (preserve all) for parity. Only true duplicates
 /// (same coords AND same energy within 0.001) are filtered.
 ///
-
-/// Optimized shadow check for hits already known to share the same target and strand.
-/// Called from bucketed dedup where the bucket key guarantees target_id/strand equality.
-/// Skips string comparison (~10x faster than shadows() in hot path).
-#[inline]
-fn shadows_same_target(k: &SearchHit, h: &SearchHit, dedup_shadow: bool) -> Option<FilterReason> {
-    // Order matters for short-circuit: target coords most discriminating (50MB target vs 22nt query)
-    // Check exact match first (most common filter reason)
-    if k.t_start == h.t_start
-        && k.t_end == h.t_end
-        && k.q_start == h.q_start
-        && k.q_end == h.q_end
-        && (k.energy.as_f64() - h.energy.as_f64()).abs() < 0.001
-        && k.alignment == h.alignment
-    {
-        return Some(FilterReason::DedupExactMatch);
-    }
-
-    // Containment check is only possible if k's bounds contain h's bounds.
-    // Early-exit if k.t_start > h.t_start (most common case - different t_start).
-    // This avoids computing q_contained and t_contained in the fast path.
-    if dedup_shadow && k.t_start <= h.t_start && k.t_end >= h.t_end {
-        // Target is contained, now check query
-        if k.q_start <= h.q_start && k.q_end >= h.q_end && h.q_start != k.q_start {
-            return Some(FilterReason::DedupContainedByShadow);
-        }
-    }
-
-    None
-}
-
-// Note: shadows_same_target and lightweight_dedup removed - maximal seeds are unique by definition
-
-fn deduplicate_hits(
-    mut hits: Vec<SearchHit>,
-    stats: &mut SearchStats,
-    dedup_shadow: bool,
-) -> Vec<SearchHit> {
-    trace!("{} input_count={}", SearchStage::Dedup, hits.len());
-
-    if hits.is_empty() {
-        return hits;
-    }
-
-    // Sort by Energy ascending (best first), then by t_start for efficient containment
-    hits.sort_by(|a, b| {
-        a.energy
-            .partial_cmp(&b.energy)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.t_start.cmp(&b.t_start))
-    });
-
-    // Use HashSet for O(1) exact-coord lookup instead of O(n) linear scan
-    use std::collections::HashSet;
-
-    // Key: (target_id, strand, q_start, q_end, t_start, t_end)
-    let mut seen_exact: HashSet<(String, Strand, usize, usize, usize, usize)> = HashSet::new();
-
-    // For containment: bucket by (target_id, strand), sorted by t_start within each bucket
-    let mut buckets: HashMap<(TargetId, Strand), Vec<SearchHit>> = HashMap::new();
-
-    for h in hits {
-        let key = (h.target_id.clone(), h.strand);
-
-        // 1. Exact coord check: O(1) via HashSet
-        let exact_key = (
-            h.target_id.0.clone(),
-            h.strand,
-            h.q_start,
-            h.q_end,
-            h.t_start,
-            h.t_end,
-        );
-
-        if !seen_exact.insert(exact_key) {
-            stats.record_filter(FilterReason::DedupExactMatch);
-            continue;
-        }
-
-        // 2. Containment check (if enabled): O(log n) via sorted bucket
-        if dedup_shadow {
-            let bucket = buckets.entry(key.clone()).or_default();
-
-            // Only check hits with t_start <= h.t_start (potential containers)
-            // Bucket is sorted by t_start, so we can use binary search
-            let search_idx = bucket.partition_point(|k| k.t_start <= h.t_start);
-
-            let mut contained = false;
-            for k in bucket[..search_idx].iter().rev().take(50) {
-                // Early exit: if k.t_end < h.t_end, it can't contain h
-                if k.t_end >= h.t_end
-                    && k.q_start <= h.q_start
-                    && k.q_end >= h.q_end
-                    && h.q_start != k.q_start
-                {
-                    stats.record_filter(FilterReason::DedupContainedByShadow);
-                    contained = true;
-                    break;
-                }
-            }
-
-            if contained {
-                continue;
-            }
-
-            // Insert maintaining sorted order by t_start
-            let insert_idx = bucket.partition_point(|k| k.t_start < h.t_start);
-            bucket.insert(insert_idx, h);
-        } else {
-            // No containment check, just add to bucket
-            buckets.entry(key).or_default().push(h);
-        }
-    }
-
-    // Flatten buckets back into a single Vec, preserving energy sort order
-    let mut kept: Vec<SearchHit> = buckets.into_values().flatten().collect();
-    kept.sort_by(|a, b| {
-        a.energy
-            .partial_cmp(&b.energy)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.q_start.cmp(&b.q_start))
-    });
-
-    trace!("{} output_count={}", SearchStage::Dedup, kept.len());
-    kept
-}
 
 fn find_seeds_for_query(
     q_seq: &[u8],
@@ -894,19 +826,13 @@ fn process_candidate(
 
     // Flanks (20bp context, T->U normalized)
     let ctx_len = 20;
-    let to_rna = |s: &[u8]| {
-        String::from_utf8_lossy(s)
-            .replace('T', "U")
-            .replace('t', "u")
-    };
-
-    let flank_5 = to_rna(&t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start])
-        .chars()
-        .rev()
-        .collect();
+    let flank_5 = bytes_to_rna_string(
+        &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start],
+        true, // reverse
+    );
     let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
     let flank_3 = if final_t_end + 1 < t_seq.len() {
-        to_rna(&t_seq[final_t_end + 1..t_3_end])
+        bytes_to_rna_string(&t_seq[final_t_end + 1..t_3_end], false)
     } else {
         String::new()
     };
@@ -929,6 +855,131 @@ fn process_candidate(
         flank_5,
         flank_3,
     })
+}
+
+/// Process candidate and write directly to output - zero String allocation variant.
+/// Returns true if a hit was written.
+fn process_candidate_streaming<W: Write>(
+    query: crate::types::Query<'_>,
+    candidate: &SeedCandidate,
+    ctx: &mut SearchContext<'_, '_>,
+    writer: &mut W,
+) -> bool {
+    let t_idx = candidate.target_idx;
+    let t_seq: &[u8] = match candidate.strand {
+        Strand::Reverse => ctx.index.get_sequence_rc(t_idx),
+        Strand::Forward => ctx.index.get_sequence(t_idx),
+    };
+
+    let t_start_idx = candidate.target_start;
+    let seed_len = candidate.len;
+    let q_pos = candidate.query_pos;
+
+    if t_start_idx + seed_len > t_seq.len() {
+        ctx.stats.record_filter(FilterReason::SeedOutOfBounds);
+        return false;
+    }
+
+    // Call extend_seed
+    let Some(ext) = extend_seed(ctx, query.seq, t_seq, candidate) else {
+        return false;
+    };
+
+    let score = ext.score;
+    if score > ctx.args.extend.delta_g {
+        ctx.stats.record_filter(FilterReason::EnergyAboveThreshold);
+        return false;
+    }
+
+    // Final coordinates (0-based)
+    let final_q_start = q_pos - ext.l_q;
+    let final_q_end = (q_pos + seed_len - 1) + ext.r_q;
+    let final_t_start = t_start_idx - ext.r_t;
+    let final_t_end = (t_start_idx + seed_len - 1) + ext.l_t;
+
+    // Output coordinates (1-based, strand-aware for target)
+    let original_len = ctx.index.get_sequence_len(candidate.target_idx);
+    let (out_t_start, out_t_end, strand_char) = match candidate.strand {
+        Strand::Reverse => {
+            let fwd_start = original_len - 1 - final_t_end;
+            let fwd_end = original_len - 1 - final_t_start;
+            (fwd_start + 1, fwd_end + 1, '-')
+        }
+        Strand::Forward => {
+            (final_t_start + 1, final_t_end + 1, '+')
+        }
+    };
+
+    // Write directly - no String allocations
+    let target_id = ctx.index.get_id(t_idx);
+    let ctx_len = 20;
+
+    // Write fixed fields (using truncated IDs)
+    let q_id_trunc = if query.id.len() > 50 { &query.id[..50] } else { query.id };
+    let t_id_trunc = if target_id.len() > 50 { &target_id[..50] } else { target_id };
+
+    if write!(
+        writer,
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t",
+        q_id_trunc,
+        final_q_start + 1,
+        final_q_end + 1,
+        t_id_trunc,
+        out_t_start,
+        out_t_end,
+        strand_char,
+        score,
+    ).is_err() {
+        return false;
+    }
+
+    // Write fingerprint directly
+    for p in ext.alignment.steps() {
+        if write!(writer, "{}", p.to_char()).is_err() {
+            return false;
+        }
+    }
+    if write!(writer, "\t").is_err() {
+        return false;
+    }
+
+    // Write target sequence with T->U normalization
+    for p in ext.alignment.steps() {
+        let c = p.target_char();
+        let normalized = match c {
+            'T' => 'U',
+            't' => 'u',
+            other => other,
+        };
+        if write!(writer, "{}", normalized).is_err() {
+            return false;
+        }
+    }
+    if write!(writer, "\t").is_err() {
+        return false;
+    }
+
+    // Write flank_5 (reversed, T->U)
+    let flank_5_slice = &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start];
+    if write_bytes_as_rna(writer, flank_5_slice, true).is_err() {
+        return false;
+    }
+    if write!(writer, "\t").is_err() {
+        return false;
+    }
+
+    // Write flank_3 (T->U)
+    let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
+    if final_t_end + 1 < t_seq.len() {
+        if write_bytes_as_rna(writer, &t_seq[final_t_end + 1..t_3_end], false).is_err() {
+            return false;
+        }
+    }
+    if writeln!(writer).is_err() {
+        return false;
+    }
+
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -1138,7 +1189,7 @@ fn extend_seed(
 
         return Some(ExtensionResult {
             score: final_score,
-            alignment: Alignment::new(Vec::new(), seed_alignment, Vec::new()),
+            alignment: Alignment::new(&[], &seed_alignment, &[]),
             l_q: 0,
             l_t: 0,
             r_q: 0,
@@ -1174,8 +1225,9 @@ fn extend_seed(
         right_res.t_len
     );
 
-    // Pre-allocate with known capacity to avoid reallocations
-    let mut left_alignment = Vec::with_capacity(left_res.trace.len());
+    // Use SmallVec to avoid heap allocation for typical extension sizes
+    use smallvec::SmallVec;
+    let mut left_alignment: SmallVec<[Pairing; 64]> = SmallVec::new();
 
     // Left Trace: replay from extension end back toward seed
     let mut li = left_res.q_len;
@@ -1209,7 +1261,7 @@ fn extend_seed(
     let seed_alignment = build_seed_alignment(&query, &target, q_pos, t_match_end, len);
 
     // Right Trace: replay reversed trace (from seed toward extension end)
-    let mut right_alignment = Vec::with_capacity(right_res.trace.len());
+    let mut right_alignment: SmallVec<[Pairing; 64]> = SmallVec::new();
     let (mut ri, mut rj) = (0, 0);
     let q_base = candidate.query_pos + len - 1;
     for step in right_res.trace.iter().rev() {
@@ -1231,7 +1283,7 @@ fn extend_seed(
         right_alignment.push(pairing);
     }
 
-    let alignment = Alignment::new(left_alignment, seed_alignment, right_alignment);
+    let alignment = Alignment::new(&left_alignment, &seed_alignment, &right_alignment);
 
     Some(ExtensionResult {
         score: final_score,

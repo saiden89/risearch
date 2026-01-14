@@ -635,7 +635,7 @@ mod tests {
         // Create a simple alignment with all Match pairings
         let len = q_end.saturating_sub(q_start).max(1);
         let seed: Vec<Pairing> = (0..len).map(|_| Pairing::Match(Base::A, Base::U)).collect();
-        let alignment = Alignment::new(vec![], seed, vec![]);
+        let alignment = Alignment::new(&[], &seed, &[]);
 
         SearchHit {
             query_id: QueryId::new("query"),
