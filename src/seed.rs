@@ -313,21 +313,16 @@ impl QueryPrep {
     pub fn new(query: &[u8], config: &SeedArgs) -> Option<Self> {
         let q_len = query.len();
 
-        // Normalize query to lowercase DNA (t not u)
-        let q_norm: Vec<u8> = query
-            .iter()
-            .map(|&b| {
-                let lower = b.to_ascii_lowercase();
-                if lower == b'u' { b't' } else { lower }
-            })
-            .collect();
-
-        // Precompute N prefix sums for O(1) checking
+        // Normalize query to lowercase DNA (t not u) and build N prefix sums.
+        let mut q_norm = Vec::with_capacity(q_len);
         let mut n_prefix = Vec::with_capacity(q_len + 1);
         n_prefix.push(0);
-        for &b in &q_norm {
+        for &b in query {
+            let lower = b.to_ascii_lowercase();
+            let norm = if lower == b'u' { b't' } else { lower };
+            q_norm.push(norm);
             let last = *n_prefix.last().unwrap();
-            n_prefix.push(last + u32::from(b == b'n'));
+            n_prefix.push(last + u32::from(norm == b'n'));
         }
 
         // Get seed interval bounds
