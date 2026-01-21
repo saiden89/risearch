@@ -26,6 +26,8 @@ use crate::args::SeedArgs;
 use crate::types::{Base, SeedPairing};
 use libsais::SuffixArrayConstruction;
 
+const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
+
 /// Interval in a suffix array [start, end) - half-open range
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SaInterval {
@@ -395,9 +397,10 @@ impl<'a> ParallelSaSearcher<'a> {
     /// Check if we should explore mismatch branches
     #[inline]
     fn should_explore_mismatches(&self, state: &SearchState, seed_len: usize) -> bool {
-        self.seed_config.mismatch_seed.max_mismatches > 0
-            && state.mismatch_count < self.seed_config.mismatch_seed.max_mismatches
-            && state.depth + 1 > self.seed_config.mismatch_seed.min_position
+        let mismatch = &self.seed_config.mismatch_seed;
+        mismatch.max_mismatches > 0
+            && state.mismatch_count < mismatch.max_mismatches
+            && state.depth + 1 > mismatch.min_position
             && state.matches_since_mismatch < seed_len
     }
 
@@ -422,15 +425,13 @@ impl<'a> ParallelSaSearcher<'a> {
         // For each query base, explore target bases that DON'T form valid pairs
         // This mirrors C's mismatch logic
 
-        let bases = [Base::A, Base::C, Base::G, Base::U];
-
-        for &q_base in &bases {
+        for &q_base in BASES.iter() {
             let q_int = qint.get(q_base);
             if q_int.is_empty() {
                 continue;
             }
 
-            for &t_base in &bases {
+            for &t_base in BASES.iter() {
                 // Skip if this is a valid match (canonical or wobble)
                 if self.is_valid_pair(q_base, t_base) {
                     continue;
