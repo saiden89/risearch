@@ -306,6 +306,8 @@ pub struct QueryPrep {
     /// Bitmap: has_n[i] = true if position i contains 'n'
     /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
+    /// Fast path when query has no Ns
+    has_n_any: bool,
 }
 
 impl QueryPrep {
@@ -324,6 +326,7 @@ impl QueryPrep {
             let last = *n_prefix.last().unwrap();
             n_prefix.push(last + u32::from(norm == b'n'));
         }
+        let has_n_any = *n_prefix.last().unwrap() != 0;
 
         // Get seed interval bounds
         let (start1, end1, mi_len) = config.seed.normalize(q_len).ok()?;
@@ -340,12 +343,16 @@ impl QueryPrep {
             end1,
             mi_len,
             n_prefix,
+            has_n_any,
         })
     }
 
     /// Check if any position in range [start, start+len) contains 'n'
     #[inline]
     pub fn contains_n(&self, start: usize, len: usize) -> bool {
+        if !self.has_n_any {
+            return false;
+        }
         let end = start + len;
         self.n_prefix[end] != self.n_prefix[start]
     }
