@@ -236,6 +236,28 @@ impl<'a> ParallelSaSearcher<'a> {
             return;
         }
 
+        // If a mismatch has occurred, ensure we can still satisfy min_matches_after
+        if state.mismatch_count > 0 && self.seed_config.mismatch_seed.min_matches_after > 0 {
+            let max_possible = state.matches_since_mismatch + (max_len - state.depth);
+            if max_possible < self.seed_config.mismatch_seed.min_matches_after {
+                return;
+            }
+        }
+
+        // If we haven't reached min_len yet, ensure both intervals have at least
+        // one suffix long enough to ever reach min_len.
+        if state.depth < min_len
+            && (!self.has_suffix_len_at_least(self.query_sa, self.query_seq, state.query_interval, min_len)
+                || !self.has_suffix_len_at_least(
+                    self.target_comp_sa,
+                    self.target_comp_seq,
+                    state.target_interval,
+                    min_len,
+                ))
+        {
+            return;
+        }
+
         // Partition both SA intervals by base at current depth
         let qint = self.partition_interval(
             self.query_sa,
@@ -391,6 +413,12 @@ impl<'a> ParallelSaSearcher<'a> {
         max_len: usize,
         results: &mut Vec<ParallelSeedMatch>,
     ) {
+        if max_len <= depth
+            || max_len - depth < self.seed_config.mismatch_seed.min_matches_after
+        {
+            return;
+        }
+
         // For each query base, explore target bases that DON'T form valid pairs
         // This mirrors C's mismatch logic
 
@@ -535,6 +563,23 @@ impl<'a> ParallelSaSearcher<'a> {
         }
 
         (valid_start, valid_end)
+    }
+
+    /// Check if any suffix in interval has length >= min_len
+    #[inline]
+    fn has_suffix_len_at_least(
+        &self,
+        sa: &[u32],
+        seq: &[u8],
+        interval: SaInterval,
+        min_len: usize,
+    ) -> bool {
+        if min_len == 0 {
+            return true;
+        }
+        let offset = min_len - 1;
+        let (valid_start, valid_end) = self.find_valid_suffix_range(sa, seq, interval, offset);
+        valid_start < valid_end
     }
 
     /// Partition a valid SA range by base character (O(log n) binary search)
