@@ -304,8 +304,8 @@ pub struct QueryPrep {
     /// Minimum seed length
     pub mi_len: usize,
     /// Bitmap: has_n[i] = true if position i contains 'n'
-    /// Used for O(1) N-checking instead of O(seed_len) scan
-    has_n: Vec<bool>,
+    /// Prefix sum of N positions for O(1) N-checking
+    n_prefix: Vec<u32>,
 }
 
 impl QueryPrep {
@@ -322,8 +322,13 @@ impl QueryPrep {
             })
             .collect();
 
-        // Precompute N positions for O(1) checking
-        let has_n: Vec<bool> = q_norm.iter().map(|&b| b == b'n').collect();
+        // Precompute N prefix sums for O(1) checking
+        let mut n_prefix = Vec::with_capacity(q_len + 1);
+        n_prefix.push(0);
+        for &b in &q_norm {
+            let last = *n_prefix.last().unwrap();
+            n_prefix.push(last + u32::from(b == b'n'));
+        }
 
         // Get seed interval bounds
         let (start1, end1, mi_len) = config.seed.normalize(q_len).ok()?;
@@ -339,14 +344,15 @@ impl QueryPrep {
             start0: start1 - 1,
             end1,
             mi_len,
-            has_n,
+            n_prefix,
         })
     }
 
     /// Check if any position in range [start, start+len) contains 'n'
     #[inline]
     pub fn contains_n(&self, start: usize, len: usize) -> bool {
-        self.has_n[start..start + len].iter().any(|&x| x)
+        let end = start + len;
+        self.n_prefix[end] != self.n_prefix[start]
     }
 }
 
