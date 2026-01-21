@@ -190,6 +190,17 @@ impl<'a> ParallelSaSearcher<'a> {
             self.target_comp_seq.len(),
         );
 
+        self.find_seeds_range_into(seed_len, seed_len, results);
+    }
+
+    /// Find seeds for a range of lengths in a single traversal.
+    #[inline]
+    pub fn find_seeds_range_into(
+        &self,
+        min_len: usize,
+        max_len: usize,
+        results: &mut Vec<ParallelSeedMatch>,
+    ) {
         let initial_state = SearchState {
             query_interval: SaInterval::new(0, self.query_sa.len()),
             target_interval: SaInterval::new(0, self.target_comp_sa.len()),
@@ -198,26 +209,30 @@ impl<'a> ParallelSaSearcher<'a> {
             mismatch_count: 0,
         };
 
-        self.search_recursive(seed_len, initial_state, results);
+        self.search_recursive_range(min_len, max_len, initial_state, results);
     }
 
-    /// Recursive parallel search (mirrors C's sa_parallel_match_neg)
+    /// Recursive parallel search over a length range (mirrors C's sa_parallel_match_neg)
     #[inline(never)] // Keep separate for flamegraph
-    fn search_recursive(
+    fn search_recursive_range(
         &self,
-        seed_len: usize,
+        min_len: usize,
+        max_len: usize,
         state: SearchState,
         results: &mut Vec<ParallelSeedMatch>,
     ) {
-        // Check if we've reached seed length - report match if valid
-        if state.depth >= seed_len {
-            if self.is_valid_match(&state, seed_len) {
+        // Report if depth is within range
+        if state.depth >= min_len && state.depth <= max_len {
+            if self.is_valid_match(&state, state.depth) {
                 results.push(ParallelSeedMatch {
                     query_interval: state.query_interval,
                     target_interval: state.target_interval,
                     depth: state.depth,
                 });
             }
+        }
+
+        if state.depth >= max_len {
             return;
         }
 
@@ -243,16 +258,16 @@ impl<'a> ParallelSaSearcher<'a> {
         let next_depth = state.depth + 1;
 
         // === CANONICAL MATCHES (same character = complementary base pair) ===
-        self.explore_canonical_matches(&qint, &sint, next_depth, &state, seed_len, results);
+        self.explore_canonical_matches(&qint, &sint, next_depth, &state, min_len, max_len, results);
 
         // === WOBBLE PAIRS ===
         if matches!(self.seed_config.pairing, SeedPairing::AllowWobble) {
-            self.explore_wobble_matches(&qint, &sint, next_depth, &state, seed_len, results);
+            self.explore_wobble_matches(&qint, &sint, next_depth, &state, min_len, max_len, results);
         }
 
         // === MISMATCH EXPLORATION ===
-        if self.should_explore_mismatches(&state, seed_len) {
-            self.explore_mismatches(&qint, &sint, next_depth, &state, seed_len, results);
+        if self.should_explore_mismatches(&state, max_len) {
+            self.explore_mismatches(&qint, &sint, next_depth, &state, min_len, max_len, results);
         }
     }
 
@@ -267,7 +282,8 @@ impl<'a> ParallelSaSearcher<'a> {
         sint: &BaseIntervals,
         next_depth: usize,
         state: &SearchState,
-        seed_len: usize,
+        min_len: usize,
+        max_len: usize,
         results: &mut Vec<ParallelSeedMatch>,
     ) {
         // C code: query 'a' matches target_comp 'a' → target has 'u' → A-U pair
@@ -276,28 +292,28 @@ impl<'a> ParallelSaSearcher<'a> {
         let q_a = qint.get(Base::A);
         let s_a = sint.get(Base::A);
         if !q_a.is_empty() && !s_a.is_empty() {
-            self.recurse_match(q_a, s_a, next_depth, state, seed_len, results);
+            self.recurse_match(q_a, s_a, next_depth, state, min_len, max_len, results);
         }
 
         // C matches (query C with target_comp C)
         let q_c = qint.get(Base::C);
         let s_c = sint.get(Base::C);
         if !q_c.is_empty() && !s_c.is_empty() {
-            self.recurse_match(q_c, s_c, next_depth, state, seed_len, results);
+            self.recurse_match(q_c, s_c, next_depth, state, min_len, max_len, results);
         }
 
         // G matches (query G with target_comp G)
         let q_g = qint.get(Base::G);
         let s_g = sint.get(Base::G);
         if !q_g.is_empty() && !s_g.is_empty() {
-            self.recurse_match(q_g, s_g, next_depth, state, seed_len, results);
+            self.recurse_match(q_g, s_g, next_depth, state, min_len, max_len, results);
         }
 
         // U matches (query U with target_comp U)
         let q_u = qint.get(Base::U);
         let s_u = sint.get(Base::U);
         if !q_u.is_empty() && !s_u.is_empty() {
-            self.recurse_match(q_u, s_u, next_depth, state, seed_len, results);
+            self.recurse_match(q_u, s_u, next_depth, state, min_len, max_len, results);
         }
     }
 
@@ -309,7 +325,8 @@ impl<'a> ParallelSaSearcher<'a> {
         sint: &BaseIntervals,
         next_depth: usize,
         state: &SearchState,
-        seed_len: usize,
+        min_len: usize,
+        max_len: usize,
         results: &mut Vec<ParallelSeedMatch>,
     ) {
         // For direct matching (query_RC vs target, both NOT complemented):
@@ -320,14 +337,14 @@ impl<'a> ParallelSaSearcher<'a> {
         let q_c = qint.get(Base::C);
         let s_u = sint.get(Base::U);
         if !q_c.is_empty() && !s_u.is_empty() {
-            self.recurse_match(q_c, s_u, next_depth, state, seed_len, results);
+            self.recurse_match(q_c, s_u, next_depth, state, min_len, max_len, results);
         }
 
         // U-G wobble: query_RC A with target G
         let q_a = qint.get(Base::A);
         let s_g = sint.get(Base::G);
         if !q_a.is_empty() && !s_g.is_empty() {
-            self.recurse_match(q_a, s_g, next_depth, state, seed_len, results);
+            self.recurse_match(q_a, s_g, next_depth, state, min_len, max_len, results);
         }
     }
 
@@ -339,7 +356,8 @@ impl<'a> ParallelSaSearcher<'a> {
         s_int: SaInterval,
         depth: usize,
         prev_state: &SearchState,
-        seed_len: usize,
+        min_len: usize,
+        max_len: usize,
         results: &mut Vec<ParallelSeedMatch>,
     ) {
         let new_state = SearchState {
@@ -349,7 +367,7 @@ impl<'a> ParallelSaSearcher<'a> {
             matches_since_mismatch: prev_state.matches_since_mismatch + 1,
             mismatch_count: prev_state.mismatch_count,
         };
-        self.search_recursive(seed_len, new_state, results);
+        self.search_recursive_range(min_len, max_len, new_state, results);
     }
 
     /// Check if we should explore mismatch branches
@@ -369,7 +387,8 @@ impl<'a> ParallelSaSearcher<'a> {
         sint: &BaseIntervals,
         depth: usize,
         state: &SearchState,
-        seed_len: usize,
+        min_len: usize,
+        max_len: usize,
         results: &mut Vec<ParallelSeedMatch>,
     ) {
         // For each query base, explore target bases that DON'T form valid pairs
@@ -402,7 +421,7 @@ impl<'a> ParallelSaSearcher<'a> {
                     matches_since_mismatch: 0, // Reset on mismatch
                     mismatch_count: state.mismatch_count + 1,
                 };
-                self.search_recursive(seed_len, new_state, results);
+                self.search_recursive_range(min_len, max_len, new_state, results);
             }
         }
     }

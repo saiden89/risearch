@@ -371,41 +371,39 @@ pub fn find_seeds_in_target_into(
 
     // Forward strand: use pre-built forward_sa
     let t_sa = &target.forward_sa;
-    // Iterate all seed lengths from mi_len to q_len; position filter handles interval
-    for seed_len in mi_len..=q_len {
-        matches.clear(); // Reuse allocation
-        let searcher = ParallelSaSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_sa, &target.sequence, config);
-        searcher.find_seeds_into(seed_len, matches);
+    matches.clear(); // Reuse allocation
+    let searcher = ParallelSaSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_sa, &target.sequence, config);
+    searcher.find_seeds_range_into(mi_len, q_len, matches);
 
-        for m in matches.iter() {
-            for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
-                let q_rc_pos = q_rc_pos_i32 as usize;
-                if q_rc_pos + seed_len > q_len {
-                    continue;
-                }
-                let q_pos = q_len - q_rc_pos - seed_len;
+    for m in matches.iter() {
+        let seed_len = m.depth;
+        for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
+            let q_rc_pos = q_rc_pos_i32 as usize;
+            if q_rc_pos + seed_len > q_len {
+                continue;
+            }
+            let q_pos = q_len - q_rc_pos - seed_len;
                 // Check: seed must start >= start0 AND end <= end0
                 // seed_end = q_pos + seed_len - 1, so check q_pos + seed_len <= end0 + 1 = end1
-                if q_pos < start0 || q_pos + seed_len > end1 {
-                    continue;
-                }
-                if prep.contains_n(q_pos, seed_len) {
-                    continue;
-                }
+            if q_pos < start0 || q_pos + seed_len > end1 {
+                continue;
+            }
+            if prep.contains_n(q_pos, seed_len) {
+                continue;
+            }
 
-                for &t_pos_i32 in &t_sa[m.target_interval.start..m.target_interval.end] {
-                    let t_pos = t_pos_i32 as usize;
-                    if t_pos + seed_len > target.sequence.len() {
-                        continue;
-                    }
-                    candidates.push(SeedCandidate {
-                        query_pos: q_pos,
-                        target_idx,
-                        target_start: t_pos,
-                        len: seed_len,
-                        strand: Strand::Forward,
-                    });
+            for &t_pos_i32 in &t_sa[m.target_interval.start..m.target_interval.end] {
+                let t_pos = t_pos_i32 as usize;
+                if t_pos + seed_len > target.sequence.len() {
+                    continue;
                 }
+                candidates.push(SeedCandidate {
+                    query_pos: q_pos,
+                    target_idx,
+                    target_start: t_pos,
+                    len: seed_len,
+                    strand: Strand::Forward,
+                });
             }
         }
     }
@@ -413,39 +411,38 @@ pub fn find_seeds_in_target_into(
     // Reverse strand: use pre-built reverse_sa and sequence_rc
     let t_rc_sa = &target.reverse_sa;
     let t_rc = &target.sequence_rc;
-    for seed_len in mi_len..=q_len {
-        matches.clear(); // Reuse allocation
-        let searcher = ParallelSaSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_rc_sa, t_rc, config);
-        searcher.find_seeds_into(seed_len, matches);
+    matches.clear(); // Reuse allocation
+    let searcher = ParallelSaSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_rc_sa, t_rc, config);
+    searcher.find_seeds_range_into(mi_len, q_len, matches);
 
-        for m in matches.iter() {
-            for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
-                let q_rc_pos = q_rc_pos_i32 as usize;
-                if q_rc_pos + seed_len > q_len {
-                    continue;
-                }
-                let q_pos = q_len - q_rc_pos - seed_len;
-                // Check: seed must start >= start0 AND end <= end0
-                if q_pos < start0 || q_pos + seed_len > end1 {
-                    continue;
-                }
-                if prep.contains_n(q_pos, seed_len) {
-                    continue;
-                }
+    for m in matches.iter() {
+        let seed_len = m.depth;
+        for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
+            let q_rc_pos = q_rc_pos_i32 as usize;
+            if q_rc_pos + seed_len > q_len {
+                continue;
+            }
+            let q_pos = q_len - q_rc_pos - seed_len;
+            // Check: seed must start >= start0 AND end <= end0
+            if q_pos < start0 || q_pos + seed_len > end1 {
+                continue;
+            }
+            if prep.contains_n(q_pos, seed_len) {
+                continue;
+            }
 
-                for &t_pos_i32 in &t_rc_sa[m.target_interval.start..m.target_interval.end] {
-                    let t_pos = t_pos_i32 as usize;
-                    if t_pos + seed_len > t_rc.len() {
-                        continue;
-                    }
-                    candidates.push(SeedCandidate {
-                        query_pos: q_pos,
-                        target_idx,
-                        target_start: t_pos,
-                        len: seed_len,
-                        strand: Strand::Reverse,
-                    });
+            for &t_pos_i32 in &t_rc_sa[m.target_interval.start..m.target_interval.end] {
+                let t_pos = t_pos_i32 as usize;
+                if t_pos + seed_len > t_rc.len() {
+                    continue;
                 }
+                candidates.push(SeedCandidate {
+                    query_pos: q_pos,
+                    target_idx,
+                    target_start: t_pos,
+                    len: seed_len,
+                    strand: Strand::Reverse,
+                });
             }
         }
     }
