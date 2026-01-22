@@ -652,6 +652,7 @@ pub fn run_search_streaming<W: std::io::Write>(
     );
 
     let mut hit_count = 0;
+    let mut line_buf: Vec<u8> = Vec::with_capacity(512);
 
     for (q_id, q_seq) in queries {
         // Borrow thread-local buffers for this query
@@ -673,6 +674,7 @@ pub fn run_search_streaming<W: std::io::Write>(
                             candidate,
                             &mut ctx,
                             writer,
+                            &mut line_buf,
                         ) {
                             hit_count += 1;
                         }
@@ -695,8 +697,8 @@ pub fn write_results(hits: &[SearchHit], output: impl AsRef<Path>) -> Result<()>
         Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
     };
 
-    // 64KB buffer reduces syscalls by ~1000x for typical hit sizes (~50-100 bytes each)
-    let mut writer = BufWriter::with_capacity(64 * 1024, inner);
+    // Larger buffer reduces syscall overhead for high-volume output.
+    let mut writer = BufWriter::with_capacity(256 * 1024, inner);
 
     debug!("{} output={:?}", SearchStage::Output, output.as_ref());
 
@@ -864,6 +866,7 @@ fn process_candidate_streaming<W: Write>(
     candidate: &SeedCandidate,
     ctx: &mut SearchContext<'_, '_>,
     writer: &mut W,
+    line_buf: &mut Vec<u8>,
 ) -> bool {
     let t_idx = candidate.target_idx;
     let t_seq: &[u8] = match candidate.strand {
@@ -918,8 +921,10 @@ fn process_candidate_streaming<W: Write>(
     let q_id_trunc = if query.id.len() > 50 { &query.id[..50] } else { query.id };
     let t_id_trunc = if target_id.len() > 50 { &target_id[..50] } else { target_id };
 
+    line_buf.clear();
+
     if write!(
-        writer,
+        line_buf,
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t",
         q_id_trunc,
         final_q_start + 1,
@@ -929,19 +934,17 @@ fn process_candidate_streaming<W: Write>(
         out_t_end,
         strand_char,
         score,
-    ).is_err() {
+    )
+    .is_err()
+    {
         return false;
     }
 
     // Write fingerprint directly
     for p in ext.alignment.steps() {
-        if write!(writer, "{}", p.to_char()).is_err() {
-            return false;
-        }
+        line_buf.push(p.to_char() as u8);
     }
-    if write!(writer, "\t").is_err() {
-        return false;
-    }
+    line_buf.push(b'\t');
 
     // Write target sequence with T->U normalization
     for p in ext.alignment.steps() {
@@ -951,31 +954,27 @@ fn process_candidate_streaming<W: Write>(
             't' => 'u',
             other => other,
         };
-        if write!(writer, "{}", normalized).is_err() {
-            return false;
-        }
+        line_buf.push(normalized as u8);
     }
-    if write!(writer, "\t").is_err() {
-        return false;
-    }
+    line_buf.push(b'\t');
 
     // Write flank_5 (reversed, T->U)
     let flank_5_slice = &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start];
-    if write_bytes_as_rna(writer, flank_5_slice, true).is_err() {
+    if write_bytes_as_rna(line_buf, flank_5_slice, true).is_err() {
         return false;
     }
-    if write!(writer, "\t").is_err() {
-        return false;
-    }
+    line_buf.push(b'\t');
 
     // Write flank_3 (T->U)
     let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
     if final_t_end + 1 < t_seq.len() {
-        if write_bytes_as_rna(writer, &t_seq[final_t_end + 1..t_3_end], false).is_err() {
+        if write_bytes_as_rna(line_buf, &t_seq[final_t_end + 1..t_3_end], false).is_err() {
             return false;
         }
     }
-    if writeln!(writer).is_err() {
+    line_buf.push(b'\n');
+
+    if writer.write_all(line_buf).is_err() {
         return false;
     }
 

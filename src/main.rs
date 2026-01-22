@@ -232,7 +232,7 @@ fn main() -> Result<()> {
                         Box::new(std::fs::File::create(output_path)
                             .context("Failed to create output file")?)
                     };
-                    let mut writer = BufWriter::with_capacity(64 * 1024, inner);
+                    let mut writer = BufWriter::with_capacity(256 * 1024, inner);
                     let hit_count = search::run_search_streaming(&queries, &wrapper, opts, &mut writer)?;
                     writer.flush().context("Failed to flush output")?;
                     info!("Search completed: {} hits written", hit_count);

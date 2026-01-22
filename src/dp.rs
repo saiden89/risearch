@@ -481,6 +481,7 @@ impl DpExtender {
         // This eliminates repeated `view.q(i)` and `view.t(j)` calls
         // which have a match on direction each time.
 
+        // Avoid per-call zeroing of these stack arrays (keeps memset out of hot path).
         let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
         let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
 
