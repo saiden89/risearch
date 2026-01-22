@@ -429,43 +429,62 @@ fn init_limited_rows(
 /// All writes are unconditional to avoid reading stale data.
 fn init_limited_cols(
     view: &DpView<'_>,
-    m: &mut ScoreOnlyGrid,
-    bq: &mut ScoreOnlyGrid,
-    bt: &mut ScoreOnlyGrid,
+    q_ptr: *const usize,
+    t_ptr: *const usize,
+    m_ptr: *mut i32,
+    bq_ptr: *mut i32,
+    bt_ptr: *mut i32,
+    width: usize,
     q_len: usize,
     best_e: &mut i32,
     best_i: &mut usize,
     best_j: &mut usize,
 ) {
-    for k in 3..q_len {
-        // Primary[ k,1 ] = Bq
-        let from_m = add_e(m.get(k - 1, 1), view.bq_open(k, 1));
-        let from_b = add_e(bq.get(k - 1, 1), view.bq_ext(k));
-        bq.set(k, 1, pick_best(from_m, from_b));
+    let left = view.dir == ExtendDir::Left;
+    let stack = |q1: usize, q2: usize, t1: usize, t2: usize| -> i32 {
+        if left {
+            dsm_lookup_raw(q2, q1, t2, t1)
+        } else {
+            dsm_lookup_raw(q1, q2, t1, t2)
+        }
+    };
 
-        // M[ k,2 ]
-        let from_m = add_e(m.get(k - 1, 1), view.match_e(k, 2));
-        let from_b = add_e(bq.get(k - 1, 1), view.m_from_bq(k, 2));
-        let val = pick_best(from_m, from_b);
-        m.set(k, 2, val);
-        update_best_with_term(
-            best_e,
-            best_i,
-            best_j,
-            val,
-            view.terminal(k, 2),
-            k,
-            2,
-        );
+    // SAFETY: caller ensures pointers are valid for indices in [0, q_len] x [0, 2].
+    unsafe {
+        let idx = |i: usize, j: usize| -> usize { i * width + j };
+        let tj1 = *t_ptr.add(1);
+        let tj2 = *t_ptr.add(2);
 
-        // Secondary[ k,2 ] = Bt
-        let m_k1 = m.get(k, 1);
-        bt.set(k, 2, add_e(m_k1, view.bt_open(k, 2)));
+        for k in 3..q_len {
+            let qi = *q_ptr.add(k);
+            let qi_prev = *q_ptr.add(k - 1);
 
-        // Primary[ k,2 ] = Bq
-        let from_m = add_e(m.get(k - 1, 2), view.bq_open(k, 2));
-        let from_b = add_e(bq.get(k - 1, 2), view.bq_ext(k));
-        bq.set(k, 2, pick_best(from_m, from_b));
+            // Primary[ k,1 ] = Bq
+            let from_m = add_e(*m_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, tj1, GAP));
+            let from_b = add_e(*bq_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, GAP, GAP));
+            *bq_ptr.add(idx(k, 1)) = pick_best(from_m, from_b);
+
+            // M[ k,2 ]
+            let from_m = add_e(*m_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, tj1, tj2));
+            let from_b = add_e(*bq_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, GAP, tj2));
+            let val = pick_best(from_m, from_b);
+            *m_ptr.add(idx(k, 2)) = val;
+            let term = if left {
+                dsm_lookup_raw(GAP, qi, GAP, tj2)
+            } else {
+                dsm_lookup_raw(qi, GAP, tj2, GAP)
+            };
+            update_best_with_term(best_e, best_i, best_j, val, term, k, 2);
+
+            // Secondary[ k,2 ] = Bt
+            let m_k1 = *m_ptr.add(idx(k, 1));
+            *bt_ptr.add(idx(k, 2)) = add_e(m_k1, stack(qi, GAP, tj1, tj2));
+
+            // Primary[ k,2 ] = Bq
+            let from_m = add_e(*m_ptr.add(idx(k - 1, 2)), stack(qi_prev, qi, tj2, GAP));
+            let from_b = add_e(*bq_ptr.add(idx(k - 1, 2)), stack(qi_prev, qi, GAP, GAP));
+            *bq_ptr.add(idx(k, 2)) = pick_best(from_m, from_b);
+        }
     }
 }
 
@@ -690,7 +709,19 @@ impl DpExtender {
 
         init_limited_rows(view, m, bt, bq, t_len, &mut best_e, &mut best_i, &mut best_j);
 
-        init_limited_cols(view, m, bq, bt, q_len, &mut best_e, &mut best_i, &mut best_j);
+        init_limited_cols(
+            view,
+            q_ptr,
+            t_ptr,
+            m_ptr,
+            bq_ptr,
+            bt_ptr,
+            width,
+            q_len,
+            &mut best_e,
+            &mut best_i,
+            &mut best_j,
+        );
 
         // =======================================================================
         // MAIN DP LOOP (i >= 3, j >= 3) - OPTIMIZED

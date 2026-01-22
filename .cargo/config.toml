@@ -1,3 +1,0 @@
-[build]
-# Keep frame pointers for better profiling call stacks (perf/samply).
-rustflags = ["-C", "force-frame-pointers=yes"]
