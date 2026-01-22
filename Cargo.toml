@@ -7,6 +7,7 @@ edition = "2024"
 default = []
 # FM-Index backend (work in progress)
 fm-index = ["genedex"]
+prof = []
 
 [dependencies]
 anyhow = "1.0"
@@ -15,8 +16,10 @@ env_logger = { version = "0.11", features = ["color"] }
 genedex = { version = "0.2.2", default-features = false, features = [
     "savefile",
 ], optional = true }
+itoa = "1.0"
 libsais = { version = "0.2", default-features = false }
 log = { version = "0.4", features = ["release_max_level_info"] }
+zmij = "0.1"
 needletail = "0.6.3"
 serde = { version = "1.0.228", features = ["derive"] }
 bincode = "1.3.3"
@@ -33,15 +36,15 @@ tabled = "0.18"
 tempfile = "3.24.0"
 rstest = "0.24"
 
-[[bench]]
-name = "seed_search"
-harness = false
+# [[bench]]
+# name = "seed_search"
+# harness = false
 
-[[bench]]
-name = "c_bench"
-harness = false
+# [[bench]]
+# name = "c_bench"
+# harness = false
 
 [profile.release]
-debug = "full"
-lto = "thin"        # Enable LTO for cross-crate inlining
+debug = true
+lto = false        # Enable LTO for cross-crate inlining
 codegen-units = 1   # Consistent symbol resolution

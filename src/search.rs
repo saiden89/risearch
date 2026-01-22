@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use itoa;
 use log::{debug, info, trace, warn};
+use zmij;
 use std::io::Write;
 use std::path::Path;
 
@@ -43,26 +45,99 @@ fn bytes_to_rna_string(s: &[u8], reverse: bool) -> String {
 /// Write bytes as RNA (T->U) directly to writer, optionally reversed. Zero allocation.
 #[inline]
 fn write_bytes_as_rna<W: Write>(w: &mut W, s: &[u8], reverse: bool) -> std::io::Result<()> {
+    const CHUNK: usize = 256;
+    let mut buf = [0u8; CHUNK];
+    let mut len = 0usize;
+
+    let mut push_byte = |b: u8| -> std::io::Result<()> {
+        let c = match b {
+            b'T' => b'U',
+            b't' => b'u',
+            _ => b,
+        };
+        buf[len] = c;
+        len += 1;
+        if len == CHUNK {
+            w.write_all(&buf)?;
+            len = 0;
+        }
+        Ok(())
+    };
+
     if reverse {
         for &b in s.iter().rev() {
-            let c = match b {
-                b'T' => b'U',
-                b't' => b'u',
-                _ => b,
-            };
-            w.write_all(&[c])?;
+            push_byte(b)?;
         }
     } else {
         for &b in s {
-            let c = match b {
-                b'T' => b'U',
-                b't' => b'u',
-                _ => b,
-            };
-            w.write_all(&[c])?;
+            push_byte(b)?;
         }
     }
+
+    if len > 0 {
+        w.write_all(&buf[..len])?;
+    }
     Ok(())
+}
+
+#[inline]
+fn push_usize(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, val: usize) {
+    buf.extend_from_slice(itoa_buf.format(val).as_bytes());
+}
+
+#[inline]
+fn push_score_fixed_2(
+    buf: &mut Vec<u8>,
+    itoa_buf: &mut itoa::Buffer,
+    zmij_buf: &mut zmij::Buffer,
+    score: f64,
+) {
+    // Round to 2 decimals with ties-to-even to match std formatting.
+    let rounded = (score * 100.0).round_ties_even() / 100.0;
+    let start = buf.len();
+    let s = zmij_buf.format_finite(rounded);
+    let bytes = s.as_bytes();
+
+    // Avoid scientific notation in output; fall back to integer-based formatting.
+    if bytes.iter().any(|&b| b == b'e' || b == b'E') {
+        buf.truncate(start);
+        push_score_fixed_2_int(buf, itoa_buf, score);
+        return;
+    }
+
+    buf.extend_from_slice(bytes);
+
+    if let Some(dot) = bytes.iter().position(|&b| b == b'.') {
+        let decimals = bytes.len() - dot - 1;
+        match decimals {
+            0 => buf.extend_from_slice(b"00"),
+            1 => buf.push(b'0'),
+            2 => {}
+            _ => {
+                // Rare: if shortest representation has more decimals, use fixed formatter.
+                buf.truncate(start);
+                push_score_fixed_2_int(buf, itoa_buf, score);
+            }
+        }
+    } else {
+        buf.extend_from_slice(b".00");
+    }
+}
+
+#[inline]
+fn push_score_fixed_2_int(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, score: f64) {
+    let scaled = (score * 100.0).round_ties_even() as i64;
+    let mut v = scaled;
+    if v < 0 {
+        buf.push(b'-');
+        v = -v;
+    }
+    let int_part = (v / 100) as u64;
+    let frac = (v % 100) as u8;
+    buf.extend_from_slice(itoa_buf.format(int_part).as_bytes());
+    buf.push(b'.');
+    buf.push(b'0' + (frac / 10));
+    buf.push(b'0' + (frac % 10));
 }
 
 /// High-level algorithm stages for structured logging
@@ -922,23 +997,25 @@ fn process_candidate_streaming<W: Write>(
     let t_id_trunc = if target_id.len() > 50 { &target_id[..50] } else { target_id };
 
     line_buf.clear();
+    let mut itoa_buf = itoa::Buffer::new();
+    let mut zmij_buf = zmij::Buffer::new();
 
-    if write!(
-        line_buf,
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t",
-        q_id_trunc,
-        final_q_start + 1,
-        final_q_end + 1,
-        t_id_trunc,
-        out_t_start,
-        out_t_end,
-        strand_char,
-        score,
-    )
-    .is_err()
-    {
-        return false;
-    }
+    line_buf.extend_from_slice(q_id_trunc.as_bytes());
+    line_buf.push(b'\t');
+    push_usize(line_buf, &mut itoa_buf, final_q_start + 1);
+    line_buf.push(b'\t');
+    push_usize(line_buf, &mut itoa_buf, final_q_end + 1);
+    line_buf.push(b'\t');
+    line_buf.extend_from_slice(t_id_trunc.as_bytes());
+    line_buf.push(b'\t');
+    push_usize(line_buf, &mut itoa_buf, out_t_start);
+    line_buf.push(b'\t');
+    push_usize(line_buf, &mut itoa_buf, out_t_end);
+    line_buf.push(b'\t');
+    line_buf.push(strand_char as u8);
+    line_buf.push(b'\t');
+    push_score_fixed_2(line_buf, &mut itoa_buf, &mut zmij_buf, score);
+    line_buf.push(b'\t');
 
     // Write fingerprint directly
     for p in ext.alignment.steps() {
