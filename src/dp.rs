@@ -385,43 +385,82 @@ fn max3(a: i32, b: i32, c: i32) -> i32 {
 /// All writes are unconditional to avoid reading stale data.
 fn init_limited_rows(
     view: &DpView<'_>,
-    m: &mut ScoreOnlyGrid,
-    bt: &mut ScoreOnlyGrid,
-    bq: &mut ScoreOnlyGrid,
+    q_ptr: *const usize,
+    t_ptr: *const usize,
+    m_ptr: *mut i32,
+    bt_ptr: *mut i32,
+    bq_ptr: *mut i32,
+    width: usize,
+    q_len: usize,
     t_len: usize,
     best_e: &mut i32,
     best_i: &mut usize,
     best_j: &mut usize,
 ) {
-    for k in 3..t_len {
-        // Primary[1,k] = Bt
-        let from_m = add_e(m.get(1, k - 1), view.bt_open(1, k));
-        let from_b = add_e(bt.get(1, k - 1), view.bt_ext(k));
-        bt.set(1, k, pick_best(from_m, from_b));
+    // SAFETY invariants:
+    // - q_ptr and t_ptr are valid for indices [0, q_len) and [0, t_len)
+    // - q_len and t_len are >= 3 (we index 1 and 2)
+    // - m_ptr/bt_ptr/bq_ptr point to matrices sized at least (q_len+1) x (t_len+1)
+    let left = view.dir == ExtendDir::Left;
+    let stack = |q1: usize, q2: usize, t1: usize, t2: usize| -> i32 {
+        if left {
+            dsm_lookup_raw(q2, q1, t2, t1)
+        } else {
+            dsm_lookup_raw(q1, q2, t1, t2)
+        }
+    };
 
-        // M[2,k]
-        let from_m = add_e(m.get(1, k - 1), view.match_e(2, k));
-        let from_b = add_e(bt.get(1, k - 1), view.m_from_bt(2, k));
-        let val = pick_best(from_m, from_b);
-        m.set(2, k, val);
-        update_best_with_term(
-            best_e,
-            best_i,
-            best_j,
-            val,
-            view.terminal(2, k),
-            2,
-            k,
-        );
+    debug_assert!(q_len > 2 && t_len > 2, "limited rows require q_len/t_len >= 3");
+    debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
+    debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
+    unsafe {
+        let idx = |i: usize, j: usize| -> usize { i * width + j };
+        let qi1 = *q_ptr.add(1);
+        let qi2 = *q_ptr.add(2);
 
-        // Secondary[2,k] = Bq
-        let m1k = m.get(1, k);
-        bq.set(2, k, add_e(m1k, view.bq_open(2, k)));
+        // Rolling values for row 1 and 2
+        let mut m1_prev = *m_ptr.add(idx(1, 2));  // m(1, k-1)
+        let mut bt1_prev = *bt_ptr.add(idx(1, 2)); // bt(1, k-1)
+        let mut m2_prev = *m_ptr.add(idx(2, 2));  // m(2, k-1)
+        let mut bt2_prev = *bt_ptr.add(idx(2, 2)); // bt(2, k-1)
 
-        // Primary[2,k] = Bt
-        let from_m = add_e(m.get(2, k - 1), view.bt_open(2, k));
-        let from_b = add_e(bt.get(2, k - 1), view.bt_ext(k));
-        bt.set(2, k, pick_best(from_m, from_b));
+        for k in 3..t_len {
+            let tj = *t_ptr.add(k);
+            let tj_prev = *t_ptr.add(k - 1);
+
+            // Primary[1,k] = Bt
+            let from_m = add_e(m1_prev, stack(qi1, GAP, tj_prev, tj));
+            let from_b = add_e(bt1_prev, stack(GAP, GAP, tj_prev, tj));
+            let bt1 = pick_best(from_m, from_b);
+            *bt_ptr.add(idx(1, k)) = bt1;
+
+            // M[2,k]
+            let from_m = add_e(m1_prev, stack(qi1, qi2, tj_prev, tj));
+            let from_b = add_e(bt1_prev, stack(GAP, qi2, tj_prev, tj));
+            let m2 = pick_best(from_m, from_b);
+            *m_ptr.add(idx(2, k)) = m2;
+            let term = if left {
+                dsm_lookup_raw(GAP, qi2, GAP, tj)
+            } else {
+                dsm_lookup_raw(qi2, GAP, tj, GAP)
+            };
+            update_best_with_term(best_e, best_i, best_j, m2, term, 2, k);
+
+            // Secondary[2,k] = Bq
+            let m1k = *m_ptr.add(idx(1, k));
+            *bq_ptr.add(idx(2, k)) = add_e(m1k, stack(qi1, qi2, tj, GAP));
+
+            // Primary[2,k] = Bt
+            let from_m = add_e(m2_prev, stack(qi2, GAP, tj_prev, tj));
+            let from_b = add_e(bt2_prev, stack(GAP, GAP, tj_prev, tj));
+            let bt2 = pick_best(from_m, from_b);
+            *bt_ptr.add(idx(2, k)) = bt2;
+
+            m1_prev = *m_ptr.add(idx(1, k));
+            bt1_prev = bt1;
+            m2_prev = m2;
+            bt2_prev = bt2;
+        }
     }
 }
 
@@ -440,6 +479,10 @@ fn init_limited_cols(
     best_i: &mut usize,
     best_j: &mut usize,
 ) {
+    // SAFETY invariants:
+    // - q_ptr and t_ptr are valid for indices [0, q_len) and [0, t_len)
+    // - q_len and t_len are >= 3 (we index 1 and 2)
+    // - m_ptr/bq_ptr/bt_ptr point to matrices sized at least (q_len+1) x (t_len+1)
     let left = view.dir == ExtendDir::Left;
     let stack = |q1: usize, q2: usize, t1: usize, t2: usize| -> i32 {
         if left {
@@ -449,7 +492,8 @@ fn init_limited_cols(
         }
     };
 
-    // SAFETY: caller ensures pointers are valid for indices in [0, q_len] x [0, 2].
+    debug_assert!(q_len > 2, "limited cols require q_len >= 3");
+    debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
     unsafe {
         let idx = |i: usize, j: usize| -> usize { i * width + j };
         let tj1 = *t_ptr.add(1);
@@ -561,9 +605,14 @@ impl DpExtender {
         let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
         let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
 
-        // SAFETY: we only read indices we explicitly write below.
+        // SAFETY invariants:
+        // - We only read indices we explicitly write below.
+        // - q_len and t_len are <= MAX_EXT.
         let q_ptr = q_idx.as_mut_ptr() as *mut usize;
         let t_ptr = t_idx.as_mut_ptr() as *mut usize;
+
+        debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
+        debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
 
         // Avoid per-iteration branching in view.q/view.t by specializing on direction.
         if view.dir == ExtendDir::Left {
@@ -596,7 +645,10 @@ impl DpExtender {
         let bq_ptr = bq.ptr();
         let bt_ptr = bt.ptr();
 
-        // SAFETY: all indices below are within [0, q_len] x [0, t_len].
+        // SAFETY invariants:
+        // - matrices are sized to at least (q_len+1) x (t_len+1)
+        // - indices used below are within those bounds
+        debug_assert!(width >= t_len + 1, "matrix width too small for t_len");
         unsafe {
             let idx = |i: usize, j: usize| -> usize { i * width + j };
 
@@ -707,7 +759,20 @@ impl DpExtender {
         // LIMITED ROWS/COLUMNS - unified via macro (score-only)
         // =======================================================================
 
-        init_limited_rows(view, m, bt, bq, t_len, &mut best_e, &mut best_i, &mut best_j);
+        init_limited_rows(
+            view,
+            q_ptr,
+            t_ptr,
+            m_ptr,
+            bt_ptr,
+            bq_ptr,
+            width,
+            q_len,
+            t_len,
+            &mut best_e,
+            &mut best_i,
+            &mut best_j,
+        );
 
         init_limited_cols(
             view,
