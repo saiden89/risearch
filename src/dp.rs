@@ -338,6 +338,26 @@ fn pick_best(val_a: i32, val_b: i32) -> i32 {
     std::cmp::max(val_a, val_b)
 }
 
+#[inline(always)]
+fn update_best_with_terminal(
+    view: &DpView<'_>,
+    best_e: &mut i32,
+    best_i: &mut usize,
+    best_j: &mut usize,
+    val: i32,
+    i: usize,
+    j: usize,
+) {
+    if val > MIN_SCORE {
+        let curr = val + view.terminal(i, j);
+        if curr > *best_e {
+            *best_e = curr;
+            *best_i = i;
+            *best_j = j;
+        }
+    }
+}
+
 /// Helper: add energy if base is valid (not MIN_SCORE).
 /// Simple branch - LLVM optimizes to CMOV when beneficial.
 #[inline(always)]
@@ -364,7 +384,7 @@ fn max3(a: i32, b: i32, c: i32) -> i32 {
 /// Initialize limited rows or columns - unified via macro (score-only version).
 /// All writes are unconditional to avoid reading stale data.
 macro_rules! init_limited_axis {
-    ($len:expr, $view:expr, $m:expr, $update_best:expr,
+    ($len:expr, $view:expr, $m:expr, $best_e:expr, $best_i:expr, $best_j:expr,
      $primary:expr, $secondary:expr,
      $idx:expr, $prev_idx:expr,
      $b_open:expr, $b_ext:expr, $match_e:expr, $m_from_b:expr, $s_open:expr) => {
@@ -385,7 +405,7 @@ macro_rules! init_limited_axis {
             let from_b = add_e($primary.get(pi1, pj1), $m_from_b($view, 2, k));
             let val = pick_best(from_m, from_b);
             $m.set(i2, j2, val);
-            $update_best(val, i2, j2);
+            update_best_with_terminal($view, $best_e, $best_i, $best_j, val, i2, j2);
 
             // Secondary[2,k] - unconditional write using add_e
             let m1k = $m.get(i1, j1);
@@ -462,20 +482,6 @@ impl DpExtender {
         let DpMatrices { m, bq, bt } = &mut self.matrices;
 
         // =====================================================================
-        // HELPER: Update best score if value + terminal is better
-        // =====================================================================
-        let mut update_best = |val: i32, i: usize, j: usize| {
-            if val > MIN_SCORE {
-                let curr = val + view.terminal(i, j);
-                if curr > best_e {
-                    best_e = curr;
-                    best_i = i;
-                    best_j = j;
-                }
-            }
-        };
-
-        // =====================================================================
         // PRECOMPUTE Q/T BASE INDICES (used by init AND main loop)
         // =====================================================================
         // This eliminates repeated `view.q(i)` and `view.t(j)` calls
@@ -528,7 +534,7 @@ impl DpExtender {
             *bq_ptr.add(idx(1, 0)) = view.bq_open(1, 0);
             let m11 = view.match_e(1, 1);
             *m_ptr.add(idx(1, 1)) = m11;
-            update_best(m11, 1, 1);
+            update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m11, 1, 1);
 
             // Row 0 (Bt only) and Row 1 (M) - unconditional writes
             for k in 2..t_len {
@@ -541,7 +547,7 @@ impl DpExtender {
                 *bq_ptr.add(idx(0, k)) = MIN_SCORE; // Bq[0,k] is NA
                 *bq_ptr.add(idx(1, k)) = MIN_SCORE; // Bq[1,k] is NA
                 *m_ptr.add(idx(1, k)) = m_val;
-                update_best(m_val, 1, k);
+                update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m_val, 1, k);
             }
 
             // Col 0 (Bq only) and Col 1 (M) - unconditional writes
@@ -554,7 +560,7 @@ impl DpExtender {
                 *bt_ptr.add(idx(k, 0)) = MIN_SCORE; // Bt[k,0] is NA
                 *bt_ptr.add(idx(k, 1)) = MIN_SCORE; // Bt[k,1] is NA
                 *m_ptr.add(idx(k, 1)) = m_val;
-                update_best(m_val, k, 1);
+                update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m_val, k, 1);
             }
         }
 
@@ -576,7 +582,7 @@ impl DpExtender {
         bt.set(1, 2, bt12);
         bq.set(2, 1, bq21);
         m.set(2, 2, m22);
-        update_best(m22, 2, 2);
+        update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m22, 2, 2);
 
         let m12 = m.get(1, 2);
         let m21 = m.get(2, 1);
@@ -591,7 +597,9 @@ impl DpExtender {
             t_len,
             view,
             m,
-            update_best,
+            &mut best_e,
+            &mut best_i,
+            &mut best_j,
             bt,
             bq,
             |f, k| (f, k),
@@ -607,7 +615,9 @@ impl DpExtender {
             q_len,
             view,
             m,
-            update_best,
+            &mut best_e,
+            &mut best_i,
+            &mut best_j,
             bq,
             bt,
             |f, k| (k, f),
@@ -674,14 +684,7 @@ impl DpExtender {
                                 let val_m = max3(s_mm, s_mq, s_mt);
 
                                 // Update best (with terminal penalty)
-                                if val_m > MIN_SCORE {
-                                    let curr = val_m + $term(qi, tj);
-                                    if curr > best_e {
-                                        best_e = curr;
-                                        best_i = i;
-                                        best_j = j;
-                                    }
-                                }
+                                update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, val_m, i, j);
 
                                 *m_ptr.add(curr_idx) = val_m;
 
