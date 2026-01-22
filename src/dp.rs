@@ -503,50 +503,59 @@ impl DpExtender {
         // =====================================================================
         // Unlike C which uses calloc (zeroed memory), we reuse buffers.
         // We must explicitly set ALL cells that might be read, including NA cells.
+        let width = m.width();
+        let m_ptr = m.ptr();
+        let bq_ptr = bq.ptr();
+        let bt_ptr = bt.ptr();
 
-        // Corner cells: explicit NA values (like C code)
-        m.set(0, 0, 0);
-        bq.set(0, 0, MIN_SCORE);
-        bt.set(0, 0, MIN_SCORE);
-        m.set(0, 1, MIN_SCORE);
-        bq.set(0, 1, MIN_SCORE);
-        m.set(1, 0, MIN_SCORE);
-        bt.set(1, 0, MIN_SCORE);
-        bq.set(1, 1, MIN_SCORE);
-        bt.set(1, 1, MIN_SCORE);
+        // SAFETY: all indices below are within [0, q_len] x [0, t_len].
+        unsafe {
+            let idx = |i: usize, j: usize| -> usize { i * width + j };
 
-        // Valid corner values
-        bt.set(0, 1, view.bt_open(0, 1));
-        bq.set(1, 0, view.bq_open(1, 0));
-        let m11 = view.match_e(1, 1);
-        m.set(1, 1, m11);
-        update_best(m11, 1, 1);
+            // Corner cells: explicit NA values (like C code)
+            *m_ptr.add(idx(0, 0)) = 0;
+            *bq_ptr.add(idx(0, 0)) = MIN_SCORE;
+            *bt_ptr.add(idx(0, 0)) = MIN_SCORE;
+            *m_ptr.add(idx(0, 1)) = MIN_SCORE;
+            *bq_ptr.add(idx(0, 1)) = MIN_SCORE;
+            *m_ptr.add(idx(1, 0)) = MIN_SCORE;
+            *bt_ptr.add(idx(1, 0)) = MIN_SCORE;
+            *bq_ptr.add(idx(1, 1)) = MIN_SCORE;
+            *bt_ptr.add(idx(1, 1)) = MIN_SCORE;
 
-        // Row 0 (Bt only) and Row 1 (M) - unconditional writes
-        for k in 2..t_len {
-            let prev = bt.get(0, k - 1);
-            // Always write - use add_e to propagate MIN_SCORE
-            let bt_val = add_e(prev, view.bt_ext(k));
-            let m_val = add_e(prev, view.m_from_bt(1, k));
-            bt.set(0, k, bt_val);
-            m.set(0, k, MIN_SCORE); // M[0,k] is NA
-            bq.set(0, k, MIN_SCORE); // Bq[0,k] is NA
-            bq.set(1, k, MIN_SCORE); // Bq[1,k] is NA
-            m.set(1, k, m_val);
-            update_best(m_val, 1, k);
-        }
+            // Valid corner values
+            *bt_ptr.add(idx(0, 1)) = view.bt_open(0, 1);
+            *bq_ptr.add(idx(1, 0)) = view.bq_open(1, 0);
+            let m11 = view.match_e(1, 1);
+            *m_ptr.add(idx(1, 1)) = m11;
+            update_best(m11, 1, 1);
 
-        // Col 0 (Bq only) and Col 1 (M) - unconditional writes
-        for k in 2..q_len {
-            let prev = bq.get(k - 1, 0);
-            let bq_val = add_e(prev, view.bq_ext(k));
-            let m_val = add_e(prev, view.m_from_bq(k, 1));
-            bq.set(k, 0, bq_val);
-            m.set(k, 0, MIN_SCORE); // M[k,0] is NA
-            bt.set(k, 0, MIN_SCORE); // Bt[k,0] is NA
-            bt.set(k, 1, MIN_SCORE); // Bt[k,1] is NA
-            m.set(k, 1, m_val);
-            update_best(m_val, k, 1);
+            // Row 0 (Bt only) and Row 1 (M) - unconditional writes
+            for k in 2..t_len {
+                let prev = *bt_ptr.add(idx(0, k - 1));
+                // Always write - use add_e to propagate MIN_SCORE
+                let bt_val = add_e(prev, view.bt_ext(k));
+                let m_val = add_e(prev, view.m_from_bt(1, k));
+                *bt_ptr.add(idx(0, k)) = bt_val;
+                *m_ptr.add(idx(0, k)) = MIN_SCORE; // M[0,k] is NA
+                *bq_ptr.add(idx(0, k)) = MIN_SCORE; // Bq[0,k] is NA
+                *bq_ptr.add(idx(1, k)) = MIN_SCORE; // Bq[1,k] is NA
+                *m_ptr.add(idx(1, k)) = m_val;
+                update_best(m_val, 1, k);
+            }
+
+            // Col 0 (Bq only) and Col 1 (M) - unconditional writes
+            for k in 2..q_len {
+                let prev = *bq_ptr.add(idx(k - 1, 0));
+                let bq_val = add_e(prev, view.bq_ext(k));
+                let m_val = add_e(prev, view.m_from_bq(k, 1));
+                *bq_ptr.add(idx(k, 0)) = bq_val;
+                *m_ptr.add(idx(k, 0)) = MIN_SCORE; // M[k,0] is NA
+                *bt_ptr.add(idx(k, 0)) = MIN_SCORE; // Bt[k,0] is NA
+                *bt_ptr.add(idx(k, 1)) = MIN_SCORE; // Bt[k,1] is NA
+                *m_ptr.add(idx(k, 1)) = m_val;
+                update_best(m_val, k, 1);
+            }
         }
 
         // Early return when either axis is too small for row/col 2 cells
@@ -623,7 +632,6 @@ impl DpExtender {
         // Skip if too short for main loop
         if q_len >= 3 && t_len >= 3 {
             // Get direct pointer access to score data - eliminates struct indirection
-            let width = m.width();
 
             // =================================================================
             // DIRECTION-SPECIFIC MAIN LOOP (SCORES ONLY - like C)
