@@ -81,6 +81,29 @@ fn write_bytes_as_rna<W: Write>(w: &mut W, s: &[u8], reverse: bool) -> std::io::
 }
 
 #[inline]
+fn push_bytes_as_rna(buf: &mut Vec<u8>, s: &[u8], reverse: bool) {
+    if reverse {
+        for &b in s.iter().rev() {
+            let c = match b {
+                b'T' => b'U',
+                b't' => b'u',
+                _ => b,
+            };
+            buf.push(c);
+        }
+    } else {
+        for &b in s {
+            let c = match b {
+                b'T' => b'U',
+                b't' => b'u',
+                _ => b,
+            };
+            buf.push(c);
+        }
+    }
+}
+
+#[inline]
 fn push_usize(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, val: usize) {
     buf.extend_from_slice(itoa_buf.format(val).as_bytes());
 }
@@ -727,7 +750,7 @@ pub fn run_search_streaming<W: std::io::Write>(
     );
 
     let mut hit_count = 0;
-    let mut line_buf: Vec<u8> = Vec::with_capacity(512);
+    let mut line_buf: Vec<u8> = Vec::new();
 
     for (q_id, q_seq) in queries {
         // Borrow thread-local buffers for this query
@@ -996,7 +1019,15 @@ fn process_candidate_streaming<W: Write>(
     let q_id_trunc = if query.id.len() > 50 { &query.id[..50] } else { query.id };
     let t_id_trunc = if target_id.len() > 50 { &target_id[..50] } else { target_id };
 
+    let approx = q_id_trunc.len()
+        + t_id_trunc.len()
+        + (ext.alignment.steps().len() * 2)
+        + (ctx_len * 2)
+        + 64;
     line_buf.clear();
+    if line_buf.capacity() < approx {
+        line_buf.reserve(approx - line_buf.capacity());
+    }
     let mut itoa_buf = itoa::Buffer::new();
     let mut zmij_buf = zmij::Buffer::new();
 
@@ -1037,17 +1068,13 @@ fn process_candidate_streaming<W: Write>(
 
     // Write flank_5 (reversed, T->U)
     let flank_5_slice = &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start];
-    if write_bytes_as_rna(line_buf, flank_5_slice, true).is_err() {
-        return false;
-    }
+    push_bytes_as_rna(line_buf, flank_5_slice, true);
     line_buf.push(b'\t');
 
     // Write flank_3 (T->U)
     let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
     if final_t_end + 1 < t_seq.len() {
-        if write_bytes_as_rna(line_buf, &t_seq[final_t_end + 1..t_3_end], false).is_err() {
-            return false;
-        }
+        push_bytes_as_rna(line_buf, &t_seq[final_t_end + 1..t_3_end], false);
     }
     line_buf.push(b'\n');
 
