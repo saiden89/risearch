@@ -59,6 +59,41 @@ pub struct DpView<'a> {
 
 /// Gap base index constant
 const GAP: usize = Base::Gap as usize;
+const DSM_DIM: usize = 6;
+
+#[inline]
+fn max_dsm_stack() -> i32 {
+    let mut max = i32::MIN;
+    for q1 in 0..DSM_DIM {
+        for q2 in 0..DSM_DIM {
+            for t1 in 0..DSM_DIM {
+                for t2 in 0..DSM_DIM {
+                    let val = EnergyModel::T04.stack_idx(q1, q2, t1, t2);
+                    if val > max {
+                        max = val;
+                    }
+                }
+            }
+        }
+    }
+    max
+}
+
+#[inline]
+fn max_dsm_terminal() -> i32 {
+    let mut max = i32::MIN;
+    for q in 0..DSM_DIM {
+        for t in 0..DSM_DIM {
+            let left = EnergyModel::T04.stack_idx(GAP, q, GAP, t);
+            let right = EnergyModel::T04.stack_idx(q, GAP, t, GAP);
+            let val = if left > right { left } else { right };
+            if val > max {
+                max = val;
+            }
+        }
+    }
+    max
+}
 
 impl<'a> DpView<'a> {
     /// Create a left extension view (query toward 5', target toward 3')
@@ -325,6 +360,8 @@ pub struct DpExtender {
     matrices: DpMatrices,
     /// Reusable traceback buffer - cleared and reused on each extend() call.
     trace_buf: TraceVec,
+    max_stack: i32,
+    max_terminal: i32,
 }
 
 // =============================================================================
@@ -383,6 +420,7 @@ fn max3(a: i32, b: i32, c: i32) -> i32 {
 
 /// Initialize limited rows (t_len axis) - score-only version.
 /// All writes are unconditional to avoid reading stale data.
+#[inline(always)]
 fn init_limited_rows(
     view: &DpView<'_>,
     q_ptr: *const usize,
@@ -466,6 +504,7 @@ fn init_limited_rows(
 
 /// Initialize limited columns (q_len axis) - score-only version.
 /// All writes are unconditional to avoid reading stale data.
+#[inline(always)]
 fn init_limited_cols(
     view: &DpView<'_>,
     q_ptr: *const usize,
@@ -534,10 +573,17 @@ fn init_limited_cols(
 
 impl DpExtender {
     pub fn new() -> Self {
+        let max_stack = max_dsm_stack();
+        let max_terminal = max_dsm_terminal();
+        debug_assert!(max_stack >= MIN_SCORE, "invalid DSM max stack");
+        debug_assert!(max_terminal >= MIN_SCORE, "invalid DSM max terminal");
+
         Self {
             matrices: DpMatrices::new(200, 200),
             // SmallVec doesn't need with_capacity for inline storage
             trace_buf: TraceVec::new(),
+            max_stack,
+            max_terminal,
         }
     }
     /// Extend to the left (query 5', target 3')
@@ -573,6 +619,8 @@ impl DpExtender {
     #[cfg_attr(feature = "prof", inline(never))]
     pub fn extend(&mut self, view: &DpView) -> DpExtension {
         let (q_len, t_len) = (view.q_len, view.t_len);
+        let max_stack = self.max_stack;
+        let max_terminal = self.max_terminal;
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
 
@@ -800,103 +848,37 @@ impl DpExtender {
 
         // Skip if too short for main loop
         if q_len >= 3 && t_len >= 3 {
-            // Get direct pointer access to score data - eliminates struct indirection
-
-            // =================================================================
-            // DIRECTION-SPECIFIC MAIN LOOP (SCORES ONLY - like C)
-            // =================================================================
-            // C stores only scores, reconstructs traceback from scores post-hoc.
-            // This reduces memory bandwidth: 3 i32 per cell instead of 6.
-
-            macro_rules! dp_main_loop {
-                ($match_e:expr, $m_from_bq:expr, $m_from_bt:expr, $term:expr,
-                 $bq_open:expr, $bq_ext:expr, $bt_open:expr, $bt_ext:expr) => {
-                    // SAFETY: All indices are bounded by grid dimensions.
-                    unsafe {
-                        let m_ptr = m.ptr();
-                        let bq_ptr = bq.ptr();
-                        let bt_ptr = bt.ptr();
-                        for i in 3..q_len {
-                            let row_i = i * width;
-                            let row_prev = (i - 1) * width;
-                            let qi = *q_ptr.add(i);
-                            let qi_prev = *q_ptr.add(i - 1);
-
-                            for j in 3..t_len {
-                                let diag_idx = row_prev + j - 1;
-                                let up_idx = row_prev + j;
-                                let left_idx = row_i + j - 1;
-                                let curr_idx = row_i + j;
-                                let tj = *t_ptr.add(j);
-                                let tj_prev = *t_ptr.add(j - 1);
-
-                                // M[i,j] = max3(M[i-1,j-1]+match, Bq[i-1,j-1]+m_from_bq, Bt[i-1,j-1]+m_from_bt)
-                                let m_diag = *m_ptr.add(diag_idx);
-                                let bq_diag = *bq_ptr.add(diag_idx);
-                                let bt_diag = *bt_ptr.add(diag_idx);
-
-                                let s_mm = add_e(m_diag, $match_e(qi, qi_prev, tj, tj_prev));
-                                let s_mq = add_e(bq_diag, $m_from_bq(qi, qi_prev, tj));
-                                let s_mt = add_e(bt_diag, $m_from_bt(qi, tj, tj_prev));
-
-                                // max3 like C - no traceback storage
-                                let val_m = max3(s_mm, s_mq, s_mt);
-
-                                // Update best (with terminal penalty)
-                                update_best_with_term(
-                                    &mut best_e,
-                                    &mut best_i,
-                                    &mut best_j,
-                                    val_m,
-                                    $term(qi, tj),
-                                    i,
-                                    j,
-                                );
-
-                                *m_ptr.add(curr_idx) = val_m;
-
-                                // Bq[i,j] = max(M[i-1,j]+bq_open, Bq[i-1,j]+bq_ext)
-                                let m_up = *m_ptr.add(up_idx);
-                                let bq_up = *bq_ptr.add(up_idx);
-                                let s_qm = add_e(m_up, $bq_open(qi, qi_prev, tj));
-                                let s_qq = add_e(bq_up, $bq_ext(qi, qi_prev));
-                                *bq_ptr.add(curr_idx) = max2(s_qm, s_qq);
-
-                                // Bt[i,j] = max(M[i,j-1]+bt_open, Bt[i,j-1]+bt_ext)
-                                let m_left = *m_ptr.add(left_idx);
-                                let bt_left = *bt_ptr.add(left_idx);
-                                let s_tm = add_e(m_left, $bt_open(qi, tj, tj_prev));
-                                let s_tt = add_e(bt_left, $bt_ext(tj, tj_prev));
-                                *bt_ptr.add(curr_idx) = max2(s_tm, s_tt);
-                            }
-                        }
-                    }
-                };
-            }
-
             if view.dir == ExtendDir::Left {
-                // LEFT: DSM[curr, prev, curr, prev]
-                dp_main_loop!(
-                    |qi, qi_prev, tj, tj_prev| dsm_lookup_raw(qi, qi_prev, tj, tj_prev),
-                    |qi, qi_prev, tj| dsm_lookup_raw(qi, qi_prev, tj, GAP),
-                    |qi, tj, tj_prev| dsm_lookup_raw(qi, GAP, tj, tj_prev),
-                    |qi, tj| dsm_lookup_raw(GAP, qi, GAP, tj),
-                    |qi, qi_prev, tj| dsm_lookup_raw(qi, qi_prev, GAP, tj),
-                    |qi, qi_prev| dsm_lookup_raw(qi, qi_prev, GAP, GAP),
-                    |qi, tj, tj_prev| dsm_lookup_raw(GAP, qi, tj, tj_prev),
-                    |tj, tj_prev| dsm_lookup_raw(GAP, GAP, tj, tj_prev)
+                dp_main_loop_left(
+                    q_ptr,
+                    t_ptr,
+                    m,
+                    bq,
+                    bt,
+                    width,
+                    q_len,
+                    t_len,
+                    max_stack,
+                    max_terminal,
+                    &mut best_e,
+                    &mut best_i,
+                    &mut best_j,
                 );
             } else {
-                // RIGHT: DSM[prev, curr, prev, curr]
-                dp_main_loop!(
-                    |qi, qi_prev, tj, tj_prev| dsm_lookup_raw(qi_prev, qi, tj_prev, tj),
-                    |qi, qi_prev, tj| dsm_lookup_raw(qi_prev, qi, GAP, tj),
-                    |qi, tj, tj_prev| dsm_lookup_raw(GAP, qi, tj_prev, tj),
-                    |qi, tj| dsm_lookup_raw(qi, GAP, tj, GAP),
-                    |qi, qi_prev, tj| dsm_lookup_raw(qi_prev, qi, tj, GAP),
-                    |qi, qi_prev| dsm_lookup_raw(qi_prev, qi, GAP, GAP),
-                    |qi, tj, tj_prev| dsm_lookup_raw(qi, GAP, tj_prev, tj),
-                    |tj, tj_prev| dsm_lookup_raw(GAP, GAP, tj_prev, tj)
+                dp_main_loop_right(
+                    q_ptr,
+                    t_ptr,
+                    m,
+                    bq,
+                    bt,
+                    width,
+                    q_len,
+                    t_len,
+                    max_stack,
+                    max_terminal,
+                    &mut best_e,
+                    &mut best_i,
+                    &mut best_j,
                 );
             }
         }
@@ -934,6 +916,166 @@ impl DpExtender {
             q_len: best_i,
             t_len: best_j,
             trace: std::mem::take(&mut self.trace_buf),
+        }
+    }
+}
+
+#[cfg_attr(feature = "prof", inline(never))]
+fn dp_main_loop_left(
+    q_ptr: *const usize,
+    t_ptr: *const usize,
+    m: &mut ScoreOnlyGrid,
+    bq: &mut ScoreOnlyGrid,
+    bt: &mut ScoreOnlyGrid,
+    width: usize,
+    q_len: usize,
+    t_len: usize,
+    max_stack: i32,
+    max_terminal: i32,
+    best_e: &mut i32,
+    best_i: &mut usize,
+    best_j: &mut usize,
+) {
+    // SAFETY invariants:
+    // - q_ptr/t_ptr valid for indices [0, q_len) / [0, t_len)
+    // - matrices sized at least (q_len+1) x (t_len+1)
+    unsafe {
+        let m_ptr = m.ptr();
+        let bq_ptr = bq.ptr();
+        let bt_ptr = bt.ptr();
+        for i in 3..q_len {
+            let row_i = i * width;
+            let row_prev = (i - 1) * width;
+            let qi = *q_ptr.add(i);
+            let qi_prev = *q_ptr.add(i - 1);
+
+            for j in 3..t_len {
+                let diag_idx = row_prev + j - 1;
+                let up_idx = row_prev + j;
+                let left_idx = row_i + j - 1;
+                let curr_idx = row_i + j;
+                let tj = *t_ptr.add(j);
+                let tj_prev = *t_ptr.add(j - 1);
+
+                let m_diag = *m_ptr.add(diag_idx);
+                let bq_diag = *bq_ptr.add(diag_idx);
+                let bt_diag = *bt_ptr.add(diag_idx);
+
+                let s_mm = add_e(m_diag, dsm_lookup_raw(qi, qi_prev, tj, tj_prev));
+                let s_mq = add_e(bq_diag, dsm_lookup_raw(qi, qi_prev, tj, GAP));
+                let s_mt = add_e(bt_diag, dsm_lookup_raw(qi, GAP, tj, tj_prev));
+                let val_m = max3(s_mm, s_mq, s_mt);
+
+                if val_m > MIN_SCORE {
+                    let remaining = (q_len - i).min(t_len - j) as i32;
+                    let upper = val_m + remaining * max_stack + max_terminal;
+                    if upper > *best_e {
+                        update_best_with_term(
+                            best_e,
+                            best_i,
+                            best_j,
+                            val_m,
+                            dsm_lookup_raw(GAP, qi, GAP, tj),
+                            i,
+                            j,
+                        );
+                    }
+                }
+
+                *m_ptr.add(curr_idx) = val_m;
+
+                let m_up = *m_ptr.add(up_idx);
+                let bq_up = *bq_ptr.add(up_idx);
+                let s_qm = add_e(m_up, dsm_lookup_raw(qi, qi_prev, GAP, tj));
+                let s_qq = add_e(bq_up, dsm_lookup_raw(qi, qi_prev, GAP, GAP));
+                *bq_ptr.add(curr_idx) = max2(s_qm, s_qq);
+
+                let m_left = *m_ptr.add(left_idx);
+                let bt_left = *bt_ptr.add(left_idx);
+                let s_tm = add_e(m_left, dsm_lookup_raw(GAP, qi, tj, tj_prev));
+                let s_tt = add_e(bt_left, dsm_lookup_raw(GAP, GAP, tj, tj_prev));
+                *bt_ptr.add(curr_idx) = max2(s_tm, s_tt);
+            }
+        }
+    }
+}
+
+#[cfg_attr(feature = "prof", inline(never))]
+fn dp_main_loop_right(
+    q_ptr: *const usize,
+    t_ptr: *const usize,
+    m: &mut ScoreOnlyGrid,
+    bq: &mut ScoreOnlyGrid,
+    bt: &mut ScoreOnlyGrid,
+    width: usize,
+    q_len: usize,
+    t_len: usize,
+    max_stack: i32,
+    max_terminal: i32,
+    best_e: &mut i32,
+    best_i: &mut usize,
+    best_j: &mut usize,
+) {
+    // SAFETY invariants:
+    // - q_ptr/t_ptr valid for indices [0, q_len) / [0, t_len)
+    // - matrices sized at least (q_len+1) x (t_len+1)
+    unsafe {
+        let m_ptr = m.ptr();
+        let bq_ptr = bq.ptr();
+        let bt_ptr = bt.ptr();
+        for i in 3..q_len {
+            let row_i = i * width;
+            let row_prev = (i - 1) * width;
+            let qi = *q_ptr.add(i);
+            let qi_prev = *q_ptr.add(i - 1);
+
+            for j in 3..t_len {
+                let diag_idx = row_prev + j - 1;
+                let up_idx = row_prev + j;
+                let left_idx = row_i + j - 1;
+                let curr_idx = row_i + j;
+                let tj = *t_ptr.add(j);
+                let tj_prev = *t_ptr.add(j - 1);
+
+                let m_diag = *m_ptr.add(diag_idx);
+                let bq_diag = *bq_ptr.add(diag_idx);
+                let bt_diag = *bt_ptr.add(diag_idx);
+
+                let s_mm = add_e(m_diag, dsm_lookup_raw(qi_prev, qi, tj_prev, tj));
+                let s_mq = add_e(bq_diag, dsm_lookup_raw(qi_prev, qi, GAP, tj));
+                let s_mt = add_e(bt_diag, dsm_lookup_raw(GAP, qi, tj_prev, tj));
+                let val_m = max3(s_mm, s_mq, s_mt);
+
+                if val_m > MIN_SCORE {
+                    let remaining = (q_len - i).min(t_len - j) as i32;
+                    let upper = val_m + remaining * max_stack + max_terminal;
+                    if upper > *best_e {
+                        update_best_with_term(
+                            best_e,
+                            best_i,
+                            best_j,
+                            val_m,
+                            dsm_lookup_raw(qi, GAP, tj, GAP),
+                            i,
+                            j,
+                        );
+                    }
+                }
+
+                *m_ptr.add(curr_idx) = val_m;
+
+                let m_up = *m_ptr.add(up_idx);
+                let bq_up = *bq_ptr.add(up_idx);
+                let s_qm = add_e(m_up, dsm_lookup_raw(qi_prev, qi, tj, GAP));
+                let s_qq = add_e(bq_up, dsm_lookup_raw(qi_prev, qi, GAP, GAP));
+                *bq_ptr.add(curr_idx) = max2(s_qm, s_qq);
+
+                let m_left = *m_ptr.add(left_idx);
+                let bt_left = *bt_ptr.add(left_idx);
+                let s_tm = add_e(m_left, dsm_lookup_raw(qi, GAP, tj_prev, tj));
+                let s_tt = add_e(bt_left, dsm_lookup_raw(GAP, GAP, tj_prev, tj));
+                *bt_ptr.add(curr_idx) = max2(s_tm, s_tt);
+            }
         }
     }
 }
