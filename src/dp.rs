@@ -339,17 +339,17 @@ fn pick_best(val_a: i32, val_b: i32) -> i32 {
 }
 
 #[inline(always)]
-fn update_best_with_terminal(
-    view: &DpView<'_>,
+fn update_best_with_term(
     best_e: &mut i32,
     best_i: &mut usize,
     best_j: &mut usize,
     val: i32,
+    term: i32,
     i: usize,
     j: usize,
 ) {
     if val > MIN_SCORE {
-        let curr = val + view.terminal(i, j);
+        let curr = val + term;
         if curr > *best_e {
             *best_e = curr;
             *best_i = i;
@@ -381,42 +381,92 @@ fn max3(a: i32, b: i32, c: i32) -> i32 {
     std::cmp::max(std::cmp::max(a, b), c)
 }
 
-/// Initialize limited rows or columns - unified via macro (score-only version).
+/// Initialize limited rows (t_len axis) - score-only version.
 /// All writes are unconditional to avoid reading stale data.
-macro_rules! init_limited_axis {
-    ($len:expr, $view:expr, $m:expr, $best_e:expr, $best_i:expr, $best_j:expr,
-     $primary:expr, $secondary:expr,
-     $idx:expr, $prev_idx:expr,
-     $b_open:expr, $b_ext:expr, $match_e:expr, $m_from_b:expr, $s_open:expr) => {
-        for k in 3..$len {
-            let (pi1, pj1) = $prev_idx(1, k);
-            let (i1, j1) = $idx(1, k);
-            let (i2, j2) = $idx(2, k);
-            let (pi2, pj2) = $prev_idx(2, k);
-            let (i2p, j2p) = $idx(2, k - 1);
+fn init_limited_rows(
+    view: &DpView<'_>,
+    m: &mut ScoreOnlyGrid,
+    bt: &mut ScoreOnlyGrid,
+    bq: &mut ScoreOnlyGrid,
+    t_len: usize,
+    best_e: &mut i32,
+    best_i: &mut usize,
+    best_j: &mut usize,
+) {
+    for k in 3..t_len {
+        // Primary[1,k] = Bt
+        let from_m = add_e(m.get(1, k - 1), view.bt_open(1, k));
+        let from_b = add_e(bt.get(1, k - 1), view.bt_ext(k));
+        bt.set(1, k, pick_best(from_m, from_b));
 
-            // Primary[1,k]
-            let from_m = add_e($m.get(pi1, pj1), $b_open($view, 1, k));
-            let from_b = add_e($primary.get(pi1, pj1), $b_ext($view, k));
-            $primary.set(i1, j1, pick_best(from_m, from_b));
+        // M[2,k]
+        let from_m = add_e(m.get(1, k - 1), view.match_e(2, k));
+        let from_b = add_e(bt.get(1, k - 1), view.m_from_bt(2, k));
+        let val = pick_best(from_m, from_b);
+        m.set(2, k, val);
+        update_best_with_term(
+            best_e,
+            best_i,
+            best_j,
+            val,
+            view.terminal(2, k),
+            2,
+            k,
+        );
 
-            // M[2,k]
-            let from_m = add_e($m.get(pi1, pj1), $match_e($view, 2, k));
-            let from_b = add_e($primary.get(pi1, pj1), $m_from_b($view, 2, k));
-            let val = pick_best(from_m, from_b);
-            $m.set(i2, j2, val);
-            update_best_with_terminal($view, $best_e, $best_i, $best_j, val, i2, j2);
+        // Secondary[2,k] = Bq
+        let m1k = m.get(1, k);
+        bq.set(2, k, add_e(m1k, view.bq_open(2, k)));
 
-            // Secondary[2,k] - unconditional write using add_e
-            let m1k = $m.get(i1, j1);
-            $secondary.set(i2, j2, add_e(m1k, $s_open($view, 2, k)));
+        // Primary[2,k] = Bt
+        let from_m = add_e(m.get(2, k - 1), view.bt_open(2, k));
+        let from_b = add_e(bt.get(2, k - 1), view.bt_ext(k));
+        bt.set(2, k, pick_best(from_m, from_b));
+    }
+}
 
-            // Primary[2,k]
-            let from_m = add_e($m.get(pi2, pj2), $b_open($view, 2, k));
-            let from_b = add_e($primary.get(i2p, j2p), $b_ext($view, k));
-            $primary.set(i2, j2, pick_best(from_m, from_b));
-        }
-    };
+/// Initialize limited columns (q_len axis) - score-only version.
+/// All writes are unconditional to avoid reading stale data.
+fn init_limited_cols(
+    view: &DpView<'_>,
+    m: &mut ScoreOnlyGrid,
+    bq: &mut ScoreOnlyGrid,
+    bt: &mut ScoreOnlyGrid,
+    q_len: usize,
+    best_e: &mut i32,
+    best_i: &mut usize,
+    best_j: &mut usize,
+) {
+    for k in 3..q_len {
+        // Primary[ k,1 ] = Bq
+        let from_m = add_e(m.get(k - 1, 1), view.bq_open(k, 1));
+        let from_b = add_e(bq.get(k - 1, 1), view.bq_ext(k));
+        bq.set(k, 1, pick_best(from_m, from_b));
+
+        // M[ k,2 ]
+        let from_m = add_e(m.get(k - 1, 1), view.match_e(k, 2));
+        let from_b = add_e(bq.get(k - 1, 1), view.m_from_bq(k, 2));
+        let val = pick_best(from_m, from_b);
+        m.set(k, 2, val);
+        update_best_with_term(
+            best_e,
+            best_i,
+            best_j,
+            val,
+            view.terminal(k, 2),
+            k,
+            2,
+        );
+
+        // Secondary[ k,2 ] = Bt
+        let m_k1 = m.get(k, 1);
+        bt.set(k, 2, add_e(m_k1, view.bt_open(k, 2)));
+
+        // Primary[ k,2 ] = Bq
+        let from_m = add_e(m.get(k - 1, 2), view.bq_open(k, 2));
+        let from_b = add_e(bq.get(k - 1, 2), view.bq_ext(k));
+        bq.set(k, 2, pick_best(from_m, from_b));
+    }
 }
 
 impl DpExtender {
@@ -495,13 +545,25 @@ impl DpExtender {
         let q_ptr = q_idx.as_mut_ptr() as *mut usize;
         let t_ptr = t_idx.as_mut_ptr() as *mut usize;
 
-        for i in 0..q_len.min(MAX_EXT) {
-            let qi = view.q(i);
-            unsafe { *q_ptr.add(i) = qi };
-        }
-        for j in 0..t_len.min(MAX_EXT) {
-            let tj = view.t(j);
-            unsafe { *t_ptr.add(j) = tj };
+        // Avoid per-iteration branching in view.q/view.t by specializing on direction.
+        if view.dir == ExtendDir::Left {
+            for i in 0..q_len.min(MAX_EXT) {
+                let qi = view.query.left(view.q_anchor, i).idx();
+                unsafe { *q_ptr.add(i) = qi };
+            }
+            for j in 0..t_len.min(MAX_EXT) {
+                let tj = view.target.right(view.t_anchor, j).idx();
+                unsafe { *t_ptr.add(j) = tj };
+            }
+        } else {
+            for i in 0..q_len.min(MAX_EXT) {
+                let qi = view.query.right(view.q_anchor, i).idx();
+                unsafe { *q_ptr.add(i) = qi };
+            }
+            for j in 0..t_len.min(MAX_EXT) {
+                let tj = view.target.left(view.t_anchor, j).idx();
+                unsafe { *t_ptr.add(j) = tj };
+            }
         }
 
         // =====================================================================
@@ -534,7 +596,15 @@ impl DpExtender {
             *bq_ptr.add(idx(1, 0)) = view.bq_open(1, 0);
             let m11 = view.match_e(1, 1);
             *m_ptr.add(idx(1, 1)) = m11;
-            update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m11, 1, 1);
+            update_best_with_term(
+                &mut best_e,
+                &mut best_i,
+                &mut best_j,
+                m11,
+                view.terminal(1, 1),
+                1,
+                1,
+            );
 
             // Row 0 (Bt only) and Row 1 (M) - unconditional writes
             for k in 2..t_len {
@@ -547,7 +617,15 @@ impl DpExtender {
                 *bq_ptr.add(idx(0, k)) = MIN_SCORE; // Bq[0,k] is NA
                 *bq_ptr.add(idx(1, k)) = MIN_SCORE; // Bq[1,k] is NA
                 *m_ptr.add(idx(1, k)) = m_val;
-                update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m_val, 1, k);
+                update_best_with_term(
+                    &mut best_e,
+                    &mut best_i,
+                    &mut best_j,
+                    m_val,
+                    view.terminal(1, k),
+                    1,
+                    k,
+                );
             }
 
             // Col 0 (Bq only) and Col 1 (M) - unconditional writes
@@ -560,7 +638,15 @@ impl DpExtender {
                 *bt_ptr.add(idx(k, 0)) = MIN_SCORE; // Bt[k,0] is NA
                 *bt_ptr.add(idx(k, 1)) = MIN_SCORE; // Bt[k,1] is NA
                 *m_ptr.add(idx(k, 1)) = m_val;
-                update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m_val, k, 1);
+                update_best_with_term(
+                    &mut best_e,
+                    &mut best_i,
+                    &mut best_j,
+                    m_val,
+                    view.terminal(k, 1),
+                    k,
+                    1,
+                );
             }
         }
 
@@ -582,7 +668,15 @@ impl DpExtender {
         bt.set(1, 2, bt12);
         bq.set(2, 1, bq21);
         m.set(2, 2, m22);
-        update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, m22, 2, 2);
+        update_best_with_term(
+            &mut best_e,
+            &mut best_i,
+            &mut best_j,
+            m22,
+            view.terminal(2, 2),
+            2,
+            2,
+        );
 
         let m12 = m.get(1, 2);
         let m21 = m.get(2, 1);
@@ -593,41 +687,9 @@ impl DpExtender {
         // LIMITED ROWS/COLUMNS - unified via macro (score-only)
         // =======================================================================
 
-        init_limited_axis!(
-            t_len,
-            view,
-            m,
-            &mut best_e,
-            &mut best_i,
-            &mut best_j,
-            bt,
-            bq,
-            |f, k| (f, k),
-            |f, k| (f, k - 1),
-            |v: &DpView, f, k| v.bt_open(f, k),
-            |v: &DpView, k| v.bt_ext(k),
-            |v: &DpView, f, k| v.match_e(f, k),
-            |v: &DpView, f, k| v.m_from_bt(f, k),
-            |v: &DpView, f, k| v.bq_open(f, k)
-        );
+        init_limited_rows(view, m, bt, bq, t_len, &mut best_e, &mut best_i, &mut best_j);
 
-        init_limited_axis!(
-            q_len,
-            view,
-            m,
-            &mut best_e,
-            &mut best_i,
-            &mut best_j,
-            bq,
-            bt,
-            |f, k| (k, f),
-            |f, k| (k - 1, f),
-            |v: &DpView, f, k| v.bq_open(k, f),
-            |v: &DpView, k| v.bq_ext(k),
-            |v: &DpView, f, k| v.match_e(k, f),
-            |v: &DpView, f, k| v.m_from_bq(k, f),
-            |v: &DpView, f, k| v.bt_open(k, f)
-        );
+        init_limited_cols(view, m, bq, bt, q_len, &mut best_e, &mut best_i, &mut best_j);
 
         // =======================================================================
         // MAIN DP LOOP (i >= 3, j >= 3) - OPTIMIZED
@@ -684,7 +746,15 @@ impl DpExtender {
                                 let val_m = max3(s_mm, s_mq, s_mt);
 
                                 // Update best (with terminal penalty)
-                                update_best_with_terminal(view, &mut best_e, &mut best_i, &mut best_j, val_m, i, j);
+                                update_best_with_term(
+                                    &mut best_e,
+                                    &mut best_i,
+                                    &mut best_j,
+                                    val_m,
+                                    $term(qi, tj),
+                                    i,
+                                    j,
+                                );
 
                                 *m_ptr.add(curr_idx) = val_m;
 
