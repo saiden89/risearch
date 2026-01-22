@@ -481,25 +481,20 @@ impl DpExtender {
         // This eliminates repeated `view.q(i)` and `view.t(j)` calls
         // which have a match on direction each time.
 
-        let mut q_idx = [0usize; MAX_EXT];
-        let mut t_idx = [0usize; MAX_EXT];
+        let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
+        let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
 
-        // Also precompute DSM offset components to eliminate multiplies in inner loop
-        // DSM index = q1*216 + q2*36 + t1*6 + t2
-        let mut q_off_216 = [0usize; MAX_EXT]; // q * 216 (for q1 position)
-        let mut q_off_36 = [0usize; MAX_EXT]; // q * 36  (for q2 position)
-        let mut t_off_6 = [0usize; MAX_EXT]; // t * 6   (for t1 position)
+        // SAFETY: we only read indices we explicitly write below.
+        let q_ptr = q_idx.as_mut_ptr() as *mut usize;
+        let t_ptr = t_idx.as_mut_ptr() as *mut usize;
 
         for i in 0..q_len.min(MAX_EXT) {
             let qi = view.q(i);
-            q_idx[i] = qi;
-            q_off_216[i] = qi * 216;
-            q_off_36[i] = qi * 36;
+            unsafe { *q_ptr.add(i) = qi };
         }
         for j in 0..t_len.min(MAX_EXT) {
             let tj = view.t(j);
-            t_idx[j] = tj;
-            t_off_6[j] = tj * 6;
+            unsafe { *t_ptr.add(j) = tj };
         }
 
         // =====================================================================
@@ -643,9 +638,6 @@ impl DpExtender {
                         let m_ptr = m.ptr();
                         let bq_ptr = bq.ptr();
                         let bt_ptr = bt.ptr();
-                        let q_ptr = q_idx.as_ptr();
-                        let t_ptr = t_idx.as_ptr();
-
                         for i in 3..q_len {
                             let row_i = i * width;
                             let row_prev = (i - 1) * width;
