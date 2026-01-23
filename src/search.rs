@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use itoa;
 use log::{debug, info, trace, warn};
+use rayon::prelude::*;
 use zmij;
 use std::io::Write;
 use std::path::Path;
@@ -629,11 +630,11 @@ fn search_core(
         opts.extend.delta_g
     );
 
-    // Sequential search for fair single-threaded comparison.
-    // Use par_iter() and RAYON_NUM_THREADS for multi-threaded mode.
-    let all_hits: Vec<SearchHit> = queries
-        .iter() // Sequential - use par_iter() for parallel
-        .flat_map(|(q_id, q_seq)| {
+    // Parallel query processing (per-query is independent).
+    // Configure worker count via the global rayon thread pool.
+    let per_query_hits: Vec<Vec<SearchHit>> = queries
+        .par_iter()
+        .map(|(q_id, q_seq)| {
             // Borrow thread-local extender for this query
             THREAD_EXTENDER.with(|ext| {
                 let mut extender = ext.borrow_mut();
@@ -681,6 +682,8 @@ fn search_core(
         })
         .collect();
 
+    let all_hits: Vec<SearchHit> = per_query_hits.into_iter().flatten().collect();
+
     info!("Search complete: {} hits", all_hits.len());
 
     Ok(all_hits)
@@ -712,36 +715,61 @@ pub fn run_search_streaming<W: std::io::Write>(
     );
 
     let mut hit_count = 0;
-    let mut line_buf: Vec<u8> = Vec::new();
+    let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
 
-    for (q_id, q_seq) in queries {
-        // Borrow thread-local buffers for this query
-        THREAD_EXTENDER.with(|ext| {
-            THREAD_SEEDS.with(|seeds_cell| {
-                THREAD_MATCHES.with(|matches_cell| {
-                    let mut extender = ext.borrow_mut();
-                    let mut seeds = seeds_cell.borrow_mut();
-                    let mut matches = matches_cell.borrow_mut();
-                    let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
+    for chunk in queries.chunks(chunk_size) {
+        let outputs: Vec<(Vec<u8>, usize)> = chunk
+            .par_iter()
+            .map(|(q_id, q_seq)| {
+                let mut out: Vec<u8> = Vec::new();
+                let mut line_buf: Vec<u8> = Vec::new();
+                let mut local_hits = 0usize;
 
-                    // Reuse thread-local Vecs instead of allocating new ones
-                    find_seeds_into(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
+                // Borrow thread-local buffers for this query
+                THREAD_EXTENDER.with(|ext| {
+                    THREAD_SEEDS.with(|seeds_cell| {
+                        THREAD_MATCHES.with(|matches_cell| {
+                            let mut extender = ext.borrow_mut();
+                            let mut seeds = seeds_cell.borrow_mut();
+                            let mut matches = matches_cell.borrow_mut();
+                            let mut ctx =
+                                SearchContext::with_extender(index, opts, &mut *extender);
 
-                    for candidate in seeds.iter() {
-                        // Use streaming variant - zero String allocations
-                        if process_candidate_streaming(
-                            crate::types::Query::new(q_id, q_seq),
-                            candidate,
-                            &mut ctx,
-                            writer,
-                            &mut line_buf,
-                        ) {
-                            hit_count += 1;
-                        }
-                    }
+                            // Reuse thread-local Vecs instead of allocating new ones
+                            find_seeds_into(
+                                q_seq,
+                                ctx.index.index,
+                                &ctx.args.seed,
+                                &mut seeds,
+                                &mut matches,
+                            );
+
+                            for candidate in seeds.iter() {
+                                // Use streaming variant - zero String allocations
+                                if process_candidate_streaming(
+                                    crate::types::Query::new(q_id, q_seq),
+                                    candidate,
+                                    &mut ctx,
+                                    &mut out,
+                                    &mut line_buf,
+                                ) {
+                                    local_hits += 1;
+                                }
+                            }
+                        });
+                    });
                 });
-            });
-        });
+
+                (out, local_hits)
+            })
+            .collect();
+
+        for (buf, count) in outputs {
+            if !buf.is_empty() {
+                writer.write_all(&buf)?;
+            }
+            hit_count += count;
+        }
     }
 
     info!("Streaming search complete: {} hits", hit_count);
