@@ -42,44 +42,6 @@ fn bytes_to_rna_string(s: &[u8], reverse: bool) -> String {
     result
 }
 
-/// Write bytes as RNA (T->U) directly to writer, optionally reversed. Zero allocation.
-#[inline]
-fn write_bytes_as_rna<W: Write>(w: &mut W, s: &[u8], reverse: bool) -> std::io::Result<()> {
-    const CHUNK: usize = 256;
-    let mut buf = [0u8; CHUNK];
-    let mut len = 0usize;
-
-    let mut push_byte = |b: u8| -> std::io::Result<()> {
-        let c = match b {
-            b'T' => b'U',
-            b't' => b'u',
-            _ => b,
-        };
-        buf[len] = c;
-        len += 1;
-        if len == CHUNK {
-            w.write_all(&buf)?;
-            len = 0;
-        }
-        Ok(())
-    };
-
-    if reverse {
-        for &b in s.iter().rev() {
-            push_byte(b)?;
-        }
-    } else {
-        for &b in s {
-            push_byte(b)?;
-        }
-    }
-
-    if len > 0 {
-        w.write_all(&buf[..len])?;
-    }
-    Ok(())
-}
-
 #[inline]
 fn push_bytes_as_rna(buf: &mut Vec<u8>, s: &[u8], reverse: bool) {
     if reverse {
@@ -642,7 +604,7 @@ impl<'a, 'e> SearchContext<'a, 'e> {
     }
 }
 
-/// Thread-local storage for reusable buffers - avoids allocation per query.
+// Thread-local storage for reusable buffers - avoids allocation per query.
 thread_local! {
     static THREAD_EXTENDER: std::cell::RefCell<dp::DpExtender> =
         std::cell::RefCell::new(dp::DpExtender::new());
