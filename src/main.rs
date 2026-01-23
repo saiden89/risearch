@@ -7,9 +7,12 @@ use risearch::{sa, search};
 
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use log::{debug, info, trace};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use zstd::stream::write::Encoder as ZstdEncoder;
 
 /// Initialize logging based on verbosity level with colored output
 fn init_logging(verbosity: u8) {
@@ -86,6 +89,104 @@ fn init_logging(verbosity: u8) {
 }
 
 use risearch::args::*;
+
+enum OutputWriter {
+    Plain(BufWriter<Box<dyn Write>>),
+    Gzip(BufWriter<GzEncoder<Box<dyn Write>>>),
+    Zstd(BufWriter<ZstdEncoder<'static, Box<dyn Write>>>),
+}
+
+impl Write for OutputWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(w) => w.write(buf),
+            Self::Gzip(w) => w.write(buf),
+            Self::Zstd(w) => w.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(w) => w.flush(),
+            Self::Gzip(w) => w.flush(),
+            Self::Zstd(w) => w.flush(),
+        }
+    }
+}
+
+impl OutputWriter {
+    fn new(
+        inner: Box<dyn Write>,
+        compression: OutputCompression,
+        level: Option<i32>,
+    ) -> Result<Self> {
+        let buf_cap = 256 * 1024;
+        match compression {
+            OutputCompression::None => {
+                if level.is_some() {
+                    bail!("--output-level requires compressed output");
+                }
+                Ok(Self::Plain(BufWriter::with_capacity(buf_cap, inner)))
+            }
+            OutputCompression::Gzip => {
+                let lvl = match level {
+                    None => Compression::default(),
+                    Some(v) => {
+                        if !(0..=9).contains(&v) {
+                            bail!("gzip level must be in 0..=9 (got {})", v);
+                        }
+                        Compression::new(v as u32)
+                    }
+                };
+                let encoder = GzEncoder::new(inner, lvl);
+                Ok(Self::Gzip(BufWriter::with_capacity(buf_cap, encoder)))
+            }
+            OutputCompression::Zstd => {
+                let lvl = level.unwrap_or(0);
+                if !(-7..=22).contains(&lvl) {
+                    bail!("zstd level must be in -7..=22 (got {})", lvl);
+                }
+                let encoder = ZstdEncoder::new(inner, lvl)
+                    .context("Failed to initialize zstd encoder")?;
+                Ok(Self::Zstd(BufWriter::with_capacity(buf_cap, encoder)))
+            }
+        }
+    }
+
+    fn finish(self) -> std::io::Result<()> {
+        fn into_inner<W: Write>(writer: BufWriter<W>) -> std::io::Result<W> {
+            match writer.into_inner() {
+                Ok(w) => Ok(w),
+                Err(e) => Err(e.into_error()),
+            }
+        }
+
+        match self {
+            Self::Plain(mut w) => w.flush(),
+            Self::Gzip(w) => {
+                let encoder = into_inner(w)?;
+                let _ = encoder.finish()?;
+                Ok(())
+            }
+            Self::Zstd(w) => {
+                let encoder = into_inner(w)?;
+                let _ = encoder.finish()?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn infer_compression(path: &std::path::Path) -> OutputCompression {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return OutputCompression::None;
+    };
+    match ext.to_ascii_lowercase().as_str() {
+        "gz" | "gzip" => OutputCompression::Gzip,
+        "zst" | "zstd" => OutputCompression::Zstd,
+        _ => OutputCompression::None,
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]
@@ -225,8 +326,6 @@ fn main() -> Result<()> {
                     let wrapper = search::SaIndex { index: &idx };
                     debug!("Starting search with streaming output...");
 
-                    // Use streaming output to avoid memory overhead for large result sets
-                    use std::io::{BufWriter, Write};
                     let output_path: &std::path::Path = output.as_ref();
                     let inner: Box<dyn std::io::Write> = if output_path == std::path::Path::new("-")
                     {
@@ -237,10 +336,17 @@ fn main() -> Result<()> {
                                 .context("Failed to create output file")?,
                         )
                     };
-                    let mut writer = BufWriter::with_capacity(256 * 1024, inner);
+                    let compression = opts.output_compress.clone().unwrap_or_else(|| {
+                        if output_path == std::path::Path::new("-") {
+                            OutputCompression::None
+                        } else {
+                            infer_compression(output_path)
+                        }
+                    });
+                    let mut writer = OutputWriter::new(inner, compression, opts.output_level)?;
                     let hit_count =
                         search::run_search_streaming(&queries, &wrapper, opts, &mut writer)?;
-                    writer.flush().context("Failed to flush output")?;
+                    writer.finish().context("Failed to finalize output")?;
                     info!("Search completed: {} hits written", hit_count);
                 }
             }

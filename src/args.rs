@@ -53,6 +53,17 @@ pub enum OutputFormat {
 
 #[derive(ValueEnum, Clone, Debug)]
 #[clap(rename_all = "lowercase")]
+pub enum OutputCompression {
+    /// No compression (default)
+    None,
+    /// Gzip compression
+    Gzip,
+    /// Zstandard compression
+    Zstd,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+#[clap(rename_all = "lowercase")]
 pub enum Backend {
     /// FM-Index backend (requires 'fm-index' feature)
     Fm,
@@ -196,6 +207,14 @@ pub struct SearchArgs {
         value_enum
     )]
     pub report_format: Option<OutputFormat>,
+
+    /// Output compression codec (overrides file extension inference)
+    #[arg(long = "output-compress", value_enum)]
+    pub output_compress: Option<OutputCompression>,
+
+    /// Output compression level (codec-specific)
+    #[arg(long = "output-level", value_name = "LEVEL")]
+    pub output_level: Option<i32>,
 
     // ========================================================================
     // TODO: Placeholder flags from C implementation - not yet implemented

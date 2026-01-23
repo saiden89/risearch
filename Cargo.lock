@@ -1139,6 +1139,7 @@ dependencies = [
  "tempfile",
  "tikv-jemallocator",
  "zmij 0.1.11",
+ "zstd",
 ]
 
 [[package]]
