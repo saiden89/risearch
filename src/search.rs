@@ -6,7 +6,7 @@ use zmij;
 use std::io::Write;
 use std::path::Path;
 
-use crate::args::SearchArgs;
+use crate::args::{OutputFormat, SearchArgs};
 use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::sa::SaIndexFile;
@@ -126,6 +126,75 @@ fn push_score_fixed_2_int(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, score:
     buf.push(b'0' + (frac % 10));
 }
 
+#[inline]
+fn push_result_fields(
+    buf: &mut Vec<u8>,
+    itoa_buf: &mut itoa::Buffer,
+    zmij_buf: &mut zmij::Buffer,
+    q_id: &str,
+    q_start: usize,
+    q_end: usize,
+    t_id: &str,
+    t_start: usize,
+    t_end: usize,
+    strand_char: char,
+    score: f64,
+) {
+    buf.extend_from_slice(q_id.as_bytes());
+    buf.push(b'\t');
+    push_usize(buf, itoa_buf, q_start);
+    buf.push(b'\t');
+    push_usize(buf, itoa_buf, q_end);
+    buf.push(b'\t');
+    buf.extend_from_slice(t_id.as_bytes());
+    buf.push(b'\t');
+    push_usize(buf, itoa_buf, t_start);
+    buf.push(b'\t');
+    push_usize(buf, itoa_buf, t_end);
+    buf.push(b'\t');
+    buf.push(strand_char as u8);
+    buf.push(b'\t');
+    push_score_fixed_2(buf, itoa_buf, zmij_buf, score);
+}
+
+#[inline]
+fn push_alignment_line(buf: &mut Vec<u8>, steps: &[Pairing]) {
+    for p in steps {
+        let c = match p {
+            Pairing::Match(_, _) => b'|',
+            Pairing::Wobble(_, _) => b':',
+            _ => b' ',
+        };
+        buf.push(c);
+    }
+}
+
+#[inline]
+fn push_query_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
+    for p in steps {
+        let c = p.query_char();
+        let normalized = match c {
+            'T' => 'U',
+            't' => 'u',
+            other => other,
+        };
+        buf.push(normalized as u8);
+    }
+}
+
+#[inline]
+fn push_target_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
+    for p in steps {
+        let c = p.target_char();
+        let normalized = match c {
+            'T' => 'U',
+            't' => 'u',
+            other => other,
+        };
+        buf.push(normalized as u8);
+    }
+}
+
 /// High-level algorithm stages for structured logging
 #[derive(Debug, Clone, Copy)]
 enum SearchStage {
@@ -201,39 +270,98 @@ pub struct SearchHit {
 
 impl SearchHit {
     pub fn write(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        // Write fixed fields
-        write!(
-            w,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t",
-            self.query_id.truncated(),
-            self.output_q_start,
-            self.output_q_end,
-            self.target_id.truncated(),
-            self.output_t_start,
-            self.output_t_end,
-            self.strand,
-            self.energy.as_f64(),
-        )?;
+        self.write_with_format(w, OutputFormat::BindingSite)
+    }
 
-        // Write fingerprint directly (no String allocation)
-        for p in self.alignment.steps() {
-            write!(w, "{}", p.to_char())?;
+    pub fn write_with_format(
+        &self,
+        w: &mut dyn Write,
+        format: OutputFormat,
+    ) -> std::io::Result<()> {
+        let q_id = self.query_id.truncated();
+        let t_id = self.target_id.truncated();
+
+        match format {
+            OutputFormat::Detailed => {
+                let query = self.alignment.query_sequence();
+                let aln = self.alignment.alignment_string();
+                let target = self.alignment.target_sequence();
+
+                writeln!(w, "{}", query)?;
+                writeln!(w, "{}", aln)?;
+                writeln!(w, "{}", target)?;
+                writeln!(
+                    w,
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}",
+                    q_id,
+                    self.output_q_start,
+                    self.output_q_end,
+                    t_id,
+                    self.output_t_start,
+                    self.output_t_end,
+                    self.strand,
+                    self.energy.as_f64()
+                )
+            }
+            OutputFormat::Cigar => {
+                write!(
+                    w,
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t",
+                    q_id,
+                    self.output_q_start,
+                    self.output_q_end,
+                    t_id,
+                    self.output_t_start,
+                    self.output_t_end,
+                    self.strand,
+                    self.energy.as_f64()
+                )?;
+                for p in self.alignment.steps() {
+                    write!(w, "{}", p.to_char())?;
+                }
+                writeln!(w)
+            }
+            OutputFormat::BindingSite => {
+                write!(
+                    w,
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t",
+                    q_id,
+                    self.output_q_start,
+                    self.output_q_end,
+                    t_id,
+                    self.output_t_start,
+                    self.output_t_end,
+                    self.strand,
+                    self.energy.as_f64()
+                )?;
+                for p in self.alignment.steps() {
+                    write!(w, "{}", p.to_char())?;
+                }
+                write!(w, "\t")?;
+                for p in self.alignment.steps() {
+                    let c = p.target_char();
+                    let normalized = match c {
+                        'T' => 'U',
+                        't' => 'u',
+                        other => other,
+                    };
+                    write!(w, "{}", normalized)?;
+                }
+                writeln!(w, "\t{}\t{}", self.flank_5, self.flank_3)
+            }
+            OutputFormat::Minimal => writeln!(
+                w,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}",
+                q_id,
+                self.output_q_start,
+                self.output_q_end,
+                t_id,
+                self.output_t_start,
+                self.output_t_end,
+                self.strand,
+                self.energy.as_f64()
+            ),
         }
-        write!(w, "\t")?;
-
-        // Write target sequence with T->U normalization (no intermediate String)
-        for p in self.alignment.steps() {
-            let c = p.target_char();
-            let normalized = match c {
-                'T' => 'U',
-                't' => 'u',
-                other => other,
-            };
-            write!(w, "{}", normalized)?;
-        }
-
-        // Write remaining fields
-        writeln!(w, "\t{}\t{}", self.flank_5, self.flank_3)
     }
 
     /// Parse a SearchHit from C risearch output line.
@@ -715,6 +843,10 @@ pub fn run_search_streaming<W: std::io::Write>(
     );
 
     let mut hit_count = 0;
+    let format = opts
+        .report_format
+        .clone()
+        .unwrap_or(OutputFormat::Detailed);
     let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
 
     for chunk in queries.chunks(chunk_size) {
@@ -751,6 +883,7 @@ pub fn run_search_streaming<W: std::io::Write>(
                                     candidate,
                                     &mut ctx,
                                     &mut out,
+                                    format,
                                     &mut line_buf,
                                 ) {
                                     local_hits += 1;
@@ -795,6 +928,37 @@ pub fn write_results(hits: &[SearchHit], output: impl AsRef<Path>) -> Result<()>
     }
 
     // BufWriter flushes on drop, but explicit flush ensures errors are caught
+    writer.flush().context("Failed to flush output")?;
+    Ok(())
+}
+
+pub fn write_results_with_format(
+    hits: &[SearchHit],
+    output: impl AsRef<Path>,
+    format: OutputFormat,
+) -> Result<()> {
+    use std::io::BufWriter;
+
+    let inner: Box<dyn Write> = if output.as_ref() == Path::new("-") {
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(std::fs::File::create(output.as_ref()).context("Failed to create output file")?)
+    };
+
+    // Larger buffer reduces syscall overhead for high-volume output.
+    let mut writer = BufWriter::with_capacity(256 * 1024, inner);
+
+    debug!(
+        "{} output={:?} format={:?}",
+        SearchStage::Output,
+        output.as_ref(),
+        format
+    );
+
+    for hit in hits {
+        hit.write_with_format(&mut writer, format)?;
+    }
+
     writer.flush().context("Failed to flush output")?;
     Ok(())
 }
@@ -954,6 +1118,7 @@ fn process_candidate_streaming<W: Write>(
     candidate: &SeedCandidate,
     ctx: &mut SearchContext<'_, '_>,
     writer: &mut W,
+    format: OutputFormat,
     line_buf: &mut Vec<u8>,
 ) -> bool {
     let t_idx = candidate.target_idx;
@@ -1013,7 +1178,7 @@ fn process_candidate_streaming<W: Write>(
         + t_id_trunc.len()
         + (ext.alignment.steps().len() * 2)
         + (ctx_len * 2)
-        + 64;
+        + 96;
     line_buf.clear();
     if line_buf.capacity() < approx {
         line_buf.reserve(approx - line_buf.capacity());
@@ -1021,52 +1186,105 @@ fn process_candidate_streaming<W: Write>(
     let mut itoa_buf = itoa::Buffer::new();
     let mut zmij_buf = zmij::Buffer::new();
 
-    line_buf.extend_from_slice(q_id_trunc.as_bytes());
-    line_buf.push(b'\t');
-    push_usize(line_buf, &mut itoa_buf, final_q_start + 1);
-    line_buf.push(b'\t');
-    push_usize(line_buf, &mut itoa_buf, final_q_end + 1);
-    line_buf.push(b'\t');
-    line_buf.extend_from_slice(t_id_trunc.as_bytes());
-    line_buf.push(b'\t');
-    push_usize(line_buf, &mut itoa_buf, out_t_start);
-    line_buf.push(b'\t');
-    push_usize(line_buf, &mut itoa_buf, out_t_end);
-    line_buf.push(b'\t');
-    line_buf.push(strand_char as u8);
-    line_buf.push(b'\t');
-    push_score_fixed_2(line_buf, &mut itoa_buf, &mut zmij_buf, score);
-    line_buf.push(b'\t');
+    match format {
+        OutputFormat::Detailed => {
+            let steps = ext.alignment.steps();
+            push_query_seq(line_buf, steps);
+            line_buf.push(b'\n');
+            push_alignment_line(line_buf, steps);
+            line_buf.push(b'\n');
+            push_target_seq(line_buf, steps);
+            line_buf.push(b'\n');
+            push_result_fields(
+                line_buf,
+                &mut itoa_buf,
+                &mut zmij_buf,
+                q_id_trunc,
+                final_q_start + 1,
+                final_q_end + 1,
+                t_id_trunc,
+                out_t_start,
+                out_t_end,
+                strand_char,
+                score,
+            );
+            line_buf.push(b'\n');
+        }
+        OutputFormat::Cigar => {
+            push_result_fields(
+                line_buf,
+                &mut itoa_buf,
+                &mut zmij_buf,
+                q_id_trunc,
+                final_q_start + 1,
+                final_q_end + 1,
+                t_id_trunc,
+                out_t_start,
+                out_t_end,
+                strand_char,
+                score,
+            );
+            line_buf.push(b'\t');
+            for p in ext.alignment.steps() {
+                line_buf.push(p.to_char() as u8);
+            }
+            line_buf.push(b'\n');
+        }
+        OutputFormat::BindingSite => {
+            push_result_fields(
+                line_buf,
+                &mut itoa_buf,
+                &mut zmij_buf,
+                q_id_trunc,
+                final_q_start + 1,
+                final_q_end + 1,
+                t_id_trunc,
+                out_t_start,
+                out_t_end,
+                strand_char,
+                score,
+            );
+            line_buf.push(b'\t');
 
-    // Write fingerprint directly
-    for p in ext.alignment.steps() {
-        line_buf.push(p.to_char() as u8);
+            // Write fingerprint directly
+            for p in ext.alignment.steps() {
+                line_buf.push(p.to_char() as u8);
+            }
+            line_buf.push(b'\t');
+
+            // Write target sequence with T->U normalization
+            push_target_seq(line_buf, ext.alignment.steps());
+            line_buf.push(b'\t');
+
+            // Write flank_5 (reversed, T->U)
+            let flank_5_slice = &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start];
+            push_bytes_as_rna(line_buf, flank_5_slice, true);
+            line_buf.push(b'\t');
+
+            // Write flank_3 (T->U)
+            let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
+            if final_t_end + 1 < t_seq.len() {
+                push_bytes_as_rna(line_buf, &t_seq[final_t_end + 1..t_3_end], false);
+            }
+            line_buf.push(b'\n');
+        }
+        OutputFormat::Minimal => {
+            push_result_fields(
+                line_buf,
+                &mut itoa_buf,
+                &mut zmij_buf,
+                q_id_trunc,
+                final_q_start + 1,
+                final_q_end + 1,
+                t_id_trunc,
+                out_t_start,
+                out_t_end,
+                strand_char,
+                score,
+            );
+            line_buf.push(b'\n');
+        }
     }
-    line_buf.push(b'\t');
-
-    // Write target sequence with T->U normalization
-    for p in ext.alignment.steps() {
-        let c = p.target_char();
-        let normalized = match c {
-            'T' => 'U',
-            't' => 'u',
-            other => other,
-        };
-        line_buf.push(normalized as u8);
-    }
-    line_buf.push(b'\t');
-
-    // Write flank_5 (reversed, T->U)
-    let flank_5_slice = &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start];
-    push_bytes_as_rna(line_buf, flank_5_slice, true);
-    line_buf.push(b'\t');
-
-    // Write flank_3 (T->U)
-    let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
-    if final_t_end + 1 < t_seq.len() {
-        push_bytes_as_rna(line_buf, &t_seq[final_t_end + 1..t_3_end], false);
-    }
-    line_buf.push(b'\n');
 
     if writer.write_all(line_buf).is_err() {
         return false;

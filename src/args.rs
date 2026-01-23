@@ -34,7 +34,7 @@ pub enum Matrix {
     Sl04NoGU,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
 #[value(rename_all = "lowercase")]
 pub enum OutputFormat {
     /// Report predictions in detailed format (C: -p or -p1)
@@ -51,7 +51,7 @@ pub enum OutputFormat {
     Minimal,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug)]
 #[clap(rename_all = "lowercase")]
 pub enum OutputCompression {
     /// No compression (default)

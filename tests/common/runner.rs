@@ -269,10 +269,44 @@ impl SingleSeqRunner {
 pub fn parse_search_args(args: &[&str]) -> risearch::args::SearchArgs {
     use clap::Parser;
 
-    let mut cli_args = vec!["risearch"];
-    cli_args.extend(args.iter().copied());
+    let mut cli_args: Vec<String> = vec!["risearch".into()];
+    let mut iter = args.iter().copied().peekable();
+    while let Some(arg) = iter.next() {
+        let mapped = match arg {
+            "-p" => {
+                if let Some(next) = iter.peek().copied() {
+                    let fmt = match next {
+                        "1" => Some("detailed"),
+                        "2" => Some("cigar"),
+                        "3" => Some("bindingsite"),
+                        "4" => Some("minimal"),
+                        _ => None,
+                    };
+                    if let Some(fmt) = fmt {
+                        let _ = iter.next();
+                        Some(format!("-f={}", fmt))
+                    } else {
+                        Some("-f=detailed".to_string())
+                    }
+                } else {
+                    Some("-f=detailed".to_string())
+                }
+            }
+            "-p1" => Some("-f=detailed".to_string()),
+            "-p2" => Some("-f=cigar".to_string()),
+            "-p3" => Some("-f=bindingsite".to_string()),
+            "-p4" => Some("-f=minimal".to_string()),
+            _ => None,
+        };
+
+        if let Some(m) = mapped {
+            cli_args.push(m);
+        } else {
+            cli_args.push(arg.to_string());
+        }
+    }
     // C doesn't do shadow dedup, so disable it for parity tests
-    cli_args.push("--no-dedup-shadow");
+    cli_args.push("--no-dedup-shadow".into());
 
     #[derive(Parser)]
     struct FakeCmd {

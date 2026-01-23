@@ -388,6 +388,18 @@ impl Alignment {
         self.steps.iter().map(|p| p.query_char()).collect()
     }
 
+    /// Generates the alignment string (e.g. "|| :  ")
+    pub fn alignment_string(&self) -> String {
+        self.steps
+            .iter()
+            .map(|p| match p {
+                Pairing::Match(_, _) => '|',
+                Pairing::Wobble(_, _) => ':',
+                _ => ' ',
+            })
+            .collect()
+    }
+
     /// Create from C output (fingerprint + target sequence + seed markers).
     /// C output uses 'y' and 'x' markers to delimit seed region.
     pub fn from_c_output(
