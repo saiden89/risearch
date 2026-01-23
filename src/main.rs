@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[cfg(feature = "fm-index")]
 use risearch::fm;
 use risearch::{sa, search};
@@ -5,12 +8,11 @@ use risearch::{sa, search};
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use log::{debug, info, trace};
+use std::io::Write;
 use std::path::PathBuf;
 
 /// Initialize logging based on verbosity level with colored output
 fn init_logging(verbosity: u8) {
-    use std::io::Write;
-
     let level = match verbosity {
         0 => log::LevelFilter::Warn,
         1 => log::LevelFilter::Info,
@@ -226,14 +228,18 @@ fn main() -> Result<()> {
                     // Use streaming output to avoid memory overhead for large result sets
                     use std::io::{BufWriter, Write};
                     let output_path: &std::path::Path = output.as_ref();
-                    let inner: Box<dyn std::io::Write> = if output_path == std::path::Path::new("-") {
+                    let inner: Box<dyn std::io::Write> = if output_path == std::path::Path::new("-")
+                    {
                         Box::new(std::io::stdout())
                     } else {
-                        Box::new(std::fs::File::create(output_path)
-                            .context("Failed to create output file")?)
+                        Box::new(
+                            std::fs::File::create(output_path)
+                                .context("Failed to create output file")?,
+                        )
                     };
                     let mut writer = BufWriter::with_capacity(256 * 1024, inner);
-                    let hit_count = search::run_search_streaming(&queries, &wrapper, opts, &mut writer)?;
+                    let hit_count =
+                        search::run_search_streaming(&queries, &wrapper, opts, &mut writer)?;
                     writer.flush().context("Failed to flush output")?;
                     info!("Search completed: {} hits written", hit_count);
                 }

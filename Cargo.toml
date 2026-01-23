@@ -25,6 +25,7 @@ rayon = "1.11"
 savefile = "0.20.2"
 serde = { version = "1.0.228", features = ["derive"] }
 smallvec = "1.15.1"
+tikv-jemallocator = "0.6"
 zmij = "0.1"
 
 [dev-dependencies]
