@@ -26,7 +26,8 @@ pub mod table;
 
 // Used by runner.rs (internally)
 
-// Used by c_parity.rs
+// Used by c_parity.rs (not necessarily used in every test crate)
+#[allow(unused_imports)]
 pub use runner::{ParityRunner, SingleSeqRunner};
 
 // =============================================================================

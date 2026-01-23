@@ -152,9 +152,20 @@ impl ParityRunner {
 
         // Translate Rust args to C args
         let mut c_args: Vec<&str> = Vec::new();
-        for &arg in args.iter() {
+        let mut iter = args.iter().copied().peekable();
+        while let Some(arg) = iter.next() {
             match arg {
-                "--no-max-prune" => continue,                   // Rust-only flag
+                "--no-max-prune" => continue, // Rust-only flag
+                "--experimental" => continue, // Rust-only flag
+                "--dp-band" => {
+                    // Skip value
+                    let _ = iter.next();
+                    continue;
+                }
+                "--dp-band-mode" => {
+                    let _ = iter.next();
+                    continue;
+                }
                 "-w" | "--wobble" => c_args.push("--noGUseed"), // Map -w to C flag
                 _ => c_args.push(arg),
             }
@@ -208,6 +219,7 @@ impl ParityRunner {
 /// Runner for single-sequence parity tests.
 ///
 /// Creates temporary FASTA files from raw sequences.
+#[allow(dead_code)] // Used by some parity suites, unused in others.
 pub struct SingleSeqRunner {
     query_path: PathBuf,
     #[allow(dead_code)] // Kept for potential future use
@@ -217,6 +229,7 @@ pub struct SingleSeqRunner {
     tmpdir: tempfile::TempDir,
 }
 
+#[allow(dead_code)] // Methods are only used by specific parity suites.
 impl SingleSeqRunner {
     /// Create a new single-sequence runner.
     pub fn new(query_seq: &str, target_seq: &str) -> Self {

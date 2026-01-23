@@ -2,7 +2,6 @@
 //!
 //! Contains `ParityComparator` - a builder pattern for comparing Rust and C results.
 
-use log::{debug, info};
 use std::collections::HashSet;
 
 use crate::common::status::{HitStatus, MissingReason, ParityMode, TEST_PARITY_MODE};
@@ -12,6 +11,7 @@ use risearch::SearchHit;
 // LOG TAG
 // =============================================================================
 
+#[allow(dead_code)] // Some tags are only used in specific parity modes/tests.
 pub enum LogTag {
     Pair,
     Parity,
@@ -89,11 +89,10 @@ impl ParityResult {
     /// Log detailed comparison results for all hit types.
     pub fn log_details(&self, test_name: &str) {
         use crate::common::table::{ParityKind, ParityTable, TableConfig};
-        use log::debug;
         use std::collections::BTreeMap;
 
-        debug!("{} {} Summary:", LogTag::Parity, test_name);
-        debug!(
+        log::debug!("{} {} Summary:", LogTag::Parity, test_name);
+        log::debug!(
             "{} Exact matches: {}, Co-optimal: {}, Rust-better: {}, Rust-worse: {}, Extras: {}, Missings: {}",
             LogTag::Parity,
             self.exact_matches,
@@ -227,8 +226,8 @@ impl ParityResult {
 
         // Print groups
         for ((q_id, t_id), hits) in groups {
-            debug!("");
-            debug!(
+            log::debug!("");
+            log::debug!(
                 "{} Group [{}:{}] hits={}",
                 LogTag::Parity,
                 q_id,
@@ -237,14 +236,13 @@ impl ParityResult {
             );
             for (_kind, content) in hits {
                 for line in content.lines() {
-                    debug!("{} {}", LogTag::Parity, line);
+                    log::debug!("{} {}", LogTag::Parity, line);
                 }
             }
         }
 
         // Final summary table (matching old compare_recs_impl format)
         use crate::common::table::{SummaryRow, render_summary_table};
-        use log::info;
 
         let total_rust = self.exact_matches
             + self.rust_better.len()
@@ -381,7 +379,7 @@ impl ParityResult {
         }
 
         for line in render_summary_table(rows).lines() {
-            info!("{} {}", LogTag::Parity, line);
+            log::info!("{} {}", LogTag::Parity, line);
         }
     }
 }
