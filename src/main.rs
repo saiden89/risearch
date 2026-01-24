@@ -129,8 +129,14 @@ fn has_seed_pairing_arg(args: &[String]) -> bool {
     false
 }
 
-fn has_wobble_legacy_arg(args: &[String]) -> bool {
+fn has_wobble_arg(args: &[String]) -> bool {
     args.iter().skip(1).any(|arg| arg == "-w" || arg == "--wobble")
+}
+
+fn has_no_guseed_arg(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| arg == "-U" || arg == "--no-guseed" || arg == "--noGUseed")
 }
 
 #[derive(Parser, Debug)]
@@ -298,7 +304,8 @@ fn main() -> Result<()> {
                     let mut writer = BufWriter::with_capacity(256 * 1024, inner);
                     let mut opts = opts.clone();
                     let legacy_mismatch = extract_legacy_mismatch_arg(&raw_args);
-                    let legacy_wobble = has_wobble_legacy_arg(&raw_args);
+                    let wobble_arg = has_wobble_arg(&raw_args);
+                    let legacy_no_guseed = has_no_guseed_arg(&raw_args);
                     let explicit_pairing = has_seed_pairing_arg(&raw_args);
                     if let Some(raw) = legacy_mismatch.as_deref() {
                         if opts.seed.has_named_mismatch() {
@@ -327,17 +334,17 @@ fn main() -> Result<()> {
                             );
                         }
                     }
-                    if legacy_wobble {
+                    if legacy_no_guseed {
                         warn!(
-                            "Legacy -w/--wobble is deprecated and redundant (default is allow_wobble). Prefer --seed-pairing allow_wobble."
+                            "Legacy --no-guseed is deprecated; use --seed-pairing strict instead."
                         );
-                        if opts.seed.no_guseed {
+                        if wobble_arg {
                             warn!(
                                 "Both -w/--wobble and --no-guseed were provided; --no-guseed takes precedence."
                             );
                         } else if explicit_pairing {
                             warn!(
-                                "Both -w/--wobble and --seed-pairing were provided; --seed-pairing takes precedence."
+                                "Both --no-guseed and --seed-pairing were provided; --seed-pairing takes precedence."
                             );
                         }
                     }

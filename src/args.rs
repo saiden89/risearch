@@ -85,17 +85,18 @@ pub struct SeedArgs {
     )]
     pub seed: SeedSpec,
 
-    /// Consider G-U wobble pairs as mismatch within the seed (only for locating seeds, energy model is not affected)
-    #[arg(short = 'U', long = "no-guseed", alias = "noGUseed", action = clap::ArgAction::SetTrue)]
-    pub no_guseed: bool,
-
-    /// DEPRECATED (will be removed in a future release): explicitly allow G-U wobble pairs in seed (default behavior)
+    /// DEPRECATED (will be removed in a future release): disable G-U wobble pairs within the seed
     #[arg(
-        short = 'w',
-        long = "wobble",
+        short = 'U',
+        long = "no-guseed",
+        alias = "noGUseed",
         action = clap::ArgAction::SetTrue,
         help_heading = "Deprecated"
     )]
+    pub no_guseed: bool,
+
+    /// Allow G-U wobble pairs within the seed (default behavior)
+    #[arg(short = 'w', long = "wobble", action = clap::ArgAction::SetTrue)]
     pub wobble_legacy: bool,
 
     /// Seed pairing mode (allow_wobble or strict)
