@@ -36,7 +36,7 @@ fn test_parity(
     // Use high energy threshold to not filter hits by energy (test alignment parity)
     let mut args = vec!["-l", &l_str, "-e", "100.0", "-s", &s_str, "-p3"];
     if w_strict {
-        args.push("-w");
+        args.push("-U");
     }
 
     let test_name = if w_strict {

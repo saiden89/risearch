@@ -86,26 +86,77 @@ pub struct SeedArgs {
     pub seed: SeedSpec,
 
     /// Consider G-U wobble pairs as mismatch within the seed (only for locating seeds, energy model is not affected)
+    #[arg(short = 'U', long = "no-guseed", alias = "noGUseed", action = clap::ArgAction::SetTrue)]
+    pub no_guseed: bool,
+
+    /// DEPRECATED (will be removed in a future release): explicitly allow G-U wobble pairs in seed (default behavior)
     #[arg(
         short = 'w',
         long = "wobble",
+        action = clap::ArgAction::SetTrue,
+        help_heading = "Deprecated"
+    )]
+    pub wobble_legacy: bool,
+
+    /// Seed pairing mode (allow_wobble or strict)
+    #[arg(
+        long = "seed-pairing",
         value_enum,
-        default_value_t = SeedPairing::AllowWobble,
-        default_missing_value = "strict",
-        num_args = 0
+        default_value_t = SeedPairing::AllowWobble
     )]
     pub pairing: SeedPairing,
 
-    /// Introduce mismatched seeds
-    /// Set the max num of mismatches (c) allowed in the seed and min num of consecutive matches required at seed start/end (p)
-    ///These seeds will not overlap with perfect complementary seeds.
+    /// DEPRECATED (will be removed in a future release): legacy mismatch shorthand
+    /// Set max mismatches (c) and min consecutive matches at seed start/end (p)
+    /// These seeds will not overlap with perfect complementary seeds.
     #[arg(
         short = 'm',
         long = "mismatch",
-        value_name = "c:p",
-        default_value = "0:0"
+        value_name = "c[:ps[:pe]]",
+        default_value = "0:0",
+        help_heading = "Deprecated"
     )]
     pub mismatch_seed: MismatchSpec,
+
+    /// Max number of mismatches allowed in the seed (preferred)
+    #[arg(long = "mismatch-max", value_name = "C")]
+    pub mismatch_max: Option<usize>,
+
+    /// Min consecutive matches at seed start (prefix / 5')
+    #[arg(long = "mismatch-prefix", value_name = "PS")]
+    pub mismatch_prefix: Option<usize>,
+
+    /// Min consecutive matches at seed end (suffix / 3')
+    #[arg(long = "mismatch-suffix", value_name = "PE")]
+    pub mismatch_suffix: Option<usize>,
+}
+
+impl SeedArgs {
+    pub fn apply_pairing_overrides(&mut self, explicit_pairing: bool) {
+        if self.no_guseed {
+            self.pairing = SeedPairing::Strict;
+            return;
+        }
+        if self.wobble_legacy && !explicit_pairing {
+            self.pairing = SeedPairing::AllowWobble;
+        }
+    }
+
+    pub fn apply_mismatch_overrides(&mut self) {
+        if let Some(max) = self.mismatch_max {
+            self.mismatch_seed.max_mismatches = max;
+        }
+        if let Some(start) = self.mismatch_prefix {
+            self.mismatch_seed.min_position = start;
+        }
+        if let Some(end) = self.mismatch_suffix {
+            self.mismatch_seed.min_matches_after = end;
+        }
+    }
+
+    pub fn has_named_mismatch(&self) -> bool {
+        self.mismatch_max.is_some() || self.mismatch_prefix.is_some() || self.mismatch_suffix.is_some()
+    }
 }
 
 /// Arguments for seed extension and scoring
@@ -203,7 +254,6 @@ pub struct SearchArgs {
         value_name = "LEVEL",
         default_missing_value = "detailed",
         default_value = "detailed",
-        require_equals = true,
         value_enum
     )]
     pub report_format: Option<OutputFormat>,

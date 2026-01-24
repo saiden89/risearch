@@ -642,6 +642,11 @@ mod tests {
             seed: SeedSpec::Length(6),
             pairing,
             mismatch_seed: MismatchSpec::exact(),
+            no_guseed: matches!(pairing, SeedPairing::Strict),
+            wobble_legacy: false,
+            mismatch_max: None,
+            mismatch_prefix: None,
+            mismatch_suffix: None,
         }
     }
 

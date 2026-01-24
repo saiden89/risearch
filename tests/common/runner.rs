@@ -166,7 +166,15 @@ impl ParityRunner {
                     let _ = iter.next();
                     continue;
                 }
-                "-w" | "--wobble" => c_args.push("--noGUseed"), // Map -w to C flag
+                "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed"),
+                "-w" | "--wobble" => continue, // Rust-only legacy alias (default allow_wobble)
+                "--seed-pairing" => {
+                    if let Some(val) = iter.next() {
+                        if val == "strict" {
+                            c_args.push("--noGUseed");
+                        }
+                    }
+                }
                 _ => c_args.push(arg),
             }
         }
@@ -314,6 +322,11 @@ pub fn parse_search_args(args: &[&str]) -> risearch::args::SearchArgs {
         search: risearch::args::SearchArgs,
     }
 
-    let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
+    let mut parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
+    let explicit_pairing = args.iter().any(|arg| {
+        *arg == "--seed-pairing" || arg.starts_with("--seed-pairing=")
+    });
+    parsed.search.seed.apply_mismatch_overrides();
+    parsed.search.seed.apply_pairing_overrides(explicit_pairing);
     parsed.search
 }

@@ -19,11 +19,15 @@ pub struct SeedCandidate {
 
 /// Representation of the `-m` (mismatch) flag.
 ///
-/// Format: `c:p` where:
+/// Format: `c[:ps[:pe]]` where:
 /// - `c` = max number of mismatches allowed in seed
-/// - `p` = min number of consecutive matches required at seed start/end
+/// - `ps` = min number of consecutive matches required at seed start
+/// - `pe` = min number of consecutive matches required at seed end
 ///
-/// Example: `-m 1:3` allows 1 mismatch with 3 consecutive matches at ends.
+/// Examples:
+/// - `-m 1`     allows 1 mismatch with 1-match protected ends (C-compatible)
+/// - `-m 1:3`   allows 1 mismatch with 3 matches at both ends
+/// - `-m 1:3:5` allows 1 mismatch with 3 matches at start and 5 at end
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MismatchSpec {
     /// Maximum number of mismatches allowed in seed
@@ -65,13 +69,13 @@ impl FromStr for MismatchSpec {
 
         let parts: Vec<&str> = s.split(':').collect();
 
-        let (max_mismatches, min_consecutive) = match parts.len() {
+        let (max_mismatches, min_start, min_end) = match parts.len() {
             1 => {
-                // Allow "c" as shorthand for "c:0" (matches C behavior)
+                // Allow "c" as shorthand for "c:c:c" (matches C behavior)
                 let max = parts[0]
                     .parse::<usize>()
                     .map_err(|e| format!("invalid max mismatches: {}", e))?;
-                (max, 0)
+                (max, max, max)
             }
             2 => {
                 let max = parts[0]
@@ -80,21 +84,33 @@ impl FromStr for MismatchSpec {
                 let min = parts[1]
                     .parse::<usize>()
                     .map_err(|e| format!("invalid min consecutive: {}", e))?;
-                (max, min)
+                (max, min, min)
+            }
+            3 => {
+                let max = parts[0]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid max mismatches: {}", e))?;
+                let min_start = parts[1]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid min start matches: {}", e))?;
+                let min_end = parts[2]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid min end matches: {}", e))?;
+                (max, min_start, min_end)
             }
             _ => {
                 return Err(format!(
-                    "invalid mismatch spec '{}': expected 'c' or 'c:p' format",
+                    "invalid mismatch spec '{}': expected 'c', 'c:p', or 'c:ps:pe' format",
                     s
                 ));
             }
         };
 
-        // CLI format c:p maps to: max=c, min_position=p, min_after=p
+        // CLI format c:p / c:ps:pe maps to: max=c, min_position=ps, min_after=pe
         Ok(MismatchSpec {
             max_mismatches,
-            min_position: min_consecutive,
-            min_matches_after: min_consecutive,
+            min_position: min_start,
+            min_matches_after: min_end,
         })
     }
 }

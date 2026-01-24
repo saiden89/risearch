@@ -4,10 +4,11 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(feature = "fm-index")]
 use risearch::fm;
 use risearch::{sa, search};
+use risearch::seed::MismatchSpec;
 
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
@@ -98,9 +99,49 @@ fn infer_compression(path: &std::path::Path) -> OutputCompression {
     }
 }
 
+fn extract_legacy_mismatch_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "-m" || arg == "--mismatch" {
+            if let Some(val) = iter.next() {
+                return Some(val.clone());
+            }
+        } else if let Some(val) = arg.strip_prefix("--mismatch=") {
+            return Some(val.to_string());
+        } else if arg.starts_with("-m") && arg.len() > 2 {
+            return Some(arg[2..].to_string());
+        }
+    }
+    None
+}
+
+fn has_seed_pairing_arg(args: &[String]) -> bool {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--seed-pairing" {
+            if iter.peek().is_some() {
+                return true;
+            }
+        } else if arg.starts_with("--seed-pairing=") {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_wobble_legacy_arg(args: &[String]) -> bool {
+    args.iter().skip(1).any(|arg| arg == "-w" || arg == "--wobble")
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]
-#[command(author, version = "3.alpha.1", about = "Energy based RNA-RNA interaction predictions", long_about = None)]
+#[command(
+    author,
+    version = "3.alpha.1",
+    about = "Energy based RNA-RNA interaction predictions",
+    long_about = None,
+    after_help = "Subcommand help:\n  risearch index --help\n  risearch search --help"
+)]
 struct Cli {
     /// Increase verbosity (-v = info, -vv = debug, -vvv = trace)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
@@ -154,6 +195,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli: Cli = Cli::parse();
+    let raw_args: Vec<String> = std::env::args().collect();
 
     // Initialize logging based on verbosity
     init_logging(cli.verbose);
@@ -255,6 +297,52 @@ fn main() -> Result<()> {
                     });
                     let mut writer = BufWriter::with_capacity(256 * 1024, inner);
                     let mut opts = opts.clone();
+                    let legacy_mismatch = extract_legacy_mismatch_arg(&raw_args);
+                    let legacy_wobble = has_wobble_legacy_arg(&raw_args);
+                    let explicit_pairing = has_seed_pairing_arg(&raw_args);
+                    if let Some(raw) = legacy_mismatch.as_deref() {
+                        if opts.seed.has_named_mismatch() {
+                            warn!(
+                                "Both legacy -m/--mismatch ({}) and named --mismatch-* flags were provided; named flags take precedence.",
+                                raw
+                            );
+                        }
+                        let suggestion = raw
+                            .parse::<MismatchSpec>()
+                            .ok()
+                            .map(|spec| {
+                                format!(
+                                    "--mismatch-max {} --mismatch-prefix {} --mismatch-suffix {}",
+                                    spec.max_mismatches, spec.min_position, spec.min_matches_after
+                                )
+                            });
+                        if let Some(s) = suggestion {
+                            warn!(
+                                "Legacy mismatch syntax '-m c[:ps[:pe]]' is deprecated; use {}.",
+                                s
+                            );
+                        } else {
+                            warn!(
+                                "Legacy mismatch syntax '-m c[:ps[:pe]]' is deprecated; use --mismatch-max/--mismatch-prefix/--mismatch-suffix."
+                            );
+                        }
+                    }
+                    if legacy_wobble {
+                        warn!(
+                            "Legacy -w/--wobble is deprecated and redundant (default is allow_wobble). Prefer --seed-pairing allow_wobble."
+                        );
+                        if opts.seed.no_guseed {
+                            warn!(
+                                "Both -w/--wobble and --no-guseed were provided; --no-guseed takes precedence."
+                            );
+                        } else if explicit_pairing {
+                            warn!(
+                                "Both -w/--wobble and --seed-pairing were provided; --seed-pairing takes precedence."
+                            );
+                        }
+                    }
+                    opts.seed.apply_mismatch_overrides();
+                    opts.seed.apply_pairing_overrides(explicit_pairing);
                     opts.output_compress = Some(compression);
                     let hit_count =
                         search::run_search_streaming(&queries, &wrapper, &opts, &mut writer)?;
