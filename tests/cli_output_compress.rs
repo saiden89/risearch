@@ -1,5 +1,5 @@
 use assert_cmd::cargo::cargo_bin_cmd;
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use std::io::{Read, Write};
 use tempfile::{Builder, NamedTempFile};
 
@@ -43,7 +43,7 @@ fn assert_gzip_file(path: &std::path::Path) -> Result<(), Box<dyn std::error::Er
     assert_eq!(bytes[0], 0x1f);
     assert_eq!(bytes[1], 0x8b);
 
-    let mut decoder = GzDecoder::new(&bytes[..]);
+    let mut decoder = MultiGzDecoder::new(&bytes[..]);
     let mut s = String::new();
     decoder.read_to_string(&mut s)?;
     Ok(())

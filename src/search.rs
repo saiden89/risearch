@@ -1,12 +1,15 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use itoa;
 use log::{debug, info, trace, warn};
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use zstd::stream;
 use rayon::prelude::*;
 use zmij;
 use std::io::Write;
 use std::path::Path;
 
-use crate::args::{OutputFormat, SearchArgs};
+use crate::args::{OutputCompression, OutputFormat, SearchArgs};
 use crate::dp;
 use crate::dsm::{EnergyModel, PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::sa::SaIndexFile;
@@ -847,53 +850,99 @@ pub fn run_search_streaming<W: std::io::Write>(
         .report_format
         .clone()
         .unwrap_or(OutputFormat::Detailed);
+    let compression = opts.output_compress.unwrap_or(OutputCompression::None);
+    let level = opts.output_level;
+
+    let gzip_level = match compression {
+        OutputCompression::Gzip => match level {
+            None => Compression::default(),
+            Some(v) => {
+                if !(0..=9).contains(&v) {
+                    bail!("gzip level must be in 0..=9 (got {})", v);
+                }
+                Compression::new(v as u32)
+            }
+        },
+        _ => Compression::default(),
+    };
+
+    let zstd_level = match compression {
+        OutputCompression::Zstd => {
+            let lvl = level.unwrap_or(0);
+            if !(-7..=22).contains(&lvl) {
+                bail!("zstd level must be in -7..=22 (got {})", lvl);
+            }
+            lvl
+        }
+        _ => 0,
+    };
+
+    if compression == OutputCompression::None && level.is_some() {
+        bail!("--output-level requires compressed output");
+    }
     let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
+
+    let process_query = |q_id: &str,
+                         q_seq: &[u8],
+                         writer: &mut dyn Write,
+                         line_buf: &mut Vec<u8>|
+     -> usize {
+        let mut local_hits = 0usize;
+        THREAD_EXTENDER.with(|ext| {
+            THREAD_SEEDS.with(|seeds_cell| {
+                THREAD_MATCHES.with(|matches_cell| {
+                    let mut extender = ext.borrow_mut();
+                    let mut seeds = seeds_cell.borrow_mut();
+                    let mut matches = matches_cell.borrow_mut();
+                    let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
+
+                    // Reuse thread-local Vecs instead of allocating new ones
+                    find_seeds_into(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
+
+                    for candidate in seeds.iter() {
+                        if process_candidate_streaming(
+                            crate::types::Query::new(q_id, q_seq),
+                            candidate,
+                            &mut ctx,
+                            writer,
+                            format,
+                            line_buf,
+                        ) {
+                            local_hits += 1;
+                        }
+                    }
+                });
+            });
+        });
+        local_hits
+    };
 
     for chunk in queries.chunks(chunk_size) {
         let outputs: Vec<(Vec<u8>, usize)> = chunk
             .par_iter()
             .map(|(q_id, q_seq)| {
-                let mut out: Vec<u8> = Vec::new();
                 let mut line_buf: Vec<u8> = Vec::new();
-                let mut local_hits = 0usize;
 
-                // Borrow thread-local buffers for this query
-                THREAD_EXTENDER.with(|ext| {
-                    THREAD_SEEDS.with(|seeds_cell| {
-                        THREAD_MATCHES.with(|matches_cell| {
-                            let mut extender = ext.borrow_mut();
-                            let mut seeds = seeds_cell.borrow_mut();
-                            let mut matches = matches_cell.borrow_mut();
-                            let mut ctx =
-                                SearchContext::with_extender(index, opts, &mut *extender);
-
-                            // Reuse thread-local Vecs instead of allocating new ones
-                            find_seeds_into(
-                                q_seq,
-                                ctx.index.index,
-                                &ctx.args.seed,
-                                &mut seeds,
-                                &mut matches,
-                            );
-
-                            for candidate in seeds.iter() {
-                                // Use streaming variant - zero String allocations
-                                if process_candidate_streaming(
-                                    crate::types::Query::new(q_id, q_seq),
-                                    candidate,
-                                    &mut ctx,
-                                    &mut out,
-                                    format,
-                                    &mut line_buf,
-                                ) {
-                                    local_hits += 1;
-                                }
-                            }
-                        });
-                    });
-                });
-
-                (out, local_hits)
+                match compression {
+                    OutputCompression::None => {
+                        let mut out: Vec<u8> = Vec::new();
+                        let hits = process_query(q_id, q_seq, &mut out, &mut line_buf);
+                        (out, hits)
+                    }
+                    OutputCompression::Gzip => {
+                        let mut encoder = GzEncoder::new(Vec::new(), gzip_level);
+                        let hits = process_query(q_id, q_seq, &mut encoder, &mut line_buf);
+                        let out = encoder.finish().expect("gzip finish failed");
+                        (out, hits)
+                    }
+                    OutputCompression::Zstd => {
+                        let mut encoder = stream::write::Encoder::new(Vec::new(), zstd_level)
+                            .expect("zstd encoder init failed");
+                        let hits = process_query(q_id, q_seq, &mut encoder, &mut line_buf);
+                        let out = encoder.finish().expect("zstd finish failed");
+                        (out, hits)
+                    }
+                }
             })
             .collect();
 
@@ -1113,7 +1162,7 @@ fn process_candidate(
 
 /// Process candidate and write directly to output - zero String allocation variant.
 /// Returns true if a hit was written.
-fn process_candidate_streaming<W: Write>(
+fn process_candidate_streaming<W: Write + ?Sized>(
     query: crate::types::Query<'_>,
     candidate: &SeedCandidate,
     ctx: &mut SearchContext<'_, '_>,

@@ -51,7 +51,7 @@ pub enum OutputFormat {
     Minimal,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 #[clap(rename_all = "lowercase")]
 pub enum OutputCompression {
     /// No compression (default)
