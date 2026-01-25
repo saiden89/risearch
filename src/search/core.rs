@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use log::trace;
 use rayon::prelude::*;
 
@@ -8,20 +8,17 @@ use crate::seed::{SeedCandidate, build_seed_alignment};
 use crate::seq::Seq;
 use crate::types::{Alignment, Pairing, SeedPairingMode, Strand};
 
-use super::{FilterReason, MAX_DP_EXT, SaIndex, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER};
+use super::{
+    FilterReason, MAX_DP_EXT, SaIndex, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER,
+};
 
 /// Run search and return hits (used by parity tests and library callers).
+/// Assumes the provided `SearchArgs` already contains a valid `SeedSpec` for each query.
 pub fn run_search(
     queries: &[(String, Vec<u8>)],
     index: &SaIndex<'_>,
     opts: &crate::config::SearchArgs,
 ) -> Result<Vec<SearchHit>> {
-    for (q_id, q_seq) in queries {
-        if let Err(err) = opts.seed.seed.normalize(q_seq.len()) {
-            bail!("Invalid seed spec for query '{}': {}", q_id, err);
-        }
-    }
-
     let per_query_hits: Vec<Vec<SearchHit>> = queries
         .par_iter()
         .map(|(q_id, q_seq)| {
@@ -39,7 +36,11 @@ pub fn run_search(
                 );
                 let mut hits = Vec::new();
                 for candidate in &seeds {
-                    if let Some(hit) = process_candidate(crate::types::Query::new(q_id, q_seq), candidate, &mut ctx) {
+                    if let Some(hit) = process_candidate(
+                        crate::types::Query::new(q_id, q_seq),
+                        candidate,
+                        &mut ctx,
+                    ) {
                         hits.push(hit);
                     }
                 }
