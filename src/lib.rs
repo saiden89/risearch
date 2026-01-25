@@ -1,6 +1,7 @@
 pub mod args;
 pub mod dp;
 pub mod dsm;
+pub mod index;
 pub mod io;
 pub mod parallel_sa;
 pub mod sa;

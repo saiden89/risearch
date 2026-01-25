@@ -3,6 +3,8 @@
 //! This module provides a `Seq` wrapper that encapsulates sequence data and strand,
 //! providing clean methods for base access without scattered `Base::from_byte()` calls.
 
+pub mod normalize;
+
 use crate::types::{Base, Strand};
 
 /// A sequence wrapper that provides clean base access.
