@@ -102,7 +102,7 @@ pub(crate) fn find_seeds(
         let t_sa = &target.forward_sa;
         matches.clear();
         let searcher = SeedSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_sa, &target.sequence, config);
-        searcher.find_seeds_range_into(mi_len, q_len, matches);
+        searcher.search_length_range(mi_len, q_len, matches);
 
         for m in matches.iter() {
             let seed_len = m.depth;
@@ -140,7 +140,7 @@ pub(crate) fn find_seeds(
         let t_rc = &target.sequence_rc;
         matches.clear();
         let searcher = SeedSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_rc_sa, t_rc, config);
-        searcher.find_seeds_range_into(mi_len, q_len, matches);
+        searcher.search_length_range(mi_len, q_len, matches);
 
         for m in matches.iter() {
             let seed_len = m.depth;

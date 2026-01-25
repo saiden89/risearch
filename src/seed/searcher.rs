@@ -192,12 +192,12 @@ impl<'a> SeedSearcher<'a> {
             self.target_comp_seq.len(),
         );
 
-        self.find_seeds_range_into(seed_len, seed_len, results);
+        self.search_length_range(seed_len, seed_len, results);
     }
 
     /// Find seeds for a range of lengths in a single traversal.
     #[inline]
-    pub fn find_seeds_range_into(
+    pub fn search_length_range(
         &self,
         min_len: usize,
         max_len: usize,
@@ -211,12 +211,12 @@ impl<'a> SeedSearcher<'a> {
             mismatch_count: 0,
         };
 
-        self.search_recursive_range(min_len, max_len, initial_state, results);
+        self.recurse_length_range(min_len, max_len, initial_state, results);
     }
 
     /// Recursive parallel search over a length range (mirrors C's sa_parallel_match_neg)
     #[inline(never)] // Keep separate for flamegraph
-    fn search_recursive_range(
+    fn recurse_length_range(
         &self,
         min_len: usize,
         max_len: usize,
@@ -391,7 +391,7 @@ impl<'a> SeedSearcher<'a> {
             matches_since_mismatch: prev_state.matches_since_mismatch + 1,
             mismatch_count: prev_state.mismatch_count,
         };
-        self.search_recursive_range(min_len, max_len, new_state, results);
+        self.recurse_length_range(min_len, max_len, new_state, results);
     }
 
     /// Check if we should explore mismatch branches
@@ -450,7 +450,7 @@ impl<'a> SeedSearcher<'a> {
                     matches_since_mismatch: 0, // Reset on mismatch
                     mismatch_count: state.mismatch_count + 1,
                 };
-                self.search_recursive_range(min_len, max_len, new_state, results);
+                self.recurse_length_range(min_len, max_len, new_state, results);
             }
         }
     }
@@ -697,7 +697,7 @@ mod tests {
         eprintln!("Target comp SA: {:?}", t_sa);
 
         // Step 3: Create searcher and find seeds
-        let seed_args = test_seed_args(SeedPairingMode::Strict);
+        let seed_args = test_seed_config(SeedPairingMode::Strict);
         let searcher = SeedSearcher::new(&q_sa, query, &t_sa, &target_comp, &seed_args);
         let matches = searcher.find_seeds(3);
         eprintln!("Raw matches: {:?}", matches);
