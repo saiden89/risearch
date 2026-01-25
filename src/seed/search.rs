@@ -3,7 +3,8 @@ use crate::sa::SaIndexFile;
 use crate::seq::reverse_complement_dna;
 use crate::types::Strand;
 
-use super::{SeedCandidate, SeedMatch, SeedSearcher, build_suffix_array};
+use super::sa::build_suffix_array;
+use super::{SeedCandidate, SeedMatch, SeedSearcher};
 
 /// Pre-computed query data to avoid rebuilding per-target.
 struct QueryCache {

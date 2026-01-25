@@ -24,7 +24,6 @@
 
 use crate::config::SeedConfig;
 use crate::types::{Base, SeedPairingMode};
-use libsais::SuffixArrayConstruction;
 
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
 
@@ -249,13 +248,17 @@ impl<'a> SeedSearcher<'a> {
         // If we haven't reached min_len yet, ensure both intervals have at least
         // one suffix long enough to ever reach min_len.
         if state.depth < min_len
-            && (!self.has_suffix_len_at_least(self.query_sa, self.query_seq, state.query_interval, min_len)
-                || !self.has_suffix_len_at_least(
-                    self.target_comp_sa,
-                    self.target_comp_seq,
-                    state.target_interval,
-                    min_len,
-                ))
+            && (!self.has_suffix_len_at_least(
+                self.query_sa,
+                self.query_seq,
+                state.query_interval,
+                min_len,
+            ) || !self.has_suffix_len_at_least(
+                self.target_comp_sa,
+                self.target_comp_seq,
+                state.target_interval,
+                min_len,
+            ))
         {
             return;
         }
@@ -286,7 +289,9 @@ impl<'a> SeedSearcher<'a> {
 
         // === WOBBLE PAIRS ===
         if matches!(self.seed_config.pairing, SeedPairingMode::AllowWobble) {
-            self.explore_wobble_matches(&qint, &sint, next_depth, &state, min_len, max_len, results);
+            self.explore_wobble_matches(
+                &qint, &sint, next_depth, &state, min_len, max_len, results,
+            );
         }
 
         // === MISMATCH EXPLORATION ===
@@ -416,9 +421,7 @@ impl<'a> SeedSearcher<'a> {
         max_len: usize,
         results: &mut Vec<SeedMatch>,
     ) {
-        if max_len <= depth
-            || max_len - depth < self.seed_config.mismatch.min_suffix_matches
-        {
+        if max_len <= depth || max_len - depth < self.seed_config.mismatch.min_suffix_matches {
             return;
         }
 
@@ -599,10 +602,14 @@ impl<'a> SeedSearcher<'a> {
 
         // Find partition points for each base boundary
         let a_start = valid_start;
-        let c_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'c');
-        let g_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'g');
-        let n_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'n');
-        let u_start = valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b't');
+        let c_start =
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'c');
+        let g_start =
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'g');
+        let n_start =
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'n');
+        let u_start =
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b't');
 
         BaseIntervals::from_bounds([a_start, c_start, g_start, n_start, u_start, valid_end])
     }
@@ -611,27 +618,9 @@ impl<'a> SeedSearcher<'a> {
 // ============================================================================
 // HIGH-LEVEL API
 // ============================================================================
-/// Compute the complement of a sequence (A<->U, C<->G)
-pub fn complement_sequence(seq: &[u8]) -> Vec<u8> {
-    use crate::types::COMPLEMENT;
-    seq.iter().map(|&b| COMPLEMENT[b as usize]).collect()
-}
-
-/// Build suffix array for a sequence
-pub fn build_suffix_array(seq: &[u8]) -> Vec<u32> {
-    SuffixArrayConstruction::for_text(seq)
-        .in_owned_buffer()
-        .single_threaded()
-        .run()
-        .expect("SA construction should not fail for valid sequences")
-        .into_vec()
-        .into_iter()
-        .map(|x: i64| x as u32)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use super::sa::{build_suffix_array, complement_sequence};
     use super::*;
     use crate::config::SeedConfig;
     use crate::seed::{MismatchSpec, SeedSpec};
