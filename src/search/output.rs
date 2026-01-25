@@ -161,58 +161,10 @@ pub(super) fn push_target_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
 }
 
 #[inline]
-fn push_fingerprint_with_seed_markers(buf: &mut Vec<u8>, alignment: &Alignment) {
-    let steps = alignment.steps();
-    let seed_start = alignment.seed_start();
-    let seed_end = alignment.seed_end();
-    for (i, p) in steps.iter().enumerate() {
-        if seed_start == Some(i) {
-            buf.push(b'y');
-        }
-        if seed_end == Some(i) {
-            buf.push(b'x');
-        }
-        buf.push(p.to_char() as u8);
-    }
-    if seed_end == Some(steps.len()) {
-        buf.push(b'x');
-    }
-}
-
-#[inline]
-fn push_target_seq_with_seed_markers(buf: &mut Vec<u8>, alignment: &Alignment) {
-    let steps = alignment.steps();
-    let seed_start = alignment.seed_start();
-    let seed_end = alignment.seed_end();
-    for (i, p) in steps.iter().enumerate() {
-        if seed_start == Some(i) {
-            buf.push(b'y');
-        }
-        if seed_end == Some(i) {
-            buf.push(b'x');
-        }
-        let c = p.target_char();
-        let normalized = match c {
-            'T' => 'U',
-            't' => 'u',
-            other => other,
-        };
-        buf.push(normalized as u8);
-    }
-    if seed_end == Some(steps.len()) {
-        buf.push(b'x');
-    }
-}
-
-#[inline]
 fn truncate_id<'a>(id: &'a str, max_len: Option<usize>) -> &'a str {
     let base = id.split_whitespace().next().unwrap_or(id);
     if let Some(max) = max_len {
-        if base.len() > max {
-            &base[..max]
-        } else {
-            base
-        }
+        if base.len() > max { &base[..max] } else { base }
     } else {
         base
     }
@@ -310,9 +262,11 @@ pub(super) fn fill_line_buf(
                 score,
             );
             line_buf.push(b'\t');
-            push_fingerprint_with_seed_markers(line_buf, alignment);
+            for p in steps {
+                line_buf.push(p.to_char() as u8);
+            }
             line_buf.push(b'\t');
-            push_target_seq_with_seed_markers(line_buf, alignment);
+            push_target_seq(line_buf, steps);
             line_buf.push(b'\t');
             push_bytes_as_rna(line_buf, flank_5.0, flank_5.1);
             line_buf.push(b'\t');
@@ -386,7 +340,11 @@ pub fn write_results_with_format_to<W: Write>(
     writer: &mut W,
     format: OutputFormat,
 ) -> Result<()> {
-    debug!("{} output=<writer> format={:?}", SearchStage::Output, format);
+    debug!(
+        "{} output=<writer> format={:?}",
+        SearchStage::Output,
+        format
+    );
     for hit in hits {
         hit.write_with_format(writer, format)?;
     }
