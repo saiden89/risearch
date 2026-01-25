@@ -20,8 +20,6 @@ const MAX_DP_EXT: usize = 50;
 /// High-level algorithm stages for structured logging
 #[derive(Debug, Clone, Copy)]
 enum SearchStage {
-    Input,  // Query parsing and processing
-    Seed,   // Suffix array search, seed generation
     Extend, // DP extension, maximality checks
     Output, // Final results
 }
@@ -29,8 +27,6 @@ enum SearchStage {
 impl std::fmt::Display for SearchStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Input => write!(f, "[INPUT]"),
-            Self::Seed => write!(f, "[SEED]"),
             Self::Extend => write!(f, "[EXTEND]"),
             Self::Output => write!(f, "[OUTPUT]"),
         }
@@ -40,17 +36,17 @@ impl std::fmt::Display for SearchStage {
 /// Reasons why a seed, candidate, or hit was filtered out
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FilterReason {
-    // Seed generation (find_seeds_for_query)
+    // Seed generation
     SeedContainsN,
 
-    // Candidate validation (process_candidate)
+    // Candidate validation
     SeedOutOfBounds,
 
-    // Maximality check (extend_seed)
+    // Maximality check
     MaximalityLeft,
     MaximalityRight,
 
-    // Energy filtering (process_candidate)
+    // Energy filtering
     EnergyAboveThreshold,
 }
 

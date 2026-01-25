@@ -1,11 +1,11 @@
 pub mod alignment;
 pub mod searcher;
-pub mod search;
+pub(crate) mod search;
 pub mod spec;
 
 pub use alignment::build_seed_alignment;
 pub use searcher::{build_suffix_array, SeedMatch, SeedSearcher};
-pub use search::{find_seeds, find_seeds_in_target, find_seeds_in_target_into, find_seeds_into, QueryPrep};
+pub(crate) use search::find_seeds;
 pub use spec::{MismatchSpec, SeedSpec};
 
 #[cfg(test)]

@@ -87,7 +87,7 @@ impl RustRunner<Indexed> {
             index: &self.state.index_file,
         };
         let queries = risearch::io::read_fasta_sequences(query_path).expect("read query FASTA");
-        let hits = risearch::run_search(&queries, &index, args).expect("search");
+        let hits = risearch::search::run_search(&queries, &index, args).expect("search");
 
         // Normalize to 1-based coordinates to match C output format for comparison
         hits.into_iter()
@@ -151,11 +151,10 @@ impl ParityRunner {
         let rust_hits = self.rust.search(query, &search_args);
 
         // Translate Rust args to C args
-        let mut c_args: Vec<&str> = Vec::new();
+        let mut c_args: Vec<String> = Vec::new();
         let mut seed_start: Option<&str> = None;
         let mut seed_end: Option<&str> = None;
         let mut seed_length: Option<&str> = None;
-        let mut seed_spec_owned: Option<String> = None;
         let mut has_legacy_seed = false;
         let mut iter = args.iter().copied().peekable();
         while let Some(arg) = iter.next() {
@@ -174,15 +173,15 @@ impl ParityRunner {
                 "-s" | "--seed" => {
                     has_legacy_seed = true;
                     if let Some(val) = iter.next() {
-                        c_args.push("-s");
-                        c_args.push(val);
+                        c_args.push("-s".to_string());
+                        c_args.push(val.to_string());
                     }
                 }
                 _ if arg.starts_with("--seed=") => {
                     has_legacy_seed = true;
                     let val = &arg["--seed=".len()..];
-                    c_args.push("-s");
-                    c_args.push(val);
+                    c_args.push("-s".to_string());
+                    c_args.push(val.to_string());
                     continue;
                 }
                 "--seed-start" => {
@@ -215,15 +214,15 @@ impl ParityRunner {
                     seed_length = Some(&arg["--seed-length=".len()..]);
                     continue;
                 }
-                "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed"),
+                "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed".to_string()),
                 "--seed-pairing" => {
                     if let Some(val) = iter.next() {
                         if val == "strict" {
-                            c_args.push("--noGUseed");
+                            c_args.push("--noGUseed".to_string());
                         }
                     }
                 }
-                _ => c_args.push(arg),
+                _ => c_args.push(arg.to_string()),
             }
         }
         if !has_legacy_seed {
@@ -234,14 +233,12 @@ impl ParityRunner {
                 _ => None,
             };
             if let Some(s) = spec {
-                seed_spec_owned = Some(s);
-                if let Some(spec_ref) = seed_spec_owned.as_ref() {
-                    c_args.push("-s");
-                    c_args.push(spec_ref.as_str());
-                }
+                c_args.push("-s".to_string());
+                c_args.push(s);
             }
         }
-        let c_out = self.c.search(query, &c_args);
+        let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
+        let c_out = self.c.search(query, &c_args_ref);
         let (c_hits, _) = parse_output(&c_out);
 
         (rust_hits, c_hits)

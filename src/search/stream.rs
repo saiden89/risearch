@@ -5,7 +5,8 @@ use std::io::Write;
 
 use crate::config::{OutputCompression, OutputFormat, SearchArgs};
 use crate::io::output::{compress_bytes, resolve_compression};
-use crate::seed::{SeedCandidate, find_seeds_into};
+use crate::seed::SeedCandidate;
+use crate::seed::search::find_seeds;
 use crate::types::Strand;
 
 use super::core::extend_seed;
@@ -60,7 +61,7 @@ pub fn run_search_streaming<W: std::io::Write>(
                     let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
 
                     // Reuse thread-local Vecs instead of allocating new ones
-                    find_seeds_into(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
+                    find_seeds(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
 
                     for candidate in seeds.iter() {
                         if process_candidate_streaming(
@@ -191,7 +192,7 @@ fn process_candidate_streaming<W: Write + ?Sized>(
         &ext.alignment,
         (flank_5, flank_5_rev),
         (flank_3, flank_3_rev),
-        Some(50),
+        None,
     );
 
     if writer.write_all(line_buf).is_err() {

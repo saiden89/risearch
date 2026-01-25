@@ -1,84 +1,45 @@
 use anyhow::{Result, bail};
-use log::{info, trace, warn};
+use log::trace;
 use rayon::prelude::*;
 
-use crate::config::SearchArgs;
 use crate::dp;
 use crate::dsm::{PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::seed::{SeedCandidate, build_seed_alignment};
 use crate::seq::Seq;
 use crate::types::{Alignment, Pairing, SeedPairingMode, Strand};
 
-use super::output::bytes_to_rna_string;
-use super::{
-    FilterReason, MAX_DP_EXT, SaIndex, SearchContext, SearchHit, SearchStage,
-    THREAD_EXTENDER,
-};
+use super::{FilterReason, MAX_DP_EXT, SaIndex, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER};
 
-/// Core search logic - finds and deduplicates hits for all queries.
-/// Uses parallel iteration over queries for multi-core utilization.
-fn search_core(
+/// Run search and return hits (used by parity tests and library callers).
+pub fn run_search(
     queries: &[(String, Vec<u8>)],
     index: &SaIndex<'_>,
-    opts: &SearchArgs,
+    opts: &crate::config::SearchArgs,
 ) -> Result<Vec<SearchHit>> {
     for (q_id, q_seq) in queries {
         if let Err(err) = opts.seed.seed.normalize(q_seq.len()) {
             bail!("Invalid seed spec for query '{}': {}", q_id, err);
         }
     }
-    info!(
-        "Starting search: {} queries, seed={:?}, max_ext={}, delta_g={}",
-        queries.len(),
-        opts.seed.seed,
-        opts.extend.max_extension,
-        opts.extend.delta_g
-    );
 
-    // Parallel query processing (per-query is independent).
-    // Configure worker count via the global rayon thread pool.
     let per_query_hits: Vec<Vec<SearchHit>> = queries
         .par_iter()
         .map(|(q_id, q_seq)| {
-            // Borrow thread-local extender for this query
             THREAD_EXTENDER.with(|ext| {
                 let mut extender = ext.borrow_mut();
                 let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
-
-                trace!("{} id={} len={}", SearchStage::Input, q_id, q_seq.len());
-                trace!("{} {}", SearchStage::Input, String::from_utf8_lossy(q_seq));
-
-                let seeds = match find_seeds_for_query(q_seq, &mut ctx) {
-                    Ok(s) => s,
-                    Err(_) => return Vec::new(),
-                };
-                trace!("{} {} candidates found", SearchStage::Input, seeds.len());
-
+                let mut seeds = Vec::new();
+                let mut matches = Vec::new();
+                crate::seed::find_seeds(
+                    q_seq,
+                    ctx.index.index,
+                    &ctx.args.seed,
+                    &mut seeds,
+                    &mut matches,
+                );
                 let mut hits = Vec::new();
                 for candidate in &seeds {
-                    trace!(
-                        "{} q_pos={} t_idx={} t_start={} len={} strand={:?}",
-                        SearchStage::Seed,
-                        candidate.query_pos,
-                        candidate.target_idx,
-                        candidate.target_start,
-                        candidate.len,
-                        candidate.strand
-                    );
-                    if let Some(hit) = process_candidate(
-                        crate::types::Query::new(q_id, q_seq),
-                        candidate,
-                        &mut ctx,
-                    ) {
-                        trace!(
-                            "{} q={}-{} t={}-{} E={:.2}",
-                            SearchStage::Output,
-                            hit.q_start,
-                            hit.q_end,
-                            hit.t_start,
-                            hit.t_end,
-                            hit.energy
-                        );
+                    if let Some(hit) = process_candidate(crate::types::Query::new(q_id, q_seq), candidate, &mut ctx) {
                         hits.push(hit);
                     }
                 }
@@ -87,37 +48,7 @@ fn search_core(
         })
         .collect();
 
-    let all_hits: Vec<SearchHit> = per_query_hits.into_iter().flatten().collect();
-
-    info!("Search complete: {} hits", all_hits.len());
-
-    Ok(all_hits)
-}
-
-/// Run search and return hits.
-pub fn run_search(
-    queries: &[(String, Vec<u8>)],
-    index: &SaIndex<'_>,
-    opts: &SearchArgs,
-) -> Result<Vec<SearchHit>> {
-    search_core(queries, index, opts)
-}
-
-fn find_seeds_for_query(
-    q_seq: &[u8],
-    ctx: &mut SearchContext<'_, '_>,
-) -> Result<Vec<SeedCandidate>> {
-    use crate::seed;
-
-    trace!(
-        "{} q_len={} spec={:?} pairing={:?}",
-        SearchStage::Seed,
-        q_seq.len(),
-        ctx.args.seed.seed,
-        ctx.args.seed.pairing
-    );
-
-    Ok(seed::find_seeds(q_seq, ctx.index.index, &ctx.args.seed))
+    Ok(per_query_hits.into_iter().flatten().collect())
 }
 
 fn process_candidate(
@@ -135,32 +66,11 @@ fn process_candidate(
     let seed_len = candidate.len;
     let q_pos = candidate.query_pos;
 
-    trace!(
-        "{} q_id={} t_idx={} q_pos={} t_start={} seed_len={} strand={:?}",
-        SearchStage::Extend,
-        query.id,
-        t_idx,
-        q_pos,
-        t_start_idx,
-        seed_len,
-        candidate.strand
-    );
-
     if t_start_idx + seed_len > t_seq.len() {
         ctx.stats.record_filter(FilterReason::SeedOutOfBounds);
-        warn!(
-            "{} FILTERED reason={:?} q_pos={} t_start={} seed_len={} t_len={}",
-            SearchStage::Extend,
-            FilterReason::SeedOutOfBounds,
-            q_pos,
-            t_start_idx,
-            seed_len,
-            t_seq.len()
-        );
         return None;
     }
 
-    // Call extend_seed
     let Some(ext) = extend_seed(ctx, query.seq, t_seq, candidate) else {
         return None;
     };
@@ -168,25 +78,14 @@ fn process_candidate(
     let score = ext.score;
     if score > ctx.args.extend.delta_g {
         ctx.stats.record_filter(FilterReason::EnergyAboveThreshold);
-        warn!(
-            "{} FILTERED reason={:?} q_pos={} t_start={} seed_len={} score={:.2}",
-            SearchStage::Extend,
-            FilterReason::EnergyAboveThreshold,
-            q_pos,
-            t_start_idx,
-            seed_len,
-            score
-        );
         return None;
     }
 
-    // Final coordinates (0-based)
     let final_q_start = q_pos - ext.l_q;
     let final_q_end = (q_pos + seed_len - 1) + ext.r_q;
     let final_t_start = t_start_idx - ext.r_t;
     let final_t_end = (t_start_idx + seed_len - 1) + ext.l_t;
 
-    // Output coordinates (1-based, strand-aware for target)
     let original_len = ctx.index.get_sequence_len(candidate.target_idx);
     let (out_t_start, out_t_end, strand_char) = match candidate.strand {
         Strand::Reverse => {
@@ -197,36 +96,22 @@ fn process_candidate(
         Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
     };
 
-    // Create flanking sequences
-    let ctx_len = 20;
-    let flank_5 = bytes_to_rna_string(
-        &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start],
-        true,
-    );
-    let flank_3 = if final_t_end + 1 < t_seq.len() {
-        let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
-        bytes_to_rna_string(&t_seq[final_t_end + 1..t_3_end], false)
-    } else {
-        String::new()
-    };
-
     Some(SearchHit {
         query_id: query.id.into(),
         target_id: ctx.index.get_id(t_idx).into(),
-
         q_start: final_q_start,
         q_end: final_q_end,
         t_start: final_t_start,
         t_end: final_t_end,
-        output_q_start: final_q_start + 1, // 1-based for output
-        output_q_end: final_q_end + 1,     // 1-based for output
+        output_q_start: final_q_start + 1,
+        output_q_end: final_q_end + 1,
         output_t_start: out_t_start,
         output_t_end: out_t_end,
         strand: strand_char.into(),
         energy: score.into(),
         alignment: ext.alignment,
-        flank_5,
-        flank_3,
+        flank_5: String::new(),
+        flank_3: String::new(),
     })
 }
 
