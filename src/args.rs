@@ -57,8 +57,10 @@ pub enum OutputCompression {
     /// No compression (default)
     None,
     /// Gzip compression
+    #[value(alias = "gz")]
     Gzip,
     /// Zstandard compression
+    #[value(alias = "zst")]
     Zstd,
 }
 
@@ -250,7 +252,7 @@ pub struct SearchArgs {
     )]
     pub report_format: Option<OutputFormat>,
 
-    /// Output compression codec (overrides file extension inference)
+    /// Output compression codec (overrides file extension inference; gzip/gz, zstd/zst accepted)
     #[arg(long = "output-compress", value_enum)]
     pub output_compress: Option<OutputCompression>,
 
