@@ -25,7 +25,7 @@ fn run_search(query_path: &std::path::Path, index_path: &std::path::Path, out_pa
         .arg(out_path)
         .arg("-e")
         .arg("100.0")
-        .arg("-s")
+        .arg("--seed-length")
         .arg("2")
         .arg("-l")
         .arg("0");

@@ -1,6 +1,8 @@
 use clap::ValueEnum;
 
-pub use crate::types::{SeedPairing, Strand};
+use crate::config as core;
+use crate::seed::{MismatchSpec, SeedSpec};
+use crate::types::SeedPairingMode;
 
 #[derive(ValueEnum, Clone, Debug)]
 #[clap(rename_all = "snake_case")]
@@ -34,6 +36,20 @@ pub enum Matrix {
     Sl04NoGU,
 }
 
+impl From<Matrix> for core::Matrix {
+    fn from(value: Matrix) -> Self {
+        match value {
+            Matrix::T99 => core::Matrix::T99,
+            Matrix::T04 => core::Matrix::T04,
+            Matrix::Su95 => core::Matrix::Su95,
+            Matrix::Su95c2 => core::Matrix::Su95c2,
+            Matrix::Su95wk11 => core::Matrix::Su95wk11,
+            Matrix::Su95NoGU => core::Matrix::Su95NoGU,
+            Matrix::Sl04NoGU => core::Matrix::Sl04NoGU,
+        }
+    }
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 #[value(rename_all = "lowercase")]
 pub enum OutputFormat {
@@ -51,6 +67,17 @@ pub enum OutputFormat {
     Minimal,
 }
 
+impl From<OutputFormat> for core::OutputFormat {
+    fn from(value: OutputFormat) -> Self {
+        match value {
+            OutputFormat::Detailed => core::OutputFormat::Detailed,
+            OutputFormat::Cigar => core::OutputFormat::Cigar,
+            OutputFormat::BindingSite => core::OutputFormat::BindingSite,
+            OutputFormat::Minimal => core::OutputFormat::Minimal,
+        }
+    }
+}
+
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 #[clap(rename_all = "lowercase")]
 pub enum OutputCompression {
@@ -64,19 +91,51 @@ pub enum OutputCompression {
     Zstd,
 }
 
-use crate::seed::{MismatchSpec, SeedSpec};
+impl From<OutputCompression> for core::OutputCompression {
+    fn from(value: OutputCompression) -> Self {
+        match value {
+            OutputCompression::None => core::OutputCompression::None,
+            OutputCompression::Gzip => core::OutputCompression::Gzip,
+            OutputCompression::Zstd => core::OutputCompression::Zstd,
+        }
+    }
+}
 
 /// Arguments for seed generation
 #[derive(clap::Args, Debug, Clone)]
-pub struct SeedArgs {
-    /// Set seed length (-s l = length only; -s n:m = full interval)
+pub struct SeedConfig {
+    /// DEPRECATED (will be removed in a future release): legacy seed spec
+    /// Formats: "l", "m:n", "m:n/l"
     #[arg(
         short = 's',
         long = "seed",
         value_name = "start:end/length",
-        default_value = "6"
+        default_value = "6",
+        help_heading = "Deprecated"
     )]
-    pub seed: SeedSpec,
+    pub seed_legacy: SeedSpec,
+
+    /// Seed interval start (1-based, can be negative)
+    #[arg(
+        long = "seed-start",
+        value_name = "START",
+        allow_hyphen_values = true,
+        requires = "seed_end"
+    )]
+    pub seed_start: Option<i64>,
+
+    /// Seed interval end (1-based, can be negative)
+    #[arg(
+        long = "seed-end",
+        value_name = "END",
+        allow_hyphen_values = true,
+        requires = "seed_start"
+    )]
+    pub seed_end: Option<i64>,
+
+    /// Seed length (use alone, or with seed-start/seed-end to constrain interval)
+    #[arg(long = "seed-length", value_name = "LENGTH")]
+    pub seed_length: Option<i64>,
 
     /// DEPRECATED (will be removed in a future release): disable G-U wobble pairs within the seed
     #[arg(
@@ -88,21 +147,18 @@ pub struct SeedArgs {
     )]
     pub no_guseed: bool,
 
-    /// Allow G-U wobble pairs within the seed (default behavior)
-    #[arg(short = 'w', long = "wobble", action = clap::ArgAction::SetTrue)]
-    pub wobble_legacy: bool,
-
     /// Seed pairing mode (allow_wobble or strict)
     #[arg(
         long = "seed-pairing",
         value_enum,
-        default_value_t = SeedPairing::AllowWobble
+        default_value_t = SeedPairingMode::Strict
     )]
-    pub pairing: SeedPairing,
+    pub pairing: SeedPairingMode,
 
     /// DEPRECATED (will be removed in a future release): legacy mismatch shorthand
     /// Set max mismatches (c) and min consecutive matches at seed start/end (p)
     /// These seeds will not overlap with perfect complementary seeds.
+    /// Prefer --mismatch-max/--mismatch-prefix/--mismatch-suffix.
     #[arg(
         short = 'm',
         long = "mismatch",
@@ -110,7 +166,7 @@ pub struct SeedArgs {
         default_value = "0:0",
         help_heading = "Deprecated"
     )]
-    pub mismatch_seed: MismatchSpec,
+    pub mismatch_legacy: MismatchSpec,
 
     /// Max number of mismatches allowed in the seed (preferred)
     #[arg(long = "mismatch-max", value_name = "C")]
@@ -125,31 +181,33 @@ pub struct SeedArgs {
     pub mismatch_suffix: Option<usize>,
 }
 
-impl SeedArgs {
-    pub fn apply_pairing_overrides(&mut self, explicit_pairing: bool) {
-        if self.no_guseed {
-            self.pairing = SeedPairing::Strict;
-            return;
+impl From<SeedConfig> for core::SeedConfig {
+    fn from(value: SeedConfig) -> Self {
+        let seed = if value.seed_start.is_some()
+            || value.seed_end.is_some()
+            || value.seed_length.is_some()
+        {
+            match (value.seed_start, value.seed_end) {
+                (Some(start), Some(end)) => SeedSpec::Interval {
+                    start,
+                    end,
+                    length: value.seed_length,
+                },
+                (None, None) => SeedSpec::Length(value.seed_length.unwrap_or(6)),
+                _ => value.seed_legacy,
+            }
+        } else {
+            value.seed_legacy
+        };
+        core::SeedConfig {
+            seed,
+            no_guseed: value.no_guseed,
+            pairing: value.pairing,
+            mismatch: value.mismatch_legacy,
+            mismatch_max: value.mismatch_max,
+            mismatch_prefix: value.mismatch_prefix,
+            mismatch_suffix: value.mismatch_suffix,
         }
-        if self.wobble_legacy && !explicit_pairing {
-            self.pairing = SeedPairing::AllowWobble;
-        }
-    }
-
-    pub fn apply_mismatch_overrides(&mut self) {
-        if let Some(max) = self.mismatch_max {
-            self.mismatch_seed.max_mismatches = max;
-        }
-        if let Some(start) = self.mismatch_prefix {
-            self.mismatch_seed.min_position = start;
-        }
-        if let Some(end) = self.mismatch_suffix {
-            self.mismatch_seed.min_matches_after = end;
-        }
-    }
-
-    pub fn has_named_mismatch(&self) -> bool {
-        self.mismatch_max.is_some() || self.mismatch_prefix.is_some() || self.mismatch_suffix.is_some()
     }
 }
 
@@ -167,12 +225,12 @@ pub struct ExtendArgs {
 
     /// Set deltaG energy threshold (in kcal/mol) to filter predictions
     #[arg(
-            short = 'e',
-            long = "energy",
-            value_name = "dG",
-            default_value_t = -20.0,
-            allow_hyphen_values = true
-        )]
+        short = 'e',
+        long = "energy",
+        value_name = "dG",
+        default_value_t = -20.0,
+        allow_hyphen_values = true
+    )]
     pub delta_g: f64,
 
     /// Energy matrix for RNA-RNA duplexes
@@ -232,11 +290,30 @@ pub struct ExtendArgs {
     pub weights: Option<String>,
 }
 
+impl From<ExtendArgs> for core::ExtendConfig {
+    fn from(value: ExtendArgs) -> Self {
+        core::ExtendConfig {
+            max_extension: value.max_extension,
+            delta_g: value.delta_g,
+            matrix: value.matrix.into(),
+            penalty: value.penalty,
+            seed_energy: value.seed_energy,
+            no_max_prune: value.no_max_prune,
+            dedup_shadow: value.dedup_shadow,
+            band: value.band,
+            matrix2: value.matrix2,
+            matpath: value.matpath,
+            temperature: value.temperature,
+            weights: value.weights,
+        }
+    }
+}
+
 /// Options that apply to the `search` subcommand
 #[derive(clap::Args, Debug, Clone)]
 pub struct SearchArgs {
     #[command(flatten)]
-    pub seed: SeedArgs,
+    pub seed: SeedConfig,
 
     #[command(flatten)]
     pub extend: ExtendArgs,
@@ -291,4 +368,21 @@ pub struct SearchArgs {
         hide = true
     )]
     pub five_prime_match: Option<String>,
+}
+
+impl From<SearchArgs> for core::SearchArgs {
+    fn from(value: SearchArgs) -> Self {
+        core::SearchArgs {
+            seed: value.seed.into(),
+            extend: value.extend.into(),
+            output: core::OutputConfig {
+                format: value.report_format.map(Into::into),
+                compress: value.output_compress.map(Into::into),
+                level: value.output_level,
+            },
+            one_vs_one: value.one_vs_one,
+            three_prime_match: value.three_prime_match,
+            five_prime_match: value.five_prime_match,
+        }
+    }
 }

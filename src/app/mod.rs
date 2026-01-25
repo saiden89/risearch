@@ -4,13 +4,10 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-use risearch::{sa, search};
-
-mod output;
+use risearch::{io, sa, search};
 
 use crate::cli::{Cli, Commands};
 use crate::cli::warnings::emit_legacy_warnings;
-use output::open_output;
 
 /// Initialize logging based on verbosity level with colored output.
 pub fn init_logging(verbosity: u8) {
@@ -136,10 +133,10 @@ pub fn run(cli: Cli) -> Result<()> {
             debug!("Starting search with streaming output...");
 
             let (mut writer, compression) =
-                open_output(output.as_ref(), opts.output_compress)?;
-            let mut opts = opts.clone();
+                io::output::open_output(output.as_ref(), opts.output_compress.map(Into::into))?;
+            let mut opts: risearch::config::SearchArgs = opts.clone().into();
             emit_legacy_warnings(&raw_args, &mut opts);
-            opts.output_compress = Some(compression);
+            opts.output.compress = Some(compression);
 
             let hit_count =
                 search::run_search_streaming(&queries, &wrapper, &opts, &mut writer)?;

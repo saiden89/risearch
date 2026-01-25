@@ -22,8 +22,8 @@
 //! Level s:  When depth == seed_length, collect matches
 //! ```
 
-use crate::args::SeedArgs;
-use crate::types::{Base, SeedPairing};
+use crate::config::SeedConfig;
+use crate::types::{Base, SeedPairingMode};
 use libsais::SuffixArrayConstruction;
 
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
@@ -99,7 +99,7 @@ impl BaseIntervals {
 
 /// A seed match found by parallel SA search
 #[derive(Debug, Clone)]
-pub struct ParallelSeedMatch {
+pub struct SeedMatch {
     /// Interval in query SA containing matching suffixes
     pub query_interval: SaInterval,
     /// Interval in target SA containing matching suffixes
@@ -108,7 +108,7 @@ pub struct ParallelSeedMatch {
     pub depth: usize,
 }
 
-impl ParallelSeedMatch {
+impl SeedMatch {
     /// Count total number of position pairs in this match
     pub fn pair_count(&self) -> usize {
         self.query_interval.len() * self.target_interval.len()
@@ -133,7 +133,7 @@ struct SearchState {
 /// - Query SA is built on the query sequence as-is
 /// - Target SA is built on the COMPLEMENT of the target sequence
 /// - Same-character matching finds complementary base pairs
-pub struct ParallelSaSearcher<'a> {
+pub struct SeedSearcher<'a> {
     /// Query suffix array
     query_sa: &'a [u32],
     /// Query sequence (for base lookup)
@@ -143,10 +143,10 @@ pub struct ParallelSaSearcher<'a> {
     /// Target complement sequence (for base lookup)
     target_comp_seq: &'a [u8],
     /// Seed configuration (pairing, mismatch spec, etc.)
-    seed_config: &'a SeedArgs,
+    seed_config: &'a SeedConfig,
 }
 
-impl<'a> ParallelSaSearcher<'a> {
+impl<'a> SeedSearcher<'a> {
     /// Create a new parallel SA searcher
     ///
     /// IMPORTANT: `target_comp_sa` and `target_comp_seq` should be built on the
@@ -156,7 +156,7 @@ impl<'a> ParallelSaSearcher<'a> {
         query_seq: &'a [u8],
         target_comp_sa: &'a [u32],
         target_comp_seq: &'a [u8],
-        seed_config: &'a SeedArgs,
+        seed_config: &'a SeedConfig,
     ) -> Self {
         Self {
             query_sa,
@@ -174,7 +174,7 @@ impl<'a> ParallelSaSearcher<'a> {
     ///
     /// Note: Short suffixes (length < seed_len) are automatically excluded during
     /// partitioning via the sentinel value (255) which sorts after all valid bases.
-    pub fn find_seeds(&self, seed_len: usize) -> Vec<ParallelSeedMatch> {
+    pub fn find_seeds(&self, seed_len: usize) -> Vec<SeedMatch> {
         let mut results = Vec::new();
         self.find_seeds_into(seed_len, &mut results);
         results
@@ -182,7 +182,7 @@ impl<'a> ParallelSaSearcher<'a> {
 
     /// Find seeds and append to existing Vec (avoids allocation per call)
     #[inline]
-    pub fn find_seeds_into(&self, seed_len: usize, results: &mut Vec<ParallelSeedMatch>) {
+    pub fn find_seeds_into(&self, seed_len: usize, results: &mut Vec<SeedMatch>) {
         use log::trace;
 
         trace!(
@@ -201,7 +201,7 @@ impl<'a> ParallelSaSearcher<'a> {
         &self,
         min_len: usize,
         max_len: usize,
-        results: &mut Vec<ParallelSeedMatch>,
+        results: &mut Vec<SeedMatch>,
     ) {
         let initial_state = SearchState {
             query_interval: SaInterval::new(0, self.query_sa.len()),
@@ -221,12 +221,12 @@ impl<'a> ParallelSaSearcher<'a> {
         min_len: usize,
         max_len: usize,
         state: SearchState,
-        results: &mut Vec<ParallelSeedMatch>,
+        results: &mut Vec<SeedMatch>,
     ) {
         // Report if depth is within range
         if state.depth >= min_len && state.depth <= max_len {
             if self.is_valid_match(&state, state.depth) {
-                results.push(ParallelSeedMatch {
+                results.push(SeedMatch {
                     query_interval: state.query_interval,
                     target_interval: state.target_interval,
                     depth: state.depth,
@@ -238,10 +238,10 @@ impl<'a> ParallelSaSearcher<'a> {
             return;
         }
 
-        // If a mismatch has occurred, ensure we can still satisfy min_matches_after
-        if state.mismatch_count > 0 && self.seed_config.mismatch_seed.min_matches_after > 0 {
+        // If a mismatch has occurred, ensure we can still satisfy min_suffix_matches
+        if state.mismatch_count > 0 && self.seed_config.mismatch.min_suffix_matches > 0 {
             let max_possible = state.matches_since_mismatch + (max_len - state.depth);
-            if max_possible < self.seed_config.mismatch_seed.min_matches_after {
+            if max_possible < self.seed_config.mismatch.min_suffix_matches {
                 return;
             }
         }
@@ -285,7 +285,7 @@ impl<'a> ParallelSaSearcher<'a> {
         self.explore_canonical_matches(&qint, &sint, next_depth, &state, min_len, max_len, results);
 
         // === WOBBLE PAIRS ===
-        if matches!(self.seed_config.pairing, SeedPairing::AllowWobble) {
+        if matches!(self.seed_config.pairing, SeedPairingMode::AllowWobble) {
             self.explore_wobble_matches(&qint, &sint, next_depth, &state, min_len, max_len, results);
         }
 
@@ -308,7 +308,7 @@ impl<'a> ParallelSaSearcher<'a> {
         state: &SearchState,
         min_len: usize,
         max_len: usize,
-        results: &mut Vec<ParallelSeedMatch>,
+        results: &mut Vec<SeedMatch>,
     ) {
         // C code: query 'a' matches target_comp 'a' → target has 'u' → A-U pair
 
@@ -351,7 +351,7 @@ impl<'a> ParallelSaSearcher<'a> {
         state: &SearchState,
         min_len: usize,
         max_len: usize,
-        results: &mut Vec<ParallelSeedMatch>,
+        results: &mut Vec<SeedMatch>,
     ) {
         // For direct matching (query_RC vs target, both NOT complemented):
         // - G-U wobble: query G (query_RC has C) pairs with target U (T)
@@ -382,7 +382,7 @@ impl<'a> ParallelSaSearcher<'a> {
         prev_state: &SearchState,
         min_len: usize,
         max_len: usize,
-        results: &mut Vec<ParallelSeedMatch>,
+        results: &mut Vec<SeedMatch>,
     ) {
         let new_state = SearchState {
             query_interval: q_int,
@@ -397,10 +397,10 @@ impl<'a> ParallelSaSearcher<'a> {
     /// Check if we should explore mismatch branches
     #[inline]
     fn should_explore_mismatches(&self, state: &SearchState, seed_len: usize) -> bool {
-        let mismatch = &self.seed_config.mismatch_seed;
+        let mismatch = &self.seed_config.mismatch;
         mismatch.max_mismatches > 0
             && state.mismatch_count < mismatch.max_mismatches
-            && state.depth + 1 > mismatch.min_position
+            && state.depth + 1 > mismatch.min_prefix_matches
             && state.matches_since_mismatch < seed_len
     }
 
@@ -414,10 +414,10 @@ impl<'a> ParallelSaSearcher<'a> {
         state: &SearchState,
         min_len: usize,
         max_len: usize,
-        results: &mut Vec<ParallelSeedMatch>,
+        results: &mut Vec<SeedMatch>,
     ) {
         if max_len <= depth
-            || max_len - depth < self.seed_config.mismatch_seed.min_matches_after
+            || max_len - depth < self.seed_config.mismatch.min_suffix_matches
         {
             return;
         }
@@ -467,7 +467,7 @@ impl<'a> ParallelSaSearcher<'a> {
         // We use query_RC, so:
         // - G-U wobble: query G (query_RC has C) with target U
         // - U-G wobble: query U (query_RC has A) with target G
-        if matches!(self.seed_config.pairing, SeedPairing::AllowWobble) {
+        if matches!(self.seed_config.pairing, SeedPairingMode::AllowWobble) {
             // G-U wobble: Query_RC C with Target U
             if q_base == Base::C && t_comp_base == Base::U {
                 return true;
@@ -488,8 +488,8 @@ impl<'a> ParallelSaSearcher<'a> {
             return true;
         }
         // With mismatches: need sufficient matches after last mismatch
-        state.mismatch_count <= self.seed_config.mismatch_seed.max_mismatches
-            && state.matches_since_mismatch >= self.seed_config.mismatch_seed.min_matches_after
+        state.mismatch_count <= self.seed_config.mismatch.max_mismatches
+            && state.matches_since_mismatch >= self.seed_config.mismatch.min_suffix_matches
             && state.matches_since_mismatch < seed_len
     }
 
@@ -633,17 +633,16 @@ pub fn build_suffix_array(seq: &[u8]) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::args::SeedArgs;
+    use crate::config::SeedConfig;
     use crate::seed::{MismatchSpec, SeedSpec};
 
-    /// Create a default SeedArgs for testing with specified pairing mode
-    fn test_seed_args(pairing: SeedPairing) -> SeedArgs {
-        SeedArgs {
+    /// Create a default SeedConfig for testing with specified pairing mode
+    fn test_seed_config(pairing: SeedPairingMode) -> SeedConfig {
+        SeedConfig {
             seed: SeedSpec::Length(6),
             pairing,
-            mismatch_seed: MismatchSpec::exact(),
-            no_guseed: matches!(pairing, SeedPairing::Strict),
-            wobble_legacy: false,
+            mismatch: MismatchSpec::exact(),
+            no_guseed: matches!(pairing, SeedPairingMode::Strict),
             mismatch_max: None,
             mismatch_prefix: None,
             mismatch_suffix: None,
@@ -661,9 +660,9 @@ mod tests {
     fn test_partition_basic() {
         let seq = b"acgt";
         let sa = build_suffix_array(seq);
-        let seed_args = test_seed_args(SeedPairing::AllowWobble);
+        let seed_args = test_seed_config(SeedPairingMode::AllowWobble);
 
-        let searcher = ParallelSaSearcher::new(&sa, seq, &sa, seq, &seed_args);
+        let searcher = SeedSearcher::new(&sa, seq, &sa, seq, &seed_args);
 
         let interval = SaInterval::new(0, sa.len());
         let parts = searcher.partition_interval(&sa, seq, interval, 0);
@@ -698,8 +697,8 @@ mod tests {
         eprintln!("Target comp SA: {:?}", t_sa);
 
         // Step 3: Create searcher and find seeds
-        let seed_args = test_seed_args(SeedPairing::Strict);
-        let searcher = ParallelSaSearcher::new(&q_sa, query, &t_sa, &target_comp, &seed_args);
+        let seed_args = test_seed_args(SeedPairingMode::Strict);
+        let searcher = SeedSearcher::new(&q_sa, query, &t_sa, &target_comp, &seed_args);
         let matches = searcher.find_seeds(3);
         eprintln!("Raw matches: {:?}", matches);
 

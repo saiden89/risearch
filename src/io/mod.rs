@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use needletail::parse_fastx_file;
 use std::path::Path;
 
+pub mod output;
+
 /// Type alias for FASTA records to reduce type complexity
 pub type FastaRecords = Vec<(String, Vec<u8>)>;
 

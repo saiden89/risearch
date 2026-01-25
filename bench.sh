@@ -13,21 +13,21 @@ OUT="/tmp/bench_out"
 
 # Build release
 echo "Building Rust release..."
-cargo build --release 2>&1 | tail -1
+RUSTFLAGS="-C target-cpu=native" cargo build --release 2>&1
 
 echo ""
 echo "=============================================="
 echo "EXACT MATCH BENCHMARKS"
 echo "=============================================="
 
-for SEED in 6 8 10; do
-    echo ""
-    echo "--- Seed length $SEED, max_ext 20 ---"
-    echo "[Rust]"
-    time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 20 -e 100 -o $OUT 2>&1
-    echo "[C] (1 thread)"
-    time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 20 -e 100 -t 1 > $OUT 2>&1
-done
+# for SEED in 6 8 10; do
+#     echo "--- Seed length $SEED, max_ext 20 ---"
+#     echo "[Rust]"
+#     time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 20 -e 100 -o $OUT --output-compress gzip -t 1 --format=bindingsite 2>&1
+#     echo "[C]"
+#     time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 20 -e 100 -t 1 -p3 > $OUT 2>&1
+#     echo ""
+# done
 
 echo ""
 echo "=============================================="
@@ -35,27 +35,17 @@ echo "MISMATCH BENCHMARKS"
 echo "=============================================="
 
 for MISMATCH in "1:0" "1:3" "2:2"; do
-    for SEED in 6 8; do
+    for SEED in 8; do
         echo ""
         echo "--- Mismatch $MISMATCH, Seed $SEED, max_ext 10 ---"
         echo "[Rust]"
-        time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -o $OUT 2>&1
-        echo "[C] (1 thread)"
-        time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -t 1 > $OUT 2>&1
+        time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -o $OUT -t 2 --output-compress gzip --format=bindingsite  2>&1
+        echo "[C]" 2>&1
+        echo "[C]"
+        time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -t 2 -p3 > $OUT 2>&1
     done
 done
 
-echo ""
-echo "=============================================="
-echo "HEAVY MISMATCH (3:0)"
-echo "=============================================="
-
-echo ""
-echo "--- Mismatch 3:0, Seed 6, max_ext 10 ---"
-echo "[Rust]"
-time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s 6 -l 10 -m 3:0 -e 100 -o $OUT 2>&1
-echo "[C] (1 thread)"
-time $C_BIN -q $MIRNAS -i $C_IDX -s 6 -l 10 -m 3:0 -e 100 -t 1 > $OUT 2>&1
 
 echo ""
 echo "Done!"

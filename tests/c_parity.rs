@@ -34,7 +34,7 @@ fn test_parity(
     let l_str = l.to_string();
     let s_str = s.to_string();
     // Use high energy threshold to not filter hits by energy (test alignment parity)
-    let mut args = vec!["-l", &l_str, "-e", "100.0", "-s", &s_str, "-p3"];
+    let mut args = vec!["-l", &l_str, "-e", "100.0", "--seed-length", &s_str, "-p3"];
     if w_strict {
         args.extend(["--seed-pairing", "strict"]);
     }
@@ -47,7 +47,7 @@ fn test_parity(
     ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
 }
 
-/// Test SeedSpec interval format: -s start:end
+/// Test SeedSpec interval format: --seed-start/--seed-end
 /// This tests the seed position (1-based) and length range within the query.
 #[rstest]
 fn test_parity_seedspec_interval(
@@ -59,13 +59,25 @@ fn test_parity_seedspec_interval(
     let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
 
     let l_str = l.to_string();
-    let args = ["-l", &l_str, "-e", "100.0", "-s", seed_spec, "-p3"];
+    let (start, rest) = seed_spec.split_once(':').expect("seed spec start:end");
+    let end = rest;
+    let args = [
+        "-l",
+        &l_str,
+        "-e",
+        "100.0",
+        "--seed-start",
+        start,
+        "--seed-end",
+        end,
+        "-p3",
+    ];
 
     let test_name = format!("seedspec_{}_l{}", seed_spec.replace(':', "_"), l);
     ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
 }
 
-/// Test SeedSpec interval with length: -s start:end/length
+/// Test SeedSpec interval with length: --seed-start/--seed-end/--seed-length
 #[rstest]
 fn test_parity_seedspec_interval_len(
     #[values("1:12/6", "2:10/5", "1:15/7")] seed_spec: &str,
@@ -76,7 +88,21 @@ fn test_parity_seedspec_interval_len(
     let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
 
     let l_str = l.to_string();
-    let args = ["-l", &l_str, "-e", "100.0", "-s", seed_spec, "-p3"];
+    let (start, rest) = seed_spec.split_once(':').expect("seed spec start:end/len");
+    let (end, len) = rest.split_once('/').expect("seed spec start:end/len");
+    let args = [
+        "-l",
+        &l_str,
+        "-e",
+        "100.0",
+        "--seed-start",
+        start,
+        "--seed-end",
+        end,
+        "--seed-length",
+        len,
+        "-p3",
+    ];
 
     let test_name = format!("seedspec_{}_l{}", seed_spec.replace([':', '/'], "_"), l);
     ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
@@ -86,7 +112,7 @@ fn test_parity_seedspec_interval_len(
 fn test_parity_alignment_repro() {
     let query = "ucaguucagcaggaacag";
     let target = "TGGCTCTGTGGGACACAGCAGG";
-    let args = ["-l", "20", "-e", "-20", "-s", "6", "-p3"];
+    let args = ["-l", "20", "-e", "-20", "--seed-length", "6", "-p3"];
 
     SingleSeqRunner::new(query, target).assert_pass("alignment_mismatch_repro", &args);
 }
@@ -94,7 +120,7 @@ fn test_parity_alignment_repro() {
 #[test]
 fn test_parity_single_seq() {
     // Tests internal mismatch handling between Rust and C implementations.
-    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+    let args = ["-l", "20", "-e", "100.0", "--seed-length", "5", "-p3"];
 
     let query = "UGCUGCUGCCGCUGCUGCUG"; // 20nt with internal variation
     let target = "GCAGCAGCAGCAGCAGCAGC"; // 20nt complement
@@ -112,7 +138,7 @@ fn test_parity_single_seq() {
 fn test_parity_seed_only() {
     // No extension: -l 0
     // This tests only the seed pairing and energy calculation
-    let args = ["-l", "0", "-e", "100.0", "-s", "5", "-p3"];
+    let args = ["-l", "0", "-e", "100.0", "--seed-length", "5", "-p3"];
 
     // Query and target are exact complements (20nt)
     // Should produce a single seed hit with no extensions
@@ -124,7 +150,7 @@ fn test_parity_seed_only() {
 
 #[test]
 fn test_parity_custom_seq() {
-    let args = ["-l", "20", "-e", "10000", "-s", "7", "-p3"];
+    let args = ["-l", "20", "-e", "10000", "--seed-length", "7", "-p3"];
 
     let query = "uggcucaguucagcaggaacag";
     let target = "ggaagaccgacuaggagacgacuugcugcuacuccuccgucccugcaucuggaggccuuu";
@@ -133,7 +159,7 @@ fn test_parity_custom_seq() {
 #[test]
 fn test_parity_left_ext() {
     // Seed at 3' end of query forces only left extension
-    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+    let args = ["-l", "20", "-e", "100.0", "--seed-length", "5", "-p3"];
 
     let query = "AAAAAUGCUG";
     let target = "CAGCAUUUUU";
@@ -145,7 +171,7 @@ fn test_parity_left_ext() {
 /// Design: seed at 5' end of query, extra bases only to the 3' side.
 #[test]
 fn test_parity_right_ext() {
-    let args = ["-l", "20", "-e", "10.0", "-s", "5", "-p3"];
+    let args = ["-l", "20", "-e", "10.0", "--seed-length", "5", "-p3"];
 
     let query = "UGCUGAAAAA";
     let target = "UUUUUCAGCA";
@@ -157,7 +183,7 @@ fn test_parity_right_ext() {
 /// Design: seed in middle, extra bases on both sides.
 #[test]
 fn test_parity_both_ext() {
-    let args = ["-l", "20", "-e", "100.0", "-s", "5", "-p3"];
+    let args = ["-l", "20", "-e", "100.0", "--seed-length", "5", "-p3"];
 
     let query = "AAAUGCUGAAA";
     let target = "UUUCAGCAUUU";
@@ -168,7 +194,7 @@ fn test_parity_both_ext() {
 /// Tests with wobble pairs (G-U) in the seed region.
 #[test]
 fn test_parity_wobble() {
-    let args = ["-l", "0", "-e", "100.0", "-s", "5", "-p3"];
+    let args = ["-l", "0", "-e", "100.0", "--seed-length", "5", "-p3"];
 
     let query = "UGUGUGUGUG"; // 10 alternating U-G pattern
     let target = "CGCGCGCGCG"; // Complement with wobble
@@ -194,8 +220,7 @@ fn test_parity_mir24_isolated() {
         "20",
         "-e",
         "100.0",
-        "-s",
-        "6",
+        "--seed-length", "6",
         "-p3",
         "--no-max-prune",
     ];
@@ -208,7 +233,7 @@ fn test_parity_mir24_isolated() {
 fn test_parity_segments_debug() {
     let query = "AAAAAUGCUGUAAAAA"; // 5 + 6 + 5 = 16nt
     let target = "UUUUUACAGCAUUUUU";
-    let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
+    let args = ["-l", "20", "-e", "100.0", "--seed-length", "6", "-p3"];
 
     SingleSeqRunner::new(query, target).assert_pass("segment_debug", &args);
 }
@@ -222,7 +247,7 @@ fn test_parity_rust_worse_debug() {
     // Extracted directly from RHOC.fa
     let target = "ATATTGCGGACATTGAGGTGGACGGCAAGCAGGTGGAGCTGGCTCTGTGGGACACAGCAGGGCAGGAAGACTATGATCGACTGCGGCCTCTCTCCTACCCG";
 
-    let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
+    let args = ["-l", "20", "-e", "100.0", "--seed-length", "6", "-p3"];
 
     SingleSeqRunner::new(query, target).assert_pass("rust_worse_debug", &args);
 }
@@ -241,7 +266,7 @@ fn test_parity_missing_544_debug() {
     let target = "TGATTGCCCTCCATCAACACTGCCCACCCCAGGTTGGGGCTACCCCAGCCCATCTTTACAAAACAGGGCAAGGTGAACTAATGGAGTGGGTGGAGGAGTTGGAAGA";
 
     // Same params as the failing matrix test: s=6, l=20
-    let args = ["-l", "20", "-e", "100.0", "-s", "6", "-p3"];
+    let args = ["-l", "20", "-e", "100.0", "--seed-length", "6", "-p3"];
 
     SingleSeqRunner::new(query, target).assert_pass("missing_544_debug", &args);
 }
@@ -260,8 +285,8 @@ fn test_parity_energy_discrepancy_minimal() {
     let target = "CTGACTCCTTGCCCTGAGT";
     // let target = "AAGCCCGGGAAGCTGACTCCTTGCCCTGAGTCACAGGGAGGGGUGGGCAGGGCATGCGGC"; //original target
 
-    // Args matching energy_threshold test: -l 10 -e -10 -s 5 -p3
-    let args = ["-l", "10", "-e", "-10.0", "-s", "5", "-p3"];
+    // Args matching energy_threshold test: -l 10 -e -10 --seed-length 5 -p3
+    let args = ["-l", "10", "-e", "-10.0", "--seed-length", "5", "-p3"];
 
     SingleSeqRunner::new(query, target).assert_pass("energy_discrepancy_minimal", &args);
 }
@@ -295,7 +320,7 @@ fn test_parity_dinucleotide_stack(
     #[values('A', 'C', 'G', 'U')] b2: char,
 ) {
     // 2bp seed, no extension, lenient energy threshold to catch all hits
-    let args = ["-l", "0", "-e", "10000.0", "-s", "2", "-p3"];
+    let args = ["-l", "0", "-e", "10000.0", "--seed-length", "2", "-p3"];
 
     let query = format!("{}{}", b1, b2);
     let target = wc_complement(&query);
@@ -314,7 +339,7 @@ fn test_parity_trinucleotide_stack(
     #[values('A', 'C', 'G', 'U')] b3: char,
 ) {
     // 3bp seed, no extension
-    let args = ["-l", "0", "-e", "10000.0", "-s", "3", "-p3"];
+    let args = ["-l", "0", "-e", "10000.0", "--seed-length", "3", "-p3"];
 
     let query = format!("{}{}{}", b1, b2, b3);
     let target = wc_complement(&query);
@@ -334,7 +359,7 @@ fn test_parity_minimal_ext_right(
     #[values('A', 'C', 'G', 'U')] e1: char, // extension base
 ) {
     // 2bp seed, with extension enabled
-    let args = ["-l", "10", "-e", "10000.0", "-s", "2", "-p3"];
+    let args = ["-l", "10", "-e", "10000.0", "--seed-length", "2", "-p3"];
 
     let query = format!("{}{}{}", s1, s2, e1); // seed at 5', ext at 3'
     let target = wc_complement(&query);
@@ -353,7 +378,7 @@ fn test_parity_minimal_ext_left(
     #[values('A', 'C', 'G', 'U')] s2: char, // seed base 2
 ) {
     // 2bp seed, with extension enabled
-    let args = ["-l", "10", "-e", "10000.0", "-s", "2", "-p3"];
+    let args = ["-l", "10", "-e", "10000.0", "--seed-length", "2", "-p3"];
 
     let query = format!("{}{}{}", e1, s1, s2); // ext at 5', seed at 3'
     let target = wc_complement(&query);
@@ -374,7 +399,7 @@ fn test_parity_ext_both_sides(
     #[values('A', 'C', 'G', 'U')] er: char, // right extension
 ) {
     // 2bp seed, with extension enabled on both sides
-    let args = ["-l", "10", "-e", "10000.0", "-s", "2", "-p3"];
+    let args = ["-l", "10", "-e", "10000.0", "--seed-length", "2", "-p3"];
 
     let query = format!("{}{}{}{}", el, s1, s2, er);
     let target = wc_complement(&query);
@@ -403,7 +428,7 @@ fn test_parity_mismatches(
         &l_str,
         "-e",
         "100.0",
-        "-s",
+        "--seed-length",
         &s_str,
         "-m",
         mismatch_spec,

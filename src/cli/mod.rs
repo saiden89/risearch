@@ -3,7 +3,7 @@ pub mod warnings;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use risearch::args::SearchArgs;
+use risearch::cli_args::SearchArgs;
 
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]

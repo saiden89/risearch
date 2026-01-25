@@ -79,7 +79,7 @@ impl RustRunner<Indexed> {
     pub fn search(
         &self,
         query_path: &Path,
-        args: &risearch::args::SearchArgs,
+        args: &risearch::config::SearchArgs,
     ) -> Vec<risearch::SearchHit> {
         use risearch::search::SaIndex;
 
@@ -152,6 +152,11 @@ impl ParityRunner {
 
         // Translate Rust args to C args
         let mut c_args: Vec<&str> = Vec::new();
+        let mut seed_start: Option<&str> = None;
+        let mut seed_end: Option<&str> = None;
+        let mut seed_length: Option<&str> = None;
+        let mut seed_spec_owned: Option<String> = None;
+        let mut has_legacy_seed = false;
         let mut iter = args.iter().copied().peekable();
         while let Some(arg) = iter.next() {
             match arg {
@@ -166,8 +171,51 @@ impl ParityRunner {
                     let _ = iter.next();
                     continue;
                 }
+                "-s" | "--seed" => {
+                    has_legacy_seed = true;
+                    if let Some(val) = iter.next() {
+                        c_args.push("-s");
+                        c_args.push(val);
+                    }
+                }
+                _ if arg.starts_with("--seed=") => {
+                    has_legacy_seed = true;
+                    let val = &arg["--seed=".len()..];
+                    c_args.push("-s");
+                    c_args.push(val);
+                    continue;
+                }
+                "--seed-start" => {
+                    if let Some(val) = iter.next() {
+                        seed_start = Some(val);
+                    }
+                    continue;
+                }
+                "--seed-end" => {
+                    if let Some(val) = iter.next() {
+                        seed_end = Some(val);
+                    }
+                    continue;
+                }
+                "--seed-length" => {
+                    if let Some(val) = iter.next() {
+                        seed_length = Some(val);
+                    }
+                    continue;
+                }
+                _ if arg.starts_with("--seed-start=") => {
+                    seed_start = Some(&arg["--seed-start=".len()..]);
+                    continue;
+                }
+                _ if arg.starts_with("--seed-end=") => {
+                    seed_end = Some(&arg["--seed-end=".len()..]);
+                    continue;
+                }
+                _ if arg.starts_with("--seed-length=") => {
+                    seed_length = Some(&arg["--seed-length=".len()..]);
+                    continue;
+                }
                 "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed"),
-                "-w" | "--wobble" => continue, // Rust-only legacy alias (default allow_wobble)
                 "--seed-pairing" => {
                     if let Some(val) = iter.next() {
                         if val == "strict" {
@@ -176,6 +224,21 @@ impl ParityRunner {
                     }
                 }
                 _ => c_args.push(arg),
+            }
+        }
+        if !has_legacy_seed {
+            let spec = match (seed_start, seed_end, seed_length) {
+                (Some(start), Some(end), Some(len)) => Some(format!("{}:{}/{}", start, end, len)),
+                (Some(start), Some(end), None) => Some(format!("{}:{}", start, end)),
+                (None, None, Some(len)) => Some(len.to_string()),
+                _ => None,
+            };
+            if let Some(s) = spec {
+                seed_spec_owned = Some(s);
+                if let Some(spec_ref) = seed_spec_owned.as_ref() {
+                    c_args.push("-s");
+                    c_args.push(spec_ref.as_str());
+                }
             }
         }
         let c_out = self.c.search(query, &c_args);
@@ -274,7 +337,7 @@ impl SingleSeqRunner {
 
 /// Parse CLI-style args into SearchArgs using clap.
 /// Always includes --no-dedup-shadow for C parity (C doesn't filter contained hits).
-pub fn parse_search_args(args: &[&str]) -> risearch::args::SearchArgs {
+pub fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
     use clap::Parser;
 
     let mut cli_args: Vec<String> = vec!["risearch".into()];
@@ -313,20 +376,31 @@ pub fn parse_search_args(args: &[&str]) -> risearch::args::SearchArgs {
             cli_args.push(arg.to_string());
         }
     }
+    let has_pairing = args
+        .iter()
+        .any(|arg| *arg == "--seed-pairing" || arg.starts_with("--seed-pairing="));
+    let has_no_guseed =
+        args.iter()
+            .any(|arg| *arg == "-U" || *arg == "--no-guseed" || *arg == "--noGUseed");
+    if !has_pairing && !has_no_guseed {
+        cli_args.push("--seed-pairing".into());
+        cli_args.push("allow_wobble".into());
+    }
     // C doesn't do shadow dedup, so disable it for parity tests
     cli_args.push("--no-dedup-shadow".into());
 
     #[derive(Parser)]
     struct FakeCmd {
         #[command(flatten)]
-        search: risearch::args::SearchArgs,
+        search: risearch::cli_args::SearchArgs,
     }
 
-    let mut parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
+    let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
+    let mut search: risearch::config::SearchArgs = parsed.search.into();
     let explicit_pairing = args.iter().any(|arg| {
         *arg == "--seed-pairing" || arg.starts_with("--seed-pairing=")
     });
-    parsed.search.seed.apply_mismatch_overrides();
-    parsed.search.seed.apply_pairing_overrides(explicit_pairing);
-    parsed.search
+    search.seed.apply_mismatch_overrides();
+    search.seed.apply_pairing_overrides(explicit_pairing);
+    search
 }

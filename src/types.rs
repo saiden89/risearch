@@ -467,19 +467,9 @@ pub enum Strand {
 /// Seed pairing mode (wobble vs strict)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "snake_case")]
-pub enum SeedPairing {
+pub enum SeedPairingMode {
     AllowWobble,
     Strict,
-}
-
-impl From<bool> for SeedPairing {
-    fn from(wobble_arg: bool) -> Self {
-        if wobble_arg {
-            SeedPairing::Strict
-        } else {
-            SeedPairing::AllowWobble
-        }
-    }
 }
 
 // =============================================================================
