@@ -3,7 +3,7 @@ use crate::sa::SaIndexFile;
 use crate::seq::reverse_complement_dna;
 use crate::types::Strand;
 
-use super::{build_suffix_array, SeedCandidate, SeedMatch, SeedSearcher};
+use super::{SeedCandidate, SeedMatch, SeedSearcher, build_suffix_array};
 
 /// Pre-computed query data to avoid rebuilding per-target.
 struct QueryCache {
@@ -65,7 +65,7 @@ impl QueryCache {
 
     /// Check if any position in range [start, start+len) contains 'n'
     #[inline]
-    fn contains_n(&self, start: usize, len: usize) -> bool {
+    fn has_n_in_range(&self, start: usize, len: usize) -> bool {
         if !self.has_n_any {
             return false;
         }
@@ -93,83 +93,76 @@ pub(crate) fn find_seeds(
     };
 
     for (idx, target) in index.sequences.iter().enumerate() {
-        let q_len = prep.q_norm.len();
-        let start0 = prep.start0;
-        let end1 = prep.end1;
-        let mi_len = prep.mi_len;
+        collect_target_seeds(
+            &prep,
+            idx,
+            config,
+            candidates,
+            matches,
+            Strand::Forward,
+            target.forward_sa.as_slice(),
+            &target.sequence,
+        );
+        collect_target_seeds(
+            &prep,
+            idx,
+            config,
+            candidates,
+            matches,
+            Strand::Reverse,
+            target.reverse_sa.as_slice(),
+            &target.sequence_rc,
+        );
+    }
+}
 
-        // Forward strand: use pre-built forward_sa
-        let t_sa = &target.forward_sa;
-        matches.clear();
-        let searcher = SeedSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_sa, &target.sequence, config);
-        searcher.search_length_range(mi_len, q_len, matches);
+/// Collect seeds from a single target strand, reusing the provided scratch buffers.
+fn collect_target_seeds(
+    prep: &QueryCache,
+    target_idx: usize,
+    config: &SeedConfig,
+    candidates: &mut Vec<SeedCandidate>,
+    matches: &mut Vec<SeedMatch>,
+    strand: Strand,
+    t_sa: &[u32],
+    t_seq: &[u8],
+) {
+    let q_len = prep.q_norm.len();
+    let start0 = prep.start0;
+    let end1 = prep.end1;
+    let mi_len = prep.mi_len;
 
-        for m in matches.iter() {
-            let seed_len = m.depth;
-            for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
-                let q_rc_pos = q_rc_pos_i32 as usize;
-                if q_rc_pos + seed_len > q_len {
-                    continue;
-                }
-                let q_pos = q_len - q_rc_pos - seed_len;
-                if q_pos < start0 || q_pos + seed_len > end1 {
-                    continue;
-                }
-                if prep.contains_n(q_pos, seed_len) {
-                    continue;
-                }
+    matches.clear();
+    let searcher = SeedSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_sa, t_seq, config);
+    searcher.search_length_range(mi_len, q_len, matches);
 
-                for &t_pos_i32 in &t_sa[m.target_interval.start..m.target_interval.end] {
-                    let t_pos = t_pos_i32 as usize;
-                    if t_pos + seed_len > target.sequence.len() {
-                        continue;
-                    }
-                    candidates.push(SeedCandidate {
-                        query_pos: q_pos,
-                        target_idx: idx,
-                        target_start: t_pos,
-                        len: seed_len,
-                        strand: Strand::Forward,
-                    });
-                }
+    for m in matches.iter() {
+        let seed_len = m.depth;
+        for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
+            let q_rc_pos = q_rc_pos_i32 as usize;
+            if q_rc_pos + seed_len > q_len {
+                continue;
             }
-        }
+            let q_pos = q_len - q_rc_pos - seed_len;
+            if q_pos < start0 || q_pos + seed_len > end1 {
+                continue;
+            }
+            if prep.has_n_in_range(q_pos, seed_len) {
+                continue;
+            }
 
-        // Reverse strand: use pre-built reverse_sa and sequence_rc
-        let t_rc_sa = &target.reverse_sa;
-        let t_rc = &target.sequence_rc;
-        matches.clear();
-        let searcher = SeedSearcher::new(&prep.q_rc_sa, &prep.q_rc, t_rc_sa, t_rc, config);
-        searcher.search_length_range(mi_len, q_len, matches);
-
-        for m in matches.iter() {
-            let seed_len = m.depth;
-            for &q_rc_pos_i32 in &prep.q_rc_sa[m.query_interval.start..m.query_interval.end] {
-                let q_rc_pos = q_rc_pos_i32 as usize;
-                if q_rc_pos + seed_len > q_len {
+            for &t_pos_i32 in &t_sa[m.target_interval.start..m.target_interval.end] {
+                let t_pos = t_pos_i32 as usize;
+                if t_pos + seed_len > t_seq.len() {
                     continue;
                 }
-                let q_pos = q_len - q_rc_pos - seed_len;
-                if q_pos < start0 || q_pos + seed_len > end1 {
-                    continue;
-                }
-                if prep.contains_n(q_pos, seed_len) {
-                    continue;
-                }
-
-                for &t_pos_i32 in &t_rc_sa[m.target_interval.start..m.target_interval.end] {
-                    let t_pos = t_pos_i32 as usize;
-                    if t_pos + seed_len > t_rc.len() {
-                        continue;
-                    }
-                    candidates.push(SeedCandidate {
-                        query_pos: q_pos,
-                        target_idx: idx,
-                        target_start: t_pos,
-                        len: seed_len,
-                        strand: Strand::Reverse,
-                    });
-                }
+                candidates.push(SeedCandidate {
+                    query_pos: q_pos,
+                    target_idx,
+                    target_start: t_pos,
+                    len: seed_len,
+                    strand,
+                });
             }
         }
     }
