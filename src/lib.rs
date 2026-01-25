@@ -1,8 +1,6 @@
 pub mod args;
 pub mod dp;
 pub mod dsm;
-#[cfg(feature = "fm-index")]
-pub mod fm;
 pub mod io;
 pub mod parallel_sa;
 pub mod sa;

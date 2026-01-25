@@ -3,7 +3,7 @@ pub mod warnings;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use risearch::args::{Backend, SearchArgs};
+use risearch::args::SearchArgs;
 
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]
@@ -20,12 +20,14 @@ pub struct Cli {
     pub verbose: u8,
 
     /// Set threads for parallel processing (global)
-    #[arg(short = 't', long = "threads", value_name = "N", default_value_t = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), global = true)]
+    #[arg(
+        short = 't',
+        long = "threads",
+        value_name = "N",
+        default_value_t = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+        global = true
+    )]
     pub threads: usize,
-
-    /// Choose backend (fm or sa)
-    #[arg(short = 'b', long = "backend", value_enum, default_value_t = Backend::Sa, global = true)]
-    pub backend: Backend,
 
     #[command(subcommand)]
     pub command: Option<Commands>,

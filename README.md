@@ -8,7 +8,7 @@ experimental.
 
 ## Features
 
-- Suffix-array (SA) index backend (default).
+- Suffix-array (SA) index backend.
 - Seed-and-extend search with configurable seed length, mismatches, and energy
   thresholds.
 - Multi-threaded search via Rayon.
@@ -19,12 +19,6 @@ experimental.
 
 ```bash
 cargo build --release
-```
-
-Optional (work-in-progress) FM-index backend:
-
-```bash
-cargo build --release --features fm-index
 ```
 
 Install the CLI locally:
@@ -85,7 +79,6 @@ Common tuning flags:
 Global options:
 
 - `-t, --threads <N>`: number of worker threads.
-- `-b, --backend <sa|fm>`: index backend (SA default; FM is WIP).
 - `-v/-vv/-vvv`: increase logging verbosity.
 
 Subcommands:

@@ -1,11 +1,9 @@
 use std::io::Write;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-#[cfg(feature = "fm-index")]
-use risearch::fm;
 use risearch::{sa, search};
 
 mod output;
@@ -105,26 +103,8 @@ pub fn run(cli: Cli) -> Result<()> {
 
     match &cli.command {
         Some(Commands::Index { input, output }) => {
-            info!(
-                "Creating index ({:?}) from {:?} -> {:?}",
-                cli.backend, input, output
-            );
-            match cli.backend {
-                risearch::args::Backend::Fm => {
-                    #[cfg(feature = "fm-index")]
-                    {
-                        fm::create_fm_index(input, output)?;
-                    }
-                    #[cfg(not(feature = "fm-index"))]
-                    {
-                        bail!(
-                            "FM-Index backend is not available. \
-                            Recompile with `--features fm-index` to enable it."
-                        );
-                    }
-                }
-                risearch::args::Backend::Sa => sa::create_suffix_array(input, output)?,
-            }
+            info!("Creating index from {:?} -> {:?}", input, output);
+            sa::create_suffix_array(input, output)?;
             info!("Saved index to {:?}", output);
         }
         Some(Commands::Search {
@@ -134,8 +114,8 @@ pub fn run(cli: Cli) -> Result<()> {
             opts,
         }) => {
             debug!(
-                "Search command: backend={:?} query={:?} index={:?} output={:?}",
-                cli.backend, query, index, output
+                "Search command: query={:?} index={:?} output={:?}",
+                query, index, output
             );
             trace!("Search options: {:?}", opts);
 
@@ -148,42 +128,23 @@ pub fn run(cli: Cli) -> Result<()> {
 
             info!("Loaded {} query sequences", queries.len());
 
-            match cli.backend {
-                risearch::args::Backend::Fm => {
-                    #[cfg(feature = "fm-index")]
-                    {
-                        log::warn!("FM-Index search is experimental");
-                        // TODO: Implement FM-Index search
-                        bail!("FM-Index search not yet implemented");
-                    }
-                    #[cfg(not(feature = "fm-index"))]
-                    {
-                        bail!(
-                            "FM-Index backend is not available. \
-                            Recompile with `--features fm-index` to enable it."
-                        );
-                    }
-                }
-                risearch::args::Backend::Sa => {
-                    debug!("Loading suffix array index...");
-                    let idx = sa::load_index_file(index).context("Failed to load index file")?;
-                    trace!("Index loaded successfully");
+            debug!("Loading suffix array index...");
+            let idx = sa::load_index_file(index).context("Failed to load index file")?;
+            trace!("Index loaded successfully");
 
-                    let wrapper = search::SaIndex { index: &idx };
-                    debug!("Starting search with streaming output...");
+            let wrapper = search::SaIndex { index: &idx };
+            debug!("Starting search with streaming output...");
 
-                    let (mut writer, compression) =
-                        open_output(output.as_ref(), opts.output_compress)?;
-                    let mut opts = opts.clone();
-                    emit_legacy_warnings(&raw_args, &mut opts);
-                    opts.output_compress = Some(compression);
+            let (mut writer, compression) =
+                open_output(output.as_ref(), opts.output_compress)?;
+            let mut opts = opts.clone();
+            emit_legacy_warnings(&raw_args, &mut opts);
+            opts.output_compress = Some(compression);
 
-                    let hit_count =
-                        search::run_search_streaming(&queries, &wrapper, &opts, &mut writer)?;
-                    writer.flush().context("Failed to flush output")?;
-                    info!("Search completed: {} hits written", hit_count);
-                }
-            }
+            let hit_count =
+                search::run_search_streaming(&queries, &wrapper, &opts, &mut writer)?;
+            writer.flush().context("Failed to flush output")?;
+            info!("Search completed: {} hits written", hit_count);
         }
         None => {
             // No subcommand: show help

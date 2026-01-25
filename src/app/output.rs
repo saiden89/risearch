@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 
 use risearch::args::OutputCompression;
 
+
 pub fn infer_compression(path: &Path) -> OutputCompression {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return OutputCompression::None;

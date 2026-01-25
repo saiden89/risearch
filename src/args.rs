@@ -62,15 +62,6 @@ pub enum OutputCompression {
     Zstd,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
-#[clap(rename_all = "lowercase")]
-pub enum Backend {
-    /// FM-Index backend (requires 'fm-index' feature)
-    Fm,
-    /// Suffix Array backend
-    Sa,
-}
-
 use crate::seed::{MismatchSpec, SeedSpec};
 
 /// Arguments for seed generation

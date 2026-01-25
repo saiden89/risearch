@@ -183,10 +183,6 @@ if current_score < best_score - X_DROP {
 
 ---
 
-### P2-2: FM-Index Hybrid
-
-**Concept:** For very large genomes, FM-Index is more space-efficient than full SA.
-
 **Trade-offs:**
 
 - Pro: 0.5-2 bytes/base vs 8-12 bytes/base
@@ -261,7 +257,6 @@ if current_score < best_score - X_DROP {
 | `u32` SA positions | -50% SA | Low |
 | Memory-mapped indexes | Enables genome-scale | Medium |
 | Bit-packed sequences | -75% seq | Medium |
-| FM-Index hybrid | -90% index | High |
 
 ### Memory Projection (Human Genome: 3.2B bases)
 
