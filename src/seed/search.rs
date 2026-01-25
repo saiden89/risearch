@@ -1,5 +1,6 @@
 use crate::config::SeedConfig;
 use crate::sa::SaIndexFile;
+use crate::seq::normalize::normalize_rna_sequence;
 use crate::seq::reverse_complement_dna;
 use crate::types::Strand;
 
@@ -30,20 +31,19 @@ struct QueryCache {
 impl QueryCache {
     /// Build query preprocessing data (called once per query)
     fn new(query: &[u8], config: &SeedConfig) -> Option<Self> {
-        let q_len = query.len();
+        let (q_norm, _) = normalize_rna_sequence("", query).ok()?;
+        let q_len = q_norm.len();
 
-        // Normalize query to lowercase DNA (t not u) and build N prefix sums.
-        let mut q_norm = Vec::with_capacity(q_len);
         let mut n_prefix = Vec::with_capacity(q_len + 1);
         n_prefix.push(0);
-        for &b in query {
-            let lower = b.to_ascii_lowercase();
-            let norm = if lower == b'u' { b't' } else { lower };
-            q_norm.push(norm);
-            let last = *n_prefix.last().unwrap();
-            n_prefix.push(last + u32::from(norm == b'n'));
+        let mut n_total = 0;
+        for &b in &q_norm {
+            if b == b'n' {
+                n_total += 1;
+            }
+            n_prefix.push(n_total);
         }
-        let has_n_any = *n_prefix.last().unwrap() != 0;
+        let has_n_any = n_total != 0;
 
         // Get seed interval bounds
         let (start1, end1, mi_len) = config.seed.normalize(q_len).ok()?;

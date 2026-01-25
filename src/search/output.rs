@@ -4,32 +4,10 @@ use anyhow::Result;
 use log::debug;
 
 use crate::config::OutputFormat;
+use crate::seq::utils::push_bytes_as_rna;
 use crate::types::{Alignment, Pairing};
 
 use super::{SearchHit, SearchStage};
-
-#[inline]
-pub(super) fn push_bytes_as_rna(buf: &mut Vec<u8>, s: &[u8], reverse: bool) {
-    if reverse {
-        for &b in s.iter().rev() {
-            let c = match b {
-                b'T' => b'U',
-                b't' => b'u',
-                _ => b,
-            };
-            buf.push(c);
-        }
-    } else {
-        for &b in s {
-            let c = match b {
-                b'T' => b'U',
-                b't' => b'u',
-                _ => b,
-            };
-            buf.push(c);
-        }
-    }
-}
 
 #[inline]
 fn push_usize(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, val: usize) {

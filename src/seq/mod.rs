@@ -1,9 +1,15 @@
 //! Sequence abstraction for clean base access.
 //!
-//! This module provides a `Seq` wrapper that encapsulates sequence data and strand,
-//! providing clean methods for base access without scattered `Base::from_byte()` calls.
+//! Normalized sequences are stored as lowercase DNA (`a/c/g/t/n`, with `u` mapped to `t`).
+//! This module centralizes normalization, reverse-complement, and RNA-formatting helpers so the
+//! rest of the repository relies on a single canonical representation.
 
 pub mod normalize;
+pub mod rc;
+pub mod utils;
+
+pub use rc::{reverse_complement_dna, reverse_complement_rna};
+pub use utils::{bytes_to_rna_string, push_bytes_as_rna};
 
 use crate::types::{Base, Strand};
 
@@ -112,33 +118,6 @@ impl<'a> Seq<'a> {
     }
 }
 
-// =============================================================================
-// REVERSE COMPLEMENT - LUT-based free functions
-// =============================================================================
-
-use crate::types::{RC_DNA_TABLE, RC_RNA_TABLE};
-
-/// Compute RNA reverse complement using LUT (single lookup per base).
-/// Returns uppercase: A↔U, G↔C.
-#[inline]
-pub fn reverse_complement_rna(data: &[u8]) -> Vec<u8> {
-    data.iter()
-        .rev()
-        .map(|&b| RC_RNA_TABLE[b as usize])
-        .collect()
-}
-
-/// Compute DNA reverse complement using LUT (single lookup per base).
-/// Returns lowercase: A↔T, G↔C.
-#[inline]
-pub fn reverse_complement_dna(data: &[u8]) -> Vec<u8> {
-    data.iter()
-        .rev()
-        .map(|&b| RC_DNA_TABLE[b as usize])
-        .collect()
-}
-
-// =============================================================================
 // ALIGNED SEQ - Sentinel-padded buffer for safe pointer arithmetic
 // =============================================================================
 
