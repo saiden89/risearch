@@ -5,11 +5,9 @@
 //! rest of the repository relies on a single canonical representation.
 
 pub mod normalize;
-pub mod rc;
 pub mod sequence;
 pub mod utils;
 
-pub use rc::{reverse_complement_dna, reverse_complement_rna};
 pub use sequence::Sequence;
 pub use utils::{bases_to_rna_string, bytes_to_rna_string, push_bases_as_rna, push_bytes_as_rna};
 

@@ -1,17 +1,12 @@
-use crate::dsm::dsm_lookup_raw;
+use std::cmp::max;
+
+use crate::dsm::DsmModel;
 
 use super::{DpView, ExtendDir, GAP, MAX_EXT, MIN_SCORE};
 
 // =============================================================================
 // INIT HELPERS - Reduce code duplication in DP initialization
 // =============================================================================
-
-/// Pick best value from two sources.
-/// Uses std::cmp::max which LLVM compiles to branchless CMOV.
-#[inline(always)]
-pub(super) fn pick_best(val_a: i32, val_b: i32) -> i32 {
-    std::cmp::max(val_a, val_b)
-}
 
 #[inline(always)]
 pub(super) fn update_best_with_term(
@@ -44,23 +39,17 @@ pub(super) fn add_e(base: i32, energy: i32) -> i32 {
     }
 }
 
-/// max of 2 values - branchless via std::cmp::max (compiles to CMOV)
-#[inline(always)]
-pub(super) fn max2(a: i32, b: i32) -> i32 {
-    std::cmp::max(a, b)
-}
-
 /// max of 3 values - branchless
 #[inline(always)]
 pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
-    std::cmp::max(std::cmp::max(a, b), c)
+    max(max(a, b), c)
 }
 
 /// Initialize limited rows (t_len axis) - score-only version.
 /// All writes are unconditional to avoid reading stale data.
 #[inline(always)]
-pub(super) fn init_limited_rows(
-    view: &DpView<'_>,
+pub(super) fn init_limited_rows<M: DsmModel>(
+    view: &DpView<'_, M>,
     q_ptr: *const usize,
     t_ptr: *const usize,
     m_ptr: *mut i32,
@@ -80,9 +69,9 @@ pub(super) fn init_limited_rows(
     let left = view.dir == ExtendDir::Left;
     let stack = |q1: usize, q2: usize, t1: usize, t2: usize| -> i32 {
         if left {
-            dsm_lookup_raw(q2, q1, t2, t1)
+            M::lookup_raw(q2, q1, t2, t1)
         } else {
-            dsm_lookup_raw(q1, q2, t1, t2)
+            M::lookup_raw(q1, q2, t1, t2)
         }
     };
 
@@ -110,18 +99,18 @@ pub(super) fn init_limited_rows(
             // Primary[1,k] = Bt
             let from_m = add_e(m1_prev, stack(qi1, GAP, tj_prev, tj));
             let from_b = add_e(bt1_prev, stack(GAP, GAP, tj_prev, tj));
-            let bt1 = pick_best(from_m, from_b);
+            let bt1 = max(from_m, from_b);
             *bt_ptr.add(idx(1, k)) = bt1;
 
             // M[2,k]
             let from_m = add_e(m1_prev, stack(qi1, qi2, tj_prev, tj));
             let from_b = add_e(bt1_prev, stack(GAP, qi2, tj_prev, tj));
-            let m2 = pick_best(from_m, from_b);
+            let m2 = max(from_m, from_b);
             *m_ptr.add(idx(2, k)) = m2;
             let term = if left {
-                dsm_lookup_raw(GAP, qi2, GAP, tj)
+                M::lookup_raw(GAP, qi2, GAP, tj)
             } else {
-                dsm_lookup_raw(qi2, GAP, tj, GAP)
+                M::lookup_raw(qi2, GAP, tj, GAP)
             };
             update_best_with_term(best_e, best_i, best_j, m2, term, 2, k);
 
@@ -132,7 +121,7 @@ pub(super) fn init_limited_rows(
             // Primary[2,k] = Bt
             let from_m = add_e(m2_prev, stack(qi2, GAP, tj_prev, tj));
             let from_b = add_e(bt2_prev, stack(GAP, GAP, tj_prev, tj));
-            let bt2 = pick_best(from_m, from_b);
+            let bt2 = max(from_m, from_b);
             *bt_ptr.add(idx(2, k)) = bt2;
 
             m1_prev = *m_ptr.add(idx(1, k));
@@ -146,8 +135,8 @@ pub(super) fn init_limited_rows(
 /// Initialize limited columns (q_len axis) - score-only version.
 /// All writes are unconditional to avoid reading stale data.
 #[inline(always)]
-pub(super) fn init_limited_cols(
-    view: &DpView<'_>,
+pub(super) fn init_limited_cols<M: DsmModel>(
+    view: &DpView<'_, M>,
     q_ptr: *const usize,
     t_ptr: *const usize,
     m_ptr: *mut i32,
@@ -166,9 +155,9 @@ pub(super) fn init_limited_cols(
     let left = view.dir == ExtendDir::Left;
     let stack = |q1: usize, q2: usize, t1: usize, t2: usize| -> i32 {
         if left {
-            dsm_lookup_raw(q2, q1, t2, t1)
+            M::lookup_raw(q2, q1, t2, t1)
         } else {
-            dsm_lookup_raw(q1, q2, t1, t2)
+            M::lookup_raw(q1, q2, t1, t2)
         }
     };
 
@@ -186,17 +175,17 @@ pub(super) fn init_limited_cols(
             // Primary[ k,1 ] = Bq
             let from_m = add_e(*m_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, tj1, GAP));
             let from_b = add_e(*bq_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, GAP, GAP));
-            *bq_ptr.add(idx(k, 1)) = pick_best(from_m, from_b);
+            *bq_ptr.add(idx(k, 1)) = max(from_m, from_b);
 
             // M[ k,2 ]
             let from_m = add_e(*m_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, tj1, tj2));
             let from_b = add_e(*bq_ptr.add(idx(k - 1, 1)), stack(qi_prev, qi, GAP, tj2));
-            let val = pick_best(from_m, from_b);
+            let val = max(from_m, from_b);
             *m_ptr.add(idx(k, 2)) = val;
             let term = if left {
-                dsm_lookup_raw(GAP, qi, GAP, tj2)
+                M::lookup_raw(GAP, qi, GAP, tj2)
             } else {
-                dsm_lookup_raw(qi, GAP, tj2, GAP)
+                M::lookup_raw(qi, GAP, tj2, GAP)
             };
             update_best_with_term(best_e, best_i, best_j, val, term, k, 2);
 
@@ -207,7 +196,7 @@ pub(super) fn init_limited_cols(
             // Primary[ k,2 ] = Bq
             let from_m = add_e(*m_ptr.add(idx(k - 1, 2)), stack(qi_prev, qi, tj2, GAP));
             let from_b = add_e(*bq_ptr.add(idx(k - 1, 2)), stack(qi_prev, qi, GAP, GAP));
-            *bq_ptr.add(idx(k, 2)) = pick_best(from_m, from_b);
+            *bq_ptr.add(idx(k, 2)) = max(from_m, from_b);
         }
     }
 }

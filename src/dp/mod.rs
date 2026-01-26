@@ -1,4 +1,4 @@
-use crate::dsm::EnergyModel;
+use crate::dsm::DsmModel;
 use crate::seq::Sequence;
 use crate::types::Base;
 use log::trace;
@@ -55,7 +55,7 @@ impl std::fmt::Display for ExtendDir {
 ///
 /// The `e()` method always takes arguments in (prev, curr, prev, curr) order
 /// and internally reorders for left extension.
-pub struct DpView<'a> {
+pub struct DpView<'a, M: DsmModel> {
     query: &'a Sequence,
     target: &'a Sequence,
     q_anchor: usize,
@@ -63,6 +63,7 @@ pub struct DpView<'a> {
     pub dir: ExtendDir,
     pub q_len: usize,
     pub t_len: usize,
+    _model: std::marker::PhantomData<M>,
 }
 
 /// Gap base index constant
@@ -70,13 +71,13 @@ const GAP: usize = Base::Gap as usize;
 const DSM_DIM: usize = 6;
 
 #[inline]
-fn max_dsm_stack() -> i32 {
+fn max_dsm_stack<M: DsmModel>() -> i32 {
     let mut max = i32::MIN;
     for q1 in 0..DSM_DIM {
         for q2 in 0..DSM_DIM {
             for t1 in 0..DSM_DIM {
                 for t2 in 0..DSM_DIM {
-                    let val = EnergyModel::T04.stack_idx(q1, q2, t1, t2);
+                    let val = M::stack_idx(q1, q2, t1, t2);
                     if val > max {
                         max = val;
                     }
@@ -88,12 +89,12 @@ fn max_dsm_stack() -> i32 {
 }
 
 #[inline]
-fn max_dsm_terminal() -> i32 {
+fn max_dsm_terminal<M: DsmModel>() -> i32 {
     let mut max = i32::MIN;
     for q in 0..DSM_DIM {
         for t in 0..DSM_DIM {
-            let left = EnergyModel::T04.stack_idx(GAP, q, GAP, t);
-            let right = EnergyModel::T04.stack_idx(q, GAP, t, GAP);
+            let left = M::stack_idx(GAP, q, GAP, t);
+            let right = M::stack_idx(q, GAP, t, GAP);
             let val = if left > right { left } else { right };
             if val > max {
                 max = val;
@@ -103,7 +104,7 @@ fn max_dsm_terminal() -> i32 {
     max
 }
 
-impl<'a> DpView<'a> {
+impl<'a, M: DsmModel> DpView<'a, M> {
     #[inline(always)]
     fn base_or_gap(seq: &Sequence, pos: usize) -> Base {
         if pos >= seq.len() {
@@ -143,6 +144,7 @@ impl<'a> DpView<'a> {
             dir: ExtendDir::Left,
             q_len: (q_start + 1).min(max_ext),
             t_len: (target.len() - t_start).min(max_ext),
+            _model: std::marker::PhantomData,
         }
     }
 
@@ -162,6 +164,7 @@ impl<'a> DpView<'a> {
             dir: ExtendDir::Right,
             q_len: (query.len() - q_end).min(max_ext),
             t_len: (t_end + 1).min(max_ext),
+            _model: std::marker::PhantomData,
         }
     }
 
@@ -191,9 +194,9 @@ impl<'a> DpView<'a> {
     pub fn e(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
         match self.dir {
             // Left: DSM[curr, prev, curr, prev] - stacking toward 5'
-            ExtendDir::Left => EnergyModel::T04.stack_idx(q2, q1, t2, t1),
+            ExtendDir::Left => M::stack_idx(q2, q1, t2, t1),
             // Right: DSM[prev, curr, prev, curr] - stacking toward 3'
-            ExtendDir::Right => EnergyModel::T04.stack_idx(q1, q2, t1, t2),
+            ExtendDir::Right => M::stack_idx(q1, q2, t1, t2),
         }
     }
 
@@ -205,8 +208,8 @@ impl<'a> DpView<'a> {
     #[inline(always)]
     pub fn terminal(&self, i: usize, j: usize) -> i32 {
         match self.dir {
-            ExtendDir::Left => EnergyModel::T04.stack_idx(GAP, self.q(i), GAP, self.t(j)),
-            ExtendDir::Right => EnergyModel::T04.stack_idx(self.q(i), GAP, self.t(j), GAP),
+            ExtendDir::Left => M::stack_idx(GAP, self.q(i), GAP, self.t(j)),
+            ExtendDir::Right => M::stack_idx(self.q(i), GAP, self.t(j), GAP),
         }
     }
 
@@ -387,18 +390,19 @@ impl DpMatrices {
 }
 
 /// Stateful DP extender with reusable matrices
-pub struct DpExtender {
+pub struct DpExtender<M: DsmModel> {
     matrices: DpMatrices,
     /// Reusable traceback buffer - cleared and reused on each extend() call.
     trace_buf: TracebackPath,
     max_stack: i32,
     max_terminal: i32,
+    _model: std::marker::PhantomData<M>,
 }
 
-impl DpExtender {
+impl<M: DsmModel> DpExtender<M> {
     pub fn new() -> Self {
-        let max_stack = max_dsm_stack();
-        let max_terminal = max_dsm_terminal();
+        let max_stack = max_dsm_stack::<M>();
+        let max_terminal = max_dsm_terminal::<M>();
         debug_assert!(max_stack >= MIN_SCORE, "invalid DSM max stack");
         debug_assert!(max_terminal >= MIN_SCORE, "invalid DSM max terminal");
 
@@ -408,6 +412,7 @@ impl DpExtender {
             trace_buf: TracebackPath::new(),
             max_stack,
             max_terminal,
+            _model: std::marker::PhantomData,
         }
     }
     /// Extend to the left (query 5', target 3')
@@ -419,7 +424,7 @@ impl DpExtender {
         t_start: usize,
         max_ext: usize,
     ) -> DpExtension {
-        let view = DpView::left(query, target, q_start, t_start, max_ext);
+        let view = DpView::<M>::left(query, target, q_start, t_start, max_ext);
         self.extend(&view)
     }
 
@@ -432,7 +437,7 @@ impl DpExtender {
         t_end: usize,
         max_ext: usize,
     ) -> DpExtension {
-        let view = DpView::right(query, target, q_end, t_end, max_ext);
+        let view = DpView::<M>::right(query, target, q_end, t_end, max_ext);
         self.extend(&view)
     }
 
@@ -441,7 +446,7 @@ impl DpExtender {
     // =========================================================================
 
     #[cfg_attr(feature = "prof", inline(never))]
-    pub fn extend(&mut self, view: &DpView) -> DpExtension {
+    pub fn extend(&mut self, view: &DpView<'_, M>) -> DpExtension {
         let (q_len, t_len) = (view.q_len, view.t_len);
         let max_stack = self.max_stack;
         let max_terminal = self.max_terminal;
@@ -489,20 +494,20 @@ impl DpExtender {
         // Avoid per-iteration branching in view.q/view.t by specializing on direction.
         if view.dir == ExtendDir::Left {
             for i in 0..q_len.min(MAX_EXT) {
-                let qi = DpView::left_base(view.query, view.q_anchor, i).idx();
+                let qi = DpView::<M>::left_base(view.query, view.q_anchor, i).idx();
                 unsafe { *q_ptr.add(i) = qi };
             }
             for j in 0..t_len.min(MAX_EXT) {
-                let tj = DpView::right_base(view.target, view.t_anchor, j).idx();
+                let tj = DpView::<M>::right_base(view.target, view.t_anchor, j).idx();
                 unsafe { *t_ptr.add(j) = tj };
             }
         } else {
             for i in 0..q_len.min(MAX_EXT) {
-                let qi = DpView::right_base(view.query, view.q_anchor, i).idx();
+                let qi = DpView::<M>::right_base(view.query, view.q_anchor, i).idx();
                 unsafe { *q_ptr.add(i) = qi };
             }
             for j in 0..t_len.min(MAX_EXT) {
-                let tj = DpView::left_base(view.target, view.t_anchor, j).idx();
+                let tj = DpView::<M>::left_base(view.target, view.t_anchor, j).idx();
                 unsafe { *t_ptr.add(j) = tj };
             }
         }
@@ -631,7 +636,7 @@ impl DpExtender {
         // LIMITED ROWS/COLUMNS - unified via macro (score-only)
         // =======================================================================
 
-        init_limited_rows(
+        init_limited_rows::<M>(
             view,
             q_ptr,
             t_ptr,
@@ -646,7 +651,7 @@ impl DpExtender {
             &mut best_j,
         );
 
-        init_limited_cols(
+        init_limited_cols::<M>(
             view,
             q_ptr,
             t_ptr,
@@ -673,7 +678,7 @@ impl DpExtender {
         // Skip if too short for main loop
         if q_len >= 3 && t_len >= 3 {
             if view.dir == ExtendDir::Left {
-                dp_main_loop_left(
+                dp_main_loop_left::<M>(
                     q_ptr,
                     t_ptr,
                     m,
@@ -689,7 +694,7 @@ impl DpExtender {
                     &mut best_j,
                 );
             } else {
-                dp_main_loop_right(
+                dp_main_loop_right::<M>(
                     q_ptr,
                     t_ptr,
                     m,
@@ -720,7 +725,7 @@ impl DpExtender {
 
         // Reuse traceback buffer (cleared each call, capacity preserved)
         self.trace_buf.clear();
-        traceback(view, m, bq, bt, best_i, best_j, &mut self.trace_buf);
+        traceback::<M>(view, m, bq, bt, best_i, best_j, &mut self.trace_buf);
 
         trace!(
             "{} result: score={} q_len={} t_len={} trace={:?}",
@@ -736,7 +741,7 @@ impl DpExtender {
     }
 }
 
-impl Default for DpExtender {
+impl<M: DsmModel> Default for DpExtender<M> {
     fn default() -> Self {
         Self::new()
     }

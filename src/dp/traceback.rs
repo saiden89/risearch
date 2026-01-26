@@ -1,10 +1,11 @@
 use log::trace;
 
+use crate::dsm::DsmModel;
 use super::{DpOp, DpView, MIN_SCORE, ScoreGrid, TracebackPath};
 
 #[cfg_attr(feature = "prof", inline(never))]
-pub(super) fn traceback(
-    view: &DpView<'_>,
+pub(super) fn traceback<M: DsmModel>(
+    view: &DpView<'_, M>,
     m: &ScoreGrid,
     bq: &ScoreGrid,
     bt: &ScoreGrid,

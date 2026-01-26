@@ -3,26 +3,26 @@ use log::info;
 use rayon::prelude::*;
 use std::io::Write;
 
-use crate::config::{OutputCompression, OutputFormat, SearchArgs};
-use crate::output::{compress_bytes, resolve_compression};
+use crate::config::{OutputFormat, SearchArgs};
+use crate::dsm::DsmModel;
+use crate::registry::QueryRegistry;
 use crate::seed::SeedHit;
 use crate::seed::search::find_seeds;
-use crate::registry::QueryRegistry;
 use crate::types::Strand;
 
 use super::core::extend_seed;
+use super::{FilterReason, SearchContext, THREAD_MATCHES, THREAD_SEEDS};
 use crate::output::format::fill_line_buf;
-use super::{FilterReason, SearchContext, THREAD_EXTENDER, THREAD_MATCHES, THREAD_SEEDS};
 use crate::sa::TargetRegistry;
 
-/// Run search with streaming output - writes hits directly instead of collecting.
-/// This avoids memory overhead for large result sets.
-pub fn run_search_streaming<W: std::io::Write>(
+pub(super) fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
     queries: &QueryRegistry,
     index: &TargetRegistry,
     opts: &SearchArgs,
     writer: &mut W,
+    extender_tls: &'static std::thread::LocalKey<std::cell::RefCell<crate::dp::DpExtender<M>>>,
 ) -> Result<usize> {
+
     for (q_idx, q) in queries.iter() {
         if let Err(err) = opts.seed.seed.normalize(q.sequence().len()) {
             bail!(
@@ -42,46 +42,43 @@ pub fn run_search_streaming<W: std::io::Write>(
 
     let mut hit_count = 0;
     let format = opts.output.format.unwrap_or(OutputFormat::Detailed);
-    let compression = opts.output.compress.unwrap_or(OutputCompression::None);
-    let compression_cfg = resolve_compression(compression, opts.output.level)?;
     let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
 
-    let process_query =
-        |q_idx: u32, q: &crate::registry::QueryEntry, writer: &mut dyn Write, line_buf: &mut Vec<u8>| -> usize {
-            let mut local_hits = 0usize;
-            THREAD_EXTENDER.with(|ext| {
-                THREAD_SEEDS.with(|seeds_cell| {
-                    THREAD_MATCHES.with(|matches_cell| {
-                        let mut extender = ext.borrow_mut();
-                        let mut seeds = seeds_cell.borrow_mut();
-                        let mut matches = matches_cell.borrow_mut();
-                        let mut ctx = SearchContext::with_extender(index, opts, &mut extender);
+    let process_query = |q_idx: u32,
+                         q: &crate::registry::QueryEntry,
+                         writer: &mut dyn Write,
+                         line_buf: &mut Vec<u8>|
+     -> usize {
+        let mut local_hits = 0usize;
+        extender_tls.with(|ext| {
+            THREAD_SEEDS.with(|seeds_cell| {
+                THREAD_MATCHES.with(|matches_cell| {
+                    let mut extender = ext.borrow_mut();
+                    let mut seeds = seeds_cell.borrow_mut();
+                    let mut matches = matches_cell.borrow_mut();
+                    let mut ctx = SearchContext::<M>::with_extender(index, opts, &mut extender);
 
-                        // Reuse thread-local Vecs instead of allocating new ones
-                        find_seeds(q, ctx.index, &ctx.args.seed, &mut seeds, &mut matches);
+                    // Reuse thread-local Vecs instead of allocating new ones
+                    find_seeds(q, ctx.index, &ctx.args.seed, &mut seeds, &mut matches);
 
-                        for candidate in seeds.iter() {
-                            if process_candidate_streaming(
-                                q_idx,
-                                queries,
-                                candidate,
-                                &mut ctx,
-                                writer,
-                                format,
-                                line_buf,
-                            ) {
-                                local_hits += 1;
-                            }
+                    for candidate in seeds.iter() {
+                        if process_candidate_streaming::<M, _>(
+                            q_idx, queries, candidate, &mut ctx, writer, format, line_buf,
+                        ) {
+                            local_hits += 1;
                         }
-                    });
+                    }
                 });
             });
-            local_hits
-        };
+        });
+        local_hits
+    };
 
     let mut chunk_start = 0usize;
     for chunk in queries.entries().chunks(chunk_size) {
-        let outputs: Vec<Result<(Vec<u8>, usize)>> = chunk
+        // Parallel processing: each thread produces raw bytes (no compression here)
+        // Compression is handled by the streaming writer wrapper
+        let outputs: Vec<(Vec<u8>, usize)> = chunk
             .par_iter()
             .enumerate()
             .map(|(i, q)| {
@@ -89,13 +86,11 @@ pub fn run_search_streaming<W: std::io::Write>(
                 let mut out: Vec<u8> = Vec::new();
                 let q_idx = (chunk_start + i) as u32;
                 let hits = process_query(q_idx, q, &mut out, &mut line_buf);
-                let out = compress_bytes(compression_cfg, out)?;
-                Ok((out, hits))
+                (out, hits)
             })
             .collect();
 
-        for item in outputs {
-            let (buf, count) = item?;
+        for (buf, count) in outputs {
             if !buf.is_empty() {
                 writer.write_all(&buf)?;
             }
@@ -110,11 +105,11 @@ pub fn run_search_streaming<W: std::io::Write>(
 
 /// Process candidate and write directly to output - zero String allocation variant.
 /// Returns true if a hit was written.
-fn process_candidate_streaming<W: Write + ?Sized>(
+fn process_candidate_streaming<M: DsmModel, W: Write + ?Sized>(
     query_idx: u32,
     queries: &QueryRegistry,
     candidate: &SeedHit,
-    ctx: &mut SearchContext,
+    ctx: &mut SearchContext<'_, '_, M>,
     writer: &mut W,
     format: OutputFormat,
     line_buf: &mut Vec<u8>,

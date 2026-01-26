@@ -1,6 +1,7 @@
 use crate::config::SearchArgs;
 use crate::dp;
-use crate::dsm::EnergyModel;
+use crate::config::Matrix;
+use crate::dsm::{DsmModel, T04, T99};
 use crate::seed::SeedHit;
 use crate::seed::SeedMatch;
 use crate::seq::Sequence;
@@ -13,10 +14,54 @@ use std::collections::HashMap;
 mod core;
 mod stream;
 
-pub use core::run_search;
-pub use stream::run_search_streaming;
-
 const MAX_DP_EXT: usize = 50;
+
+pub fn run_search(
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
+    opts: &SearchArgs,
+) -> anyhow::Result<Vec<SearchHit>> {
+    match opts.extend.matrix {
+        Matrix::T04 => core::run_search_impl::<T04>(queries, index, opts, &THREAD_EXTENDER_T04),
+        Matrix::T99 => core::run_search_impl::<T99>(queries, index, opts, &THREAD_EXTENDER_T99),
+        _ => {
+            anyhow::bail!(
+                "Energy matrix {:?} is not implemented yet (supported: t04, t99).",
+                opts.extend.matrix
+            );
+        }
+    }
+}
+
+pub fn run_search_streaming<W: std::io::Write>(
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
+    opts: &SearchArgs,
+    writer: &mut W,
+) -> anyhow::Result<usize> {
+    match opts.extend.matrix {
+        Matrix::T04 => stream::run_search_streaming_impl::<T04, _>(
+            queries,
+            index,
+            opts,
+            writer,
+            &THREAD_EXTENDER_T04,
+        ),
+        Matrix::T99 => stream::run_search_streaming_impl::<T99, _>(
+            queries,
+            index,
+            opts,
+            writer,
+            &THREAD_EXTENDER_T99,
+        ),
+        _ => {
+            anyhow::bail!(
+                "Energy matrix {:?} is not implemented yet (supported: t04, t99).",
+                opts.extend.matrix
+            );
+        }
+    }
+}
 
 /// High-level algorithm stages for structured logging
 #[derive(Debug, Clone, Copy)]
@@ -246,34 +291,34 @@ impl SearchHit {
 
 // Reimplementing mapping locally for safety and speed
 
-pub struct SearchContext<'a, 'e> {
+pub struct SearchContext<'a, 'e, M: DsmModel> {
     pub index: &'a TargetRegistry,
     pub args: &'a SearchArgs,
-    pub extender: &'e mut dp::DpExtender,
+    pub extender: &'e mut dp::DpExtender<M>,
     pub stats: SearchStats,
-    pub energy: EnergyModel,
 }
 
-impl<'a, 'e> SearchContext<'a, 'e> {
+impl<'a, 'e, M: DsmModel> SearchContext<'a, 'e, M> {
     pub fn with_extender(
         index: &'a TargetRegistry,
         args: &'a SearchArgs,
-        extender: &'e mut dp::DpExtender,
+        extender: &'e mut dp::DpExtender<M>,
     ) -> Self {
         Self {
             index,
             args,
             extender,
             stats: SearchStats::default(),
-            energy: EnergyModel::T04,
         }
     }
 }
 
 // Thread-local storage for reusable buffers - avoids allocation per query.
 thread_local! {
-    static THREAD_EXTENDER: std::cell::RefCell<dp::DpExtender> =
-        std::cell::RefCell::new(dp::DpExtender::new());
+    static THREAD_EXTENDER_T04: std::cell::RefCell<dp::DpExtender<T04>> =
+        std::cell::RefCell::new(dp::DpExtender::<T04>::new());
+    static THREAD_EXTENDER_T99: std::cell::RefCell<dp::DpExtender<T99>> =
+        std::cell::RefCell::new(dp::DpExtender::<T99>::new());
     static THREAD_SEEDS: std::cell::RefCell<Vec<SeedHit>> =
         std::cell::RefCell::new(Vec::with_capacity(100_000));
     static THREAD_MATCHES: std::cell::RefCell<Vec<SeedMatch>> =

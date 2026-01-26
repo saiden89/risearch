@@ -1,10 +1,12 @@
-use crate::dsm::dsm_lookup_raw;
+use std::cmp::max;
 
-use super::init::{add_e, max2, max3, update_best_with_term};
+use crate::dsm::DsmModel;
+
+use super::init::{add_e, max3, update_best_with_term};
 use super::{GAP, MIN_SCORE, ScoreGrid};
 
 #[cfg_attr(feature = "prof", inline(never))]
-pub(super) fn dp_main_loop_left(
+pub(super) fn dp_main_loop_left<M: DsmModel>(
     q_ptr: *const usize,
     t_ptr: *const usize,
     m: &mut ScoreGrid,
@@ -44,9 +46,9 @@ pub(super) fn dp_main_loop_left(
                 let bq_diag = *bq_ptr.add(diag_idx);
                 let bt_diag = *bt_ptr.add(diag_idx);
 
-                let s_mm = add_e(m_diag, dsm_lookup_raw(qi, qi_prev, tj, tj_prev));
-                let s_mq = add_e(bq_diag, dsm_lookup_raw(qi, qi_prev, tj, GAP));
-                let s_mt = add_e(bt_diag, dsm_lookup_raw(qi, GAP, tj, tj_prev));
+                let s_mm = add_e(m_diag, M::lookup_raw(qi, qi_prev, tj, tj_prev));
+                let s_mq = add_e(bq_diag, M::lookup_raw(qi, qi_prev, tj, GAP));
+                let s_mt = add_e(bt_diag, M::lookup_raw(qi, GAP, tj, tj_prev));
                 let val_m = max3(s_mm, s_mq, s_mt);
 
                 if val_m > MIN_SCORE {
@@ -58,7 +60,7 @@ pub(super) fn dp_main_loop_left(
                             best_i,
                             best_j,
                             val_m,
-                            dsm_lookup_raw(GAP, qi, GAP, tj),
+                            M::lookup_raw(GAP, qi, GAP, tj),
                             i,
                             j,
                         );
@@ -69,22 +71,22 @@ pub(super) fn dp_main_loop_left(
 
                 let m_up = *m_ptr.add(up_idx);
                 let bq_up = *bq_ptr.add(up_idx);
-                let s_qm = add_e(m_up, dsm_lookup_raw(qi, qi_prev, GAP, tj));
-                let s_qq = add_e(bq_up, dsm_lookup_raw(qi, qi_prev, GAP, GAP));
-                *bq_ptr.add(curr_idx) = max2(s_qm, s_qq);
+                let s_qm = add_e(m_up, M::lookup_raw(qi, qi_prev, GAP, tj));
+                let s_qq = add_e(bq_up, M::lookup_raw(qi, qi_prev, GAP, GAP));
+                *bq_ptr.add(curr_idx) = max(s_qm, s_qq);
 
                 let m_left = *m_ptr.add(left_idx);
                 let bt_left = *bt_ptr.add(left_idx);
-                let s_tm = add_e(m_left, dsm_lookup_raw(GAP, qi, tj, tj_prev));
-                let s_tt = add_e(bt_left, dsm_lookup_raw(GAP, GAP, tj, tj_prev));
-                *bt_ptr.add(curr_idx) = max2(s_tm, s_tt);
+                let s_tm = add_e(m_left, M::lookup_raw(GAP, qi, tj, tj_prev));
+                let s_tt = add_e(bt_left, M::lookup_raw(GAP, GAP, tj, tj_prev));
+                *bt_ptr.add(curr_idx) = max(s_tm, s_tt);
             }
         }
     }
 }
 
 #[cfg_attr(feature = "prof", inline(never))]
-pub(super) fn dp_main_loop_right(
+pub(super) fn dp_main_loop_right<M: DsmModel>(
     q_ptr: *const usize,
     t_ptr: *const usize,
     m: &mut ScoreGrid,
@@ -124,9 +126,9 @@ pub(super) fn dp_main_loop_right(
                 let bq_diag = *bq_ptr.add(diag_idx);
                 let bt_diag = *bt_ptr.add(diag_idx);
 
-                let s_mm = add_e(m_diag, dsm_lookup_raw(qi_prev, qi, tj_prev, tj));
-                let s_mq = add_e(bq_diag, dsm_lookup_raw(qi_prev, qi, GAP, tj));
-                let s_mt = add_e(bt_diag, dsm_lookup_raw(GAP, qi, tj_prev, tj));
+                let s_mm = add_e(m_diag, M::lookup_raw(qi_prev, qi, tj_prev, tj));
+                let s_mq = add_e(bq_diag, M::lookup_raw(qi_prev, qi, GAP, tj));
+                let s_mt = add_e(bt_diag, M::lookup_raw(GAP, qi, tj_prev, tj));
                 let val_m = max3(s_mm, s_mq, s_mt);
 
                 if val_m > MIN_SCORE {
@@ -138,7 +140,7 @@ pub(super) fn dp_main_loop_right(
                             best_i,
                             best_j,
                             val_m,
-                            dsm_lookup_raw(qi, GAP, tj, GAP),
+                            M::lookup_raw(qi, GAP, tj, GAP),
                             i,
                             j,
                         );
@@ -149,15 +151,15 @@ pub(super) fn dp_main_loop_right(
 
                 let m_up = *m_ptr.add(up_idx);
                 let bq_up = *bq_ptr.add(up_idx);
-                let s_qm = add_e(m_up, dsm_lookup_raw(qi_prev, qi, tj, GAP));
-                let s_qq = add_e(bq_up, dsm_lookup_raw(qi_prev, qi, GAP, GAP));
-                *bq_ptr.add(curr_idx) = max2(s_qm, s_qq);
+                let s_qm = add_e(m_up, M::lookup_raw(qi_prev, qi, tj, GAP));
+                let s_qq = add_e(bq_up, M::lookup_raw(qi_prev, qi, GAP, GAP));
+                *bq_ptr.add(curr_idx) = max(s_qm, s_qq);
 
                 let m_left = *m_ptr.add(left_idx);
                 let bt_left = *bt_ptr.add(left_idx);
-                let s_tm = add_e(m_left, dsm_lookup_raw(qi, GAP, tj_prev, tj));
-                let s_tt = add_e(bt_left, dsm_lookup_raw(GAP, GAP, tj_prev, tj));
-                *bt_ptr.add(curr_idx) = max2(s_tm, s_tt);
+                let s_tm = add_e(m_left, M::lookup_raw(qi, GAP, tj_prev, tj));
+                let s_tt = add_e(bt_left, M::lookup_raw(GAP, GAP, tj_prev, tj));
+                *bt_ptr.add(curr_idx) = max(s_tm, s_tt);
             }
         }
     }

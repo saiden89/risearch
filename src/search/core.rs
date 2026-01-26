@@ -4,14 +4,14 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 
 use crate::dp;
-use crate::dsm::{PAIR_MAT, PAIR_MAT_NO_GU};
+use crate::dsm::{DsmModel, PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
 use crate::seed::{SeedHit, build_seed_alignment};
 use crate::seq::Sequence;
 use crate::types::{Alignment, Base, Pairing, Strand};
 
-use super::{FilterReason, MAX_DP_EXT, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER};
+use super::{FilterReason, MAX_DP_EXT, SearchContext, SearchHit, SearchStage};
 
 #[inline]
 fn base_or_gap(seq: &Sequence, pos: usize) -> Base {
@@ -33,19 +33,20 @@ fn left_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
 
 /// Run search and return hits (used by parity tests and library callers).
 /// Assumes the provided `SearchArgs` already contains a valid `SeedSpec` for each query.
-pub fn run_search(
+pub(super) fn run_search_impl<M: DsmModel>(
     queries: &QueryRegistry,
     index: &TargetRegistry,
     opts: &crate::config::SearchArgs,
+    extender_tls: &'static std::thread::LocalKey<std::cell::RefCell<dp::DpExtender<M>>>,
 ) -> Result<Vec<SearchHit>> {
     let per_query_hits: Vec<Vec<SearchHit>> = queries
         .entries()
         .par_iter()
         .enumerate()
         .map(|(q_idx, q)| {
-            THREAD_EXTENDER.with(|ext| {
+            extender_tls.with(|ext| {
                 let mut extender = ext.borrow_mut();
-                let mut ctx = SearchContext::with_extender(index, opts, &mut extender);
+                let mut ctx = SearchContext::<M>::with_extender(index, opts, &mut extender);
                 let mut seeds = Vec::new();
                 let mut matches = Vec::new();
                 crate::seed::find_seeds(q, ctx.index, &ctx.args.seed, &mut seeds, &mut matches);
@@ -64,11 +65,11 @@ pub fn run_search(
 }
 
 /// Extend a single candidate and build a `SearchHit` if the energy passes filters.
-fn extend_candidate(
+fn extend_candidate<M: DsmModel>(
     query_idx: u32,
     queries: &QueryRegistry,
     candidate: &SeedHit,
-    ctx: &mut SearchContext,
+    ctx: &mut SearchContext<'_, '_, M>,
 ) -> Option<SearchHit> {
     let query_seq = queries.get(query_idx).sequence();
     let t_idx = candidate.target_idx;
@@ -96,9 +97,9 @@ fn extend_candidate(
 }
 
 /// Finalize coordinates, bookkeeping, and formatting for an accepted hit.
-fn build_hit(
+fn build_hit<M: DsmModel>(
     query_idx: u32,
-    ctx: &SearchContext,
+    ctx: &SearchContext<'_, '_, M>,
     candidate: &SeedHit,
     ext: ExtendedHit,
 ) -> SearchHit {
@@ -151,8 +152,8 @@ pub(super) struct ExtendedHit {
     pub r_t: usize,
 }
 
-pub(super) fn extend_seed(
-    ctx: &mut SearchContext<'_, '_>,
+pub(super) fn extend_seed<M: DsmModel>(
+    ctx: &mut SearchContext<'_, '_, M>,
     q_seq: &Sequence,
     t_seq: &Sequence,
     candidate: &SeedHit,
@@ -311,10 +312,8 @@ pub(super) fn extend_seed(
         );
     }
 
-    // Seed energy calculation using centralized EnergyModel
-    let seed_energy_raw = ctx
-        .energy
-        .seed_energy(query, target, q_pos, t_match_end, len);
+    // Seed energy calculation using DSM model
+    let seed_energy_raw = M::seed_energy(query, target, q_pos, t_match_end, len);
 
     // Only build interaction string when trace logging is enabled (avoids allocation in hot path)
     if log::log_enabled!(log::Level::Trace) {
@@ -334,14 +333,12 @@ pub(super) fn extend_seed(
     // Need to add terminal penalties at both ends of the seed
     if !do_extension {
         // 5' terminal: Gap->q[0] paired with Gap->t[t_end]
-        let term_5p = ctx.energy.terminal_5p(query[q_pos], target[t_match_end]);
+        let term_5p = M::terminal_5p(query[q_pos], target[t_match_end]);
         // 3' terminal: q[q_end]->Gap paired with t[t_pos]->Gap
-        let term_3p = ctx
-            .energy
-            .terminal_3p(query[q_pos + len - 1], target[t_pos]);
+        let term_3p = M::terminal_3p(query[q_pos + len - 1], target[t_pos]);
 
         let total_raw = seed_energy_raw + term_5p + term_3p;
-        let final_score = ctx.energy.to_kcal(total_raw);
+        let final_score = M::to_kcal(total_raw);
         let seed_alignment = build_seed_alignment(query, target, q_pos, t_match_end, len);
 
         return Some(ExtendedHit {
@@ -365,9 +362,7 @@ pub(super) fn extend_seed(
         .extend_right(query, target, q_pos + len - 1, t_pos, safe_ext);
 
     // Use OLD embedded DP scores for C parity (new dp module has differences)
-    let final_score = ctx
-        .energy
-        .to_kcal(seed_energy_raw + left_res.score + right_res.score);
+    let final_score = M::to_kcal(seed_energy_raw + left_res.score + right_res.score);
 
     trace!(
         "{} score={:.2} (seed={:.2} L={} R={}) L_len={}/{} R_len={}/{}",

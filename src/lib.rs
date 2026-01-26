@@ -13,8 +13,7 @@ pub mod seq;
 pub mod types; // Core domain types - must be first
 
 // Re-exports for convenience
-pub use dsm::{Dsm, StackPair};
-pub use seq::{AlignedSeq, Sequence, reverse_complement_dna, reverse_complement_rna};
+pub use seq::{AlignedSeq, Sequence};
 pub use registry::{QueryRegistry, TargetRegistry};
 pub use types::{BASE_COUNT, Base, Energy, QueryId, SeedPairingMode, Span, Strand, TargetId};
 
