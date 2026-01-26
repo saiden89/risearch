@@ -1,18 +1,17 @@
 use crate::config::SeedConfig;
 use crate::sa::SaIndexFile;
-use crate::seq::normalize::normalize_rna_sequence;
-use crate::seq::reverse_complement_dna;
-use crate::types::Strand;
+use crate::seq::Sequence;
+use crate::types::{Base, Strand};
 
 use super::sa::build_suffix_array;
 use super::{SeedCandidate, SeedMatch, SeedSearcher};
 
 /// Pre-computed query data to avoid rebuilding per-target.
 struct QueryCache {
-    /// Normalized query (lowercase DNA, U->T)
-    pub q_norm: Vec<u8>,
+    /// Normalized query sequence
+    pub q_norm: Sequence,
     /// Reverse complement of normalized query
-    pub q_rc: Vec<u8>,
+    pub q_rc: Sequence,
     /// Suffix array of reverse complement
     pub q_rc_sa: Vec<u32>,
     /// Seed interval start (0-based)
@@ -21,7 +20,6 @@ struct QueryCache {
     pub end1: usize,
     /// Minimum seed length
     pub mi_len: usize,
-    /// Bitmap: has_n[i] = true if position i contains 'n'
     /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
@@ -30,15 +28,15 @@ struct QueryCache {
 
 impl QueryCache {
     /// Build query preprocessing data (called once per query)
-    fn new(query: &[u8], config: &SeedConfig) -> Option<Self> {
-        let (q_norm, _) = normalize_rna_sequence("", query).ok()?;
+    fn new(query: &Sequence, config: &SeedConfig) -> Option<Self> {
+        let q_norm = query.clone();
         let q_len = q_norm.len();
 
         let mut n_prefix = Vec::with_capacity(q_len + 1);
         n_prefix.push(0);
         let mut n_total = 0;
-        for &b in &q_norm {
-            if b == b'n' {
+        for &base in q_norm.iter() {
+            if base == Base::N {
                 n_total += 1;
             }
             n_prefix.push(n_total);
@@ -49,7 +47,7 @@ impl QueryCache {
         let (start1, end1, mi_len) = config.seed.normalize(q_len).ok()?;
 
         // Build query RC and its SA once
-        let q_rc = reverse_complement_dna(&q_norm);
+        let q_rc = q_norm.reverse_complement();
         let q_rc_sa = build_suffix_array(&q_rc);
 
         Some(Self {
@@ -64,7 +62,7 @@ impl QueryCache {
         })
     }
 
-    /// Check if any position in range [start, start+len) contains 'n'
+    /// Check if any position in range [start, start+len) contains 'N'
     #[inline]
     fn has_n_in_range(&self, start: usize, len: usize) -> bool {
         if !self.has_n_any {
@@ -79,7 +77,7 @@ impl QueryCache {
 ///
 /// Clears `candidates` and `matches` before filling.
 pub(crate) fn find_seeds(
-    query: &[u8],
+    query: &Sequence,
     index: &SaIndexFile,
     config: &SeedConfig,
     candidates: &mut Vec<SeedCandidate>,
@@ -126,7 +124,7 @@ fn collect_target_seeds(
     matches: &mut Vec<SeedMatch>,
     strand: Strand,
     t_sa: &[u32],
-    t_seq: &[u8],
+    t_seq: &Sequence,
 ) {
     let q_len = prep.q_norm.len();
     let start0 = prep.start0;

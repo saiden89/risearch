@@ -22,6 +22,7 @@
 //! Level s:  When depth == seed_length, collect matches
 //! ```
 
+use crate::Sequence;
 use crate::config::SeedConfig;
 use crate::types::{Base, SeedPairingMode};
 
@@ -56,33 +57,37 @@ impl SaInterval {
 /// After partitioning, the SA interval is divided into contiguous sub-intervals
 /// where all suffixes in each sub-interval start with the same base.
 ///
-/// The C algorithm uses interval array [6] with boundaries for a,c,g,n,u,end
+/// Base discriminant ordering: A(1) < G(2) < C(3) < U(4) < N(5)
+/// Boundaries array: [a_start, g_start, c_start, u_start, n_start, end]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BaseIntervals {
-    /// Boundaries: [a_start, c_start, g_start, n_start, u_start, end]
+    /// Boundaries: [a_start, g_start, c_start, u_start, n_start, end]
+    /// Reflects discriminant ordering: A < G < C < U < N
     bounds: [usize; 6],
 }
 
 impl BaseIntervals {
-    /// Create from raw bounds array (C-style)
+    /// Create from raw bounds array
+    /// Expected order: [a_start, g_start, c_start, u_start, n_start, end]
     pub fn from_bounds(bounds: [usize; 6]) -> Self {
         Self { bounds }
     }
 
-    /// Get interval for a specific base (using C's indexing: a=0, c=1, g=2, n=3, u=4)
+    /// Get interval for a specific base
+    /// Indexing: 0=A, 1=G, 2=C, 3=U, 4=N (matches discriminant order)
     #[inline]
     pub fn get(&self, base: Base) -> SaInterval {
         match base {
             Base::Gap => SaInterval::new(0, 0),
             Base::A => SaInterval::new(self.bounds[0], self.bounds[1]),
-            Base::C => SaInterval::new(self.bounds[1], self.bounds[2]),
-            Base::G => SaInterval::new(self.bounds[2], self.bounds[3]),
-            Base::N => SaInterval::new(self.bounds[3], self.bounds[4]),
-            Base::U => SaInterval::new(self.bounds[4], self.bounds[5]),
+            Base::G => SaInterval::new(self.bounds[1], self.bounds[2]),
+            Base::C => SaInterval::new(self.bounds[2], self.bounds[3]),
+            Base::U => SaInterval::new(self.bounds[3], self.bounds[4]),
+            Base::N => SaInterval::new(self.bounds[4], self.bounds[5]),
         }
     }
 
-    /// Get interval by C-style index (0=a, 1=c, 2=g, 3=n, 4=u)
+    /// Get interval by index (0=A, 1=G, 2=C, 3=U, 4=N)
     #[inline]
     pub fn get_by_idx(&self, idx: usize) -> SaInterval {
         debug_assert!(idx < 5);
@@ -136,11 +141,11 @@ pub struct SeedSearcher<'a> {
     /// Query suffix array
     query_sa: &'a [u32],
     /// Query sequence (for base lookup)
-    query_seq: &'a [u8],
+    query_seq: &'a Sequence,
     /// Target suffix array (built on COMPLEMENT of target)
     target_comp_sa: &'a [u32],
-    /// Target complement sequence (for base lookup)
-    target_comp_seq: &'a [u8],
+    /// Target complement sequence
+    target_comp_seq: &'a Sequence,
     /// Seed configuration (pairing, mismatch spec, etc.)
     seed_config: &'a SeedConfig,
 }
@@ -152,9 +157,9 @@ impl<'a> SeedSearcher<'a> {
     /// COMPLEMENT (not reverse complement) of the target sequence.
     pub fn new(
         query_sa: &'a [u32],
-        query_seq: &'a [u8],
+        query_seq: &'a Sequence,
         target_comp_sa: &'a [u32],
-        target_comp_seq: &'a [u8],
+        target_comp_seq: &'a Sequence,
         seed_config: &'a SeedConfig,
     ) -> Self {
         Self {
@@ -499,14 +504,14 @@ impl<'a> SeedSearcher<'a> {
     /// Partition an SA interval by base at given offset (C's sa_search_interval)
     ///
     /// Uses binary search to find boundaries where bases change.
-    /// Returns intervals for [a, c, g, n, u] with end boundary.
+    /// Returns intervals for [a, g, c, u, n] with end boundary.
     ///
     /// Short suffixes (pos + offset >= seq_len) must be filtered out via linear scan
     /// because they're scattered throughout the SA (sorted by earlier characters).
     fn partition_interval(
         &self,
         sa: &[u32],
-        seq: &[u8],
+        seq: &Sequence,
         interval: SaInterval,
         offset: usize,
     ) -> BaseIntervals {
@@ -533,7 +538,7 @@ impl<'a> SeedSearcher<'a> {
     fn find_valid_suffix_range(
         &self,
         sa: &[u32],
-        seq: &[u8],
+        seq: &Sequence,
         interval: SaInterval,
         offset: usize,
     ) -> (usize, usize) {
@@ -574,7 +579,7 @@ impl<'a> SeedSearcher<'a> {
     fn has_suffix_len_at_least(
         &self,
         sa: &[u32],
-        seq: &[u8],
+        seq: &Sequence,
         interval: SaInterval,
         min_len: usize,
     ) -> bool {
@@ -589,11 +594,14 @@ impl<'a> SeedSearcher<'a> {
     /// Partition a valid SA range by base character (O(log n) binary search)
     ///
     /// Assumes all suffixes in [valid_start..valid_end] have pos + offset < seq.len()
+    ///
+    /// Base ordering: Gap(0) < A(1) < G(2) < C(3) < U(4) < N(5)
+    /// This differs from ASCII ordering: a < c < g < n < t
     #[inline]
     fn partition_by_base(
         &self,
         sa: &[u32],
-        seq: &[u8],
+        seq: &Sequence,
         valid_start: usize,
         valid_end: usize,
         offset: usize,
@@ -601,17 +609,18 @@ impl<'a> SeedSearcher<'a> {
         let sa_slice = &sa[valid_start..valid_end];
 
         // Find partition points for each base boundary
+        // Base discriminant ordering: A(1) < G(2) < C(3) < U(4) < N(5)
         let a_start = valid_start;
-        let c_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'c');
         let g_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'g');
-        let n_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b'n');
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::G);
+        let c_start =
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::C);
         let u_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < b't');
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::U);
+        let n_start =
+            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::N);
 
-        BaseIntervals::from_bounds([a_start, c_start, g_start, n_start, u_start, valid_end])
+        BaseIntervals::from_bounds([a_start, g_start, c_start, u_start, n_start, valid_end])
     }
 }
 
@@ -620,9 +629,9 @@ impl<'a> SeedSearcher<'a> {
 // ============================================================================
 #[cfg(test)]
 mod tests {
-    use super::sa::{build_suffix_array, complement_sequence};
     use super::*;
     use crate::config::SeedConfig;
+    use crate::seed::sa::{build_suffix_array, complement_sequence};
     use crate::seed::{MismatchSpec, SeedSpec};
 
     /// Create a default SeedConfig for testing with specified pairing mode
@@ -640,21 +649,28 @@ mod tests {
 
     #[test]
     fn test_complement_sequence() {
-        assert_eq!(complement_sequence(b"acgt"), b"tgca");
-        assert_eq!(complement_sequence(b"ACGU"), b"tgca");
-        assert_eq!(complement_sequence(b"aaaa"), b"tttt");
+        use crate::types::Base;
+        let seq = vec![Base::A, Base::C, Base::G, Base::U];
+        let comp = complement_sequence(&seq);
+        assert_eq!(comp, vec![Base::U, Base::G, Base::C, Base::A]);
+
+        let seq2 = vec![Base::A, Base::A, Base::A, Base::A];
+        let comp2 = complement_sequence(&seq2);
+        assert_eq!(comp2, vec![Base::U, Base::U, Base::U, Base::U]);
     }
 
     #[test]
     fn test_partition_basic() {
-        let seq = b"acgt";
-        let sa = build_suffix_array(seq);
+        use crate::types::Base;
+        let seq_bases = vec![Base::A, Base::C, Base::G, Base::U];
+        let seq = Sequence::from(seq_bases.clone());
+        let sa = build_suffix_array(&seq);
         let seed_args = test_seed_config(SeedPairingMode::AllowWobble);
 
-        let searcher = SeedSearcher::new(&sa, seq, &sa, seq, &seed_args);
+        let searcher = SeedSearcher::new(&sa, &seq, &sa, &seq, &seed_args);
 
         let interval = SaInterval::new(0, sa.len());
-        let parts = searcher.partition_interval(&sa, seq, interval, 0);
+        let parts = searcher.partition_interval(&sa, &seq, interval, 0);
 
         // Each base should have exactly one entry
         assert_eq!(parts.get(Base::A).len(), 1);
@@ -665,29 +681,31 @@ mod tests {
 
     #[test]
     fn test_homopolymer_debug() {
+        use crate::types::Base;
         // Debug test for the aaa/ttt case
-        let query = b"aaa";
-        let target = b"ttt";
+        let query_bases = vec![Base::A, Base::A, Base::A];
+        let target_bases = vec![Base::U, Base::U, Base::U];
 
         // Step 1: Check complement
-        let target_comp = complement_sequence(target);
-        eprintln!("Query: {:?}", String::from_utf8_lossy(query));
-        eprintln!("Target: {:?}", String::from_utf8_lossy(target));
-        eprintln!(
-            "Target complement: {:?}",
-            String::from_utf8_lossy(&target_comp)
-        );
-        assert_eq!(&target_comp, b"aaa", "complement(ttt) should be aaa");
+        let target_comp_bases = complement_sequence(&target_bases);
+        eprintln!("Query: {:?}", query_bases);
+        eprintln!("Target: {:?}", target_bases);
+        eprintln!("Target complement: {:?}", target_comp_bases);
+        assert_eq!(&target_comp_bases, &[Base::A, Base::A, Base::A], "complement(UUU) should be AAA");
+
+        let query = Sequence::from(query_bases);
+        let _target = Sequence::from(target_bases);
+        let target_comp = Sequence::from(target_comp_bases);
 
         // Step 2: Build SAs
-        let q_sa = build_suffix_array(query);
+        let q_sa = build_suffix_array(&query);
         let t_sa = build_suffix_array(&target_comp);
         eprintln!("Query SA: {:?}", q_sa);
         eprintln!("Target comp SA: {:?}", t_sa);
 
         // Step 3: Create searcher and find seeds
         let seed_args = test_seed_config(SeedPairingMode::Strict);
-        let searcher = SeedSearcher::new(&q_sa, query, &t_sa, &target_comp, &seed_args);
+        let searcher = SeedSearcher::new(&q_sa, &query, &t_sa, &target_comp, &seed_args);
         let matches = searcher.find_seeds(3);
         eprintln!("Raw matches: {:?}", matches);
 

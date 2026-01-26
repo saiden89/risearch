@@ -2,13 +2,13 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use zstd::stream;
 
 use crate::config::{OutputCompression, OutputFormat};
-use crate::search::output::{write_results_to, write_results_with_format_to};
 use crate::search::SearchHit;
+use crate::search::output::{write_results_to, write_results_with_format_to};
 
 #[derive(Debug, Clone, Copy)]
 pub enum CompressionConfig {

@@ -1,17 +1,19 @@
 use anyhow::{Result, bail};
 use std::sync::OnceLock;
 
+use crate::types::Base;
+
 #[derive(Default, Debug, Clone, Copy)]
-pub(crate) struct NormalizationStats {
-    pub(crate) removed_gaps: usize,
-    pub(crate) converted_to_n: usize,
+pub struct NormalizationStats {
+    pub removed_gaps: usize,
+    pub converted_to_n: usize,
 }
 
 #[derive(Copy, Clone)]
 enum NormalizeKind {
     /// Keep the normalized base as is (lowercase DNA or `n`).
     Copy,
-    /// Map `u`/`t` to `t`.
+    /// Map `u`/`t` to U.
     MapToT,
     /// Map ambiguous alphabetic bases to `n`.
     MapToN,
@@ -23,31 +25,44 @@ enum NormalizeKind {
 
 #[derive(Copy, Clone)]
 struct NormalizeEntry {
-    norm: u8,
+    norm: Base,
     kind: NormalizeKind,
 }
 
 fn classify_byte(c: u8) -> NormalizeEntry {
     let lower = c.to_ascii_lowercase();
-    match lower {
-        b'a' | b'c' | b'g' | b'n' => NormalizeEntry {
-            norm: lower,
+    let upper = lower.to_ascii_uppercase();
+    match upper {
+        b'A' => NormalizeEntry {
+            norm: Base::A,
             kind: NormalizeKind::Copy,
         },
-        b'u' | b't' => NormalizeEntry {
-            norm: b't',
+        b'C' => NormalizeEntry {
+            norm: Base::C,
+            kind: NormalizeKind::Copy,
+        },
+        b'G' => NormalizeEntry {
+            norm: Base::G,
+            kind: NormalizeKind::Copy,
+        },
+        b'N' => NormalizeEntry {
+            norm: Base::N,
+            kind: NormalizeKind::Copy,
+        },
+        b'U' | b'T' => NormalizeEntry {
+            norm: Base::U,
             kind: NormalizeKind::MapToT,
         },
         b'-' | b'.' => NormalizeEntry {
-            norm: 0,
+            norm: Base::Gap,
             kind: NormalizeKind::SkipGap,
         },
-        _ if lower.is_ascii_alphabetic() => NormalizeEntry {
-            norm: b'n',
+        _ if upper.is_ascii_alphabetic() => NormalizeEntry {
+            norm: Base::N,
             kind: NormalizeKind::MapToN,
         },
         _ => NormalizeEntry {
-            norm: 0,
+            norm: Base::Gap,
             kind: NormalizeKind::Error,
         },
     }
@@ -56,7 +71,7 @@ fn lookup_table() -> &'static [NormalizeEntry; 256] {
     static LOOKUP: OnceLock<[NormalizeEntry; 256]> = OnceLock::new();
     LOOKUP.get_or_init(|| {
         let mut table = [NormalizeEntry {
-            norm: 0,
+            norm: Base::Gap,
             kind: NormalizeKind::Error,
         }; 256];
         let mut i = 0;
@@ -68,10 +83,10 @@ fn lookup_table() -> &'static [NormalizeEntry; 256] {
     })
 }
 
-pub(crate) fn normalize_rna_sequence(
+pub fn normalize_rna_sequence(
     id: &str,
     seq: &[u8],
-) -> Result<(Vec<u8>, NormalizationStats)> {
+) -> Result<(Vec<Base>, NormalizationStats)> {
     let mut out = Vec::with_capacity(seq.len());
     let mut stats = NormalizationStats::default();
     let table = lookup_table();

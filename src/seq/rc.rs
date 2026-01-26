@@ -1,21 +1,15 @@
-use crate::types::{RC_DNA_TABLE, RC_RNA_TABLE};
+use crate::seq::Sequence;
 
-/// Compute RNA reverse complement using LUT (single lookup per base).
-/// Returns uppercase: A↔U, G↔C.
+/// Compute RNA reverse complement for a normalized Sequence.
 #[inline]
-pub fn reverse_complement_rna(data: &[u8]) -> Vec<u8> {
-    data.iter()
-        .rev()
-        .map(|&b| RC_RNA_TABLE[b as usize])
-        .collect()
+pub fn reverse_complement_rna(data: &Sequence) -> Sequence {
+    data.reverse_complement()
 }
 
-/// Compute DNA reverse complement using LUT (single lookup per base).
-/// Returns lowercase: A↔T, G↔C.
+/// Compute DNA reverse complement for a normalized Sequence.
+///
+/// Note: sequences are normalized to RNA (U instead of T), so this mirrors RNA behavior.
 #[inline]
-pub fn reverse_complement_dna(data: &[u8]) -> Vec<u8> {
-    data.iter()
-        .rev()
-        .map(|&b| RC_DNA_TABLE[b as usize])
-        .collect()
+pub fn reverse_complement_dna(data: &Sequence) -> Sequence {
+    data.reverse_complement()
 }

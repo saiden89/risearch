@@ -1,5 +1,5 @@
 use crate::dsm::EnergyModel;
-use crate::seq::Seq;
+use crate::seq::Sequence;
 use crate::types::Base;
 use log::trace;
 use smallvec::SmallVec;
@@ -14,7 +14,7 @@ use traceback::traceback;
 
 /// Stack-allocated trace buffer. 64 ops covers most extensions without heap allocation.
 /// DpOp is 1 byte, so 64 * 1 = 64 bytes on stack.
-pub type TraceVec = SmallVec<[DpOp; 64]>;
+pub type TracebackPath = SmallVec<[DpOp; 64]>;
 
 /// Maximum extension length for precomputed index arrays.
 /// Matches the typical max_ext parameter (100-200 bases).
@@ -56,8 +56,8 @@ impl std::fmt::Display for ExtendDir {
 /// The `e()` method always takes arguments in (prev, curr, prev, curr) order
 /// and internally reorders for left extension.
 pub struct DpView<'a> {
-    query: &'a Seq<'a>,
-    target: &'a Seq<'a>,
+    query: &'a Sequence,
+    target: &'a Sequence,
     q_anchor: usize,
     t_anchor: usize,
     pub dir: ExtendDir,
@@ -104,10 +104,33 @@ fn max_dsm_terminal() -> i32 {
 }
 
 impl<'a> DpView<'a> {
+    #[inline(always)]
+    fn base_or_gap(seq: &Sequence, pos: usize) -> Base {
+        if pos >= seq.len() {
+            Base::Gap
+        } else {
+            seq[pos]
+        }
+    }
+
+    #[inline(always)]
+    fn left_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
+        if offset > anchor {
+            Base::Gap
+        } else {
+            seq[anchor - offset]
+        }
+    }
+
+    #[inline(always)]
+    fn right_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
+        Self::base_or_gap(seq, anchor + offset)
+    }
+
     /// Create a left extension view (query toward 5', target toward 3')
     pub fn left(
-        query: &'a Seq<'a>,
-        target: &'a Seq<'a>,
+        query: &'a Sequence,
+        target: &'a Sequence,
         q_start: usize,
         t_start: usize,
         max_ext: usize,
@@ -125,8 +148,8 @@ impl<'a> DpView<'a> {
 
     /// Create a right extension view (query toward 3', target toward 5')
     pub fn right(
-        query: &'a Seq<'a>,
-        target: &'a Seq<'a>,
+        query: &'a Sequence,
+        target: &'a Sequence,
         q_end: usize,
         t_end: usize,
         max_ext: usize,
@@ -146,8 +169,8 @@ impl<'a> DpView<'a> {
     #[inline(always)]
     pub fn q(&self, i: usize) -> usize {
         match self.dir {
-            ExtendDir::Left => self.query.left(self.q_anchor, i).idx(),
-            ExtendDir::Right => self.query.right(self.q_anchor, i).idx(),
+            ExtendDir::Left => Self::left_base(self.query, self.q_anchor, i).idx(),
+            ExtendDir::Right => Self::right_base(self.query, self.q_anchor, i).idx(),
         }
     }
 
@@ -155,8 +178,8 @@ impl<'a> DpView<'a> {
     #[inline(always)]
     pub fn t(&self, j: usize) -> usize {
         match self.dir {
-            ExtendDir::Left => self.target.right(self.t_anchor, j).idx(),
-            ExtendDir::Right => self.target.left(self.t_anchor, j).idx(),
+            ExtendDir::Left => Self::right_base(self.target, self.t_anchor, j).idx(),
+            ExtendDir::Right => Self::left_base(self.target, self.t_anchor, j).idx(),
         }
     }
 
@@ -242,7 +265,7 @@ pub struct DpExtension {
     pub score: i32,
     pub q_len: usize,
     pub t_len: usize,
-    pub trace: TraceVec,
+    pub trace: TracebackPath,
 }
 
 /// Alignment operation for traceback
@@ -367,7 +390,7 @@ impl DpMatrices {
 pub struct DpExtender {
     matrices: DpMatrices,
     /// Reusable traceback buffer - cleared and reused on each extend() call.
-    trace_buf: TraceVec,
+    trace_buf: TracebackPath,
     max_stack: i32,
     max_terminal: i32,
 }
@@ -382,7 +405,7 @@ impl DpExtender {
         Self {
             matrices: DpMatrices::new(200, 200),
             // SmallVec doesn't need with_capacity for inline storage
-            trace_buf: TraceVec::new(),
+            trace_buf: TracebackPath::new(),
             max_stack,
             max_terminal,
         }
@@ -390,8 +413,8 @@ impl DpExtender {
     /// Extend to the left (query 5', target 3')
     pub fn extend_left(
         &mut self,
-        query: &Seq,
-        target: &Seq,
+        query: &Sequence,
+        target: &Sequence,
         q_start: usize,
         t_start: usize,
         max_ext: usize,
@@ -403,8 +426,8 @@ impl DpExtender {
     /// Extend to the right (query 3', target 5')
     pub fn extend_right(
         &mut self,
-        query: &Seq,
-        target: &Seq,
+        query: &Sequence,
+        target: &Sequence,
         q_end: usize,
         t_end: usize,
         max_ext: usize,
@@ -436,7 +459,7 @@ impl DpExtender {
                 score: best_e,
                 q_len: 0,
                 t_len: 0,
-                trace: TraceVec::new(),
+                trace: TracebackPath::new(),
             };
         }
 
@@ -466,20 +489,20 @@ impl DpExtender {
         // Avoid per-iteration branching in view.q/view.t by specializing on direction.
         if view.dir == ExtendDir::Left {
             for i in 0..q_len.min(MAX_EXT) {
-                let qi = view.query.left(view.q_anchor, i).idx();
+                let qi = DpView::left_base(view.query, view.q_anchor, i).idx();
                 unsafe { *q_ptr.add(i) = qi };
             }
             for j in 0..t_len.min(MAX_EXT) {
-                let tj = view.target.right(view.t_anchor, j).idx();
+                let tj = DpView::right_base(view.target, view.t_anchor, j).idx();
                 unsafe { *t_ptr.add(j) = tj };
             }
         } else {
             for i in 0..q_len.min(MAX_EXT) {
-                let qi = view.query.right(view.q_anchor, i).idx();
+                let qi = DpView::right_base(view.query, view.q_anchor, i).idx();
                 unsafe { *q_ptr.add(i) = qi };
             }
             for j in 0..t_len.min(MAX_EXT) {
-                let tj = view.target.left(view.t_anchor, j).idx();
+                let tj = DpView::left_base(view.target, view.t_anchor, j).idx();
                 unsafe { *t_ptr.add(j) = tj };
             }
         }
@@ -497,7 +520,7 @@ impl DpExtender {
         // SAFETY invariants:
         // - matrices are sized to at least (q_len+1) x (t_len+1)
         // - indices used below are within those bounds
-        debug_assert!(width >= t_len + 1, "matrix width too small for t_len");
+        debug_assert!(width > t_len, "matrix width too small for t_len");
         unsafe {
             let idx = |i: usize, j: usize| -> usize { i * width + j };
 
@@ -577,7 +600,7 @@ impl DpExtender {
                 score: best_e,
                 q_len: best_i,
                 t_len: best_j,
-                trace: TraceVec::new(),
+                trace: TracebackPath::new(),
             };
         }
 
@@ -697,15 +720,7 @@ impl DpExtender {
 
         // Reuse traceback buffer (cleared each call, capacity preserved)
         self.trace_buf.clear();
-        traceback(
-            view,
-            m,
-            bq,
-            bt,
-            best_i,
-            best_j,
-            &mut self.trace_buf,
-        );
+        traceback(view, m, bq, bt, best_i, best_j, &mut self.trace_buf);
 
         trace!(
             "{} result: score={} q_len={} t_len={} trace={:?}",

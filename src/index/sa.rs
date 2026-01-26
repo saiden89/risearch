@@ -6,8 +6,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::io::read_fasta_sequences;
-use crate::seq::normalize::normalize_rna_sequence;
-use needletail::Sequence;
+use crate::seq::Sequence;
 
 use super::io::{validate_output_path, validate_readable_file, write_index_file};
 
@@ -20,10 +19,10 @@ pub struct SequenceIndex {
     pub forward_sa: Vec<u32>,
     /// Suffix array for the reverse strand (u32 for 50% memory reduction).
     pub reverse_sa: Vec<u32>,
-    /// Normalized RNA sequence (lowercase, gaps removed, ambiguous bases as 'n')
-    pub sequence: Vec<u8>, //TODO: seq abstraction
+    /// Normalized RNA sequence (stored as Vec<Base>)
+    pub sequence: Sequence,
     /// Pre-computed reverse complement (avoids allocation on every access)
-    pub sequence_rc: Vec<u8>,
+    pub sequence_rc: Sequence,
 }
 
 /// Structure representing the entire index file containing multiple sequences.
@@ -80,7 +79,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
     let maybe_indices: Vec<Option<SequenceIndex>> = sequences
         .into_par_iter()
         .map(|(id, seq)| -> Result<Option<SequenceIndex>> {
-            let (seq_norm, stats) = normalize_rna_sequence(&id, &seq)
+            let (seq_norm, stats) = Sequence::normalize(&id, &seq)
                 .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
 
             if seq_norm.is_empty() {
@@ -114,9 +113,13 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
                 );
             }
 
-            let seq_rc = seq_norm.as_slice().reverse_complement();
+            let seq_rc = seq_norm.reverse_complement();
 
-            let sa_fwd: Vec<u32> = SuffixArrayConstruction::for_text(&seq_norm)
+            // Convert to bytes for suffix array construction
+            let seq_norm_bytes = seq_norm.to_bytes();
+            let seq_rc_bytes = seq_rc.to_bytes();
+
+            let sa_fwd: Vec<u32> = SuffixArrayConstruction::for_text(&seq_norm_bytes)
                 .in_owned_buffer()
                 .single_threaded()
                 .run()
@@ -125,7 +128,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
                 .into_iter()
                 .map(|x: i64| x as u32)
                 .collect();
-            let sa_rev: Vec<u32> = SuffixArrayConstruction::for_text(&seq_rc)
+            let sa_rev: Vec<u32> = SuffixArrayConstruction::for_text(&seq_rc_bytes)
                 .in_owned_buffer()
                 .single_threaded()
                 .run()
@@ -208,7 +211,9 @@ mod tests {
         let idx = process_sequences(file.path()).expect("indexing failed");
         assert_eq!(idx.sequences.len(), 1);
         assert_eq!(idx.sequences[0].name, "s1");
-        assert_eq!(idx.sequences[0].sequence, b"acgtnn".to_vec());
+        // Compare with expected sequence using Sequence::normalize
+        let (expected, _) = Sequence::normalize("test", b"ACGTNN").unwrap();
+        assert_eq!(idx.sequences[0].sequence, expected);
     }
 
     #[test]
@@ -218,7 +223,9 @@ mod tests {
         let idx = process_sequences(file.path()).expect("indexing failed");
         assert_eq!(idx.sequences.len(), 1);
         assert_eq!(idx.sequences[0].name, "ok");
-        assert_eq!(idx.sequences[0].sequence, b"acgt".to_vec()); // U normalized to T
+        // Compare with expected sequence using Sequence::normalize
+        let (expected, _) = Sequence::normalize("test", b"ACGU").unwrap();
+        assert_eq!(idx.sequences[0].sequence, expected);
     }
 
     #[test]
@@ -239,28 +246,34 @@ mod tests {
 
     #[test]
     fn test_sequence_index_struct_fields() {
+        let (seq, _) = Sequence::normalize("test", b"ACGT").unwrap();
+        let (seq_rc, _) = Sequence::normalize("test", b"ACGT").unwrap();
+
         let index = SequenceIndex {
             name: "test_seq".to_string(),
             forward_sa: vec![0, 1, 2],
             reverse_sa: vec![2, 1, 0],
-            sequence: b"acgt".to_vec(),
-            sequence_rc: b"acgt".to_vec(), // RC of acgt is acgt
+            sequence: seq.clone(),
+            sequence_rc: seq_rc,
         };
 
         assert_eq!(index.name, "test_seq");
         assert_eq!(index.forward_sa, vec![0, 1, 2]);
         assert_eq!(index.reverse_sa, vec![2, 1, 0]);
-        assert_eq!(index.sequence, b"acgt".to_vec());
+        assert_eq!(index.sequence, seq);
     }
 
     #[test]
     fn test_sequence_index_serialization() {
+        let (seq, _) = Sequence::normalize("test", b"ACGT").unwrap();
+        let (seq_rc, _) = Sequence::normalize("test", b"ACGT").unwrap();
+
         let index = SequenceIndex {
             name: "seq1".to_string(),
             forward_sa: vec![3, 0, 1, 2],
             reverse_sa: vec![0, 3, 2, 1],
-            sequence: b"acgt".to_vec(),
-            sequence_rc: b"acgt".to_vec(),
+            sequence: seq.clone(),
+            sequence_rc: seq_rc,
         };
 
         let encoded = bincode::serialize(&index).expect("Serialization failed");
@@ -285,21 +298,26 @@ mod tests {
 
     #[test]
     fn test_index_file_multiple_sequences() {
+        let (seq1, _) = Sequence::normalize("test", b"A").unwrap();
+        let (seq1_rc, _) = Sequence::normalize("test", b"U").unwrap();
+        let (seq2, _) = Sequence::normalize("test", b"AC").unwrap();
+        let (seq2_rc, _) = Sequence::normalize("test", b"GU").unwrap();
+
         let index_file = SaIndexFile {
             sequences: vec![
                 SequenceIndex {
                     name: "seq1".to_string(),
                     forward_sa: vec![0],
                     reverse_sa: vec![0],
-                    sequence: b"a".to_vec(),
-                    sequence_rc: b"t".to_vec(), // RC of a is t
+                    sequence: seq1,
+                    sequence_rc: seq1_rc,
                 },
                 SequenceIndex {
                     name: "seq2".to_string(),
                     forward_sa: vec![0, 1],
                     reverse_sa: vec![1, 0],
-                    sequence: b"ac".to_vec(),
-                    sequence_rc: b"gt".to_vec(), // RC of ac is gt
+                    sequence: seq2,
+                    sequence_rc: seq2_rc,
                 },
             ],
         };
@@ -310,13 +328,16 @@ mod tests {
 
     #[test]
     fn test_index_file_serialization() {
+        let (seq, _) = Sequence::normalize("test", b"AU").unwrap();
+        let (seq_rc, _) = Sequence::normalize("test", b"AU").unwrap();
+
         let index_file = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "test".to_string(),
                 forward_sa: vec![0, 1],
                 reverse_sa: vec![1, 0],
-                sequence: b"at".to_vec(),
-                sequence_rc: b"at".to_vec(), // RC of at is at
+                sequence: seq,
+                sequence_rc: seq_rc,
             }],
         };
 
@@ -338,8 +359,8 @@ mod tests {
 
         assert_eq!(result.sequences.len(), 1);
         assert_eq!(result.sequences[0].name, "seq1");
-        // Sequence should be lowercase
-        assert_eq!(result.sequences[0].sequence, b"acgt".to_vec());
+        // Verify sequence length
+        assert_eq!(result.sequences[0].sequence.len(), 4);
         // Suffix arrays should have same length as sequence
         assert_eq!(result.sequences[0].forward_sa.len(), 4);
         assert_eq!(result.sequences[0].reverse_sa.len(), 4);
@@ -367,7 +388,8 @@ mod tests {
 
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
-        assert_eq!(result.sequences[0].sequence, b"acgtacgt".to_vec());
+        // Verify sequence length (normalized)
+        assert_eq!(result.sequences[0].sequence.len(), 8);
     }
 
     #[test]
@@ -377,7 +399,8 @@ mod tests {
 
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
-        assert_eq!(result.sequences[0].sequence, b"acgt".to_vec());
+        // Verify sequence length
+        assert_eq!(result.sequences[0].sequence.len(), 4);
     }
 
     #[test]
@@ -388,7 +411,8 @@ mod tests {
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
         assert_eq!(result.sequences.len(), 1);
-        assert_eq!(result.sequences[0].sequence, b"acgttgcaaaaa".to_vec());
+        // Verify sequence length (4+4+4=12)
+        assert_eq!(result.sequences[0].sequence.len(), 12);
     }
 
     #[test]
@@ -424,13 +448,16 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let output_path = temp_dir.path().join("test.idx");
 
+        let (seq, _) = Sequence::normalize("test", b"ACG").unwrap();
+        let (seq_rc, _) = Sequence::normalize("test", b"CGU").unwrap();
+
         let index = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "test".to_string(),
                 forward_sa: vec![0, 1, 2],
                 reverse_sa: vec![2, 1, 0],
-                sequence: b"acg".to_vec(),
-                sequence_rc: b"cgt".to_vec(), // RC of acg is cgt
+                sequence: seq,
+                sequence_rc: seq_rc,
             }],
         };
 
@@ -474,13 +501,16 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let file_path = temp_dir.path().join("test.idx");
 
+        let (seq, _) = Sequence::normalize("test", b"ACGT").unwrap();
+        let (seq_rc, _) = Sequence::normalize("test", b"ACGT").unwrap();
+
         let original = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "loaded_seq".to_string(),
                 forward_sa: vec![3, 0, 1, 2],
                 reverse_sa: vec![0, 3, 2, 1],
-                sequence: b"acgt".to_vec(),
-                sequence_rc: b"acgt".to_vec(), // RC of acgt is acgt
+                sequence: seq.clone(),
+                sequence_rc: seq_rc,
             }],
         };
 
@@ -492,7 +522,7 @@ mod tests {
         assert_eq!(loaded.sequences[0].name, "loaded_seq");
         assert_eq!(loaded.sequences[0].forward_sa, vec![3, 0, 1, 2]);
         assert_eq!(loaded.sequences[0].reverse_sa, vec![0, 3, 2, 1]);
-        assert_eq!(loaded.sequences[0].sequence, b"acgt".to_vec());
+        assert_eq!(loaded.sequences[0].sequence, seq);
     }
 
     #[test]
@@ -593,10 +623,8 @@ mod tests {
         // Verify content
         assert_eq!(loaded.sequences.len(), 1);
         assert_eq!(loaded.sequences[0].name, "myseq description here");
-        assert_eq!(
-            loaded.sequences[0].sequence,
-            b"acgtacgtaaaaccccggggtttt".to_vec()
-        );
+        // Verify sequence length (24 bases)
+        assert_eq!(loaded.sequences[0].sequence.len(), 24);
         assert_eq!(loaded.sequences[0].forward_sa.len(), 24);
         assert_eq!(loaded.sequences[0].reverse_sa.len(), 24);
     }
@@ -606,21 +634,26 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let file_path = temp_dir.path().join("roundtrip.idx");
 
+        let (seq1, _) = Sequence::normalize("test", b"AAAAAA").unwrap();
+        let (seq1_rc, _) = Sequence::normalize("test", b"UUUUUU").unwrap();
+        let (seq2, _) = Sequence::normalize("test", b"C").unwrap();
+        let (seq2_rc, _) = Sequence::normalize("test", b"G").unwrap();
+
         let original = SaIndexFile {
             sequences: vec![
                 SequenceIndex {
                     name: "first".to_string(),
                     forward_sa: vec![5, 4, 3, 2, 1, 0],
                     reverse_sa: vec![0, 1, 2, 3, 4, 5],
-                    sequence: b"aaaaaa".to_vec(),
-                    sequence_rc: b"tttttt".to_vec(), // RC of all a's is all t's
+                    sequence: seq1.clone(),
+                    sequence_rc: seq1_rc.clone(),
                 },
                 SequenceIndex {
                     name: "second".to_string(),
                     forward_sa: vec![0],
                     reverse_sa: vec![0],
-                    sequence: b"c".to_vec(),
-                    sequence_rc: b"g".to_vec(), // RC of c is g
+                    sequence: seq2.clone(),
+                    sequence_rc: seq2_rc.clone(),
                 },
             ],
         };

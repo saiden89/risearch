@@ -86,7 +86,10 @@ pub(super) fn init_limited_rows(
         }
     };
 
-    debug_assert!(q_len > 2 && t_len > 2, "limited rows require q_len/t_len >= 3");
+    debug_assert!(
+        q_len > 2 && t_len > 2,
+        "limited rows require q_len/t_len >= 3"
+    );
     debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
     debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
     unsafe {
@@ -95,9 +98,9 @@ pub(super) fn init_limited_rows(
         let qi2 = *q_ptr.add(2);
 
         // Rolling values for row 1 and 2
-        let mut m1_prev = *m_ptr.add(idx(1, 2));  // m(1, k-1)
+        let mut m1_prev = *m_ptr.add(idx(1, 2)); // m(1, k-1)
         let mut bt1_prev = *bt_ptr.add(idx(1, 2)); // bt(1, k-1)
-        let mut m2_prev = *m_ptr.add(idx(2, 2));  // m(2, k-1)
+        let mut m2_prev = *m_ptr.add(idx(2, 2)); // m(2, k-1)
         let mut bt2_prev = *bt_ptr.add(idx(2, 2)); // bt(2, k-1)
 
         for k in 3..t_len {

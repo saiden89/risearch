@@ -5,17 +5,35 @@ use rayon::prelude::*;
 use crate::dp;
 use crate::dsm::{PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::seed::{SeedCandidate, build_seed_alignment};
-use crate::seq::Seq;
-use crate::types::{Alignment, Pairing, SeedPairingMode, Strand};
+use crate::seq::Sequence;
+use crate::types::{Alignment, Base, Pairing, SeedPairingMode, Strand};
 
 use super::{
     FilterReason, MAX_DP_EXT, SaIndex, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER,
 };
 
+#[inline]
+fn base_or_gap(seq: &Sequence, pos: usize) -> Base {
+    if pos >= seq.len() {
+        Base::Gap
+    } else {
+        seq[pos]
+    }
+}
+
+#[inline]
+fn left_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
+    if offset > anchor {
+        Base::Gap
+    } else {
+        seq[anchor - offset]
+    }
+}
+
 /// Run search and return hits (used by parity tests and library callers).
 /// Assumes the provided `SearchArgs` already contains a valid `SeedSpec` for each query.
 pub fn run_search(
-    queries: &[(String, Vec<u8>)],
+    queries: &[(String, Sequence)],
     index: &SaIndex<'_>,
     opts: &crate::config::SearchArgs,
 ) -> Result<Vec<SearchHit>> {
@@ -24,27 +42,16 @@ pub fn run_search(
         .map(|(q_id, q_seq)| {
             THREAD_EXTENDER.with(|ext| {
                 let mut extender = ext.borrow_mut();
-                let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
+                let mut ctx = SearchContext::with_extender(index, opts, &mut extender);
                 let mut seeds = Vec::new();
                 let mut matches = Vec::new();
-                crate::seed::find_seeds(
-                    q_seq,
-                    ctx.index.index,
-                    &ctx.args.seed,
-                    &mut seeds,
-                    &mut matches,
-                );
-                let mut hits = Vec::new();
-                for candidate in &seeds {
-                    if let Some(hit) = process_candidate(
-                        crate::types::Query::new(q_id, q_seq),
-                        candidate,
-                        &mut ctx,
-                    ) {
-                        hits.push(hit);
-                    }
-                }
-                hits
+                crate::seed::find_seeds(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
+
+                let query = super::Query::new(q_id, q_seq);
+                seeds
+                    .iter()
+                    .filter_map(|candidate| process_candidate(query, candidate, &mut ctx))
+                    .collect()
             })
         })
         .collect();
@@ -52,29 +59,26 @@ pub fn run_search(
     Ok(per_query_hits.into_iter().flatten().collect())
 }
 
+/// Extend a single candidate and build a `SearchHit` if the energy passes filters.
 fn process_candidate(
-    query: crate::types::Query<'_>,
+    query: super::Query<'_>,
     candidate: &SeedCandidate,
     ctx: &mut SearchContext<'_, '_>,
 ) -> Option<SearchHit> {
     let t_idx = candidate.target_idx;
-    let t_seq: &[u8] = match candidate.strand {
+    let t_seq = match candidate.strand {
         Strand::Reverse => ctx.index.get_sequence_rc(t_idx),
         Strand::Forward => ctx.index.get_sequence(t_idx),
     };
 
     let t_start_idx = candidate.target_start;
     let seed_len = candidate.len;
-    let q_pos = candidate.query_pos;
-
     if t_start_idx + seed_len > t_seq.len() {
         ctx.stats.record_filter(FilterReason::SeedOutOfBounds);
         return None;
     }
 
-    let Some(ext) = extend_seed(ctx, query.seq, t_seq, candidate) else {
-        return None;
-    };
+    let ext = extend_seed(ctx, query.seq, t_seq, candidate)?;
 
     let score = ext.score;
     if score > ctx.args.extend.delta_g {
@@ -82,9 +86,23 @@ fn process_candidate(
         return None;
     }
 
-    let final_q_start = q_pos - ext.l_q;
+    Some(build_hit(query, ctx, candidate, ext))
+}
+
+/// Finalize coordinates, bookkeeping, and formatting for an accepted hit.
+fn build_hit(
+    query: super::Query<'_>,
+    ctx: &SearchContext<'_, '_>,
+    candidate: &SeedCandidate,
+    ext: ExtensionResult,
+) -> SearchHit {
+    let seed_len = candidate.len;
+    let q_pos = candidate.query_pos;
+    let t_start_idx = candidate.target_start;
+
+    let final_q_start = q_pos.saturating_sub(ext.l_q);
     let final_q_end = (q_pos + seed_len - 1) + ext.r_q;
-    let final_t_start = t_start_idx - ext.r_t;
+    let final_t_start = t_start_idx.saturating_sub(ext.r_t);
     let final_t_end = (t_start_idx + seed_len - 1) + ext.l_t;
 
     let original_len = ctx.index.get_sequence_len(candidate.target_idx);
@@ -97,9 +115,9 @@ fn process_candidate(
         Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
     };
 
-    Some(SearchHit {
+    SearchHit {
         query_id: query.id.into(),
-        target_id: ctx.index.get_id(t_idx).into(),
+        target_id: ctx.index.get_id(candidate.target_idx).into(),
         q_start: final_q_start,
         q_end: final_q_end,
         t_start: final_t_start,
@@ -109,11 +127,11 @@ fn process_candidate(
         output_t_start: out_t_start,
         output_t_end: out_t_end,
         strand: strand_char.into(),
-        energy: score.into(),
+        energy: ext.score.into(),
         alignment: ext.alignment,
         flank_5: String::new(),
         flank_3: String::new(),
-    })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -129,8 +147,8 @@ pub(super) struct ExtensionResult {
 
 pub(super) fn extend_seed(
     ctx: &mut SearchContext<'_, '_>,
-    q_seq: &[u8],
-    t_seq: &[u8],
+    q_seq: &Sequence,
+    t_seq: &Sequence,
     candidate: &SeedCandidate,
 ) -> Option<ExtensionResult> {
     let q_pos = candidate.query_pos;
@@ -150,8 +168,8 @@ pub(super) fn extend_seed(
         .unwrap_or((0, q_seq.len())); // Fallback: full query
 
     // Wrap sequences for clean base access (used throughout function)
-    let query = Seq::forward(q_seq);
-    let target = Seq::new(t_seq, candidate.strand);
+    let query = q_seq;
+    let target = t_seq;
 
     // Select pair matrix based on wobble mode:
     // - AllowWobble: use PAIR_MAT (G-U wobble pairs are valid)
@@ -177,8 +195,8 @@ pub(super) fn extend_seed(
     // 1. Left extendable? Check if q[q_pos-1] pairs with t[t_pos+len]
     // Use interval_start to constrain: seed touching interval left edge is maximal on left
     if q_pos > interval_start && t_pos + len < t_seq.len() {
-        let q_prev = query.base(q_pos - 1).idx();
-        let t_next = target.base(t_pos + len).idx();
+        let q_prev = query[q_pos - 1].idx();
+        let t_next = target[t_pos + len].idx();
         let p_class = pair_mat[q_prev][t_next];
 
         trace!(
@@ -217,8 +235,8 @@ pub(super) fn extend_seed(
     // 2. Right extendable? Check if q[q_pos+len] pairs with t[t_pos-1]
     // Use interval_end to constrain: seed touching interval right edge is maximal on right
     if q_pos + len < interval_end && t_pos > 0 {
-        let q_next = query.base(q_pos + len).idx();
-        let t_prev = target.base(t_pos - 1).idx();
+        let q_next = query[q_pos + len].idx();
+        let t_prev = target[t_pos - 1].idx();
         let p_class = pair_mat[q_next][t_prev];
 
         trace!(
@@ -287,16 +305,14 @@ pub(super) fn extend_seed(
     }
 
     // Seed energy calculation using centralized EnergyModel
-    let seed_energy_raw = ctx
-        .energy
-        .seed_energy(&query, &target, q_pos, t_match_end, len);
+    let seed_energy_raw = ctx.energy.seed_energy(query, target, q_pos, t_match_end, len);
 
     // Only build interaction string when trace logging is enabled (avoids allocation in hot path)
     if log::log_enabled!(log::Level::Trace) {
         let mut seed_int_str = String::with_capacity(len);
         for k in 0..len {
-            let qc = query.base(q_pos + k);
-            let tc = target.base(t_match_end - k);
+            let qc = query[q_pos + k];
+            let tc = target[t_match_end - k];
             seed_int_str.push(qc.pairing_class(tc));
         }
         trace!(
@@ -309,17 +325,13 @@ pub(super) fn extend_seed(
     // Need to add terminal penalties at both ends of the seed
     if !do_extension {
         // 5' terminal: Gap->q[0] paired with Gap->t[t_end]
-        let term_5p = ctx
-            .energy
-            .terminal_5p(query.base(q_pos), target.base(t_match_end));
+        let term_5p = ctx.energy.terminal_5p(query[q_pos], target[t_match_end]);
         // 3' terminal: q[q_end]->Gap paired with t[t_pos]->Gap
-        let term_3p = ctx
-            .energy
-            .terminal_3p(query.base(q_pos + len - 1), target.base(t_pos));
+        let term_3p = ctx.energy.terminal_3p(query[q_pos + len - 1], target[t_pos]);
 
         let total_raw = seed_energy_raw + term_5p + term_3p;
         let final_score = ctx.energy.to_kcal(total_raw);
-        let seed_alignment = build_seed_alignment(&query, &target, q_pos, t_match_end, len);
+        let seed_alignment = build_seed_alignment(query, target, q_pos, t_match_end, len);
 
         return Some(ExtensionResult {
             score: final_score,
@@ -334,12 +346,12 @@ pub(super) fn extend_seed(
     // DP Left: Extend Query Left (5'), Target Right (3')
     let left_res = ctx
         .extender
-        .extend_left(&query, &target, q_pos, t_match_end, safe_ext);
+        .extend_left(query, target, q_pos, t_match_end, safe_ext);
 
     // DP Right: Extend Query Right (3'), Target Left (5')
     let right_res = ctx
         .extender
-        .extend_right(&query, &target, q_pos + len - 1, t_pos, safe_ext);
+        .extend_right(query, target, q_pos + len - 1, t_pos, safe_ext);
 
     // Use OLD embedded DP scores for C parity (new dp module has differences)
     let final_score = ctx
@@ -370,20 +382,20 @@ pub(super) fn extend_seed(
         let pairing = match step {
             dp::DpOp::Match | dp::DpOp::Stop => {
                 let p = Pairing::from_bases(
-                    query.left(candidate.query_pos, li),
-                    target.base_or_gap(t_match_end + lj),
+                    left_base(query, candidate.query_pos, li),
+                    base_or_gap(target, t_match_end + lj),
                 );
                 li = li.saturating_sub(1);
                 lj = lj.saturating_sub(1);
                 p
             }
             dp::DpOp::GapQ => {
-                let p = Pairing::GapTarget(query.left(candidate.query_pos, li));
+                let p = Pairing::GapTarget(left_base(query, candidate.query_pos, li));
                 li = li.saturating_sub(1);
                 p
             }
             dp::DpOp::GapT => {
-                let p = Pairing::GapQuery(target.base_or_gap(t_match_end + lj));
+                let p = Pairing::GapQuery(base_or_gap(target, t_match_end + lj));
                 lj = lj.saturating_sub(1);
                 p
             }
@@ -392,7 +404,7 @@ pub(super) fn extend_seed(
     }
 
     // 2. Seed itself
-    let seed_alignment = build_seed_alignment(&query, &target, q_pos, t_match_end, len);
+    let seed_alignment = build_seed_alignment(query, target, q_pos, t_match_end, len);
 
     // Right Trace: replay reversed trace (from seed toward extension end)
     let mut right_alignment: SmallVec<[Pairing; 64]> = SmallVec::new();
@@ -403,15 +415,15 @@ pub(super) fn extend_seed(
             dp::DpOp::Match | dp::DpOp::Stop => {
                 ri += 1;
                 rj += 1;
-                Pairing::from_bases(query.base_or_gap(q_base + ri), target.left(t_pos, rj))
+                Pairing::from_bases(base_or_gap(query, q_base + ri), left_base(target, t_pos, rj))
             }
             dp::DpOp::GapQ => {
                 ri += 1;
-                Pairing::GapTarget(query.base_or_gap(q_base + ri))
+                Pairing::GapTarget(base_or_gap(query, q_base + ri))
             }
             dp::DpOp::GapT => {
                 rj += 1;
-                Pairing::GapQuery(target.left(t_pos, rj))
+                Pairing::GapQuery(left_base(target, t_pos, rj))
             }
         };
         right_alignment.push(pairing);

@@ -1,6 +1,6 @@
 use log::trace;
 
-use super::{DpOp, DpView, ScoreOnlyGrid, TraceVec, MIN_SCORE};
+use super::{DpOp, DpView, MIN_SCORE, ScoreOnlyGrid, TracebackPath};
 
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn traceback(
@@ -10,7 +10,7 @@ pub(super) fn traceback(
     bt: &ScoreOnlyGrid,
     best_i: usize,
     best_j: usize,
-    trace_buf: &mut TraceVec,
+    trace_buf: &mut TracebackPath,
 ) {
     let (mut i, mut j) = (best_i, best_j);
     let mut state = DpOp::Match;

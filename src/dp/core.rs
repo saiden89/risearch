@@ -1,7 +1,7 @@
 use crate::dsm::dsm_lookup_raw;
 
-use super::{ScoreOnlyGrid, GAP, MIN_SCORE};
 use super::init::{add_e, max2, max3, update_best_with_term};
+use super::{GAP, MIN_SCORE, ScoreOnlyGrid};
 
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn dp_main_loop_left(

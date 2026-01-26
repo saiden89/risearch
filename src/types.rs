@@ -1,11 +1,12 @@
 //! Core domain types used across the codebase
 
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 /// Nucleotide/gap representation for DSM indexing and sequence operations
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub enum Base {
     #[default]
     Gap = 0,
@@ -80,6 +81,9 @@ pub static RC_DNA_TABLE: [u8; 256] = {
 /// Base → uppercase ASCII byte
 static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'G', b'C', b'U', b'N'];
 
+/// Base → lowercase ASCII byte (for to_byte())
+static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'g', b'c', b't', b'n'];
+
 /// Base → complement Base (indexed by Base as usize)
 static BASE_COMPLEMENT: [Base; 6] = [Base::Gap, Base::U, Base::C, Base::G, Base::A, Base::N];
 
@@ -132,6 +136,13 @@ impl Base {
     #[inline]
     pub fn to_u8_upper(self) -> u8 {
         BASE_TO_UPPER[self as usize]
+    }
+
+    /// Convert Base to lowercase ASCII byte (a, g, c, t, n, -)
+    /// Used for display and output formatting.
+    #[inline]
+    pub fn to_byte(self) -> u8 {
+        BASE_TO_BYTE[self as usize]
     }
 
     /// Get char representation
@@ -543,19 +554,6 @@ impl From<&str> for QueryId {
 impl From<String> for QueryId {
     fn from(s: String) -> Self {
         QueryId(s)
-    }
-}
-
-/// Query with ID and sequence (borrowed for processing).
-#[derive(Debug, Clone, Copy)]
-pub struct Query<'a> {
-    pub id: &'a str,
-    pub seq: &'a [u8],
-}
-
-impl<'a> Query<'a> {
-    pub fn new(id: &'a str, seq: &'a [u8]) -> Self {
-        Self { id, seq }
     }
 }
 

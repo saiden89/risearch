@@ -7,18 +7,17 @@ use crate::config::{OutputCompression, OutputFormat, SearchArgs};
 use crate::io::output::{compress_bytes, resolve_compression};
 use crate::seed::SeedCandidate;
 use crate::seed::search::find_seeds;
+use crate::seq::Sequence;
 use crate::types::Strand;
 
 use super::core::extend_seed;
 use super::output::fill_line_buf;
-use super::{
-    FilterReason, SaIndex, SearchContext, THREAD_EXTENDER, THREAD_MATCHES, THREAD_SEEDS,
-};
+use super::{FilterReason, SaIndex, SearchContext, THREAD_EXTENDER, THREAD_MATCHES, THREAD_SEEDS};
 
 /// Run search with streaming output - writes hits directly instead of collecting.
 /// This avoids memory overhead for large result sets.
 pub fn run_search_streaming<W: std::io::Write>(
-    queries: &[(String, Vec<u8>)],
+    queries: &[(String, Sequence)],
     index: &SaIndex<'_>,
     opts: &SearchArgs,
     writer: &mut W,
@@ -37,49 +36,42 @@ pub fn run_search_streaming<W: std::io::Write>(
     );
 
     let mut hit_count = 0;
-    let format = opts
-        .output
-        .format
-        .clone()
-        .unwrap_or(OutputFormat::Detailed);
+    let format = opts.output.format.unwrap_or(OutputFormat::Detailed);
     let compression = opts.output.compress.unwrap_or(OutputCompression::None);
     let compression_cfg = resolve_compression(compression, opts.output.level)?;
     let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
 
-    let process_query = |q_id: &str,
-                         q_seq: &[u8],
-                         writer: &mut dyn Write,
-                         line_buf: &mut Vec<u8>|
-     -> usize {
-        let mut local_hits = 0usize;
-        THREAD_EXTENDER.with(|ext| {
-            THREAD_SEEDS.with(|seeds_cell| {
-                THREAD_MATCHES.with(|matches_cell| {
-                    let mut extender = ext.borrow_mut();
-                    let mut seeds = seeds_cell.borrow_mut();
-                    let mut matches = matches_cell.borrow_mut();
-                    let mut ctx = SearchContext::with_extender(index, opts, &mut *extender);
+    let process_query =
+        |q_id: &str, q_seq: &Sequence, writer: &mut dyn Write, line_buf: &mut Vec<u8>| -> usize {
+            let mut local_hits = 0usize;
+            THREAD_EXTENDER.with(|ext| {
+                THREAD_SEEDS.with(|seeds_cell| {
+                    THREAD_MATCHES.with(|matches_cell| {
+                        let mut extender = ext.borrow_mut();
+                        let mut seeds = seeds_cell.borrow_mut();
+                        let mut matches = matches_cell.borrow_mut();
+                        let mut ctx = SearchContext::with_extender(index, opts, &mut extender);
 
-                    // Reuse thread-local Vecs instead of allocating new ones
-                    find_seeds(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
+                        // Reuse thread-local Vecs instead of allocating new ones
+                        find_seeds(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
 
-                    for candidate in seeds.iter() {
-                        if process_candidate_streaming(
-                            crate::types::Query::new(q_id, q_seq),
-                            candidate,
-                            &mut ctx,
-                            writer,
-                            format,
-                            line_buf,
-                        ) {
-                            local_hits += 1;
+                        for candidate in seeds.iter() {
+            if process_candidate_streaming(
+                super::Query::new(q_id, q_seq),
+                candidate,
+                &mut ctx,
+                writer,
+                format,
+                line_buf,
+            ) {
+                                local_hits += 1;
+                            }
                         }
-                    }
+                    });
                 });
             });
-        });
-        local_hits
-    };
+            local_hits
+        };
 
     for chunk in queries.chunks(chunk_size) {
         let outputs: Vec<Result<(Vec<u8>, usize)>> = chunk
@@ -109,7 +101,7 @@ pub fn run_search_streaming<W: std::io::Write>(
 /// Process candidate and write directly to output - zero String allocation variant.
 /// Returns true if a hit was written.
 fn process_candidate_streaming<W: Write + ?Sized>(
-    query: crate::types::Query<'_>,
+    query: super::Query<'_>,
     candidate: &SeedCandidate,
     ctx: &mut SearchContext<'_, '_>,
     writer: &mut W,
@@ -117,7 +109,7 @@ fn process_candidate_streaming<W: Write + ?Sized>(
     line_buf: &mut Vec<u8>,
 ) -> bool {
     let t_idx = candidate.target_idx;
-    let t_seq: &[u8] = match candidate.strand {
+    let t_seq = match candidate.strand {
         Strand::Reverse => ctx.index.get_sequence_rc(t_idx),
         Strand::Forward => ctx.index.get_sequence(t_idx),
     };
@@ -161,7 +153,9 @@ fn process_candidate_streaming<W: Write + ?Sized>(
 
     let target_id = ctx.index.get_id(t_idx);
     let ctx_len = 20;
-    let (flank_5, flank_5_rev, flank_3, flank_3_rev) = if format == OutputFormat::BindingSite {
+
+    // Convert flanking Base sequences to bytes for output
+    let (flank_5_bytes, flank_5_rev, flank_3_bytes, flank_3_rev) = if format == OutputFormat::BindingSite {
         let flank_5_slice = &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start];
         let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
         let flank_3_slice = if final_t_end + 1 < t_seq.len() {
@@ -169,9 +163,12 @@ fn process_candidate_streaming<W: Write + ?Sized>(
         } else {
             &t_seq[0..0]
         };
-        (flank_5_slice, true, flank_3_slice, false)
+        // Convert Base slices to bytes
+        let f5: Vec<u8> = flank_5_slice.iter().map(|b| b.to_byte()).collect();
+        let f3: Vec<u8> = flank_3_slice.iter().map(|b| b.to_byte()).collect();
+        (f5, true, f3, false)
     } else {
-        (&t_seq[0..0], false, &t_seq[0..0], false)
+        (Vec::new(), false, Vec::new(), false)
     };
 
     let mut itoa_buf = itoa::Buffer::new();
@@ -190,8 +187,8 @@ fn process_candidate_streaming<W: Write + ?Sized>(
         strand_char,
         score,
         &ext.alignment,
-        (flank_5, flank_5_rev),
-        (flank_3, flank_3_rev),
+        (&flank_5_bytes, flank_5_rev),
+        (&flank_3_bytes, flank_3_rev),
         None,
     );
 
