@@ -4,20 +4,20 @@ use rayon::prelude::*;
 use std::io::Write;
 
 use crate::config::{OutputCompression, OutputFormat, SearchArgs};
-use crate::io::output::{compress_bytes, resolve_compression};
+use crate::output::{compress_bytes, resolve_compression};
 use crate::seed::SeedCandidate;
 use crate::seed::search::find_seeds;
 use crate::seq::Sequence;
-use crate::types::Strand;
+use crate::types::{QueryId, Strand};
 
 use super::core::extend_seed;
-use super::output::fill_line_buf;
+use crate::output::format::fill_line_buf;
 use super::{FilterReason, SaIndex, SearchContext, THREAD_EXTENDER, THREAD_MATCHES, THREAD_SEEDS};
 
 /// Run search with streaming output - writes hits directly instead of collecting.
 /// This avoids memory overhead for large result sets.
 pub fn run_search_streaming<W: std::io::Write>(
-    queries: &[(String, Sequence)],
+    queries: &[(QueryId, Sequence)],
     index: &SaIndex<'_>,
     opts: &SearchArgs,
     writer: &mut W,
@@ -42,7 +42,7 @@ pub fn run_search_streaming<W: std::io::Write>(
     let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
 
     let process_query =
-        |q_id: &str, q_seq: &Sequence, writer: &mut dyn Write, line_buf: &mut Vec<u8>| -> usize {
+        |q_id: &QueryId, q_seq: &Sequence, writer: &mut dyn Write, line_buf: &mut Vec<u8>| -> usize {
             let mut local_hits = 0usize;
             THREAD_EXTENDER.with(|ext| {
                 THREAD_SEEDS.with(|seeds_cell| {
@@ -154,21 +154,23 @@ fn process_candidate_streaming<W: Write + ?Sized>(
     let target_id = ctx.index.get_id(t_idx);
     let ctx_len = 20;
 
-    // Convert flanking Base sequences to bytes for output
-    let (flank_5_bytes, flank_5_rev, flank_3_bytes, flank_3_rev) = if format == OutputFormat::BindingSite {
-        let flank_5_slice = &t_seq[final_t_start.saturating_sub(ctx_len)..final_t_start];
-        let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
-        let flank_3_slice = if final_t_end + 1 < t_seq.len() {
-            &t_seq[final_t_end + 1..t_3_end]
-        } else {
-            &t_seq[0..0]
-        };
-        // Convert Base slices to bytes
-        let f5: Vec<u8> = flank_5_slice.iter().map(|b| b.to_byte()).collect();
-        let f3: Vec<u8> = flank_3_slice.iter().map(|b| b.to_byte()).collect();
-        (f5, true, f3, false)
+    // Flanking Base sequences for binding-site output
+    let (flank_5_range, flank_5_rev) = if format == OutputFormat::BindingSite {
+        let start = final_t_start.saturating_sub(ctx_len);
+        (start..final_t_start, true)
     } else {
-        (Vec::new(), false, Vec::new(), false)
+        (0..0, false)
+    };
+
+    let (flank_3_range, flank_3_rev) = if format == OutputFormat::BindingSite {
+        let t_3_end = (final_t_end + 1 + ctx_len).min(t_seq.len());
+        if final_t_end + 1 < t_seq.len() {
+            ((final_t_end + 1)..t_3_end, false)
+        } else {
+            (0..0, false)
+        }
+    } else {
+        (0..0, false)
     };
 
     let mut itoa_buf = itoa::Buffer::new();
@@ -178,7 +180,7 @@ fn process_candidate_streaming<W: Write + ?Sized>(
         &mut itoa_buf,
         &mut zmij_buf,
         format,
-        query.id,
+        query.id.as_str(),
         final_q_start + 1,
         final_q_end + 1,
         target_id,
@@ -187,8 +189,8 @@ fn process_candidate_streaming<W: Write + ?Sized>(
         strand_char,
         score,
         &ext.alignment,
-        (&flank_5_bytes, flank_5_rev),
-        (&flank_3_bytes, flank_3_rev),
+        (t_seq, flank_5_range, flank_5_rev),
+        (t_seq, flank_3_range, flank_3_rev),
         None,
     );
 

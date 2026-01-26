@@ -6,7 +6,7 @@ use crate::dp;
 use crate::dsm::{PAIR_MAT, PAIR_MAT_NO_GU};
 use crate::seed::{SeedCandidate, build_seed_alignment};
 use crate::seq::Sequence;
-use crate::types::{Alignment, Base, Pairing, SeedPairingMode, Strand};
+use crate::types::{Alignment, Base, Pairing, QueryId, SeedPairingMode, Strand};
 
 use super::{
     FilterReason, MAX_DP_EXT, SaIndex, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER,
@@ -33,7 +33,7 @@ fn left_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
 /// Run search and return hits (used by parity tests and library callers).
 /// Assumes the provided `SearchArgs` already contains a valid `SeedSpec` for each query.
 pub fn run_search(
-    queries: &[(String, Sequence)],
+    queries: &[(QueryId, Sequence)],
     index: &SaIndex<'_>,
     opts: &crate::config::SearchArgs,
 ) -> Result<Vec<SearchHit>> {
@@ -116,7 +116,7 @@ fn build_hit(
     };
 
     SearchHit {
-        query_id: query.id.into(),
+        query_id: query.id.clone(),
         target_id: ctx.index.get_id(candidate.target_idx).into(),
         q_start: final_q_start,
         q_end: final_q_end,
@@ -129,8 +129,8 @@ fn build_hit(
         strand: strand_char.into(),
         energy: ext.score.into(),
         alignment: ext.alignment,
-        flank_5: String::new(),
-        flank_3: String::new(),
+        flank_5: Sequence::from(Vec::new()),
+        flank_3: Sequence::from(Vec::new()),
     }
 }
 

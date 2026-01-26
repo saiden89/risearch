@@ -2,8 +2,9 @@ pub mod cli_args;
 pub mod config;
 pub mod dp;
 pub mod dsm;
+pub mod fastx;
 pub mod index;
-pub mod io;
+pub mod output;
 pub mod sa;
 pub mod search;
 pub mod seed;
@@ -16,7 +17,7 @@ pub use seq::{AlignedSeq, Sequence, reverse_complement_dna, reverse_complement_r
 pub use types::{BASE_COUNT, Base, Energy, QueryId, SeedPairingMode, Span, Strand, TargetId};
 
 // Search API re-exports for library usage
-pub use io::output::{write_results, write_results_with_format};
+pub use output::{write_results, write_results_with_format};
 pub use search::SearchHit;
 pub use seed::{SeedCandidate, SeedSpec};
 pub use types::{Alignment, Pairing};

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::io::read_fasta_sequences;
+use crate::fastx::read_fasta_sequences;
 use crate::sa::SuffixArray;
 use crate::seq::Sequence;
 

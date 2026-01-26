@@ -8,7 +8,9 @@ use zstd::stream;
 
 use crate::config::{OutputCompression, OutputFormat};
 use crate::search::SearchHit;
-use crate::search::output::{write_results_to, write_results_with_format_to};
+use self::format::{write_results_to, write_results_with_format_to};
+
+pub mod format;
 
 #[derive(Debug, Clone, Copy)]
 pub enum CompressionConfig {

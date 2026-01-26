@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-use risearch::{io, sa, search};
+use risearch::{output, sa, search, QueryId};
 
 use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
@@ -120,7 +120,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 .context("Failed to process query sequences")?
                 .sequences
                 .into_iter()
-                .map(|s| (s.name, s.sequence))
+                .map(|s| (QueryId::from(s.name), s.sequence))
                 .collect::<Vec<_>>();
 
             info!("Loaded {} query sequences", queries.len());
@@ -133,7 +133,7 @@ pub fn run(cli: Cli) -> Result<()> {
             debug!("Starting search with streaming output...");
 
             let (mut writer, compression) =
-                io::output::open_output(output.as_ref(), opts.output_compress.map(Into::into))?;
+                output::open_output(output.as_ref(), opts.output_compress.map(Into::into))?;
             let mut opts: risearch::config::SearchArgs = opts.clone().into();
             emit_legacy_warnings(&raw_args, &mut opts);
             opts.output.compress = Some(compression);

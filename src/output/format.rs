@@ -4,10 +4,28 @@ use anyhow::Result;
 use log::debug;
 
 use crate::config::OutputFormat;
-use crate::seq::utils::push_bytes_as_rna;
+use crate::seq::utils::push_bases_as_rna;
+use crate::seq::Sequence;
 use crate::types::{Alignment, Pairing};
+use crate::search::SearchHit;
 
-use super::{SearchHit, SearchStage};
+const OUTPUT_STAGE: &str = "[OUTPUT]";
+
+struct OutputBuffers {
+    line: Vec<u8>,
+    itoa: itoa::Buffer,
+    zmij: zmij::Buffer,
+}
+
+impl OutputBuffers {
+    fn new() -> Self {
+        Self {
+            line: Vec::new(),
+            itoa: itoa::Buffer::new(),
+            zmij: zmij::Buffer::new(),
+        }
+    }
+}
 
 #[inline]
 fn push_usize(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, val: usize) {
@@ -113,9 +131,16 @@ pub(super) fn push_alignment_line(buf: &mut Vec<u8>, steps: &[Pairing]) {
 }
 
 #[inline]
-pub(super) fn push_query_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
+fn push_pairing_string(buf: &mut Vec<u8>, steps: &[Pairing]) {
     for p in steps {
-        let c = p.query_char();
+        buf.push(p.to_char() as u8);
+    }
+}
+
+#[inline]
+fn push_seq(buf: &mut Vec<u8>, steps: &[Pairing], f: fn(&Pairing) -> char) {
+    for p in steps {
+        let c = f(p);
         let normalized = match c {
             'T' => 'U',
             't' => 'u',
@@ -126,16 +151,13 @@ pub(super) fn push_query_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
 }
 
 #[inline]
+pub(super) fn push_query_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
+    push_seq(buf, steps, Pairing::query_char);
+}
+
+#[inline]
 pub(super) fn push_target_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
-    for p in steps {
-        let c = p.target_char();
-        let normalized = match c {
-            'T' => 'U',
-            't' => 'u',
-            other => other,
-        };
-        buf.push(normalized as u8);
-    }
+    push_seq(buf, steps, Pairing::target_char);
 }
 
 #[inline]
@@ -149,7 +171,7 @@ fn truncate_id(id: &str, max_len: Option<usize>) -> &str {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn fill_line_buf(
+pub(crate) fn fill_line_buf(
     line_buf: &mut Vec<u8>,
     itoa_buf: &mut itoa::Buffer,
     zmij_buf: &mut zmij::Buffer,
@@ -163,8 +185,8 @@ pub(super) fn fill_line_buf(
     strand_char: char,
     score: f64,
     alignment: &Alignment,
-    flank_5: (&[u8], bool),
-    flank_3: (&[u8], bool),
+    flank_5: (&Sequence, std::ops::Range<usize>, bool),
+    flank_3: (&Sequence, std::ops::Range<usize>, bool),
     id_max_len: Option<usize>,
 ) {
     let q_id_trunc = truncate_id(q_id, id_max_len);
@@ -174,8 +196,8 @@ pub(super) fn fill_line_buf(
     let approx = q_id_trunc.len()
         + t_id_trunc.len()
         + (steps.len() * 2)
-        + flank_5.0.len()
-        + flank_3.0.len()
+        + flank_5.1.end.saturating_sub(flank_5.1.start)
+        + flank_3.1.end.saturating_sub(flank_3.1.start)
         + 96;
     line_buf.clear();
     if line_buf.capacity() < approx {
@@ -220,9 +242,7 @@ pub(super) fn fill_line_buf(
                 score,
             );
             line_buf.push(b'\t');
-            for p in steps {
-                line_buf.push(p.to_char() as u8);
-            }
+            push_pairing_string(line_buf, steps);
             line_buf.push(b'\n');
         }
         OutputFormat::BindingSite => {
@@ -240,15 +260,13 @@ pub(super) fn fill_line_buf(
                 score,
             );
             line_buf.push(b'\t');
-            for p in steps {
-                line_buf.push(p.to_char() as u8);
-            }
+            push_pairing_string(line_buf, steps);
             line_buf.push(b'\t');
             push_target_seq(line_buf, steps);
             line_buf.push(b'\t');
-            push_bytes_as_rna(line_buf, flank_5.0, flank_5.1);
+            push_bases_as_rna(line_buf, &flank_5.0[flank_5.1.clone()], flank_5.2);
             line_buf.push(b'\t');
-            push_bytes_as_rna(line_buf, flank_3.0, flank_3.1);
+            push_bases_as_rna(line_buf, &flank_3.0[flank_3.1.clone()], flank_3.2);
             line_buf.push(b'\n');
         }
         OutputFormat::Minimal => {
@@ -270,6 +288,34 @@ pub(super) fn fill_line_buf(
     }
 }
 
+#[inline]
+fn write_hit_with_format<W: Write>(
+    bufs: &mut OutputBuffers,
+    hit: &SearchHit,
+    format: OutputFormat,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    fill_line_buf(
+        &mut bufs.line,
+        &mut bufs.itoa,
+        &mut bufs.zmij,
+        format,
+        hit.query_id.as_str(),
+        hit.output_q_start,
+        hit.output_q_end,
+        hit.target_id.as_str(),
+        hit.output_t_start,
+        hit.output_t_end,
+        char::from(hit.strand),
+        hit.energy.as_f64(),
+        &hit.alignment,
+        (&hit.flank_5, 0..hit.flank_5.len(), false),
+        (&hit.flank_3, 0..hit.flank_3.len(), false),
+        None,
+    );
+    writer.write_all(&bufs.line)
+}
+
 impl SearchHit {
     pub fn write(&self, w: &mut dyn Write) -> std::io::Result<()> {
         self.write_with_format(w, OutputFormat::BindingSite)
@@ -280,35 +326,16 @@ impl SearchHit {
         w: &mut dyn Write,
         format: OutputFormat,
     ) -> std::io::Result<()> {
-        let mut line_buf = Vec::new();
-        let mut itoa_buf = itoa::Buffer::new();
-        let mut zmij_buf = zmij::Buffer::new();
-        fill_line_buf(
-            &mut line_buf,
-            &mut itoa_buf,
-            &mut zmij_buf,
-            format,
-            self.query_id.as_str(),
-            self.output_q_start,
-            self.output_q_end,
-            self.target_id.as_str(),
-            self.output_t_start,
-            self.output_t_end,
-            char::from(self.strand),
-            self.energy.as_f64(),
-            &self.alignment,
-            (self.flank_5.as_bytes(), false),
-            (self.flank_3.as_bytes(), false),
-            None,
-        );
-        w.write_all(&line_buf)
+        let mut bufs = OutputBuffers::new();
+        write_hit_with_format(&mut bufs, self, format, w)
     }
 }
 
 pub fn write_results_to<W: Write>(hits: &[SearchHit], writer: &mut W) -> Result<()> {
-    debug!("{} output=<writer>", SearchStage::Output);
+    debug!("{} output=<writer>", OUTPUT_STAGE);
+    let mut bufs = OutputBuffers::new();
     for hit in hits {
-        hit.write(writer)?;
+        write_hit_with_format(&mut bufs, hit, OutputFormat::BindingSite, writer)?;
     }
     Ok(())
 }
@@ -320,11 +347,12 @@ pub fn write_results_with_format_to<W: Write>(
 ) -> Result<()> {
     debug!(
         "{} output=<writer> format={:?}",
-        SearchStage::Output,
+        OUTPUT_STAGE,
         format
     );
+    let mut bufs = OutputBuffers::new();
     for hit in hits {
-        hit.write_with_format(writer, format)?;
+        write_hit_with_format(&mut bufs, hit, format, writer)?;
     }
     Ok(())
 }

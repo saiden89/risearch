@@ -10,7 +10,6 @@ use crate::types::{Alignment, Energy, QueryId, Strand, TargetId};
 use std::collections::HashMap;
 
 mod core;
-pub(crate) mod output;
 mod stream;
 
 pub use core::run_search;
@@ -83,19 +82,19 @@ pub struct SearchHit {
     pub strand: Strand,
     pub energy: Energy,
     pub alignment: Alignment,
-    pub flank_5: String,
-    pub flank_3: String,
+    pub flank_5: Sequence,
+    pub flank_3: Sequence,
 }
 
 /// Query with ID and sequence (borrowed for processing).
 #[derive(Debug, Clone, Copy)]
 pub struct Query<'a> {
-    pub id: &'a str,
+    pub id: &'a QueryId,
     pub seq: &'a Sequence,
 }
 
 impl<'a> Query<'a> {
-    pub fn new(id: &'a str, seq: &'a Sequence) -> Self {
+    pub fn new(id: &'a QueryId, seq: &'a Sequence) -> Self {
         Self { id, seq }
     }
 }
@@ -136,12 +135,20 @@ impl SearchHit {
         let alignment = Alignment::from_c_output(&interaction, &target_seq, seed_start, seed_end);
 
         // Optional flanks
-        let flank_5 = fields
-            .get(10)
-            .map_or(String::new(), |s| Self::strip_markers_simple(s));
-        let flank_3 = fields
-            .get(11)
-            .map_or(String::new(), |s| Self::strip_markers_simple(s));
+        let flank_5 = match fields.get(10) {
+            Some(s) => {
+                let clean = Self::strip_markers_simple(s);
+                Sequence::normalize("flank_5", clean.as_bytes()).ok()?.0
+            }
+            None => Sequence::from(Vec::new()),
+        };
+        let flank_3 = match fields.get(11) {
+            Some(s) => {
+                let clean = Self::strip_markers_simple(s);
+                Sequence::normalize("flank_3", clean.as_bytes()).ok()?.0
+            }
+            None => Sequence::from(Vec::new()),
+        };
 
         Some(SearchHit {
             query_id: fields[0].into(),
@@ -330,8 +337,10 @@ mod tests {
         assert_eq!(hit.strand, Strand::Forward);
         assert!((hit.energy.as_f64() - (-15.50)).abs() < 0.01);
         assert_eq!(hit.alignment.fingerprint(), "PPPUPPP"); // markers stripped
-        assert_eq!(hit.flank_5, "AA");
-        assert_eq!(hit.flank_3, "CC");
+        let (f5, _) = Sequence::normalize("f5", b"AA").unwrap();
+        let (f3, _) = Sequence::normalize("f3", b"CC").unwrap();
+        assert_eq!(hit.flank_5, f5);
+        assert_eq!(hit.flank_3, f3);
     }
 
     #[test]
@@ -352,8 +361,8 @@ mod tests {
         assert_eq!(hit.output_t_start, 10);
         assert_eq!(hit.output_t_end, 15);
         assert_eq!(hit.strand, Strand::Reverse);
-        assert_eq!(hit.flank_5, "");
-        assert_eq!(hit.flank_3, "");
+        assert!(hit.flank_5.is_empty());
+        assert!(hit.flank_3.is_empty());
     }
 
     #[test]
