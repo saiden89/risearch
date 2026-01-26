@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 
 use crate::dp;
-use crate::dsm::{DsmModel, PAIR_MAT, PAIR_MAT_NO_GU};
+use crate::dsm::{DsmModel, pair_mat};
 use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
 use crate::seed::{SeedHit, build_seed_alignment};
@@ -178,14 +178,8 @@ pub(super) fn extend_seed<M: DsmModel>(
     let query = q_seq;
     let target = t_seq;
 
-    // Select pair matrix based on wobble mode:
-    // - AllowWobble: use PAIR_MAT (G-U wobble pairs are valid)
-    // - Strict: use PAIR_MAT_NO_GU (G-U wobble pairs are NOT valid)
-    let pair_mat = if ctx.args.seed.allows_wobble() {
-        &PAIR_MAT
-    } else {
-        &PAIR_MAT_NO_GU
-    };
+    // Select pair matrix based on wobble mode.
+    let pair_mat = pair_mat(ctx.args.seed.allows_wobble());
 
     // MAXIMALITY CHECK
     // Skip non-maximal seeds: if the seed can be extended by a valid base pair
