@@ -129,7 +129,6 @@ pub const GAP: i32 = 0;
 // ENERGY MODEL - Centralized energy calculation
 // =============================================================================
 
-use crate::seq::Seq;
 
 /// Centralized energy calculation model.
 /// Encapsulates all stacking energy logic including antiparallel indexing.
@@ -179,18 +178,18 @@ impl EnergyModel {
     /// Full seed energy calculation with antiparallel indexing.
     pub fn seed_energy(
         &self,
-        query: &Seq,
-        target: &Seq,
+        query: &[Base],
+        target: &[Base],
         q_pos: usize,
         t_end: usize,
         len: usize,
     ) -> i32 {
         (0..len.saturating_sub(1))
             .map(|k| {
-                let q1 = query.base(q_pos + k);
-                let q2 = query.base(q_pos + k + 1);
-                let t1 = target.base(t_end - k);
-                let t2 = target.base(t_end - (k + 1));
+                let q1 = query[q_pos + k];
+                let q2 = query[q_pos + k + 1];
+                let t1 = target[t_end - k];
+                let t2 = target[t_end - (k + 1)];
                 self.stack(q1, q2, t1, t2)
             })
             .sum()

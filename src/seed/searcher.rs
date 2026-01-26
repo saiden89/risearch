@@ -22,8 +22,9 @@
 //! Level s:  When depth == seed_length, collect matches
 //! ```
 
-use crate::Sequence;
 use crate::config::SeedConfig;
+use crate::sa::SuffixArray;
+use crate::seq::Sequence;
 use crate::types::{Base, SeedPairingMode};
 
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
@@ -139,11 +140,11 @@ struct SearchState {
 /// - Same-character matching finds complementary base pairs
 pub struct SeedSearcher<'a> {
     /// Query suffix array
-    query_sa: &'a [u32],
+    query_sa: &'a SuffixArray,
     /// Query sequence (for base lookup)
     query_seq: &'a Sequence,
     /// Target suffix array (built on COMPLEMENT of target)
-    target_comp_sa: &'a [u32],
+    target_comp_sa: &'a SuffixArray,
     /// Target complement sequence
     target_comp_seq: &'a Sequence,
     /// Seed configuration (pairing, mismatch spec, etc.)
@@ -156,9 +157,9 @@ impl<'a> SeedSearcher<'a> {
     /// IMPORTANT: `target_comp_sa` and `target_comp_seq` should be built on the
     /// COMPLEMENT (not reverse complement) of the target sequence.
     pub fn new(
-        query_sa: &'a [u32],
+        query_sa: &'a SuffixArray,
         query_seq: &'a Sequence,
-        target_comp_sa: &'a [u32],
+        target_comp_sa: &'a SuffixArray,
         target_comp_seq: &'a Sequence,
         seed_config: &'a SeedConfig,
     ) -> Self {
@@ -631,7 +632,7 @@ impl<'a> SeedSearcher<'a> {
 mod tests {
     use super::*;
     use crate::config::SeedConfig;
-    use crate::seed::sa::{build_suffix_array, complement_sequence};
+    use crate::sa::SuffixArray;
     use crate::seed::{MismatchSpec, SeedSpec};
 
     /// Create a default SeedConfig for testing with specified pairing mode
@@ -648,14 +649,14 @@ mod tests {
     }
 
     #[test]
-    fn test_complement_sequence() {
+    fn test_base_complement() {
         use crate::types::Base;
         let seq = vec![Base::A, Base::C, Base::G, Base::U];
-        let comp = complement_sequence(&seq);
+        let comp: Vec<_> = seq.iter().map(|b| b.complement()).collect();
         assert_eq!(comp, vec![Base::U, Base::G, Base::C, Base::A]);
 
         let seq2 = vec![Base::A, Base::A, Base::A, Base::A];
-        let comp2 = complement_sequence(&seq2);
+        let comp2: Vec<_> = seq2.iter().map(|b| b.complement()).collect();
         assert_eq!(comp2, vec![Base::U, Base::U, Base::U, Base::U]);
     }
 
@@ -664,7 +665,7 @@ mod tests {
         use crate::types::Base;
         let seq_bases = vec![Base::A, Base::C, Base::G, Base::U];
         let seq = Sequence::from(seq_bases.clone());
-        let sa = build_suffix_array(&seq);
+        let sa = SuffixArray::build(&seq);
         let seed_args = test_seed_config(SeedPairingMode::AllowWobble);
 
         let searcher = SeedSearcher::new(&sa, &seq, &sa, &seq, &seed_args);
@@ -687,19 +688,23 @@ mod tests {
         let target_bases = vec![Base::U, Base::U, Base::U];
 
         // Step 1: Check complement
-        let target_comp_bases = complement_sequence(&target_bases);
+        let target_comp_bases: Vec<_> = target_bases.iter().map(|b| b.complement()).collect();
         eprintln!("Query: {:?}", query_bases);
         eprintln!("Target: {:?}", target_bases);
         eprintln!("Target complement: {:?}", target_comp_bases);
-        assert_eq!(&target_comp_bases, &[Base::A, Base::A, Base::A], "complement(UUU) should be AAA");
+        assert_eq!(
+            &target_comp_bases,
+            &[Base::A, Base::A, Base::A],
+            "complement(UUU) should be AAA"
+        );
 
         let query = Sequence::from(query_bases);
         let _target = Sequence::from(target_bases);
         let target_comp = Sequence::from(target_comp_bases);
 
         // Step 2: Build SAs
-        let q_sa = build_suffix_array(&query);
-        let t_sa = build_suffix_array(&target_comp);
+        let q_sa = SuffixArray::build(&query);
+        let t_sa = SuffixArray::build(&target_comp);
         eprintln!("Query SA: {:?}", q_sa);
         eprintln!("Target comp SA: {:?}", t_sa);
 

@@ -6,8 +6,8 @@ use log::{debug, info, trace};
 
 use risearch::{io, sa, search};
 
-use crate::cli::{Cli, Commands};
 use crate::cli::warnings::emit_legacy_warnings;
+use crate::cli::{Cli, Commands};
 
 /// Initialize logging based on verbosity level with colored output.
 pub fn init_logging(verbosity: u8) {
@@ -138,8 +138,7 @@ pub fn run(cli: Cli) -> Result<()> {
             emit_legacy_warnings(&raw_args, &mut opts);
             opts.output.compress = Some(compression);
 
-            let hit_count =
-                search::run_search_streaming(&queries, &wrapper, &opts, &mut writer)?;
+            let hit_count = search::run_search_streaming(&queries, &wrapper, &opts, &mut writer)?;
             writer.flush().context("Failed to flush output")?;
             info!("Search completed: {} hits written", hit_count);
         }

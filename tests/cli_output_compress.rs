@@ -13,7 +13,12 @@ fn build_index(target_path: &std::path::Path, index_path: &std::path::Path) {
         .success();
 }
 
-fn run_search(query_path: &std::path::Path, index_path: &std::path::Path, out_path: &std::path::Path, extra_args: &[&str]) {
+fn run_search(
+    query_path: &std::path::Path,
+    index_path: &std::path::Path,
+    out_path: &std::path::Path,
+    extra_args: &[&str],
+) {
     let mut cmd_search = cargo_bin_cmd!("risearch");
     let mut cmd = cmd_search
         .arg("search")

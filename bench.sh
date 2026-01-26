@@ -10,6 +10,7 @@ C_IDX="chr22_c.idx"
 RUST_BIN="./target/release/risearch"
 C_BIN="legacy_c/RIsearch2/bin/risearch2.x"
 OUT="/tmp/bench_out"
+FORMAT="-p4"
 
 # Build release
 echo "Building Rust release..."
@@ -20,14 +21,14 @@ echo "=============================================="
 echo "EXACT MATCH BENCHMARKS"
 echo "=============================================="
 
-# for SEED in 6 8 10; do
-#     echo "--- Seed length $SEED, max_ext 20 ---"
-#     echo "[Rust]"
-#     time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 20 -e 100 -o $OUT --output-compress gzip -t 1 --format=bindingsite 2>&1
-#     echo "[C]"
-#     time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 20 -e 100 -t 1 -p3 > $OUT 2>&1
-#     echo ""
-# done
+for SEED in 6 8 10; do
+    echo "--- Seed length $SEED, max_ext 20 ---"
+    echo "[Rust]"
+    time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 20 -e 100 -o - --seed-pairing allow_wobble -t 1 $FORMAT | gzip >rust_l${SEED}.gz
+    echo "[C]"
+    time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 20 -e 100 -t 1 $FORMAT
+    echo ""
+done
 
 echo ""
 echo "=============================================="
@@ -39,13 +40,11 @@ for MISMATCH in "1:0" "1:3" "2:2"; do
         echo ""
         echo "--- Mismatch $MISMATCH, Seed $SEED, max_ext 10 ---"
         echo "[Rust]"
-        time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -o $OUT -t 2 --output-compress gzip --format=bindingsite  2>&1
-        echo "[C]" 2>&1
+        time $RUST_BIN search -q $MIRNAS -i $RUST_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -o - --seed-pairing allow_wobble -t 2 $FORMAT | gzip >rust_m${MISMATCH}_s${SEED}.gz
         echo "[C]"
-        time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -t 2 -p3 > $OUT 2>&1
+        time $C_BIN -q $MIRNAS -i $C_IDX -s $SEED -l 10 -m $MISMATCH -e 100 -t 2 $FORMAT
     done
 done
-
 
 echo ""
 echo "Done!"

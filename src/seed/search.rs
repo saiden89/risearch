@@ -1,9 +1,8 @@
 use crate::config::SeedConfig;
-use crate::sa::SaIndexFile;
+use crate::sa::{SaIndexFile, SuffixArray};
 use crate::seq::Sequence;
 use crate::types::{Base, Strand};
 
-use super::sa::build_suffix_array;
 use super::{SeedCandidate, SeedMatch, SeedSearcher};
 
 /// Pre-computed query data to avoid rebuilding per-target.
@@ -13,7 +12,7 @@ struct QueryCache {
     /// Reverse complement of normalized query
     pub q_rc: Sequence,
     /// Suffix array of reverse complement
-    pub q_rc_sa: Vec<u32>,
+    pub q_rc_sa: SuffixArray,
     /// Seed interval start (0-based)
     pub start0: usize,
     /// Seed interval end (1-based, exclusive)
@@ -48,7 +47,7 @@ impl QueryCache {
 
         // Build query RC and its SA once
         let q_rc = q_norm.reverse_complement();
-        let q_rc_sa = build_suffix_array(&q_rc);
+        let q_rc_sa = SuffixArray::build(&q_rc);
 
         Some(Self {
             q_norm,
@@ -99,7 +98,7 @@ pub(crate) fn find_seeds(
             candidates,
             matches,
             Strand::Forward,
-            target.forward_sa.as_slice(),
+            &target.forward_sa,
             &target.sequence,
         );
         collect_target_seeds(
@@ -109,7 +108,7 @@ pub(crate) fn find_seeds(
             candidates,
             matches,
             Strand::Reverse,
-            target.reverse_sa.as_slice(),
+            &target.reverse_sa,
             &target.sequence_rc,
         );
     }
@@ -123,7 +122,7 @@ fn collect_target_seeds(
     candidates: &mut Vec<SeedCandidate>,
     matches: &mut Vec<SeedMatch>,
     strand: Strand,
-    t_sa: &[u32],
+    t_sa: &SuffixArray,
     t_seq: &Sequence,
 ) {
     let q_len = prep.q_norm.len();

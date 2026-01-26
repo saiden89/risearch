@@ -1,11 +1,11 @@
 use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
-use libsais::SuffixArrayConstruction;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::io::read_fasta_sequences;
+use crate::sa::SuffixArray;
 use crate::seq::Sequence;
 
 use super::io::{validate_output_path, validate_readable_file, write_index_file};
@@ -16,23 +16,21 @@ pub struct SequenceIndex {
     /// Sequence identifier.
     pub name: String,
     /// Suffix array for the forward strand (u32 for 50% memory reduction).
-    pub forward_sa: Vec<u32>,
+    pub forward_sa: SuffixArray,
     /// Suffix array for the reverse strand (u32 for 50% memory reduction).
-    pub reverse_sa: Vec<u32>,
+    pub reverse_sa: SuffixArray,
     /// Normalized RNA sequence (stored as Vec<Base>)
     pub sequence: Sequence,
     /// Pre-computed reverse complement (avoids allocation on every access)
     pub sequence_rc: Sequence,
 }
 
-/// Structure representing the entire index file containing multiple sequences.
+/// Structure representing the entire index file containing multile sequences.
 #[derive(Serialize, Deserialize)]
 pub struct SaIndexFile {
-    /// List of sequence indices in the index file.
     pub sequences: Vec<SequenceIndex>,
 }
 
-// TODO: This probably belongs in some trait (IndexBuilder or similar)
 pub fn create_suffix_array(
     input_file: impl AsRef<Path>,
     output_file: impl AsRef<Path>,
@@ -119,24 +117,10 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
             let seq_norm_bytes = seq_norm.to_bytes();
             let seq_rc_bytes = seq_rc.to_bytes();
 
-            let sa_fwd: Vec<u32> = SuffixArrayConstruction::for_text(&seq_norm_bytes)
-                .in_owned_buffer()
-                .single_threaded()
-                .run()
-                .map_err(|e| anyhow!("Suffix array construction failed for '{}': {e:?}", id))?
-                .into_vec()
-                .into_iter()
-                .map(|x: i64| x as u32)
-                .collect();
-            let sa_rev: Vec<u32> = SuffixArrayConstruction::for_text(&seq_rc_bytes)
-                .in_owned_buffer()
-                .single_threaded()
-                .run()
-                .map_err(|e| anyhow!("Suffix array construction failed for '{}' (revcomp): {e:?}", id))?
-                .into_vec()
-                .into_iter()
-                .map(|x: i64| x as u32)
-                .collect();
+            let sa_fwd = SuffixArray::try_build(&seq_norm_bytes)
+                .map_err(|e| anyhow!("Suffix array construction failed for '{}': {e:?}", id))?;
+            let sa_rev = SuffixArray::try_build(&seq_rc_bytes)
+                .map_err(|e| anyhow!("Suffix array construction failed for '{}' (revcomp): {e:?}", id))?;
 
             Ok(Some(SequenceIndex {
                 name: id,
@@ -251,15 +235,15 @@ mod tests {
 
         let index = SequenceIndex {
             name: "test_seq".to_string(),
-            forward_sa: vec![0, 1, 2],
-            reverse_sa: vec![2, 1, 0],
+            forward_sa: SuffixArray::from(vec![0, 1, 2]),
+            reverse_sa: SuffixArray::from(vec![2, 1, 0]),
             sequence: seq.clone(),
             sequence_rc: seq_rc,
         };
 
         assert_eq!(index.name, "test_seq");
-        assert_eq!(index.forward_sa, vec![0, 1, 2]);
-        assert_eq!(index.reverse_sa, vec![2, 1, 0]);
+        assert_eq!(&index.forward_sa[..], &[0, 1, 2]);
+        assert_eq!(&index.reverse_sa[..], &[2, 1, 0]);
         assert_eq!(index.sequence, seq);
     }
 
@@ -270,8 +254,8 @@ mod tests {
 
         let index = SequenceIndex {
             name: "seq1".to_string(),
-            forward_sa: vec![3, 0, 1, 2],
-            reverse_sa: vec![0, 3, 2, 1],
+            forward_sa: SuffixArray::from(vec![3, 0, 1, 2]),
+            reverse_sa: SuffixArray::from(vec![0, 3, 2, 1]),
             sequence: seq.clone(),
             sequence_rc: seq_rc,
         };
@@ -307,15 +291,15 @@ mod tests {
             sequences: vec![
                 SequenceIndex {
                     name: "seq1".to_string(),
-                    forward_sa: vec![0],
-                    reverse_sa: vec![0],
+                    forward_sa: SuffixArray::from(vec![0]),
+                    reverse_sa: SuffixArray::from(vec![0]),
                     sequence: seq1,
                     sequence_rc: seq1_rc,
                 },
                 SequenceIndex {
                     name: "seq2".to_string(),
-                    forward_sa: vec![0, 1],
-                    reverse_sa: vec![1, 0],
+                    forward_sa: SuffixArray::from(vec![0, 1]),
+                    reverse_sa: SuffixArray::from(vec![1, 0]),
                     sequence: seq2,
                     sequence_rc: seq2_rc,
                 },
@@ -334,8 +318,8 @@ mod tests {
         let index_file = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "test".to_string(),
-                forward_sa: vec![0, 1],
-                reverse_sa: vec![1, 0],
+                forward_sa: SuffixArray::from(vec![0, 1]),
+                reverse_sa: SuffixArray::from(vec![1, 0]),
                 sequence: seq,
                 sequence_rc: seq_rc,
             }],
@@ -431,12 +415,12 @@ mod tests {
         let seq_idx = &result.sequences[0];
 
         // Check forward SA contains all indices
-        let mut forward_sorted: Vec<u32> = seq_idx.forward_sa.clone();
+        let mut forward_sorted: Vec<u32> = seq_idx.forward_sa.iter().copied().collect();
         forward_sorted.sort();
         assert_eq!(forward_sorted, vec![0u32, 1, 2, 3]);
 
         // Check reverse SA contains all indices
-        let mut reverse_sorted: Vec<u32> = seq_idx.reverse_sa.clone();
+        let mut reverse_sorted: Vec<u32> = seq_idx.reverse_sa.iter().copied().collect();
         reverse_sorted.sort();
         assert_eq!(reverse_sorted, vec![0u32, 1, 2, 3]);
     }
@@ -454,8 +438,8 @@ mod tests {
         let index = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "test".to_string(),
-                forward_sa: vec![0, 1, 2],
-                reverse_sa: vec![2, 1, 0],
+                forward_sa: SuffixArray::from(vec![0, 1, 2]),
+                reverse_sa: SuffixArray::from(vec![2, 1, 0]),
                 sequence: seq,
                 sequence_rc: seq_rc,
             }],
@@ -507,8 +491,8 @@ mod tests {
         let original = SaIndexFile {
             sequences: vec![SequenceIndex {
                 name: "loaded_seq".to_string(),
-                forward_sa: vec![3, 0, 1, 2],
-                reverse_sa: vec![0, 3, 2, 1],
+                forward_sa: SuffixArray::from(vec![3, 0, 1, 2]),
+                reverse_sa: SuffixArray::from(vec![0, 3, 2, 1]),
                 sequence: seq.clone(),
                 sequence_rc: seq_rc,
             }],
@@ -520,8 +504,8 @@ mod tests {
 
         assert_eq!(loaded.sequences.len(), 1);
         assert_eq!(loaded.sequences[0].name, "loaded_seq");
-        assert_eq!(loaded.sequences[0].forward_sa, vec![3, 0, 1, 2]);
-        assert_eq!(loaded.sequences[0].reverse_sa, vec![0, 3, 2, 1]);
+        assert_eq!(&loaded.sequences[0].forward_sa[..], &[3, 0, 1, 2]);
+        assert_eq!(&loaded.sequences[0].reverse_sa[..], &[0, 3, 2, 1]);
         assert_eq!(loaded.sequences[0].sequence, seq);
     }
 
@@ -643,15 +627,15 @@ mod tests {
             sequences: vec![
                 SequenceIndex {
                     name: "first".to_string(),
-                    forward_sa: vec![5, 4, 3, 2, 1, 0],
-                    reverse_sa: vec![0, 1, 2, 3, 4, 5],
+                    forward_sa: SuffixArray::from(vec![5, 4, 3, 2, 1, 0]),
+                    reverse_sa: SuffixArray::from(vec![0, 1, 2, 3, 4, 5]),
                     sequence: seq1.clone(),
                     sequence_rc: seq1_rc.clone(),
                 },
                 SequenceIndex {
                     name: "second".to_string(),
-                    forward_sa: vec![0],
-                    reverse_sa: vec![0],
+                    forward_sa: SuffixArray::from(vec![0]),
+                    reverse_sa: SuffixArray::from(vec![0]),
                     sequence: seq2.clone(),
                     sequence_rc: seq2_rc.clone(),
                 },

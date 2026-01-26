@@ -1,5 +1,6 @@
 [tools]
-"cargo:rust-mcp-server" = "latest"
+rust = "latest"
+cmake = "latest"
 # [tools]
 # rust = { version = "1.90", profile = "default" }
 

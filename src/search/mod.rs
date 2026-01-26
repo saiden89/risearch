@@ -4,6 +4,7 @@ use crate::dsm::EnergyModel;
 use crate::sa::SaIndexFile;
 use crate::seed::SeedCandidate;
 use crate::seed::SeedMatch;
+use crate::seq::Sequence;
 use crate::types::{Alignment, Energy, QueryId, Strand, TargetId};
 
 use std::collections::HashMap;
@@ -84,6 +85,19 @@ pub struct SearchHit {
     pub alignment: Alignment,
     pub flank_5: String,
     pub flank_3: String,
+}
+
+/// Query with ID and sequence (borrowed for processing).
+#[derive(Debug, Clone, Copy)]
+pub struct Query<'a> {
+    pub id: &'a str,
+    pub seq: &'a Sequence,
+}
+
+impl<'a> Query<'a> {
+    pub fn new(id: &'a str, seq: &'a Sequence) -> Self {
+        Self { id, seq }
+    }
 }
 
 impl SearchHit {
@@ -238,11 +252,11 @@ pub struct SaIndex<'a> {
 }
 
 impl<'a> SaIndex<'a> {
-    pub fn get_sequence(&self, seq_idx: usize) -> &[u8] {
+    pub fn get_sequence(&self, seq_idx: usize) -> &Sequence {
         &self.index.sequences[seq_idx].sequence
     }
 
-    pub fn get_sequence_rc(&self, seq_idx: usize) -> &[u8] {
+    pub fn get_sequence_rc(&self, seq_idx: usize) -> &Sequence {
         &self.index.sequences[seq_idx].sequence_rc
     }
 

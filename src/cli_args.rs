@@ -239,7 +239,7 @@ pub struct ExtendArgs {
 
     /// Per-nucleotide extension penalty (in kcal/mol)
     #[arg(
-        short = 'p',
+        short = 'd',
         long = "penalty",
         value_name = "PENALTY",
         default_value_t = 0.0
@@ -324,10 +324,20 @@ pub struct SearchArgs {
         long = "format",
         value_name = "LEVEL",
         default_missing_value = "detailed",
-        default_value = "detailed",
         value_enum
     )]
     pub report_format: Option<OutputFormat>,
+
+    /// DEPRECATED: Legacy argument for output format (1=detailed, 2=cigar, 3=binding_site, 4=minimal)
+    #[arg(
+        short = 'p',
+        long = "report-alignment",
+        value_name = "MODE",
+        num_args = 0..=1,
+        default_missing_value = "1",
+        help_heading = "Deprecated"
+    )]
+    pub report_legacy: Option<u8>,
 
     /// Output compression codec (overrides file extension inference; gzip/gz, zstd/zst accepted)
     #[arg(long = "output-compress", value_enum)]
@@ -372,11 +382,26 @@ pub struct SearchArgs {
 
 impl From<SearchArgs> for core::SearchArgs {
     fn from(value: SearchArgs) -> Self {
+        // Resolve output format: preferred > legacy > default (Detailed)
+        let format = if let Some(f) = value.report_format {
+            f.into()
+        } else if let Some(legacy_mode) = value.report_legacy {
+            match legacy_mode {
+                1 => core::OutputFormat::Detailed,
+                2 => core::OutputFormat::Cigar,
+                3 => core::OutputFormat::BindingSite,
+                4 => core::OutputFormat::Minimal,
+                _ => core::OutputFormat::Detailed, // Fallback/Default
+            }
+        } else {
+            core::OutputFormat::Detailed
+        };
+
         core::SearchArgs {
             seed: value.seed.into(),
             extend: value.extend.into(),
             output: core::OutputConfig {
-                format: value.report_format.map(Into::into),
+                format: Some(format),
                 compress: value.output_compress.map(Into::into),
                 level: value.output_level,
             },

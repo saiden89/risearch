@@ -86,7 +86,12 @@ impl RustRunner<Indexed> {
         let index = SaIndex {
             index: &self.state.index_file,
         };
-        let queries = risearch::io::read_fasta_sequences(query_path).expect("read query FASTA");
+        let queries = risearch::sa::process_sequences(query_path)
+            .expect("read query FASTA")
+            .sequences
+            .into_iter()
+            .map(|s| (s.name, s.sequence))
+            .collect::<Vec<_>>();
         let hits = risearch::search::run_search(&queries, &index, args).expect("search");
 
         // Normalize to 1-based coordinates to match C output format for comparison
@@ -376,9 +381,9 @@ pub fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
     let has_pairing = args
         .iter()
         .any(|arg| *arg == "--seed-pairing" || arg.starts_with("--seed-pairing="));
-    let has_no_guseed =
-        args.iter()
-            .any(|arg| *arg == "-U" || *arg == "--no-guseed" || *arg == "--noGUseed");
+    let has_no_guseed = args
+        .iter()
+        .any(|arg| *arg == "-U" || *arg == "--no-guseed" || *arg == "--noGUseed");
     if !has_pairing && !has_no_guseed {
         cli_args.push("--seed-pairing".into());
         cli_args.push("allow_wobble".into());
@@ -394,9 +399,9 @@ pub fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
 
     let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
     let mut search: risearch::config::SearchArgs = parsed.search.into();
-    let explicit_pairing = args.iter().any(|arg| {
-        *arg == "--seed-pairing" || arg.starts_with("--seed-pairing=")
-    });
+    let explicit_pairing = args
+        .iter()
+        .any(|arg| *arg == "--seed-pairing" || arg.starts_with("--seed-pairing="));
     search.seed.apply_mismatch_overrides();
     search.seed.apply_pairing_overrides(explicit_pairing);
     search

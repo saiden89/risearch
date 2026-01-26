@@ -139,7 +139,7 @@ pub(super) fn push_target_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
 }
 
 #[inline]
-fn truncate_id<'a>(id: &'a str, max_len: Option<usize>) -> &'a str {
+fn truncate_id(id: &str, max_len: Option<usize>) -> &str {
     let base = id.split_whitespace().next().unwrap_or(id);
     if let Some(max) = max_len {
         if base.len() > max { &base[..max] } else { base }

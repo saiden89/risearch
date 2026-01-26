@@ -220,7 +220,8 @@ fn test_parity_mir24_isolated() {
         "20",
         "-e",
         "100.0",
-        "--seed-length", "6",
+        "--seed-length",
+        "6",
         "-p3",
         "--no-max-prune",
     ];
