@@ -8,7 +8,7 @@ mod core;
 mod init;
 mod traceback;
 
-use core::{dp_main_loop_left, dp_main_loop_right};
+use core::dp_main_loop_generic;
 use init::{add_e, init_limited_cols, init_limited_rows, update_best_with_term};
 use traceback::traceback;
 
@@ -359,6 +359,7 @@ impl ScoreGrid {
     pub fn width(&self) -> usize {
         self.width
     }
+
 }
 
 // =============================================================================
@@ -678,7 +679,7 @@ impl<M: DsmModel> DpExtender<M> {
         // Skip if too short for main loop
         if q_len >= 3 && t_len >= 3 {
             if view.dir == ExtendDir::Left {
-                dp_main_loop_left::<M>(
+                dp_main_loop_generic::<true, M>(
                     q_ptr,
                     t_ptr,
                     m,
@@ -694,7 +695,7 @@ impl<M: DsmModel> DpExtender<M> {
                     &mut best_j,
                 );
             } else {
-                dp_main_loop_right::<M>(
+                dp_main_loop_generic::<false, M>(
                     q_ptr,
                     t_ptr,
                     m,
