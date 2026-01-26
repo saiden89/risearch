@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-use risearch::{output, sa, search, QueryRegistry};
+use risearch::{QueryRegistry, output, sa, search};
 
 use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
@@ -116,8 +116,8 @@ pub fn run(cli: Cli) -> Result<()> {
             );
             trace!("Search options: {:?}", opts);
 
-            let processed = sa::process_sequences(query)
-                .context("Failed to process query sequences")?;
+            let processed =
+                sa::process_sequences(query).context("Failed to process query sequences")?;
             let query_registry = QueryRegistry::from_indices(processed.into_entries());
 
             info!("Loaded {} query sequences", query_registry.len());
@@ -127,11 +127,16 @@ pub fn run(cli: Cli) -> Result<()> {
             trace!("Index loaded successfully");
             debug!("Starting search with streaming output...");
 
-            let (mut writer, compression) =
-                output::open_output(output.as_ref(), opts.output_compress.map(Into::into))?;
+            // Use streaming compression - encoder wraps the writer directly
+            let mut writer = output::open_compressed_output(
+                output.as_ref(),
+                opts.output_compress.map(Into::into),
+                opts.output_level,
+            )?;
             let mut opts: risearch::config::SearchArgs = opts.clone().into();
-            emit_legacy_warnings(&raw_args, &mut opts);
-            opts.output.compress = Some(compression);
+            emit_legacy_warnings(&raw_args, &mut opts)?;
+            // Clear compression from opts - it's now handled by the writer
+            opts.output.compress = Some(risearch::config::OutputCompression::None);
 
             let hit_count =
                 search::run_search_streaming(&query_registry, &idx, &opts, &mut writer)?;

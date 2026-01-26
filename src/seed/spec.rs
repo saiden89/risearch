@@ -22,6 +22,8 @@ pub struct MismatchSpec {
 }
 
 impl MismatchSpec {
+    // TODO: Consider validating against seed length (e.g., prefix/suffix > seed_len)
+    // to avoid configurations that yield zero hits, while preserving C compatibility.
     /// No mismatches allowed (exact matching)
     pub const fn exact() -> Self {
         Self {
@@ -99,16 +101,20 @@ impl FromStr for MismatchSpec {
 }
 
 /// Representation of the `-s` flag:
-/// - `-s l`              => SeedSpec::Length(l)
-/// - `-s m:n`            => SeedSpec::Interval { start: m, end: n, length: None }
-/// - `-s m:n/l`          => SeedSpec::Interval { start: m, end: n, length: Some(l) }
+/// - `-s l`              => SeedSpec::LengthOnly(l)
+/// - `-s m:n`            => SeedSpec::Interval { start: m, end: n }
+/// - `-s m:n/l`          => SeedSpec::IntervalWithLength { start: m, end: n, length: l }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeedSpec {
-    Length(i64),
+    LengthOnly(i64),
     Interval {
         start: i64, // TODO: consider using RangeInclusive<i64>
         end: i64,
-        length: Option<i64>, // TODO: enforce strictly positive via newtype
+    },
+    IntervalWithLength {
+        start: i64, // TODO: consider using RangeInclusive<i64>
+        end: i64,
+        length: i64, // TODO: enforce strictly positive via newtype
     },
 }
 
@@ -131,7 +137,7 @@ impl FromStr for SeedSpec {
             None => {
                 // Length-only format: "l"
                 let len = parse_i64(s, "length")?;
-                Ok(SeedSpec::Length(len))
+                Ok(SeedSpec::LengthOnly(len))
             }
             Some(colon_idx) => {
                 let (start_str, rest) = s.split_at(colon_idx);
@@ -148,11 +154,7 @@ impl FromStr for SeedSpec {
                     None => {
                         // Format: "start:end"
                         let end = parse_i64(rest, "end")?;
-                        Ok(SeedSpec::Interval {
-                            start,
-                            end,
-                            length: None,
-                        })
+                        Ok(SeedSpec::Interval { start, end })
                     }
                     Some(slash_idx) => {
                         // Format: "start:end/length"
@@ -169,10 +171,10 @@ impl FromStr for SeedSpec {
                         let end = parse_i64(end_str, "end")?;
                         let length = parse_i64(len_str, "length")?;
 
-                        Ok(SeedSpec::Interval {
+                        Ok(SeedSpec::IntervalWithLength {
                             start,
                             end,
-                            length: Some(length),
+                            length,
                         })
                     }
                 }
@@ -194,12 +196,12 @@ impl SeedSpec {
         }
 
         match *self {
-            SeedSpec::Length(l) if l <= 0 => Err("Invalid seed length".into()),
-            SeedSpec::Length(l) => {
+            SeedSpec::LengthOnly(l) if l <= 0 => Err("Invalid seed length".into()),
+            SeedSpec::LengthOnly(l) => {
                 let length = l.min(n) as usize;
                 Ok((1, query_len, length))
             }
-            SeedSpec::Interval { start, end, length } => {
+            SeedSpec::Interval { start, end } | SeedSpec::IntervalWithLength { start, end, .. } => {
                 // Validate sign consistency
                 let (s_pos, e_pos) = match (start.signum(), end.signum()) {
                     // Both positive
@@ -228,12 +230,20 @@ impl SeedSpec {
                 }
 
                 // Determine final length
-                let final_len = match length {
-                    Some(l) if l < 0 => return Err("Invalid seed length".into()),
-                    Some(l) if (l as usize) > interval_len => {
+                let length_opt = match *self {
+                    SeedSpec::IntervalWithLength { length, .. } => Some(length),
+                    SeedSpec::Interval { .. } => None,
+                    SeedSpec::LengthOnly(_) => None,
+                };
+
+                let final_len = match length_opt {
+                    Some(length) if length < 0 => {
+                        return Err("Invalid seed length".into());
+                    }
+                    Some(length) if (length as usize) > interval_len => {
                         return Err("Invalid seed length (exceeds interval)".into());
                     }
-                    Some(l) => l as usize,
+                    Some(length) => length as usize,
                     None => interval_len,
                 };
 

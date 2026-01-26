@@ -1,3 +1,4 @@
+use anyhow::{Result, bail};
 use log::warn;
 
 use risearch::config::SearchArgs;
@@ -66,6 +67,35 @@ fn has_seed_override_args(args: &[String]) -> bool {
     })
 }
 
+fn has_seed_start_arg(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| arg == "--seed-start" || arg.starts_with("--seed-start="))
+}
+
+fn has_seed_end_arg(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| arg == "--seed-end" || arg.starts_with("--seed-end="))
+}
+
+fn has_seed_length_arg(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| arg == "--seed-length" || arg.starts_with("--seed-length="))
+}
+
+fn has_mismatch_override_args(args: &[String]) -> bool {
+    args.iter().skip(1).any(|arg| {
+        arg == "--mismatch-max"
+            || arg.starts_with("--mismatch-max=")
+            || arg == "--mismatch-prefix"
+            || arg.starts_with("--mismatch-prefix=")
+            || arg == "--mismatch-suffix"
+            || arg.starts_with("--mismatch-suffix=")
+    })
+}
+
 fn extract_legacy_report_arg(args: &[String]) -> Option<String> {
     for arg in args.iter().skip(1) {
         if arg == "-p" || arg == "--report-alignment" {
@@ -85,7 +115,7 @@ fn has_format_arg(args: &[String]) -> bool {
         .any(|arg| arg == "-f" || arg == "--format" || arg.starts_with("--format="))
 }
 
-pub fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) {
+pub fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -> Result<()> {
     let legacy_mismatch = extract_legacy_mismatch_arg(raw_args);
     let legacy_seed = extract_legacy_seed_arg(raw_args);
     let legacy_no_guseed = has_no_guseed_arg(raw_args);
@@ -93,6 +123,32 @@ pub fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) {
     let has_seed_overrides = has_seed_override_args(raw_args);
     let legacy_report = extract_legacy_report_arg(raw_args);
     let has_format = has_format_arg(raw_args);
+    let has_mismatch_overrides = has_mismatch_override_args(raw_args);
+
+    if legacy_seed.is_some() && has_seed_overrides {
+        bail!(
+            "Conflicting seed specification: legacy -s cannot be combined with --seed-start/--seed-end/--seed-length."
+        );
+    }
+
+    if legacy_mismatch.is_some() && has_mismatch_overrides {
+        bail!(
+            "Conflicting mismatch specification: legacy -m cannot be combined with --mismatch-max/--mismatch-prefix/--mismatch-suffix."
+        );
+    }
+
+    let has_seed_start = has_seed_start_arg(raw_args);
+    let has_seed_end = has_seed_end_arg(raw_args);
+    let has_seed_length = has_seed_length_arg(raw_args);
+    let has_any_seed_flag = has_seed_start || has_seed_end || has_seed_length;
+    let valid_seed_flags = (!has_any_seed_flag)
+        || (!has_seed_start && !has_seed_end && has_seed_length)
+        || (has_seed_start && has_seed_end);
+    if has_any_seed_flag && !valid_seed_flags {
+        bail!(
+            "Invalid seed flags: use --seed-length alone, or --seed-start + --seed-end (optionally with --seed-length)."
+        );
+    }
 
     if let Some(raw) = legacy_report {
         if has_format {
@@ -148,13 +204,15 @@ pub fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) {
             );
         }
         let suggestion = raw.parse::<SeedSpec>().ok().map(|spec| match spec {
-            SeedSpec::Length(len) => format!("--seed-length {}", len),
-            SeedSpec::Interval { start, end, length } => {
-                let mut s = format!("--seed-start {} --seed-end {}", start, end);
-                if let Some(l) = length {
-                    s.push_str(&format!(" --seed-length {}", l));
-                }
-                s
+            SeedSpec::LengthOnly(len) => format!("--seed-length {}", len),
+            SeedSpec::Interval { start, end } => {
+                format!("--seed-start {} --seed-end {}", start, end)
+            }
+            SeedSpec::IntervalWithLength { start, end, length } => {
+                format!(
+                    "--seed-start {} --seed-end {} --seed-length {}",
+                    start, end, length
+                )
             }
         });
         if let Some(s) = suggestion {
@@ -179,4 +237,6 @@ pub fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) {
 
     opts.seed.apply_mismatch_overrides();
     opts.seed.apply_pairing_overrides(explicit_pairing);
+
+    Ok(())
 }

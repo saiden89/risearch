@@ -116,6 +116,8 @@ pub struct SeedConfig {
     pub seed_legacy: SeedSpec,
 
     /// Seed interval start (1-based, can be negative)
+    /// TODO: Consider explicit one-sided bounds (e.g. --seed-to-end/--seed-from-start)
+    /// instead of inferring missing start/end. Keep strict parsing for now.
     #[arg(
         long = "seed-start",
         value_name = "START",
@@ -188,12 +190,14 @@ impl From<SeedConfig> for core::SeedConfig {
             || value.seed_length.is_some()
         {
             match (value.seed_start, value.seed_end) {
-                (Some(start), Some(end)) => SeedSpec::Interval {
-                    start,
-                    end,
-                    length: value.seed_length,
-                },
-                (None, None) => SeedSpec::Length(value.seed_length.unwrap_or(6)),
+                (Some(start), Some(end)) => {
+                    if let Some(length) = value.seed_length {
+                        SeedSpec::IntervalWithLength { start, end, length }
+                    } else {
+                        SeedSpec::Interval { start, end }
+                    }
+                }
+                (None, None) => SeedSpec::LengthOnly(value.seed_length.unwrap_or(6)),
                 _ => value.seed_legacy,
             }
         } else {

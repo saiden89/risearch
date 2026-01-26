@@ -25,7 +25,7 @@
 use crate::config::SeedConfig;
 use crate::sa::SuffixArray;
 use crate::seq::Sequence;
-use crate::types::{Base, SeedPairingMode};
+use crate::types::Base;
 
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
 
@@ -292,7 +292,7 @@ impl<'a> SeedSearcher<'a> {
         self.explore_canonical_matches(&qint, &sint, next_depth, &state, min_len, max_len, results);
 
         // === WOBBLE PAIRS ===
-        if matches!(self.seed_config.pairing, SeedPairingMode::AllowWobble) {
+        if self.seed_config.allows_wobble() {
             self.explore_wobble_matches(
                 &qint, &sint, next_depth, &state, min_len, max_len, results,
             );
@@ -470,7 +470,7 @@ impl<'a> SeedSearcher<'a> {
             return true;
         }
 
-        if matches!(self.seed_config.pairing, SeedPairingMode::AllowWobble) {
+        if self.seed_config.allows_wobble() {
             // G-U wobble: Query_RC C with Target U
             if q_base == Base::C && t_comp_base == Base::U {
                 return true;
@@ -629,17 +629,9 @@ mod tests {
     use crate::sa::SuffixArray;
     use crate::seed::{MismatchSpec, SeedSpec};
 
-    /// Create a default SeedConfig for testing with specified pairing mode
-    fn test_seed_config(pairing: SeedPairingMode) -> SeedConfig {
-        SeedConfig {
-            seed: SeedSpec::Length(6),
-            pairing,
-            mismatch: MismatchSpec::exact(),
-            no_guseed: matches!(pairing, SeedPairingMode::Strict),
-            mismatch_max: None,
-            mismatch_prefix: None,
-            mismatch_suffix: None,
-        }
+    /// Create a default SeedConfig for testing with specified wobble policy
+    fn test_seed_config(allow_wobble: bool) -> SeedConfig {
+        SeedConfig::with_wobble(SeedSpec::LengthOnly(6), MismatchSpec::exact(), allow_wobble)
     }
 
     #[test]
@@ -660,7 +652,7 @@ mod tests {
         let seq_bases = vec![Base::A, Base::C, Base::G, Base::U];
         let seq = Sequence::from(seq_bases.clone());
         let sa = SuffixArray::build(&seq);
-        let seed_args = test_seed_config(SeedPairingMode::AllowWobble);
+        let seed_args = test_seed_config(true);
 
         let searcher = SeedSearcher::new(&sa, &seq, &sa, &seq, &seed_args);
 
@@ -703,7 +695,7 @@ mod tests {
         eprintln!("Target comp SA: {:?}", t_sa);
 
         // Step 3: Create searcher and find seeds
-        let seed_args = test_seed_config(SeedPairingMode::Strict);
+        let seed_args = test_seed_config(false);
         let searcher = SeedSearcher::new(&q_sa, &query, &t_sa, &target_comp, &seed_args);
         let matches = searcher.find_seeds(3);
         eprintln!("Raw matches: {:?}", matches);

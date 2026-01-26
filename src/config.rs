@@ -85,6 +85,28 @@ pub struct SeedConfig {
 }
 
 impl SeedConfig {
+    pub fn with_wobble(seed: SeedSpec, mismatch: MismatchSpec, allow_wobble: bool) -> Self {
+        let pairing = if allow_wobble {
+            SeedPairingMode::AllowWobble
+        } else {
+            SeedPairingMode::Strict
+        };
+        Self {
+            seed,
+            no_guseed: !allow_wobble,
+            pairing,
+            mismatch,
+            mismatch_max: None,
+            mismatch_prefix: None,
+            mismatch_suffix: None,
+        }
+    }
+
+    #[inline]
+    pub fn allows_wobble(&self) -> bool {
+        matches!(self.pairing, SeedPairingMode::AllowWobble)
+    }
+
     pub fn apply_pairing_overrides(&mut self, explicit_pairing: bool) {
         if self.no_guseed && !explicit_pairing {
             self.pairing = SeedPairingMode::Strict;

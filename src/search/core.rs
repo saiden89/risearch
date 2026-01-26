@@ -9,7 +9,7 @@ use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
 use crate::seed::{SeedHit, build_seed_alignment};
 use crate::seq::Sequence;
-use crate::types::{Alignment, Base, Pairing, SeedPairingMode, Strand};
+use crate::types::{Alignment, Base, Pairing, Strand};
 
 use super::{FilterReason, MAX_DP_EXT, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER};
 
@@ -180,9 +180,10 @@ pub(super) fn extend_seed(
     // Select pair matrix based on wobble mode:
     // - AllowWobble: use PAIR_MAT (G-U wobble pairs are valid)
     // - Strict: use PAIR_MAT_NO_GU (G-U wobble pairs are NOT valid)
-    let pair_mat = match ctx.args.seed.pairing {
-        SeedPairingMode::AllowWobble => &PAIR_MAT,
-        SeedPairingMode::Strict => &PAIR_MAT_NO_GU,
+    let pair_mat = if ctx.args.seed.allows_wobble() {
+        &PAIR_MAT
+    } else {
+        &PAIR_MAT_NO_GU
     };
 
     // MAXIMALITY CHECK
