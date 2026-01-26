@@ -15,7 +15,7 @@ use crate::types::Strand;
 
 /// A candidate seed match found during suffix array search.
 #[derive(Debug, Clone)]
-pub struct SeedCandidate {
+pub struct SeedHit {
     /// Position in query sequence (0-based)
     pub query_pos: usize,
     /// Index of target sequence in the index

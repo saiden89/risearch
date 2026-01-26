@@ -74,19 +74,23 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// Returns (records after dedup, count before dedup)
-pub fn parse_output(output: &str) -> (Vec<risearch::SearchHit>, usize) {
+pub fn parse_output(
+    output: &str,
+    query_registry: &risearch::QueryRegistry,
+    target_registry: &risearch::TargetRegistry,
+) -> (Vec<risearch::SearchHit>, usize) {
     let mut hits: Vec<risearch::SearchHit> = output
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        .filter_map(risearch::SearchHit::from_c_output)
+        .filter_map(|l| risearch::SearchHit::from_c_output(l, query_registry, target_registry))
         .collect();
     let parsed_count = hits.len();
     // Sort by group_key, then all coordinates for deterministic dedup
     // Must sort by ALL coordinate fields to ensure true duplicates are adjacent
     hits.sort_by(|a, b| {
-        a.group_key()
-            .cmp(&b.group_key())
+        (a.query_idx, a.target_idx)
+            .cmp(&(b.query_idx, b.target_idx))
             .then(a.q_start.cmp(&b.q_start))
             .then(a.q_end.cmp(&b.q_end))
             .then(a.output_t_start.cmp(&b.output_t_start))

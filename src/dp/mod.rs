@@ -288,12 +288,12 @@ const MIN_SCORE: i32 = -1_000_000_000;
 
 /// Score-only grid for DP. No traceback storage - reconstructed post-hoc.
 /// This matches the C implementation which stores only M, Bq, Bt scores.
-pub struct ScoreOnlyGrid {
+pub struct ScoreGrid {
     data: Vec<i32>,
     width: usize,
 }
 
-impl ScoreOnlyGrid {
+impl ScoreGrid {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             data: vec![MIN_SCORE; width * height],
@@ -365,17 +365,17 @@ impl ScoreOnlyGrid {
 /// Score-only DP matrices for extension (matches C implementation).
 /// Traceback is reconstructed post-hoc by comparing scores.
 pub struct DpMatrices {
-    pub m: ScoreOnlyGrid,  // Match/mismatch state
-    pub bq: ScoreOnlyGrid, // Query bulge (gap in target)
-    pub bt: ScoreOnlyGrid, // Target bulge (gap in query)
+    pub m: ScoreGrid,  // Match/mismatch state
+    pub bq: ScoreGrid, // Query bulge (gap in target)
+    pub bt: ScoreGrid, // Target bulge (gap in query)
 }
 
 impl DpMatrices {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
-            m: ScoreOnlyGrid::new(width, height),
-            bq: ScoreOnlyGrid::new(width, height),
-            bt: ScoreOnlyGrid::new(width, height),
+            m: ScoreGrid::new(width, height),
+            bq: ScoreGrid::new(width, height),
+            bt: ScoreGrid::new(width, height),
         }
     }
 

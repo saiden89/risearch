@@ -356,9 +356,42 @@ impl Alignment {
         &self.steps
     }
 
+    /// Write query sequence (RNA-normalized) into a buffer.
+    pub fn write_query_seq(&self, buf: &mut Vec<u8>) {
+        for p in self.steps.iter() {
+            buf.push(p.query_char() as u8);
+        }
+    }
+
+    /// Write target sequence into a buffer.
+    pub fn write_target_seq(&self, buf: &mut Vec<u8>) {
+        for p in self.steps.iter() {
+            buf.push(p.target_char() as u8);
+        }
+    }
+
+    /// Write alignment line (|, :, or space) into a buffer.
+    pub fn write_alignment_line(&self, buf: &mut Vec<u8>) {
+        for p in self.steps.iter() {
+            let c = match p {
+                Pairing::Match(_, _) => b'|',
+                Pairing::Wobble(_, _) => b':',
+                _ => b' ',
+            };
+            buf.push(c);
+        }
+    }
+
+    /// Write pairing fingerprint (P/W/U/...) into a buffer.
+    pub fn write_pairing_string(&self, buf: &mut Vec<u8>) {
+        for p in self.steps.iter() {
+            buf.push(p.to_char() as u8);
+        }
+    }
+
     /// Returns only the seed region steps
     pub fn seed(&self) -> &[Pairing] {
-        &self.steps[self.seed_range.clone()]
+        &self.steps[self.seed_range.start..self.seed_range.end]
     }
 
     /// Returns the 5' extension (Left of seed)
@@ -560,6 +593,7 @@ impl From<String> for QueryId {
 /// Target sequence identifier (newtype for type safety).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct TargetId(pub String);
+
 
 impl TargetId {
     /// Create from string.

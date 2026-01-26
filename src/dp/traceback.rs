@@ -1,16 +1,16 @@
 use log::trace;
 
-use super::{DpOp, DpView, MIN_SCORE, ScoreOnlyGrid, TracebackPath};
+use super::{DpOp, DpView, MIN_SCORE, ScoreGrid, TracebackPath};
 
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn traceback(
     view: &DpView<'_>,
-    m: &ScoreOnlyGrid,
-    bq: &ScoreOnlyGrid,
-    bt: &ScoreOnlyGrid,
+    m: &ScoreGrid,
+    bq: &ScoreGrid,
+    bt: &ScoreGrid,
     best_i: usize,
     best_j: usize,
-    trace_buf: &mut TracebackPath,
+    trace: &mut TracebackPath,
 ) {
     let (mut i, mut j) = (best_i, best_j);
     let mut state = DpOp::Match;
@@ -19,7 +19,7 @@ pub(super) fn traceback(
         match state {
             DpOp::Stop => break,
             DpOp::Match if i > 0 && j > 0 => {
-                trace_buf.push(DpOp::Match);
+                trace.push(DpOp::Match);
                 let m_val = m.get(i, j);
                 let m_diag = m.get(i - 1, j - 1);
                 let bq_diag = bq.get(i - 1, j - 1);
@@ -46,7 +46,7 @@ pub(super) fn traceback(
                 state = next;
             }
             DpOp::GapQ if i > 0 => {
-                trace_buf.push(DpOp::GapQ);
+                trace.push(DpOp::GapQ);
                 let bq_val = bq.get(i, j);
                 let m_up = m.get(i - 1, j);
                 let bq_up = bq.get(i - 1, j);
@@ -67,7 +67,7 @@ pub(super) fn traceback(
                 state = next;
             }
             DpOp::GapT if j > 0 => {
-                trace_buf.push(DpOp::GapT);
+                trace.push(DpOp::GapT);
                 let bt_val = bt.get(i, j);
                 let m_left = m.get(i, j - 1);
                 let bt_left = bt.get(i, j - 1);

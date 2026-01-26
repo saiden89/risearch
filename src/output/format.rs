@@ -6,7 +6,8 @@ use log::debug;
 use crate::config::OutputFormat;
 use crate::seq::utils::push_bases_as_rna;
 use crate::seq::Sequence;
-use crate::types::{Alignment, Pairing};
+use crate::registry::{QueryRegistry, TargetRegistry};
+use crate::types::Alignment;
 use crate::search::SearchHit;
 
 const OUTPUT_STAGE: &str = "[OUTPUT]";
@@ -119,48 +120,6 @@ pub(super) fn push_result_fields(
 }
 
 #[inline]
-pub(super) fn push_alignment_line(buf: &mut Vec<u8>, steps: &[Pairing]) {
-    for p in steps {
-        let c = match p {
-            Pairing::Match(_, _) => b'|',
-            Pairing::Wobble(_, _) => b':',
-            _ => b' ',
-        };
-        buf.push(c);
-    }
-}
-
-#[inline]
-fn push_pairing_string(buf: &mut Vec<u8>, steps: &[Pairing]) {
-    for p in steps {
-        buf.push(p.to_char() as u8);
-    }
-}
-
-#[inline]
-fn push_seq(buf: &mut Vec<u8>, steps: &[Pairing], f: fn(&Pairing) -> char) {
-    for p in steps {
-        let c = f(p);
-        let normalized = match c {
-            'T' => 'U',
-            't' => 'u',
-            other => other,
-        };
-        buf.push(normalized as u8);
-    }
-}
-
-#[inline]
-pub(super) fn push_query_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
-    push_seq(buf, steps, Pairing::query_char);
-}
-
-#[inline]
-pub(super) fn push_target_seq(buf: &mut Vec<u8>, steps: &[Pairing]) {
-    push_seq(buf, steps, Pairing::target_char);
-}
-
-#[inline]
 fn truncate_id(id: &str, max_len: Option<usize>) -> &str {
     let base = id.split_whitespace().next().unwrap_or(id);
     if let Some(max) = max_len {
@@ -204,84 +163,54 @@ pub(crate) fn fill_line_buf(
         line_buf.reserve(approx - line_buf.capacity());
     }
 
+    if format == OutputFormat::Detailed {
+        alignment.write_query_seq(line_buf);
+        line_buf.push(b'\n');
+        alignment.write_alignment_line(line_buf);
+        line_buf.push(b'\n');
+        alignment.write_target_seq(line_buf);
+        line_buf.push(b'\n');
+    }
+
+    push_result_fields(
+        line_buf,
+        itoa_buf,
+        zmij_buf,
+        q_id_trunc,
+        q_start,
+        q_end,
+        t_id_trunc,
+        t_start,
+        t_end,
+        strand_char,
+        score,
+    );
+
     match format {
-        OutputFormat::Detailed => {
-            push_query_seq(line_buf, steps);
-            line_buf.push(b'\n');
-            push_alignment_line(line_buf, steps);
-            line_buf.push(b'\n');
-            push_target_seq(line_buf, steps);
-            line_buf.push(b'\n');
-            push_result_fields(
-                line_buf,
-                itoa_buf,
-                zmij_buf,
-                q_id_trunc,
-                q_start,
-                q_end,
-                t_id_trunc,
-                t_start,
-                t_end,
-                strand_char,
-                score,
-            );
+        OutputFormat::Minimal | OutputFormat::Detailed => {
             line_buf.push(b'\n');
         }
         OutputFormat::Cigar => {
-            push_result_fields(
-                line_buf,
-                itoa_buf,
-                zmij_buf,
-                q_id_trunc,
-                q_start,
-                q_end,
-                t_id_trunc,
-                t_start,
-                t_end,
-                strand_char,
-                score,
-            );
             line_buf.push(b'\t');
-            push_pairing_string(line_buf, steps);
+            alignment.write_pairing_string(line_buf);
             line_buf.push(b'\n');
         }
         OutputFormat::BindingSite => {
-            push_result_fields(
+            line_buf.push(b'\t');
+            alignment.write_pairing_string(line_buf);
+            line_buf.push(b'\t');
+            alignment.write_target_seq(line_buf);
+            line_buf.push(b'\t');
+            push_bases_as_rna(
                 line_buf,
-                itoa_buf,
-                zmij_buf,
-                q_id_trunc,
-                q_start,
-                q_end,
-                t_id_trunc,
-                t_start,
-                t_end,
-                strand_char,
-                score,
+                &flank_5.0[flank_5.1.start..flank_5.1.end],
+                flank_5.2,
             );
             line_buf.push(b'\t');
-            push_pairing_string(line_buf, steps);
-            line_buf.push(b'\t');
-            push_target_seq(line_buf, steps);
-            line_buf.push(b'\t');
-            push_bases_as_rna(line_buf, &flank_5.0[flank_5.1.clone()], flank_5.2);
-            line_buf.push(b'\t');
-            push_bases_as_rna(line_buf, &flank_3.0[flank_3.1.clone()], flank_3.2);
-            line_buf.push(b'\n');
-        }
-        OutputFormat::Minimal => {
-            push_result_fields(
+            push_bases_as_rna(
                 line_buf,
-                itoa_buf,
-                zmij_buf,
-                q_id_trunc,
-                q_start,
-                q_end,
-                t_id_trunc,
-                t_start,
-                t_end,
-                strand_char,
-                score,
+                &flank_3.0[flank_3.1.start..flank_3.1.end],
+                flank_3.2,
             );
             line_buf.push(b'\n');
         }
@@ -289,21 +218,25 @@ pub(crate) fn fill_line_buf(
 }
 
 #[inline]
-fn write_hit_with_format<W: Write>(
+fn write_hit_with_format<W: Write + ?Sized>(
     bufs: &mut OutputBuffers,
     hit: &SearchHit,
     format: OutputFormat,
     writer: &mut W,
+    query_registry: &QueryRegistry,
+    target_registry: &TargetRegistry,
 ) -> std::io::Result<()> {
+    let q_name = query_registry.get_name(hit.query_idx);
+    let t_name = target_registry.get_name(hit.target_idx);
     fill_line_buf(
         &mut bufs.line,
         &mut bufs.itoa,
         &mut bufs.zmij,
         format,
-        hit.query_id.as_str(),
+        q_name,
         hit.output_q_start,
         hit.output_q_end,
-        hit.target_id.as_str(),
+        t_name,
         hit.output_t_start,
         hit.output_t_end,
         char::from(hit.strand),
@@ -317,25 +250,44 @@ fn write_hit_with_format<W: Write>(
 }
 
 impl SearchHit {
-    pub fn write(&self, w: &mut dyn Write) -> std::io::Result<()> {
-        self.write_with_format(w, OutputFormat::BindingSite)
+    pub fn write(
+        &self,
+        w: &mut dyn Write,
+        query_registry: &QueryRegistry,
+        target_registry: &TargetRegistry,
+    ) -> std::io::Result<()> {
+        self.write_with_format(w, OutputFormat::BindingSite, query_registry, target_registry)
     }
 
     pub fn write_with_format(
         &self,
         w: &mut dyn Write,
         format: OutputFormat,
+        query_registry: &QueryRegistry,
+        target_registry: &TargetRegistry,
     ) -> std::io::Result<()> {
         let mut bufs = OutputBuffers::new();
-        write_hit_with_format(&mut bufs, self, format, w)
+        write_hit_with_format(&mut bufs, self, format, w, query_registry, target_registry)
     }
 }
 
-pub fn write_results_to<W: Write>(hits: &[SearchHit], writer: &mut W) -> Result<()> {
+pub fn write_results_to<W: Write>(
+    hits: &[SearchHit],
+    writer: &mut W,
+    query_registry: &QueryRegistry,
+    target_registry: &TargetRegistry,
+) -> Result<()> {
     debug!("{} output=<writer>", OUTPUT_STAGE);
     let mut bufs = OutputBuffers::new();
     for hit in hits {
-        write_hit_with_format(&mut bufs, hit, OutputFormat::BindingSite, writer)?;
+        write_hit_with_format(
+            &mut bufs,
+            hit,
+            OutputFormat::BindingSite,
+            writer,
+            query_registry,
+            target_registry,
+        )?;
     }
     Ok(())
 }
@@ -344,6 +296,8 @@ pub fn write_results_with_format_to<W: Write>(
     hits: &[SearchHit],
     writer: &mut W,
     format: OutputFormat,
+    query_registry: &QueryRegistry,
+    target_registry: &TargetRegistry,
 ) -> Result<()> {
     debug!(
         "{} output=<writer> format={:?}",
@@ -352,7 +306,14 @@ pub fn write_results_with_format_to<W: Write>(
     );
     let mut bufs = OutputBuffers::new();
     for hit in hits {
-        write_hit_with_format(&mut bufs, hit, format, writer)?;
+        write_hit_with_format(
+            &mut bufs,
+            hit,
+            format,
+            writer,
+            query_registry,
+            target_registry,
+        )?;
     }
     Ok(())
 }

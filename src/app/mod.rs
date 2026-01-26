@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-use risearch::{output, sa, search, QueryId};
+use risearch::{output, sa, search, QueryRegistry};
 
 use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
@@ -116,20 +116,15 @@ pub fn run(cli: Cli) -> Result<()> {
             );
             trace!("Search options: {:?}", opts);
 
-            let queries = sa::process_sequences(query)
-                .context("Failed to process query sequences")?
-                .sequences
-                .into_iter()
-                .map(|s| (QueryId::from(s.name), s.sequence))
-                .collect::<Vec<_>>();
+            let processed = sa::process_sequences(query)
+                .context("Failed to process query sequences")?;
+            let query_registry = QueryRegistry::from_indices(processed.into_entries());
 
-            info!("Loaded {} query sequences", queries.len());
+            info!("Loaded {} query sequences", query_registry.len());
 
             debug!("Loading suffix array index...");
             let idx = sa::load_index_file(index).context("Failed to load index file")?;
             trace!("Index loaded successfully");
-
-            let wrapper = search::SaIndex { index: &idx };
             debug!("Starting search with streaming output...");
 
             let (mut writer, compression) =
@@ -138,7 +133,8 @@ pub fn run(cli: Cli) -> Result<()> {
             emit_legacy_warnings(&raw_args, &mut opts);
             opts.output.compress = Some(compression);
 
-            let hit_count = search::run_search_streaming(&queries, &wrapper, &opts, &mut writer)?;
+            let hit_count =
+                search::run_search_streaming(&query_registry, &idx, &opts, &mut writer)?;
             writer.flush().context("Failed to flush output")?;
             info!("Search completed: {} hits written", hit_count);
         }

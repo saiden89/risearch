@@ -1,11 +1,12 @@
 use crate::config::SearchArgs;
 use crate::dp;
 use crate::dsm::EnergyModel;
-use crate::sa::SaIndexFile;
-use crate::seed::SeedCandidate;
+use crate::seed::SeedHit;
 use crate::seed::SeedMatch;
 use crate::seq::Sequence;
-use crate::types::{Alignment, Energy, QueryId, Strand, TargetId};
+use crate::registry::QueryRegistry;
+use crate::types::{Alignment, Energy, Strand};
+use crate::sa::TargetRegistry;
 
 use std::collections::HashMap;
 
@@ -21,14 +22,12 @@ const MAX_DP_EXT: usize = 50;
 #[derive(Debug, Clone, Copy)]
 enum SearchStage {
     Extend, // DP extension, maximality checks
-    Output, // Final results
 }
 
 impl std::fmt::Display for SearchStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Extend => write!(f, "[EXTEND]"),
-            Self::Output => write!(f, "[OUTPUT]"),
         }
     }
 }
@@ -68,8 +67,8 @@ impl SearchStats {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct SearchHit {
-    pub query_id: QueryId,
-    pub target_id: TargetId,
+    pub query_idx: u32,
+    pub target_idx: u32,
 
     pub q_start: usize,        // 0-based internal
     pub q_end: usize,          // 0-based internal
@@ -86,19 +85,6 @@ pub struct SearchHit {
     pub flank_3: Sequence,
 }
 
-/// Query with ID and sequence (borrowed for processing).
-#[derive(Debug, Clone, Copy)]
-pub struct Query<'a> {
-    pub id: &'a QueryId,
-    pub seq: &'a Sequence,
-}
-
-impl<'a> Query<'a> {
-    pub fn new(id: &'a QueryId, seq: &'a Sequence) -> Self {
-        Self { id, seq }
-    }
-}
-
 impl SearchHit {
     /// Parse a SearchHit from C risearch output line.
     ///
@@ -109,11 +95,17 @@ impl SearchHit {
     /// - Seed markers 'y' and 'x' in interaction/target strings
     /// - Missing optional columns (flanks)
     /// - 1-based coordinates
-    pub fn from_c_output(line: &str) -> Option<Self> {
+    pub fn from_c_output(
+        line: &str,
+        query_registry: &QueryRegistry,
+        target_registry: &TargetRegistry,
+    ) -> Option<Self> {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 10 {
             return None;
         }
+        let query_idx = query_registry.index_of(fields[0])?;
+        let target_idx = target_registry.index_of(fields[3])?;
 
         // Parse and strip seed markers from interaction
         let (interaction, seed_start, seed_end) = Self::strip_c_markers(fields[8]);
@@ -151,8 +143,8 @@ impl SearchHit {
         };
 
         Some(SearchHit {
-            query_id: fields[0].into(),
-            target_id: fields[3].into(),
+            query_idx,
+            target_idx,
             q_start: q_start.saturating_sub(1), // 0-based internal
             q_end: q_end.saturating_sub(1),     // 0-based internal
             t_start: t_start.saturating_sub(1), // 0-based internal
@@ -202,12 +194,12 @@ impl SearchHit {
             && self.strand == other.strand
     }
 
-    /// Group key for matching hits (query_id:target_id).
-    pub fn group_key(&self) -> String {
+    /// Group key for matching hits (query_idx:target_idx -> names).
+    pub fn group_key(&self, query_registry: &QueryRegistry, target_registry: &TargetRegistry) -> String {
         format!(
             "{}:{}",
-            self.query_id.truncated(),
-            self.target_id.truncated()
+            query_registry.get_name(self.query_idx),
+            target_registry.get_name(self.target_idx)
         )
     }
 
@@ -254,30 +246,8 @@ impl SearchHit {
 
 // Reimplementing mapping locally for safety and speed
 
-pub struct SaIndex<'a> {
-    pub index: &'a SaIndexFile,
-}
-
-impl<'a> SaIndex<'a> {
-    pub fn get_sequence(&self, seq_idx: usize) -> &Sequence {
-        &self.index.sequences[seq_idx].sequence
-    }
-
-    pub fn get_sequence_rc(&self, seq_idx: usize) -> &Sequence {
-        &self.index.sequences[seq_idx].sequence_rc
-    }
-
-    pub fn get_id(&self, seq_idx: usize) -> &str {
-        &self.index.sequences[seq_idx].name
-    }
-
-    pub fn get_sequence_len(&self, seq_idx: usize) -> usize {
-        self.index.sequences[seq_idx].sequence.len()
-    }
-}
-
 pub struct SearchContext<'a, 'e> {
-    pub index: &'a SaIndex<'a>,
+    pub index: &'a TargetRegistry,
     pub args: &'a SearchArgs,
     pub extender: &'e mut dp::DpExtender,
     pub stats: SearchStats,
@@ -286,7 +256,7 @@ pub struct SearchContext<'a, 'e> {
 
 impl<'a, 'e> SearchContext<'a, 'e> {
     pub fn with_extender(
-        index: &'a SaIndex<'a>,
+        index: &'a TargetRegistry,
         args: &'a SearchArgs,
         extender: &'e mut dp::DpExtender,
     ) -> Self {
@@ -304,7 +274,7 @@ impl<'a, 'e> SearchContext<'a, 'e> {
 thread_local! {
     static THREAD_EXTENDER: std::cell::RefCell<dp::DpExtender> =
         std::cell::RefCell::new(dp::DpExtender::new());
-    static THREAD_SEEDS: std::cell::RefCell<Vec<SeedCandidate>> =
+    static THREAD_SEEDS: std::cell::RefCell<Vec<SeedHit>> =
         std::cell::RefCell::new(Vec::with_capacity(100_000));
     static THREAD_MATCHES: std::cell::RefCell<Vec<SeedMatch>> =
         std::cell::RefCell::new(Vec::with_capacity(1024));
@@ -320,10 +290,13 @@ mod tests {
         let line =
             "hsa-miR-1\t1\t10\tENSG00000001\t100\t110\t+\t-15.50\tyPPPUPPPx\tacguacgu\tAA\tCC";
 
-        let hit = SearchHit::from_c_output(line).expect("should parse");
+        let query_registry = QueryRegistry::from_names(vec!["hsa-miR-1".to_string()]);
+        let target_registry = TargetRegistry::from_names(vec!["ENSG00000001".to_string()]);
+        let hit =
+            SearchHit::from_c_output(line, &query_registry, &target_registry).expect("should parse");
 
-        assert_eq!(hit.query_id.as_str(), "hsa-miR-1");
-        assert_eq!(hit.target_id.as_str(), "ENSG00000001");
+        assert_eq!(hit.query_idx, 0);
+        assert_eq!(hit.target_idx, 0);
         // Internal coords are 0-based (converted from C's 1-based)
         assert_eq!(hit.q_start, 0);
         assert_eq!(hit.q_end, 9);
@@ -348,8 +321,11 @@ mod tests {
         // Minimal 10 columns (no flanks), C uses 1-based coords
         let line = "q1\t1\t5\tt1\t10\t15\t-\t-8.00\tPPPPP\tacgua";
 
-        let hit = SearchHit::from_c_output(line).expect("should parse minimal");
-        assert_eq!(hit.query_id.as_str(), "q1");
+        let query_registry = QueryRegistry::from_names(vec!["q1".to_string()]);
+        let target_registry = TargetRegistry::from_names(vec!["t1".to_string()]);
+        let hit =
+            SearchHit::from_c_output(line, &query_registry, &target_registry).expect("should parse minimal");
+        assert_eq!(hit.query_idx, 0);
         // Internal coords are 0-based
         assert_eq!(hit.q_start, 0);
         assert_eq!(hit.q_end, 4);
@@ -367,7 +343,9 @@ mod tests {
 
     #[test]
     fn test_search_hit_from_c_output_invalid() {
-        assert!(SearchHit::from_c_output("too\tfew\tcolumns").is_none());
-        assert!(SearchHit::from_c_output("").is_none());
+        let query_registry = QueryRegistry::from_names(vec![]);
+        let target_registry = TargetRegistry::from_names(vec![]);
+        assert!(SearchHit::from_c_output("too\tfew\tcolumns", &query_registry, &target_registry).is_none());
+        assert!(SearchHit::from_c_output("", &query_registry, &target_registry).is_none());
     }
 }

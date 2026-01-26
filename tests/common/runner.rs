@@ -23,7 +23,7 @@ pub struct NoIndex;
 pub struct Indexed {
     index_path: PathBuf,
     #[allow(dead_code)]
-    index_file: risearch::sa::SaIndexFile,
+    index_file: risearch::sa::TargetRegistry,
 }
 
 // =============================================================================
@@ -80,28 +80,23 @@ impl RustRunner<Indexed> {
         &self,
         query_path: &Path,
         args: &risearch::config::SearchArgs,
-    ) -> Vec<risearch::SearchHit> {
-        use risearch::search::SaIndex;
-
-        let index = SaIndex {
-            index: &self.state.index_file,
-        };
-        let queries = risearch::sa::process_sequences(query_path)
-            .expect("read query FASTA")
-            .sequences
-            .into_iter()
-            .map(|s| (s.name, s.sequence))
-            .collect::<Vec<_>>();
-        let hits = risearch::search::run_search(&queries, &index, args).expect("search");
+    ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
+        let index = &self.state.index_file;
+        let processed = risearch::sa::process_sequences(query_path)
+            .expect("read query FASTA");
+        let query_registry = risearch::QueryRegistry::from_indices(processed.into_entries());
+        let hits = risearch::search::run_search(&query_registry, index, args).expect("search");
 
         // Normalize to 1-based coordinates to match C output format for comparison
-        hits.into_iter()
+        let hits = hits
+            .into_iter()
             .map(|mut h| {
                 h.q_start += 1;
                 h.q_end += 1;
                 h
             })
-            .collect()
+            .collect();
+        (hits, query_registry)
     }
 
     /// Get the index path.
@@ -153,7 +148,7 @@ impl ParityRunner {
         args: &[&str],
     ) -> (Vec<risearch::SearchHit>, Vec<risearch::SearchHit>) {
         let search_args = parse_search_args(args);
-        let rust_hits = self.rust.search(query, &search_args);
+        let (rust_hits, query_registry) = self.rust.search(query, &search_args);
 
         // Translate Rust args to C args
         let mut c_args: Vec<String> = Vec::new();
@@ -244,7 +239,7 @@ impl ParityRunner {
         }
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
-        let (c_hits, _) = parse_output(&c_out);
+        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.index_file);
 
         (rust_hits, c_hits)
     }

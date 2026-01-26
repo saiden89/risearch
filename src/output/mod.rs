@@ -8,6 +8,7 @@ use zstd::stream;
 
 use crate::config::{OutputCompression, OutputFormat};
 use crate::search::SearchHit;
+use crate::registry::{QueryRegistry, TargetRegistry};
 use self::format::{write_results_to, write_results_with_format_to};
 
 pub mod format;
@@ -104,9 +105,14 @@ pub fn open_output(
     Ok((writer, compression))
 }
 
-pub fn write_results(hits: &[SearchHit], output: impl AsRef<Path>) -> Result<()> {
+pub fn write_results(
+    hits: &[SearchHit],
+    output: impl AsRef<Path>,
+    query_registry: &QueryRegistry,
+    target_registry: &TargetRegistry,
+) -> Result<()> {
     let (mut writer, _compression) = open_output(output.as_ref(), None)?;
-    write_results_to(hits, &mut writer)?;
+    write_results_to(hits, &mut writer, query_registry, target_registry)?;
     writer.flush().context("Failed to flush output")?;
     Ok(())
 }
@@ -115,9 +121,11 @@ pub fn write_results_with_format(
     hits: &[SearchHit],
     output: impl AsRef<Path>,
     format: OutputFormat,
+    query_registry: &QueryRegistry,
+    target_registry: &TargetRegistry,
 ) -> Result<()> {
     let (mut writer, _compression) = open_output(output.as_ref(), None)?;
-    write_results_with_format_to(hits, &mut writer, format)?;
+    write_results_with_format_to(hits, &mut writer, format, query_registry, target_registry)?;
     writer.flush().context("Failed to flush output")?;
     Ok(())
 }

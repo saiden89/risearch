@@ -25,11 +25,7 @@ pub struct SequenceIndex {
     pub sequence_rc: Sequence,
 }
 
-/// Structure representing the entire index file containing multile sequences.
-#[derive(Serialize, Deserialize)]
-pub struct SaIndexFile {
-    pub sequences: Vec<SequenceIndex>,
-}
+use crate::registry::TargetRegistry;
 
 pub fn create_suffix_array(
     input_file: impl AsRef<Path>,
@@ -44,7 +40,7 @@ pub fn create_suffix_array(
     Ok(())
 }
 
-pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
+pub fn process_sequences(filename: impl AsRef<Path>) -> Result<TargetRegistry> {
     validate_readable_file(filename.as_ref())?;
 
     let sequences = read_fasta_sequences(&filename).context("Failed to read FASTA sequences")?;
@@ -142,9 +138,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<SaIndexFile> {
         );
     }
 
-    Ok(SaIndexFile {
-        sequences: sequence_indices,
-    })
+    Ok(TargetRegistry::new(sequence_indices))
 }
 
 #[cfg(test)]
@@ -193,11 +187,11 @@ mod tests {
     fn test_process_sequences_normalizes_t_and_ambiguous_to_n() {
         let file = create_temp_fasta(">s1\nACGTYR\n");
         let idx = process_sequences(file.path()).expect("indexing failed");
-        assert_eq!(idx.sequences.len(), 1);
-        assert_eq!(idx.sequences[0].name, "s1");
+        assert_eq!(idx.entries().len(), 1);
+        assert_eq!(idx.entries()[0].name, "s1");
         // Compare with expected sequence using Sequence::normalize
         let (expected, _) = Sequence::normalize("test", b"ACGTNN").unwrap();
-        assert_eq!(idx.sequences[0].sequence, expected);
+        assert_eq!(idx.entries()[0].sequence, expected);
     }
 
     #[test]
@@ -205,11 +199,11 @@ mod tests {
         // First record is gaps only and becomes empty; second is valid.
         let file = create_temp_fasta(">empty\n--..\n>ok\nACGU\n");
         let idx = process_sequences(file.path()).expect("indexing failed");
-        assert_eq!(idx.sequences.len(), 1);
-        assert_eq!(idx.sequences[0].name, "ok");
+        assert_eq!(idx.entries().len(), 1);
+        assert_eq!(idx.entries()[0].name, "ok");
         // Compare with expected sequence using Sequence::normalize
         let (expected, _) = Sequence::normalize("test", b"ACGU").unwrap();
-        assert_eq!(idx.sequences[0].sequence, expected);
+        assert_eq!(idx.entries()[0].sequence, expected);
     }
 
     #[test]
@@ -274,10 +268,8 @@ mod tests {
 
     #[test]
     fn test_index_file_empty() {
-        let index_file = SaIndexFile {
-            sequences: Vec::new(),
-        };
-        assert!(index_file.sequences.is_empty());
+        let index_file = TargetRegistry::new(Vec::new());
+        assert!(index_file.entries().is_empty());
     }
 
     #[test]
@@ -287,8 +279,7 @@ mod tests {
         let (seq2, _) = Sequence::normalize("test", b"AC").unwrap();
         let (seq2_rc, _) = Sequence::normalize("test", b"GU").unwrap();
 
-        let index_file = SaIndexFile {
-            sequences: vec![
+        let index_file = TargetRegistry::new(vec![
                 SequenceIndex {
                     name: "seq1".to_string(),
                     forward_sa: SuffixArray::from(vec![0]),
@@ -303,11 +294,10 @@ mod tests {
                     sequence: seq2,
                     sequence_rc: seq2_rc,
                 },
-            ],
-        };
-        assert_eq!(index_file.sequences.len(), 2);
-        assert_eq!(index_file.sequences[0].name, "seq1");
-        assert_eq!(index_file.sequences[1].name, "seq2");
+            ]);
+        assert_eq!(index_file.entries().len(), 2);
+        assert_eq!(index_file.entries()[0].name, "seq1");
+        assert_eq!(index_file.entries()[1].name, "seq2");
     }
 
     #[test]
@@ -315,21 +305,19 @@ mod tests {
         let (seq, _) = Sequence::normalize("test", b"AU").unwrap();
         let (seq_rc, _) = Sequence::normalize("test", b"AU").unwrap();
 
-        let index_file = SaIndexFile {
-            sequences: vec![SequenceIndex {
-                name: "test".to_string(),
-                forward_sa: SuffixArray::from(vec![0, 1]),
-                reverse_sa: SuffixArray::from(vec![1, 0]),
-                sequence: seq,
-                sequence_rc: seq_rc,
-            }],
-        };
+        let index_file = TargetRegistry::new(vec![SequenceIndex {
+            name: "test".to_string(),
+            forward_sa: SuffixArray::from(vec![0, 1]),
+            reverse_sa: SuffixArray::from(vec![1, 0]),
+            sequence: seq,
+            sequence_rc: seq_rc,
+        }]);
 
         let encoded = bincode::serialize(&index_file).expect("Serialization failed");
-        let decoded: SaIndexFile = bincode::deserialize(&encoded).expect("Deserialization failed");
+        let decoded: TargetRegistry = bincode::deserialize(&encoded).expect("Deserialization failed");
 
-        assert_eq!(decoded.sequences.len(), 1);
-        assert_eq!(decoded.sequences[0].name, "test");
+        assert_eq!(decoded.entries().len(), 1);
+        assert_eq!(decoded.entries()[0].name, "test");
     }
 
     // ==================== process_sequences Tests ====================
@@ -341,13 +329,13 @@ mod tests {
 
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
-        assert_eq!(result.sequences.len(), 1);
-        assert_eq!(result.sequences[0].name, "seq1");
+        assert_eq!(result.entries().len(), 1);
+        assert_eq!(result.entries()[0].name, "seq1");
         // Verify sequence length
-        assert_eq!(result.sequences[0].sequence.len(), 4);
+        assert_eq!(result.entries()[0].sequence.len(), 4);
         // Suffix arrays should have same length as sequence
-        assert_eq!(result.sequences[0].forward_sa.len(), 4);
-        assert_eq!(result.sequences[0].reverse_sa.len(), 4);
+        assert_eq!(result.entries()[0].forward_sa.len(), 4);
+        assert_eq!(result.entries()[0].reverse_sa.len(), 4);
     }
 
     #[test]
@@ -357,9 +345,9 @@ mod tests {
 
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
-        assert_eq!(result.sequences.len(), 3);
+        assert_eq!(result.entries().len(), 3);
         // Note: parallel processing may change order, so check by finding sequences
-        let names: Vec<&str> = result.sequences.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = result.entries().iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"seq1"));
         assert!(names.contains(&"seq2"));
         assert!(names.contains(&"seq3"));
@@ -373,7 +361,7 @@ mod tests {
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
         // Verify sequence length (normalized)
-        assert_eq!(result.sequences[0].sequence.len(), 8);
+        assert_eq!(result.entries()[0].sequence.len(), 8);
     }
 
     #[test]
@@ -384,7 +372,7 @@ mod tests {
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
         // Verify sequence length
-        assert_eq!(result.sequences[0].sequence.len(), 4);
+        assert_eq!(result.entries()[0].sequence.len(), 4);
     }
 
     #[test]
@@ -394,9 +382,9 @@ mod tests {
 
         let result = process_sequences(temp_file.path()).expect("Processing failed");
 
-        assert_eq!(result.sequences.len(), 1);
+        assert_eq!(result.entries().len(), 1);
         // Verify sequence length (4+4+4=12)
-        assert_eq!(result.sequences[0].sequence.len(), 12);
+        assert_eq!(result.entries()[0].sequence.len(), 12);
     }
 
     #[test]
@@ -412,7 +400,7 @@ mod tests {
         let temp_file = create_temp_fasta(fasta_content);
 
         let result = process_sequences(temp_file.path()).expect("Processing failed");
-        let seq_idx = &result.sequences[0];
+        let seq_idx = &result.entries()[0];
 
         // Check forward SA contains all indices
         let mut forward_sorted: Vec<u32> = seq_idx.forward_sa.iter().copied().collect();
@@ -435,15 +423,13 @@ mod tests {
         let (seq, _) = Sequence::normalize("test", b"ACG").unwrap();
         let (seq_rc, _) = Sequence::normalize("test", b"CGU").unwrap();
 
-        let index = SaIndexFile {
-            sequences: vec![SequenceIndex {
-                name: "test".to_string(),
-                forward_sa: SuffixArray::from(vec![0, 1, 2]),
-                reverse_sa: SuffixArray::from(vec![2, 1, 0]),
-                sequence: seq,
-                sequence_rc: seq_rc,
-            }],
-        };
+        let index = TargetRegistry::new(vec![SequenceIndex {
+            name: "test".to_string(),
+            forward_sa: SuffixArray::from(vec![0, 1, 2]),
+            reverse_sa: SuffixArray::from(vec![2, 1, 0]),
+            sequence: seq,
+            sequence_rc: seq_rc,
+        }]);
 
         let result = write_index_file(&index, &output_path);
         assert!(result.is_ok());
@@ -452,9 +438,7 @@ mod tests {
 
     #[test]
     fn test_write_index_file_invalid_path() {
-        let index = SaIndexFile {
-            sequences: Vec::new(),
-        };
+        let index = TargetRegistry::new(Vec::new());
 
         let result = write_index_file(&index, "/nonexistent/directory/file.idx");
         assert!(result.is_err());
@@ -465,9 +449,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let output_path = temp_dir.path().join("empty.idx");
 
-        let index = SaIndexFile {
-            sequences: Vec::new(),
-        };
+        let index = TargetRegistry::new(Vec::new());
 
         let result = write_index_file(&index, &output_path);
         assert!(result.is_ok());
@@ -488,25 +470,23 @@ mod tests {
         let (seq, _) = Sequence::normalize("test", b"ACGT").unwrap();
         let (seq_rc, _) = Sequence::normalize("test", b"ACGT").unwrap();
 
-        let original = SaIndexFile {
-            sequences: vec![SequenceIndex {
-                name: "loaded_seq".to_string(),
-                forward_sa: SuffixArray::from(vec![3, 0, 1, 2]),
-                reverse_sa: SuffixArray::from(vec![0, 3, 2, 1]),
-                sequence: seq.clone(),
-                sequence_rc: seq_rc,
-            }],
-        };
+        let original = TargetRegistry::new(vec![SequenceIndex {
+            name: "loaded_seq".to_string(),
+            forward_sa: SuffixArray::from(vec![3, 0, 1, 2]),
+            reverse_sa: SuffixArray::from(vec![0, 3, 2, 1]),
+            sequence: seq.clone(),
+            sequence_rc: seq_rc,
+        }]);
 
         write_index_file(&original, &file_path).expect("Write failed");
 
         let loaded = load_index_file(&file_path).expect("Load failed");
 
-        assert_eq!(loaded.sequences.len(), 1);
-        assert_eq!(loaded.sequences[0].name, "loaded_seq");
-        assert_eq!(&loaded.sequences[0].forward_sa[..], &[3, 0, 1, 2]);
-        assert_eq!(&loaded.sequences[0].reverse_sa[..], &[0, 3, 2, 1]);
-        assert_eq!(loaded.sequences[0].sequence, seq);
+        assert_eq!(loaded.entries().len(), 1);
+        assert_eq!(loaded.entries()[0].name, "loaded_seq");
+        assert_eq!(&loaded.entries()[0].forward_sa[..], &[3, 0, 1, 2]);
+        assert_eq!(&loaded.entries()[0].reverse_sa[..], &[0, 3, 2, 1]);
+        assert_eq!(loaded.entries()[0].sequence, seq);
     }
 
     #[test]
@@ -553,8 +533,8 @@ mod tests {
 
         // Verify the created file can be loaded
         let loaded = load_index_file(&output_path).expect("Failed to load created index");
-        assert_eq!(loaded.sequences.len(), 1);
-        assert_eq!(loaded.sequences[0].name, "seq1");
+        assert_eq!(loaded.entries().len(), 1);
+        assert_eq!(loaded.entries()[0].name, "seq1");
     }
 
     #[test]
@@ -586,7 +566,7 @@ mod tests {
         assert!(result.is_ok());
 
         let loaded = load_index_file(&output_path).expect("Failed to load");
-        assert_eq!(loaded.sequences.len(), 2);
+        assert_eq!(loaded.entries().len(), 2);
     }
 
     // ==================== Round-trip Tests ====================
@@ -605,12 +585,12 @@ mod tests {
         let loaded = load_index_file(&index_path).expect("Load failed");
 
         // Verify content
-        assert_eq!(loaded.sequences.len(), 1);
-        assert_eq!(loaded.sequences[0].name, "myseq description here");
+        assert_eq!(loaded.entries().len(), 1);
+        assert_eq!(loaded.entries()[0].name, "myseq description here");
         // Verify sequence length (24 bases)
-        assert_eq!(loaded.sequences[0].sequence.len(), 24);
-        assert_eq!(loaded.sequences[0].forward_sa.len(), 24);
-        assert_eq!(loaded.sequences[0].reverse_sa.len(), 24);
+        assert_eq!(loaded.entries()[0].sequence.len(), 24);
+        assert_eq!(loaded.entries()[0].forward_sa.len(), 24);
+        assert_eq!(loaded.entries()[0].reverse_sa.len(), 24);
     }
 
     #[test]
@@ -623,30 +603,28 @@ mod tests {
         let (seq2, _) = Sequence::normalize("test", b"C").unwrap();
         let (seq2_rc, _) = Sequence::normalize("test", b"G").unwrap();
 
-        let original = SaIndexFile {
-            sequences: vec![
-                SequenceIndex {
-                    name: "first".to_string(),
-                    forward_sa: SuffixArray::from(vec![5, 4, 3, 2, 1, 0]),
-                    reverse_sa: SuffixArray::from(vec![0, 1, 2, 3, 4, 5]),
-                    sequence: seq1.clone(),
-                    sequence_rc: seq1_rc.clone(),
-                },
-                SequenceIndex {
-                    name: "second".to_string(),
-                    forward_sa: SuffixArray::from(vec![0]),
-                    reverse_sa: SuffixArray::from(vec![0]),
-                    sequence: seq2.clone(),
-                    sequence_rc: seq2_rc.clone(),
-                },
-            ],
-        };
+        let original = TargetRegistry::new(vec![
+            SequenceIndex {
+                name: "first".to_string(),
+                forward_sa: SuffixArray::from(vec![5, 4, 3, 2, 1, 0]),
+                reverse_sa: SuffixArray::from(vec![0, 1, 2, 3, 4, 5]),
+                sequence: seq1.clone(),
+                sequence_rc: seq1_rc.clone(),
+            },
+            SequenceIndex {
+                name: "second".to_string(),
+                forward_sa: SuffixArray::from(vec![0]),
+                reverse_sa: SuffixArray::from(vec![0]),
+                sequence: seq2.clone(),
+                sequence_rc: seq2_rc.clone(),
+            },
+        ]);
 
         write_index_file(&original, &file_path).expect("Write failed");
         let loaded = load_index_file(&file_path).expect("Load failed");
 
-        assert_eq!(loaded.sequences.len(), original.sequences.len());
-        for (orig, load) in original.sequences.iter().zip(loaded.sequences.iter()) {
+        assert_eq!(loaded.entries().len(), original.entries().len());
+        for (orig, load) in original.entries().iter().zip(loaded.entries().iter()) {
             assert_eq!(orig.name, load.name);
             assert_eq!(orig.forward_sa, load.forward_sa);
             assert_eq!(orig.reverse_sa, load.reverse_sa);

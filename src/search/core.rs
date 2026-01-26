@@ -1,16 +1,17 @@
 use anyhow::Result;
 use log::trace;
 use rayon::prelude::*;
+use smallvec::SmallVec;
 
 use crate::dp;
 use crate::dsm::{PAIR_MAT, PAIR_MAT_NO_GU};
-use crate::seed::{SeedCandidate, build_seed_alignment};
+use crate::registry::QueryRegistry;
+use crate::sa::TargetRegistry;
+use crate::seed::{SeedHit, build_seed_alignment};
 use crate::seq::Sequence;
-use crate::types::{Alignment, Base, Pairing, QueryId, SeedPairingMode, Strand};
+use crate::types::{Alignment, Base, Pairing, SeedPairingMode, Strand};
 
-use super::{
-    FilterReason, MAX_DP_EXT, SaIndex, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER,
-};
+use super::{FilterReason, MAX_DP_EXT, SearchContext, SearchHit, SearchStage, THREAD_EXTENDER};
 
 #[inline]
 fn base_or_gap(seq: &Sequence, pos: usize) -> Base {
@@ -33,24 +34,27 @@ fn left_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
 /// Run search and return hits (used by parity tests and library callers).
 /// Assumes the provided `SearchArgs` already contains a valid `SeedSpec` for each query.
 pub fn run_search(
-    queries: &[(QueryId, Sequence)],
-    index: &SaIndex<'_>,
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
     opts: &crate::config::SearchArgs,
 ) -> Result<Vec<SearchHit>> {
     let per_query_hits: Vec<Vec<SearchHit>> = queries
+        .entries()
         .par_iter()
-        .map(|(q_id, q_seq)| {
+        .enumerate()
+        .map(|(q_idx, q)| {
             THREAD_EXTENDER.with(|ext| {
                 let mut extender = ext.borrow_mut();
                 let mut ctx = SearchContext::with_extender(index, opts, &mut extender);
                 let mut seeds = Vec::new();
                 let mut matches = Vec::new();
-                crate::seed::find_seeds(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
+                crate::seed::find_seeds(q, ctx.index, &ctx.args.seed, &mut seeds, &mut matches);
 
-                let query = super::Query::new(q_id, q_seq);
                 seeds
                     .iter()
-                    .filter_map(|candidate| process_candidate(query, candidate, &mut ctx))
+                    .filter_map(|candidate| {
+                        extend_candidate(q_idx as u32, queries, candidate, &mut ctx)
+                    })
                     .collect()
             })
         })
@@ -60,11 +64,13 @@ pub fn run_search(
 }
 
 /// Extend a single candidate and build a `SearchHit` if the energy passes filters.
-fn process_candidate(
-    query: super::Query<'_>,
-    candidate: &SeedCandidate,
-    ctx: &mut SearchContext<'_, '_>,
+fn extend_candidate(
+    query_idx: u32,
+    queries: &QueryRegistry,
+    candidate: &SeedHit,
+    ctx: &mut SearchContext,
 ) -> Option<SearchHit> {
+    let query_seq = queries.get(query_idx).sequence();
     let t_idx = candidate.target_idx;
     let t_seq = match candidate.strand {
         Strand::Reverse => ctx.index.get_sequence_rc(t_idx),
@@ -78,23 +84,23 @@ fn process_candidate(
         return None;
     }
 
-    let ext = extend_seed(ctx, query.seq, t_seq, candidate)?;
+    let extension = extend_seed(ctx, query_seq, t_seq, candidate)?;
 
-    let score = ext.score;
+    let score = extension.score;
     if score > ctx.args.extend.delta_g {
         ctx.stats.record_filter(FilterReason::EnergyAboveThreshold);
         return None;
     }
 
-    Some(build_hit(query, ctx, candidate, ext))
+    Some(build_hit(query_idx, ctx, candidate, extension))
 }
 
 /// Finalize coordinates, bookkeeping, and formatting for an accepted hit.
 fn build_hit(
-    query: super::Query<'_>,
-    ctx: &SearchContext<'_, '_>,
-    candidate: &SeedCandidate,
-    ext: ExtensionResult,
+    query_idx: u32,
+    ctx: &SearchContext,
+    candidate: &SeedHit,
+    ext: ExtendedHit,
 ) -> SearchHit {
     let seed_len = candidate.len;
     let q_pos = candidate.query_pos;
@@ -116,8 +122,8 @@ fn build_hit(
     };
 
     SearchHit {
-        query_id: query.id.clone(),
-        target_id: ctx.index.get_id(candidate.target_idx).into(),
+        query_idx,
+        target_idx: candidate.target_idx as u32,
         q_start: final_q_start,
         q_end: final_q_end,
         t_start: final_t_start,
@@ -135,7 +141,7 @@ fn build_hit(
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ExtensionResult {
+pub(super) struct ExtendedHit {
     pub score: f64,
     pub alignment: Alignment,
 
@@ -149,8 +155,8 @@ pub(super) fn extend_seed(
     ctx: &mut SearchContext<'_, '_>,
     q_seq: &Sequence,
     t_seq: &Sequence,
-    candidate: &SeedCandidate,
-) -> Option<ExtensionResult> {
+    candidate: &SeedHit,
+) -> Option<ExtendedHit> {
     let q_pos = candidate.query_pos;
     let t_pos = candidate.target_start;
     let len = candidate.len;
@@ -305,7 +311,9 @@ pub(super) fn extend_seed(
     }
 
     // Seed energy calculation using centralized EnergyModel
-    let seed_energy_raw = ctx.energy.seed_energy(query, target, q_pos, t_match_end, len);
+    let seed_energy_raw = ctx
+        .energy
+        .seed_energy(query, target, q_pos, t_match_end, len);
 
     // Only build interaction string when trace logging is enabled (avoids allocation in hot path)
     if log::log_enabled!(log::Level::Trace) {
@@ -327,13 +335,15 @@ pub(super) fn extend_seed(
         // 5' terminal: Gap->q[0] paired with Gap->t[t_end]
         let term_5p = ctx.energy.terminal_5p(query[q_pos], target[t_match_end]);
         // 3' terminal: q[q_end]->Gap paired with t[t_pos]->Gap
-        let term_3p = ctx.energy.terminal_3p(query[q_pos + len - 1], target[t_pos]);
+        let term_3p = ctx
+            .energy
+            .terminal_3p(query[q_pos + len - 1], target[t_pos]);
 
         let total_raw = seed_energy_raw + term_5p + term_3p;
         let final_score = ctx.energy.to_kcal(total_raw);
         let seed_alignment = build_seed_alignment(query, target, q_pos, t_match_end, len);
 
-        return Some(ExtensionResult {
+        return Some(ExtendedHit {
             score: final_score,
             alignment: Alignment::new(&[], &seed_alignment, &[]),
             l_q: 0,
@@ -372,7 +382,6 @@ pub(super) fn extend_seed(
     );
 
     // Use SmallVec to avoid heap allocation for typical extension sizes
-    use smallvec::SmallVec;
     let mut left_alignment: SmallVec<[Pairing; 64]> = SmallVec::new();
 
     // Left Trace: replay from extension end back toward seed
@@ -415,7 +424,10 @@ pub(super) fn extend_seed(
             dp::DpOp::Match | dp::DpOp::Stop => {
                 ri += 1;
                 rj += 1;
-                Pairing::from_bases(base_or_gap(query, q_base + ri), left_base(target, t_pos, rj))
+                Pairing::from_bases(
+                    base_or_gap(query, q_base + ri),
+                    left_base(target, t_pos, rj),
+                )
             }
             dp::DpOp::GapQ => {
                 ri += 1;
@@ -431,7 +443,7 @@ pub(super) fn extend_seed(
 
     let alignment = Alignment::new(&left_alignment, &seed_alignment, &right_alignment);
 
-    Some(ExtensionResult {
+    Some(ExtendedHit {
         score: final_score,
         alignment,
 

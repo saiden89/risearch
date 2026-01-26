@@ -5,26 +5,31 @@ use std::io::Write;
 
 use crate::config::{OutputCompression, OutputFormat, SearchArgs};
 use crate::output::{compress_bytes, resolve_compression};
-use crate::seed::SeedCandidate;
+use crate::seed::SeedHit;
 use crate::seed::search::find_seeds;
-use crate::seq::Sequence;
-use crate::types::{QueryId, Strand};
+use crate::registry::QueryRegistry;
+use crate::types::Strand;
 
 use super::core::extend_seed;
 use crate::output::format::fill_line_buf;
-use super::{FilterReason, SaIndex, SearchContext, THREAD_EXTENDER, THREAD_MATCHES, THREAD_SEEDS};
+use super::{FilterReason, SearchContext, THREAD_EXTENDER, THREAD_MATCHES, THREAD_SEEDS};
+use crate::sa::TargetRegistry;
 
 /// Run search with streaming output - writes hits directly instead of collecting.
 /// This avoids memory overhead for large result sets.
 pub fn run_search_streaming<W: std::io::Write>(
-    queries: &[(QueryId, Sequence)],
-    index: &SaIndex<'_>,
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
     opts: &SearchArgs,
     writer: &mut W,
 ) -> Result<usize> {
-    for (q_id, q_seq) in queries {
-        if let Err(err) = opts.seed.seed.normalize(q_seq.len()) {
-            bail!("Invalid seed spec for query '{}': {}", q_id, err);
+    for (q_idx, q) in queries.iter() {
+        if let Err(err) = opts.seed.seed.normalize(q.sequence().len()) {
+            bail!(
+                "Invalid seed spec for query '{}': {}",
+                queries.get_name(q_idx),
+                err
+            );
         }
     }
     info!(
@@ -42,7 +47,7 @@ pub fn run_search_streaming<W: std::io::Write>(
     let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
 
     let process_query =
-        |q_id: &QueryId, q_seq: &Sequence, writer: &mut dyn Write, line_buf: &mut Vec<u8>| -> usize {
+        |q_idx: u32, q: &crate::registry::QueryEntry, writer: &mut dyn Write, line_buf: &mut Vec<u8>| -> usize {
             let mut local_hits = 0usize;
             THREAD_EXTENDER.with(|ext| {
                 THREAD_SEEDS.with(|seeds_cell| {
@@ -53,17 +58,18 @@ pub fn run_search_streaming<W: std::io::Write>(
                         let mut ctx = SearchContext::with_extender(index, opts, &mut extender);
 
                         // Reuse thread-local Vecs instead of allocating new ones
-                        find_seeds(q_seq, ctx.index.index, &ctx.args.seed, &mut seeds, &mut matches);
+                        find_seeds(q, ctx.index, &ctx.args.seed, &mut seeds, &mut matches);
 
                         for candidate in seeds.iter() {
-            if process_candidate_streaming(
-                super::Query::new(q_id, q_seq),
-                candidate,
-                &mut ctx,
-                writer,
-                format,
-                line_buf,
-            ) {
+                            if process_candidate_streaming(
+                                q_idx,
+                                queries,
+                                candidate,
+                                &mut ctx,
+                                writer,
+                                format,
+                                line_buf,
+                            ) {
                                 local_hits += 1;
                             }
                         }
@@ -73,13 +79,16 @@ pub fn run_search_streaming<W: std::io::Write>(
             local_hits
         };
 
-    for chunk in queries.chunks(chunk_size) {
+    let mut chunk_start = 0usize;
+    for chunk in queries.entries().chunks(chunk_size) {
         let outputs: Vec<Result<(Vec<u8>, usize)>> = chunk
             .par_iter()
-            .map(|(q_id, q_seq)| {
+            .enumerate()
+            .map(|(i, q)| {
                 let mut line_buf: Vec<u8> = Vec::new();
                 let mut out: Vec<u8> = Vec::new();
-                let hits = process_query(q_id, q_seq, &mut out, &mut line_buf);
+                let q_idx = (chunk_start + i) as u32;
+                let hits = process_query(q_idx, q, &mut out, &mut line_buf);
                 let out = compress_bytes(compression_cfg, out)?;
                 Ok((out, hits))
             })
@@ -92,6 +101,7 @@ pub fn run_search_streaming<W: std::io::Write>(
             }
             hit_count += count;
         }
+        chunk_start += chunk.len();
     }
 
     info!("Streaming search complete: {} hits", hit_count);
@@ -101,13 +111,15 @@ pub fn run_search_streaming<W: std::io::Write>(
 /// Process candidate and write directly to output - zero String allocation variant.
 /// Returns true if a hit was written.
 fn process_candidate_streaming<W: Write + ?Sized>(
-    query: super::Query<'_>,
-    candidate: &SeedCandidate,
-    ctx: &mut SearchContext<'_, '_>,
+    query_idx: u32,
+    queries: &QueryRegistry,
+    candidate: &SeedHit,
+    ctx: &mut SearchContext,
     writer: &mut W,
     format: OutputFormat,
     line_buf: &mut Vec<u8>,
 ) -> bool {
+    let query_seq = queries.get(query_idx).sequence();
     let t_idx = candidate.target_idx;
     let t_seq = match candidate.strand {
         Strand::Reverse => ctx.index.get_sequence_rc(t_idx),
@@ -124,7 +136,7 @@ fn process_candidate_streaming<W: Write + ?Sized>(
     }
 
     // Call extend_seed
-    let Some(ext) = extend_seed(ctx, query.seq, t_seq, candidate) else {
+    let Some(ext) = extend_seed(ctx, query_seq, t_seq, candidate) else {
         return false;
     };
 
@@ -151,7 +163,7 @@ fn process_candidate_streaming<W: Write + ?Sized>(
         Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
     };
 
-    let target_id = ctx.index.get_id(t_idx);
+    let target_id = ctx.index.get_name(t_idx as u32);
     let ctx_len = 20;
 
     // Flanking Base sequences for binding-site output
@@ -180,7 +192,7 @@ fn process_candidate_streaming<W: Write + ?Sized>(
         &mut itoa_buf,
         &mut zmij_buf,
         format,
-        query.id.as_str(),
+        queries.get_name(query_idx),
         final_q_start + 1,
         final_q_end + 1,
         target_id,

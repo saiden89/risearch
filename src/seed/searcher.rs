@@ -132,9 +132,7 @@ struct SearchState {
     mismatch_count: usize,
 }
 
-/// Parallel Suffix Array searcher (C-style algorithm)
-///
-/// This searcher uses the C RIsearch2 algorithm where:
+/// Parallel Suffix Array searcher
 /// - Query SA is built on the query sequence as-is
 /// - Target SA is built on the COMPLEMENT of the target sequence
 /// - Same-character matching finds complementary base pairs
@@ -472,10 +470,6 @@ impl<'a> SeedSearcher<'a> {
             return true;
         }
 
-        // Wobble pairs - must match canonical wobble exploration above!
-        // We use query_RC, so:
-        // - G-U wobble: query G (query_RC has C) with target U
-        // - U-G wobble: query U (query_RC has A) with target G
         if matches!(self.seed_config.pairing, SeedPairingMode::AllowWobble) {
             // G-U wobble: Query_RC C with Target U
             if q_base == Base::C && t_comp_base == Base::U {
@@ -511,7 +505,7 @@ impl<'a> SeedSearcher<'a> {
     /// because they're scattered throughout the SA (sorted by earlier characters).
     fn partition_interval(
         &self,
-        sa: &[u32],
+        sa: &SuffixArray    ,
         seq: &Sequence,
         interval: SaInterval,
         offset: usize,
@@ -520,7 +514,7 @@ impl<'a> SeedSearcher<'a> {
             return BaseIntervals::default();
         }
 
-        // Step 1: Find valid suffix range - optimized with early exit
+        // Step 1: Find valid suffix range
         let (valid_start, valid_end) = self.find_valid_suffix_range(sa, seq, interval, offset);
 
         if valid_start >= valid_end {
@@ -538,7 +532,7 @@ impl<'a> SeedSearcher<'a> {
     #[inline]
     fn find_valid_suffix_range(
         &self,
-        sa: &[u32],
+        sa: &SuffixArray,
         seq: &Sequence,
         interval: SaInterval,
         offset: usize,
@@ -579,7 +573,7 @@ impl<'a> SeedSearcher<'a> {
     #[inline]
     fn has_suffix_len_at_least(
         &self,
-        sa: &[u32],
+        sa: &SuffixArray,
         seq: &Sequence,
         interval: SaInterval,
         min_len: usize,
@@ -601,7 +595,7 @@ impl<'a> SeedSearcher<'a> {
     #[inline]
     fn partition_by_base(
         &self,
-        sa: &[u32],
+        sa: &SuffixArray,
         seq: &Sequence,
         valid_start: usize,
         valid_end: usize,

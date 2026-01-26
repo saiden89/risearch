@@ -4,6 +4,7 @@
 //! differences between Rust and C implementations.
 
 use risearch::SearchHit;
+use risearch::seq::bases_to_rna_string;
 use tabled::{Table, Tabled, builder::Builder, settings::Style};
 
 // =============================================================================
@@ -229,11 +230,11 @@ impl ParsedInteraction {
         };
 
         Self {
-            ctx_5: hit.flank_5.clone(),
+            ctx_5: bases_to_rna_string(&hit.flank_5, false),
             ext_5: left,
             seed,
             ext_3: right,
-            ctx_3: hit.flank_3.clone(),
+            ctx_3: bases_to_rna_string(&hit.flank_3, false),
         }
     }
 

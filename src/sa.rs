@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::Sequence;
 pub use crate::index::io::{load_index_file, write_index_file};
 pub use crate::index::sa::*;
+pub use crate::registry::TargetRegistry;
 
 /// A suffix array stored as Vec<u32>.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

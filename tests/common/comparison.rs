@@ -103,8 +103,8 @@ impl ParityResult {
             self.missings.len()
         );
 
-        // Collect all hits into groups by (query_id, target_id)
-        let mut groups: BTreeMap<(String, String), Vec<(&str, String)>> = BTreeMap::new();
+        // Collect all hits into groups by (query_idx, target_idx)
+        let mut groups: BTreeMap<(u32, u32), Vec<(&str, String)>> = BTreeMap::new();
 
         // Helper to render a table and collect lines
         let render_table = |kind: ParityKind| -> String {
@@ -118,10 +118,7 @@ impl ParityResult {
         // Collect co-optimal (only show details if not allowed by current mode)
         if matches!(*TEST_PARITY_MODE, ParityMode::Absolute) {
             for matched in &self.co_optimal {
-                let key = (
-                    matched.rust.query_id.to_string(),
-                    matched.rust.target_id.to_string(),
-                );
+                let key = (matched.rust.query_idx, matched.rust.target_idx);
                 let label = format!(
                     "CO-OPTIMAL: {} FP={} vs C FP={}",
                     matched.rust.fmt_coords(),
@@ -141,10 +138,7 @@ impl ParityResult {
 
         // Collect rust-better
         for matched in &self.rust_better {
-            let key = (
-                matched.rust.query_id.to_string(),
-                matched.rust.target_id.to_string(),
-            );
+            let key = (matched.rust.query_idx, matched.rust.target_idx);
             let label = format!(
                 "RUST-BETTER: {} vs C E={}",
                 matched.rust.fmt_coords(),
@@ -162,10 +156,7 @@ impl ParityResult {
 
         // Collect rust-worse
         for matched in &self.rust_worse {
-            let key = (
-                matched.rust.query_id.to_string(),
-                matched.rust.target_id.to_string(),
-            );
+            let key = (matched.rust.query_idx, matched.rust.target_idx);
             let label = format!(
                 "✗ RUST-WORSE: {} vs C E={}",
                 matched.rust.fmt_coords(),
@@ -183,7 +174,7 @@ impl ParityResult {
 
         // Collect extras
         for extra in &self.extras {
-            let key = (extra.query_id.to_string(), extra.target_id.to_string());
+            let key = (extra.query_idx, extra.target_idx);
             let label = format!("✗ EXTRA: {}", extra.fmt_coords());
             let table = render_table(ParityKind::RustOnly(extra));
             groups
@@ -194,7 +185,7 @@ impl ParityResult {
 
         // Collect missings
         for (missing, reason, overlap) in &self.missings {
-            let key = (missing.query_id.to_string(), missing.target_id.to_string());
+            let key = (missing.query_idx, missing.target_idx);
             let (label, table) = match overlap {
                 Some(rust_hit) => {
                     let energy_diff = missing.energy.as_f64() - rust_hit.energy.as_f64();
@@ -396,8 +387,8 @@ pub fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize
 /// Check if two hits overlap in both query and target coordinates.
 /// Also requires same query_id and target_id to be meaningful.
 pub fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
-    a.query_id == b.query_id
-        && a.target_id == b.target_id
+    a.query_idx == b.query_idx
+        && a.target_idx == b.target_idx
         && a.strand == b.strand
         && ranges_overlap(
             a.output_t_start,
@@ -473,13 +464,13 @@ impl<'a> ParityComparator<'a> {
     pub fn compare(self) -> ParityResult {
         let mut result = ParityResult::default();
 
-        // Group by (q_id, t_id) using group_key()
+        // Group by (query_idx, target_idx)
         let mut keys = HashSet::new();
         for h in self.rust_hits {
-            keys.insert(h.group_key());
+            keys.insert((h.query_idx, h.target_idx));
         }
         for h in self.c_hits {
-            keys.insert(h.group_key());
+            keys.insert((h.query_idx, h.target_idx));
         }
 
         let all_rust_refs: Vec<&SearchHit> = self.rust_hits.iter().collect();
@@ -488,7 +479,7 @@ impl<'a> ParityComparator<'a> {
             let mut r_group: Vec<&SearchHit> = self
                 .rust_hits
                 .iter()
-                .filter(|h| h.group_key() == key)
+                .filter(|h| (h.query_idx, h.target_idx) == key)
                 .collect();
 
             r_group.sort_by(|a, b| {
@@ -502,7 +493,7 @@ impl<'a> ParityComparator<'a> {
             let mut c_group: Vec<&SearchHit> = self
                 .c_hits
                 .iter()
-                .filter(|h| h.group_key() == key)
+                .filter(|h| (h.query_idx, h.target_idx) == key)
                 .collect();
             c_group.sort_by(|a, b| {
                 a.q_start
@@ -612,8 +603,8 @@ impl<'a> ParityComparator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use risearch::types::{Base, Energy, QueryId, Strand, TargetId};
-    use risearch::{Alignment, Pairing};
+    use risearch::types::{Base, Energy, Strand};
+    use risearch::{Alignment, Pairing, Sequence};
 
     fn make_hit(
         q_start: usize,
@@ -636,8 +627,8 @@ mod tests {
         let alignment = Alignment::new(&[], &seed, &[]);
 
         SearchHit {
-            query_id: QueryId::new("query"),
-            target_id: TargetId::new("target"),
+            query_idx: 0,
+            target_idx: 0,
             q_start,
             q_end,
             t_start,
@@ -649,8 +640,8 @@ mod tests {
             strand: strand_enum,
             energy: energy_val,
             alignment,
-            flank_5: String::new(),
-            flank_3: String::new(),
+            flank_5: Sequence::from(Vec::new()),
+            flank_3: Sequence::from(Vec::new()),
         }
     }
 

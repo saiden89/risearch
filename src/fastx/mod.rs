@@ -6,7 +6,6 @@ use std::path::Path;
 pub type FastaRecords = Vec<(String, Vec<u8>)>;
 
 /// Read FASTA/FASTQ and return Vec of (id, sequence) tuples.
-#[allow(dead_code)] // Used by binary crate via mod fastx
 pub fn read_fasta_sequences(filename: impl AsRef<Path>) -> Result<FastaRecords> {
     let filename_ref = filename.as_ref();
 

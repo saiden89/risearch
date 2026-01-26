@@ -1,15 +1,15 @@
 use crate::dsm::dsm_lookup_raw;
 
 use super::init::{add_e, max2, max3, update_best_with_term};
-use super::{GAP, MIN_SCORE, ScoreOnlyGrid};
+use super::{GAP, MIN_SCORE, ScoreGrid};
 
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn dp_main_loop_left(
     q_ptr: *const usize,
     t_ptr: *const usize,
-    m: &mut ScoreOnlyGrid,
-    bq: &mut ScoreOnlyGrid,
-    bt: &mut ScoreOnlyGrid,
+    m: &mut ScoreGrid,
+    bq: &mut ScoreGrid,
+    bt: &mut ScoreGrid,
     width: usize,
     q_len: usize,
     t_len: usize,
@@ -87,9 +87,9 @@ pub(super) fn dp_main_loop_left(
 pub(super) fn dp_main_loop_right(
     q_ptr: *const usize,
     t_ptr: *const usize,
-    m: &mut ScoreOnlyGrid,
-    bq: &mut ScoreOnlyGrid,
-    bt: &mut ScoreOnlyGrid,
+    m: &mut ScoreGrid,
+    bq: &mut ScoreGrid,
+    bt: &mut ScoreGrid,
     width: usize,
     q_len: usize,
     t_len: usize,
