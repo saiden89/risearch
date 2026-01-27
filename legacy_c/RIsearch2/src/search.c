@@ -236,10 +236,12 @@ int DP_left(
 
   M[TI(0, 0)] = 0;
   best_e = (*S)[GAP][Q(0)][GAP][T(0)];
-  fprintf(stderr,
-          "[DP_LEFT] START q_start=%lu t_start=%lu lq=%d lt=%d Q(0)=%d T(0)=%d "
-          "best_e=DSM[0][%d][0][%d]=%d\n",
-          q_start, t_start, lq, lt, Q(0), T(0), Q(0), T(0), best_e);
+  if (print_debug)
+    fprintf(
+        stderr,
+        "[DP_LEFT] START q_start=%lu t_start=%lu lq=%d lt=%d Q(0)=%d T(0)=%d "
+        "best_e=DSM[0][%d][0][%d]=%d\n",
+        q_start, t_start, lq, lt, Q(0), T(0), Q(0), T(0), best_e);
   *best_i = 0;
   *best_j = 0;
   if (lq <= 1 || lt <= 1)
@@ -468,8 +470,9 @@ int DP_left(
   }
 
 #undef TI
-  fprintf(stderr, "[DP_LEFT] END score=%d best_i=%ld best_j=%ld\n", best_e,
-          *best_i, *best_j);
+  if (print_debug)
+    fprintf(stderr, "[DP_LEFT] END score=%d best_i=%ld best_j=%ld\n", best_e,
+            *best_i, *best_j);
   return best_e;
 }
 
@@ -509,10 +512,11 @@ int DP_right(
 
   M[TI(0, 0)] = 0;
   best_e = (*S)[Q(0)][GAP][T(0)][GAP];
-  fprintf(stderr,
-          "[DP_RIGHT] START q_start=%lu t_start=%lu lq=%d lt=%d Q(0)=%d "
-          "T(0)=%d best_e=DSM[%d][0][%d][0]=%d\n",
-          q_start, t_start, lq, lt, Q(0), T(0), Q(0), T(0), best_e);
+  if (print_debug)
+    fprintf(stderr,
+            "[DP_RIGHT] START q_start=%lu t_start=%lu lq=%d lt=%d Q(0)=%d "
+            "T(0)=%d best_e=DSM[%d][0][%d][0]=%d\n",
+            q_start, t_start, lq, lt, Q(0), T(0), Q(0), T(0), best_e);
   *best_i = 0;
   *best_j = 0;
   if (lq <= 1 || lt <= 1)
@@ -737,8 +741,9 @@ int DP_right(
   }
 
 #undef TI
-  fprintf(stderr, "[DP_RIGHT] END score=%d best_i=%ld best_j=%ld\n", best_e,
-          *best_i, *best_j);
+  if (print_debug)
+    fprintf(stderr, "[DP_RIGHT] END score=%d best_i=%ld best_j=%ld\n", best_e,
+            *best_i, *best_j);
   return best_e;
 }
 
@@ -1857,11 +1862,12 @@ void sa_evaluate_interval(sa_interval_list_t *results, query_t *query,
 
     for (j = 0; j < seed_len - 1; j++) {
       int dsm_val = (*S)[Q(j)][Q(j + 1)][T(j)][T(j + 1)];
-      fprintf(stderr,
-              "[SEED_DSM] k=%d Q[%d][%d] T[%d][%d] DSM[%d][%d][%d][%d]=%d "
-              "running=%d\n",
-              j, Q(j), Q(j + 1), T(j), T(j + 1), Q(j), Q(j + 1), T(j), T(j + 1),
-              dsm_val, seed_score + dsm_val);
+      if (print_debug)
+        fprintf(stderr,
+                "[SEED_DSM] k=%d Q[%d][%d] T[%d][%d] DSM[%d][%d][%d][%d]=%d "
+                "running=%d\n",
+                j, Q(j), Q(j + 1), T(j), T(j + 1), Q(j), Q(j + 1), T(j),
+                T(j + 1), dsm_val, seed_score + dsm_val);
       seed_score += dsm_val;
     }
 
