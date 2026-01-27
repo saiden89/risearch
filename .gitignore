@@ -4,3 +4,6 @@ target/
 *.gz
 *.txt
 *.idx
+*.sh
+*.json
+legacy_c/RIsearch2/bin/
