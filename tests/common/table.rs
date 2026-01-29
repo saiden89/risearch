@@ -3,6 +3,7 @@
 //! Provides `ParityTable` and related types for visualizing alignment
 //! differences between Rust and C implementations.
 
+use crate::common::search_hit::SearchHitExt;
 use risearch::SearchHit;
 use risearch::seq::bases_to_rna_string;
 use tabled::{Table, Tabled, builder::Builder, settings::Style};
@@ -211,7 +212,9 @@ impl ParsedInteraction {
         seed_start: Option<usize>,
         seed_end: Option<usize>,
     ) -> Self {
-        let fp_raw = hit.fingerprint();
+        let fp_raw = hit
+            .fingerprint()
+            .expect("hit missing alignment for fingerprint");
 
         let (left, seed, right) = if let (Some(start), Some(end)) = (seed_start, seed_end) {
             let chars: Vec<char> = fp_raw.chars().collect();
@@ -240,7 +243,11 @@ impl ParsedInteraction {
 
     /// Parse target sequence using reference parts for alignment.
     pub fn from_hit_target(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
-        let chars: Vec<char> = hit.target_seq().chars().collect();
+        let chars: Vec<char> = hit
+            .target_seq()
+            .expect("hit missing alignment for target_seq")
+            .chars()
+            .collect();
 
         let l_len = ref_parts.ext_5.chars().count();
         let s_len = ref_parts.seed.chars().count();
@@ -260,7 +267,11 @@ impl ParsedInteraction {
 
     /// Parse query sequence using reference parts for alignment.
     pub fn from_hit_query(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
-        let chars: Vec<char> = hit.query_seq().chars().collect();
+        let chars: Vec<char> = hit
+            .query_seq()
+            .expect("hit missing alignment for query_seq")
+            .chars()
+            .collect();
 
         let l_len = ref_parts.ext_5.chars().count();
         let s_len = ref_parts.seed.chars().count();

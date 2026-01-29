@@ -53,9 +53,9 @@ pub enum Commands {
         #[arg(short = 'q', long = "query", value_name = "FILE")]
         query: PathBuf,
 
-        /// Index file (created by `index` command)
+        /// Index file (created by `index` command)``
         #[arg(short = 'i', long = "index", value_name = "INDEX")]
-        index: PathBuf,
+        target: PathBuf,
 
         /// Output file for search results (use '-' for stdout)
         #[arg(short = 'o', long = "output", value_name = "FILE")]

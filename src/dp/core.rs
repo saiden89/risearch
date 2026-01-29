@@ -5,6 +5,7 @@ use crate::dsm::DsmModel;
 use super::init::{add_e, max3, update_best_with_term};
 use super::{MIN_SCORE, ScoreGrid};
 
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     q_ptr: *const usize,

@@ -45,8 +45,7 @@ pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
     max(max(a, b), c)
 }
 
-/// Initialize limited rows (t_len axis) - score-only version.
-/// All writes are unconditional to avoid reading stale data.
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(super) fn init_limited_rows<M: DsmModel>(
     view: &DpView<'_, M>,
@@ -132,8 +131,7 @@ pub(super) fn init_limited_rows<M: DsmModel>(
     }
 }
 
-/// Initialize limited columns (q_len axis) - score-only version.
-/// All writes are unconditional to avoid reading stale data.
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(super) fn init_limited_cols<M: DsmModel>(
     view: &DpView<'_, M>,

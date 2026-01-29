@@ -9,7 +9,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::ops::{Deref, Index, Range, RangeFrom, RangeFull, RangeTo};
 
-use super::normalize::{normalize_rna_sequence, NormalizationStats};
+use super::normalize::{NormalizationStats, normalize_rna_sequence};
 
 /// A normalized RNA sequence stored as Vec<Base>.
 ///
@@ -52,11 +52,7 @@ impl Sequence {
     ///
     /// Uses Base::complement() for each base, then reverses.
     pub fn reverse_complement(&self) -> Sequence {
-        let rc_bases: Vec<Base> = self.0
-            .iter()
-            .rev()
-            .map(|&base| base.complement())
-            .collect();
+        let rc_bases: Vec<Base> = self.0.iter().rev().map(|&base| base.complement()).collect();
 
         Self(rc_bases)
     }

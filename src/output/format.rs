@@ -1,16 +1,11 @@
 use std::io::Write;
 
-use anyhow::Result;
-use log::debug;
-
 use crate::config::OutputFormat;
-use crate::seq::utils::push_bases_as_rna;
-use crate::seq::Sequence;
 use crate::registry::{QueryRegistry, TargetRegistry};
-use crate::types::Alignment;
 use crate::search::SearchHit;
-
-const OUTPUT_STAGE: &str = "[OUTPUT]";
+use crate::seq::Sequence;
+use crate::seq::utils::push_bases_as_rna;
+use crate::types::Alignment;
 
 struct OutputBuffers {
     line: Vec<u8>,
@@ -88,6 +83,7 @@ fn push_score_fixed_2_int(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, score:
     buf.push(b'0' + (frac % 10));
 }
 
+#[allow(clippy::too_many_arguments)]
 #[inline]
 pub(super) fn push_result_fields(
     buf: &mut Vec<u8>,
@@ -143,18 +139,18 @@ pub(crate) fn fill_line_buf(
     t_end: usize,
     strand_char: char,
     score: f64,
-    alignment: &Alignment,
+    alignment: Option<&Alignment>,
     flank_5: (&Sequence, std::ops::Range<usize>, bool),
     flank_3: (&Sequence, std::ops::Range<usize>, bool),
     id_max_len: Option<usize>,
 ) {
     let q_id_trunc = truncate_id(q_id, id_max_len);
     let t_id_trunc = truncate_id(t_id, id_max_len);
-    let steps = alignment.steps();
+    let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
 
     let approx = q_id_trunc.len()
         + t_id_trunc.len()
-        + (steps.len() * 2)
+        + (steps_len * 2)
         + flank_5.1.end.saturating_sub(flank_5.1.start)
         + flank_3.1.end.saturating_sub(flank_3.1.start)
         + 96;
@@ -163,12 +159,14 @@ pub(crate) fn fill_line_buf(
         line_buf.reserve(approx - line_buf.capacity());
     }
 
-    if format == OutputFormat::Detailed {
-        alignment.write_query_seq(line_buf);
+    if format == OutputFormat::Detailed
+        && let Some(align) = alignment
+    {
+        align.write_query_seq(line_buf);
         line_buf.push(b'\n');
-        alignment.write_alignment_line(line_buf);
+        align.write_alignment_line(line_buf);
         line_buf.push(b'\n');
-        alignment.write_target_seq(line_buf);
+        align.write_target_seq(line_buf);
         line_buf.push(b'\n');
     }
 
@@ -192,14 +190,21 @@ pub(crate) fn fill_line_buf(
         }
         OutputFormat::Cigar => {
             line_buf.push(b'\t');
-            alignment.write_pairing_string(line_buf);
+            if let Some(align) = alignment {
+                align.write_pairing_string(line_buf);
+            }
             line_buf.push(b'\n');
         }
         OutputFormat::BindingSite => {
             line_buf.push(b'\t');
-            alignment.write_pairing_string(line_buf);
-            line_buf.push(b'\t');
-            alignment.write_target_seq(line_buf);
+            if let Some(align) = alignment {
+                align.write_pairing_string(line_buf);
+                line_buf.push(b'\t');
+                align.write_target_seq(line_buf);
+            } else {
+                line_buf.push(b'\t'); // empty pairing
+                // empty target seq
+            }
             line_buf.push(b'\t');
             push_bases_as_rna(
                 line_buf,
@@ -217,7 +222,6 @@ pub(crate) fn fill_line_buf(
     }
 }
 
-#[inline]
 fn write_hit_with_format<W: Write + ?Sized>(
     bufs: &mut OutputBuffers,
     hit: &SearchHit,
@@ -241,7 +245,7 @@ fn write_hit_with_format<W: Write + ?Sized>(
         hit.output_t_end,
         char::from(hit.strand),
         hit.energy.as_f64(),
-        &hit.alignment,
+        hit.alignment.as_ref(),
         (&hit.flank_5, 0..hit.flank_5.len(), false),
         (&hit.flank_3, 0..hit.flank_3.len(), false),
         None,
@@ -256,7 +260,12 @@ impl SearchHit {
         query_registry: &QueryRegistry,
         target_registry: &TargetRegistry,
     ) -> std::io::Result<()> {
-        self.write_with_format(w, OutputFormat::BindingSite, query_registry, target_registry)
+        self.write_with_format(
+            w,
+            OutputFormat::BindingSite,
+            query_registry,
+            target_registry,
+        )
     }
 
     pub fn write_with_format(
@@ -269,51 +278,4 @@ impl SearchHit {
         let mut bufs = OutputBuffers::new();
         write_hit_with_format(&mut bufs, self, format, w, query_registry, target_registry)
     }
-}
-
-pub fn write_results_to<W: Write>(
-    hits: &[SearchHit],
-    writer: &mut W,
-    query_registry: &QueryRegistry,
-    target_registry: &TargetRegistry,
-) -> Result<()> {
-    debug!("{} output=<writer>", OUTPUT_STAGE);
-    let mut bufs = OutputBuffers::new();
-    for hit in hits {
-        write_hit_with_format(
-            &mut bufs,
-            hit,
-            OutputFormat::BindingSite,
-            writer,
-            query_registry,
-            target_registry,
-        )?;
-    }
-    Ok(())
-}
-
-pub fn write_results_with_format_to<W: Write>(
-    hits: &[SearchHit],
-    writer: &mut W,
-    format: OutputFormat,
-    query_registry: &QueryRegistry,
-    target_registry: &TargetRegistry,
-) -> Result<()> {
-    debug!(
-        "{} output=<writer> format={:?}",
-        OUTPUT_STAGE,
-        format
-    );
-    let mut bufs = OutputBuffers::new();
-    for hit in hits {
-        write_hit_with_format(
-            &mut bufs,
-            hit,
-            format,
-            writer,
-            query_registry,
-            target_registry,
-        )?;
-    }
-    Ok(())
 }

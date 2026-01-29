@@ -82,8 +82,7 @@ impl RustRunner<Indexed> {
         args: &risearch::config::SearchArgs,
     ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
         let index = &self.state.index_file;
-        let processed = risearch::sa::process_sequences(query_path)
-            .expect("read query FASTA");
+        let processed = risearch::sa::process_sequences(query_path).expect("read query FASTA");
         let query_registry = risearch::QueryRegistry::from_indices(processed.into_entries());
         let hits = risearch::search::run_search(&query_registry, index, args).expect("search");
 
@@ -216,10 +215,10 @@ impl ParityRunner {
                 }
                 "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed".to_string()),
                 "--seed-pairing" => {
-                    if let Some(val) = iter.next() {
-                        if val == "strict" {
-                            c_args.push("--noGUseed".to_string());
-                        }
+                    if let Some(val) = iter.next()
+                        && val == "strict"
+                    {
+                        c_args.push("--noGUseed".to_string());
                     }
                 }
                 _ => c_args.push(arg.to_string()),

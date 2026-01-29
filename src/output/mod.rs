@@ -6,10 +6,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use zstd::stream;
 
-use crate::config::{OutputCompression, OutputFormat};
-use crate::search::SearchHit;
-use crate::registry::{QueryRegistry, TargetRegistry};
-use self::format::{write_results_to, write_results_with_format_to};
+use crate::config::OutputCompression;
 
 pub mod format;
 
@@ -105,27 +102,40 @@ pub fn open_output(
     Ok((writer, compression))
 }
 
-pub fn write_results(
-    hits: &[SearchHit],
-    output: impl AsRef<Path>,
-    query_registry: &QueryRegistry,
-    target_registry: &TargetRegistry,
-) -> Result<()> {
-    let (mut writer, _compression) = open_output(output.as_ref(), None)?;
-    write_results_to(hits, &mut writer, query_registry, target_registry)?;
-    writer.flush().context("Failed to flush output")?;
-    Ok(())
-}
+/// Open output file with streaming compression applied.
+/// Returns a boxed writer that compresses on-the-fly.
+pub fn open_compressed_output(
+    path: Option<impl AsRef<Path>>,
+    compress: Option<OutputCompression>,
+    level: Option<i32>,
+) -> Result<Box<dyn Write>> {
+    let path_ref = path.as_ref().map(|p| p.as_ref());
+    let inner: Box<dyn Write> = match path_ref {
+        Some(p) if p != Path::new("-") => {
+            Box::new(std::fs::File::create(p).context("Failed to create output file")?)
+        }
+        _ => Box::new(std::io::stdout()),
+    };
 
-pub fn write_results_with_format(
-    hits: &[SearchHit],
-    output: impl AsRef<Path>,
-    format: OutputFormat,
-    query_registry: &QueryRegistry,
-    target_registry: &TargetRegistry,
-) -> Result<()> {
-    let (mut writer, _compression) = open_output(output.as_ref(), None)?;
-    write_results_with_format_to(hits, &mut writer, format, query_registry, target_registry)?;
-    writer.flush().context("Failed to flush output")?;
-    Ok(())
+    let compression = compress.unwrap_or_else(|| {
+        path_ref
+            .map(infer_compression)
+            .unwrap_or(OutputCompression::None)
+    });
+
+    let config = resolve_compression(compression, level)?;
+
+    match config {
+        CompressionConfig::None => Ok(Box::new(BufWriter::with_capacity(256 * 1024, inner))),
+        CompressionConfig::Gzip(lvl) => Ok(Box::new(BufWriter::with_capacity(
+            256 * 1024,
+            GzEncoder::new(inner, lvl),
+        ))),
+        CompressionConfig::Zstd(lvl) => {
+            let encoder = stream::write::Encoder::new(inner, lvl)
+                .context("zstd encoder init failed")?
+                .auto_finish();
+            Ok(Box::new(BufWriter::with_capacity(256 * 1024, encoder)))
+        }
+    }
 }

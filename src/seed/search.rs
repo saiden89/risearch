@@ -1,7 +1,7 @@
 use crate::config::SeedConfig;
-use crate::sa::{TargetRegistry, SuffixArray};
-use crate::seq::Sequence;
 use crate::registry::QueryEntry;
+use crate::sa::{SuffixArray, TargetRegistry};
+use crate::seq::Sequence;
 use crate::types::Strand;
 
 use super::{SeedHit, SeedMatch, SeedSearcher};
@@ -108,6 +108,7 @@ pub(crate) fn find_seeds(
 }
 
 /// Collect seeds from a single target strand, reusing the provided scratch buffers.
+#[allow(clippy::too_many_arguments)]
 fn collect_target_seeds(
     query: &QueryCache,
     target_idx: usize,
@@ -124,7 +125,7 @@ fn collect_target_seeds(
     let mi_len = query.mi_len;
 
     matches.clear();
-    let searcher = SeedSearcher::new(&query.q_rc_sa, &query.q_rc, t_sa, t_seq, config);
+    let searcher = SeedSearcher::new(query.q_rc_sa, query.q_rc, t_sa, t_seq, config);
     searcher.search_length_range(mi_len, q_len, matches);
 
     for m in matches.iter() {

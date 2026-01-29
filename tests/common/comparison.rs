@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use crate::common::search_hit::SearchHitExt;
 use crate::common::status::{HitStatus, MissingReason, ParityMode, TEST_PARITY_MODE};
 use risearch::SearchHit;
 
@@ -122,8 +123,11 @@ impl ParityResult {
                 let label = format!(
                     "CO-OPTIMAL: {} FP={} vs C FP={}",
                     matched.rust.fmt_coords(),
-                    matched.rust.fingerprint(),
-                    matched.c.fingerprint()
+                    matched
+                        .rust
+                        .fingerprint()
+                        .expect("rust hit missing alignment"),
+                    matched.c.fingerprint().expect("c hit missing alignment")
                 );
                 let table = render_table(ParityKind::Mismatch {
                     rust: &matched.rust,
@@ -261,7 +265,7 @@ impl ParityResult {
         } else {
             self.extras
                 .iter()
-                .map(|r| r.fingerprint().len())
+                .map(|r| r.fingerprint().expect("extra hit missing alignment").len())
                 .sum::<usize>() as f64
                 / self.extras.len() as f64
         };
@@ -275,7 +279,11 @@ impl ParityResult {
         } else {
             self.missings
                 .iter()
-                .map(|(r, _, _)| r.fingerprint().len())
+                .map(|(r, _, _)| {
+                    r.fingerprint()
+                        .expect("missing hit missing alignment")
+                        .len()
+                })
                 .sum::<usize>() as f64
                 / self.missings.len() as f64
         };
@@ -639,7 +647,7 @@ mod tests {
             output_t_end: t_end,
             strand: strand_enum,
             energy: energy_val,
-            alignment,
+            alignment: Some(alignment),
             flank_5: Sequence::from(Vec::new()),
             flank_3: Sequence::from(Vec::new()),
         }
@@ -666,7 +674,7 @@ mod tests {
     #[test]
     fn test_classify_missing_better_energy() {
         let c_hit = make_hit(1, 10, 100, 110, "+", "-10.0");
-        let rust_hits = vec![make_hit(1, 10, 100, 110, "+", "-15.0")];
+        let rust_hits = [make_hit(1, 10, 100, 110, "+", "-15.0")];
         let refs: Vec<&SearchHit> = rust_hits.iter().collect();
         let (reason, _) = classify_missing(&c_hit, &refs);
         assert_eq!(reason, MissingReason::BetterEnergy);

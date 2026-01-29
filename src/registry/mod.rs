@@ -53,10 +53,7 @@ impl<T: RegistryEntry> Registry<T> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u32, &T)> {
-        self.entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (i as u32, e))
+        self.entries.iter().enumerate().map(|(i, e)| (i as u32, e))
     }
 }
 
@@ -129,13 +126,15 @@ impl QueryRegistry {
     pub fn from_names(names: Vec<String>) -> Self {
         let entries = names
             .into_iter()
-            .map(|name| QueryEntry::new(SequenceIndex {
-                name,
-                forward_sa: SuffixArray::from(Vec::new()),
-                reverse_sa: SuffixArray::from(Vec::new()),
-                sequence: Sequence::from(Vec::new()),
-                sequence_rc: Sequence::from(Vec::new()),
-            }))
+            .map(|name| {
+                QueryEntry::new(SequenceIndex {
+                    name,
+                    forward_sa: SuffixArray::from(Vec::new()),
+                    reverse_sa: SuffixArray::from(Vec::new()),
+                    sequence: Sequence::from(Vec::new()),
+                    sequence_rc: Sequence::from(Vec::new()),
+                })
+            })
             .collect();
         Self { entries }
     }

@@ -218,6 +218,7 @@ impl<'a> SeedSearcher<'a> {
     }
 
     /// Recursive parallel search over a length range (mirrors C's sa_parallel_match_neg)
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)] // Keep separate for flamegraph
     fn recurse_length_range(
         &self,
@@ -227,14 +228,15 @@ impl<'a> SeedSearcher<'a> {
         results: &mut Vec<SeedMatch>,
     ) {
         // Report if depth is within range
-        if state.depth >= min_len && state.depth <= max_len {
-            if self.is_valid_match(&state, state.depth) {
-                results.push(SeedMatch {
-                    query_interval: state.query_interval,
-                    target_interval: state.target_interval,
-                    depth: state.depth,
-                });
-            }
+        if state.depth >= min_len
+            && state.depth <= max_len
+            && self.is_valid_match(&state, state.depth)
+        {
+            results.push(SeedMatch {
+                query_interval: state.query_interval,
+                target_interval: state.target_interval,
+                depth: state.depth,
+            });
         }
 
         if state.depth >= max_len {
@@ -308,6 +310,7 @@ impl<'a> SeedSearcher<'a> {
     ///
     /// Always inlined since this is called on every recursion.
     /// For profiling wobble/mismatch overhead, these remain #[inline(never)].
+    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn explore_canonical_matches(
         &self,
@@ -351,6 +354,7 @@ impl<'a> SeedSearcher<'a> {
     }
 
     /// Explore wobble base pair matches (G-U, U-G)
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)] // Keep separate for flamegraph
     fn explore_wobble_matches(
         &self,
@@ -382,6 +386,7 @@ impl<'a> SeedSearcher<'a> {
     }
 
     /// Recurse with a match (increment match counter)
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     fn recurse_match(
         &self,
@@ -414,6 +419,7 @@ impl<'a> SeedSearcher<'a> {
     }
 
     /// Explore mismatch branches (non-complementary pairs)
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)] // Keep separate for flamegraph
     fn explore_mismatches(
         &self,
@@ -505,7 +511,7 @@ impl<'a> SeedSearcher<'a> {
     /// because they're scattered throughout the SA (sorted by earlier characters).
     fn partition_interval(
         &self,
-        sa: &SuffixArray    ,
+        sa: &SuffixArray,
         seq: &Sequence,
         interval: SaInterval,
         offset: usize,
@@ -637,11 +643,11 @@ mod tests {
     #[test]
     fn test_base_complement() {
         use crate::types::Base;
-        let seq = vec![Base::A, Base::C, Base::G, Base::U];
+        let seq = [Base::A, Base::C, Base::G, Base::U];
         let comp: Vec<_> = seq.iter().map(|b| b.complement()).collect();
         assert_eq!(comp, vec![Base::U, Base::G, Base::C, Base::A]);
 
-        let seq2 = vec![Base::A, Base::A, Base::A, Base::A];
+        let seq2 = [Base::A, Base::A, Base::A, Base::A];
         let comp2: Vec<_> = seq2.iter().map(|b| b.complement()).collect();
         assert_eq!(comp2, vec![Base::U, Base::U, Base::U, Base::U]);
     }

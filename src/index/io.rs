@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::registry::TargetRegistry;
 
+// TODO: validate also for wrong bases
 pub(crate) fn validate_readable_file(path: &Path) -> Result<()> {
     let md = std::fs::metadata(path)
         .with_context(|| format!("Failed to access input path: {}", path.display()))?;
@@ -34,6 +35,7 @@ pub fn write_index_file(index: &TargetRegistry, output_file: impl AsRef<Path>) -
 
 pub fn load_index_file(input_file: impl AsRef<Path>) -> Result<TargetRegistry> {
     let data = std::fs::read(&input_file).context("Failed to read index file")?;
-    let index: TargetRegistry = bincode::deserialize(&data).context("Failed to deserialize index")?;
+    let index: TargetRegistry =
+        bincode::deserialize(&data).context("Failed to deserialize index")?;
     Ok(index)
 }

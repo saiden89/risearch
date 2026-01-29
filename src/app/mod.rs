@@ -106,7 +106,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Some(Commands::Search {
             query,
-            index,
+            target: index,
             output,
             opts,
         }) => {
@@ -116,20 +116,20 @@ pub fn run(cli: Cli) -> Result<()> {
             );
             trace!("Search options: {:?}", opts);
 
-            let processed =
+            let queries =
                 sa::process_sequences(query).context("Failed to process query sequences")?;
-            let query_registry = QueryRegistry::from_indices(processed.into_entries());
+            let queries = QueryRegistry::from_indices(queries.into_entries());
 
-            info!("Loaded {} query sequences", query_registry.len());
+            info!("Loaded {} query sequences", queries.len());
 
             debug!("Loading suffix array index...");
-            let idx = sa::load_index_file(index).context("Failed to load index file")?;
+            let targets = sa::load_index_file(index).context("Failed to load index file")?;
             trace!("Index loaded successfully");
             debug!("Starting search with streaming output...");
 
             // Use streaming compression - encoder wraps the writer directly
             let mut writer = output::open_compressed_output(
-                output.as_ref(),
+                Some(output.as_path()),
                 opts.output_compress.map(Into::into),
                 opts.output_level,
             )?;
@@ -138,8 +138,7 @@ pub fn run(cli: Cli) -> Result<()> {
             // Clear compression from opts - it's now handled by the writer
             opts.output.compress = Some(risearch::config::OutputCompression::None);
 
-            let hit_count =
-                search::run_search_streaming(&query_registry, &idx, &opts, &mut writer)?;
+            let hit_count = search::run_search_streaming(&queries, &targets, &opts, &mut writer)?;
             writer.flush().context("Failed to flush output")?;
             info!("Search completed: {} hits written", hit_count);
         }

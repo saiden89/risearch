@@ -1,39 +1,25 @@
 use crate::seed::{MismatchSpec, SeedSpec};
 use crate::types::SeedPairingMode;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum Matrix {
     /// Turner 1999 RNA-RNA parameters
     T99,
     /// Turner 2004 RNA-RNA parameters (default)
+    #[default]
     T04,
-
-    // ========================================================================
-    // TODO: Placeholder matrix types from C implementation - not yet implemented
-    // ========================================================================
-    /// TODO: SantaLucia 1995 RNA-DNA duplex parameters
-    Su95,
-
-    /// TODO: SantaLucia 1995 RNA-DNA modified for CRISPRoff2
-    Su95c2,
-
-    /// TODO: SantaLucia 1995 RNA-DNA with mismatches as loop size 2
-    Su95wk11,
-
-    /// TODO: SantaLucia 1995 RNA-DNA without G-U wobble pairs
-    Su95NoGU,
-
-    /// TODO: SantaLucia 2004 DNA-DNA without G-T wobble pairs
-    Sl04NoGU,
 }
 
-impl Default for Matrix {
-    fn default() -> Self {
-        Self::T04
+impl std::fmt::Display for Matrix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Matrix::T99 => write!(f, "t99"),
+            Matrix::T04 => write!(f, "t04"),
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum OutputFormat {
     /// Report predictions in detailed format (C: -p or -p1)
     Detailed,
@@ -41,17 +27,15 @@ pub enum OutputFormat {
     Cigar,
     /// Report predictions in a simple format together with binding site (3'->5'), flanking 5'end (3'->5') and flanking 3'end (5'->3') sequences of the target (required for post-processing of CRISPR off-target predictions) (C: -p3)
     BindingSite,
-
-    // ========================================================================
-    // TODO: Placeholder output format from C implementation - not yet implemented
-    // ========================================================================
-    /// TODO: Minimal format - target, start, strand, and energy only (C: -p4)
+    /// Report predictions in minimal format (C: -p4)
+    #[default]
     Minimal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum OutputCompression {
     /// No compression (default)
+    #[default]
     None,
     /// Gzip compression
     Gzip,
@@ -136,7 +120,7 @@ impl SeedConfig {
 #[derive(Debug, Clone)]
 pub struct ExtendConfig {
     /// Max extension length on the seed (do DP for max this length up- and downstream of seed)
-    pub max_extension: u8, // TODO: should be strictly positive
+    pub max_extension: u8,
 
     /// Set deltaG energy threshold (in kcal/mol) to filter predictions
     pub delta_g: f64,
@@ -213,7 +197,7 @@ pub struct SearchArgs {
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
     /// Output format
-    pub format: Option<OutputFormat>,
+    pub format: OutputFormat,
 
     /// Output compression codec (overrides file extension inference; gzip/gz, zstd/zst accepted)
     pub compress: Option<OutputCompression>,

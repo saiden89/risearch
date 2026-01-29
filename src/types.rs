@@ -594,7 +594,6 @@ impl From<String> for QueryId {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct TargetId(pub String);
 
-
 impl TargetId {
     /// Create from string.
     pub fn new(s: impl Into<String>) -> Self {

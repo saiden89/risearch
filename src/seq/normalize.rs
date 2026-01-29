@@ -83,10 +83,7 @@ fn lookup_table() -> &'static [NormalizeEntry; 256] {
     })
 }
 
-pub fn normalize_rna_sequence(
-    id: &str,
-    seq: &[u8],
-) -> Result<(Vec<Base>, NormalizationStats)> {
+pub fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<Base>, NormalizationStats)> {
     let mut out = Vec::with_capacity(seq.len());
     let mut stats = NormalizationStats::default();
     let table = lookup_table();

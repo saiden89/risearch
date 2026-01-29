@@ -34,7 +34,9 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
         .arg("-p2") // Legacy flag
         .assert()
         .success()
-        .stderr(predicate::str::contains("Legacy report syntax '-p2' is deprecated; use --format cigar."));
+        .stderr(predicate::str::contains(
+            "Legacy report syntax '-p2' is deprecated; use --format cigar.",
+        ));
 
     // 4. Test -p (Detailed) warning
     cargo_bin_cmd!("risearch")
@@ -48,7 +50,9 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
         .arg("-p") // Legacy flag default
         .assert()
         .success()
-        .stderr(predicate::str::contains("Legacy report syntax '-p' is deprecated; use --format detailed."));
-        
+        .stderr(predicate::str::contains(
+            "Legacy report syntax '-p' is deprecated; use --format detailed.",
+        ));
+
     Ok(())
 }

@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::fastx::read_fasta_sequences;
+use crate::registry::TargetRegistry;
 use crate::sa::SuffixArray;
 use crate::seq::Sequence;
 
@@ -15,17 +16,15 @@ use super::io::{validate_output_path, validate_readable_file, write_index_file};
 pub struct SequenceIndex {
     /// Sequence identifier.
     pub name: String,
-    /// Suffix array for the forward strand (u32 for 50% memory reduction).
+    /// Suffix array for the forward strand
     pub forward_sa: SuffixArray,
-    /// Suffix array for the reverse strand (u32 for 50% memory reduction).
+    /// Suffix array for the reverse strand
     pub reverse_sa: SuffixArray,
-    /// Normalized RNA sequence (stored as Vec<Base>)
+    /// Forward sequence
     pub sequence: Sequence,
-    /// Pre-computed reverse complement (avoids allocation on every access)
+    /// Reverse complement sequence
     pub sequence_rc: Sequence,
 }
-
-use crate::registry::TargetRegistry;
 
 pub fn create_suffix_array(
     input_file: impl AsRef<Path>,
@@ -34,8 +33,8 @@ pub fn create_suffix_array(
     validate_readable_file(input_file.as_ref())?;
     validate_output_path(output_file.as_ref())?;
 
-    let index = process_sequences(&input_file).context("Failed to process input sequences")?;
-    write_index_file(&index, &output_file).context("Failed to write index file")?;
+    let sa = process_sequences(&input_file).context("Failed to process input sequences")?;
+    write_index_file(&sa, &output_file).context("Failed to write index file")?;
 
     Ok(())
 }
@@ -44,7 +43,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<TargetRegistry> {
     validate_readable_file(filename.as_ref())?;
 
     let sequences = read_fasta_sequences(&filename).context("Failed to read FASTA sequences")?;
-
+    // TODO decouple processing from validation
     if sequences.is_empty() {
         bail!(
             "No sequences found in input file: {}",
@@ -52,6 +51,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<TargetRegistry> {
         );
     }
 
+    // TODO debouple processing from decoupling
     let mut seen = HashSet::with_capacity(sequences.len());
     for (id, _) in &sequences {
         if id.trim().is_empty() {
@@ -109,13 +109,9 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<TargetRegistry> {
 
             let seq_rc = seq_norm.reverse_complement();
 
-            // Convert to bytes for suffix array construction
-            let seq_norm_bytes = seq_norm.to_bytes();
-            let seq_rc_bytes = seq_rc.to_bytes();
-
-            let sa_fwd = SuffixArray::try_build(&seq_norm_bytes)
+            let sa_fwd = SuffixArray::try_build(&seq_norm.to_bytes())
                 .map_err(|e| anyhow!("Suffix array construction failed for '{}': {e:?}", id))?;
-            let sa_rev = SuffixArray::try_build(&seq_rc_bytes)
+            let sa_rev = SuffixArray::try_build(&seq_rc.to_bytes())
                 .map_err(|e| anyhow!("Suffix array construction failed for '{}' (revcomp): {e:?}", id))?;
 
             Ok(Some(SequenceIndex {
@@ -280,21 +276,21 @@ mod tests {
         let (seq2_rc, _) = Sequence::normalize("test", b"GU").unwrap();
 
         let index_file = TargetRegistry::new(vec![
-                SequenceIndex {
-                    name: "seq1".to_string(),
-                    forward_sa: SuffixArray::from(vec![0]),
-                    reverse_sa: SuffixArray::from(vec![0]),
-                    sequence: seq1,
-                    sequence_rc: seq1_rc,
-                },
-                SequenceIndex {
-                    name: "seq2".to_string(),
-                    forward_sa: SuffixArray::from(vec![0, 1]),
-                    reverse_sa: SuffixArray::from(vec![1, 0]),
-                    sequence: seq2,
-                    sequence_rc: seq2_rc,
-                },
-            ]);
+            SequenceIndex {
+                name: "seq1".to_string(),
+                forward_sa: SuffixArray::from(vec![0]),
+                reverse_sa: SuffixArray::from(vec![0]),
+                sequence: seq1,
+                sequence_rc: seq1_rc,
+            },
+            SequenceIndex {
+                name: "seq2".to_string(),
+                forward_sa: SuffixArray::from(vec![0, 1]),
+                reverse_sa: SuffixArray::from(vec![1, 0]),
+                sequence: seq2,
+                sequence_rc: seq2_rc,
+            },
+        ]);
         assert_eq!(index_file.entries().len(), 2);
         assert_eq!(index_file.entries()[0].name, "seq1");
         assert_eq!(index_file.entries()[1].name, "seq2");
@@ -314,7 +310,8 @@ mod tests {
         }]);
 
         let encoded = bincode::serialize(&index_file).expect("Serialization failed");
-        let decoded: TargetRegistry = bincode::deserialize(&encoded).expect("Deserialization failed");
+        let decoded: TargetRegistry =
+            bincode::deserialize(&encoded).expect("Deserialization failed");
 
         assert_eq!(decoded.entries().len(), 1);
         assert_eq!(decoded.entries()[0].name, "test");

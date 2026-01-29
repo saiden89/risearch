@@ -1,39 +1,18 @@
 use clap::ValueEnum;
+use log::warn;
 
 use crate::config as core;
 use crate::seed::{MismatchSpec, SeedSpec};
 use crate::types::SeedPairingMode;
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Default)]
 #[clap(rename_all = "snake_case")]
 pub enum Matrix {
     /// Turner 1999 RNA-RNA parameters
     T99,
-    /// Turner 2004 RNA-RNA parameters (default)
+    /// Turner 2004 RNA-RNA parameters
+    #[default]
     T04,
-
-    // ========================================================================
-    // TODO: Placeholder matrix types from C implementation - not yet implemented
-    // ========================================================================
-    /// TODO: SantaLucia 1995 RNA-DNA duplex parameters
-    #[value(name = "su95")]
-    Su95,
-
-    /// TODO: SantaLucia 1995 RNA-DNA modified for CRISPRoff2
-    #[value(name = "su95c2")]
-    Su95c2,
-
-    /// TODO: SantaLucia 1995 RNA-DNA with mismatches as loop size 2
-    #[value(name = "su95wk11")]
-    Su95wk11,
-
-    /// TODO: SantaLucia 1995 RNA-DNA without G-U wobble pairs
-    #[value(name = "su95_nogu")]
-    Su95NoGU,
-
-    /// TODO: SantaLucia 2004 DNA-DNA without G-T wobble pairs
-    #[value(name = "sl04_nogu")]
-    Sl04NoGU,
 }
 
 impl From<Matrix> for core::Matrix {
@@ -41,16 +20,11 @@ impl From<Matrix> for core::Matrix {
         match value {
             Matrix::T99 => core::Matrix::T99,
             Matrix::T04 => core::Matrix::T04,
-            Matrix::Su95 => core::Matrix::Su95,
-            Matrix::Su95c2 => core::Matrix::Su95c2,
-            Matrix::Su95wk11 => core::Matrix::Su95wk11,
-            Matrix::Su95NoGU => core::Matrix::Su95NoGU,
-            Matrix::Sl04NoGU => core::Matrix::Sl04NoGU,
         }
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
 #[value(rename_all = "lowercase")]
 pub enum OutputFormat {
     /// Report predictions in detailed format (C: -p or -p1)
@@ -59,11 +33,8 @@ pub enum OutputFormat {
     Cigar,
     /// Report predictions in a simple format together with binding site (3'->5'), flanking 5'end (3'->5') and flanking 3'end (5'->3') sequences of the target (required for post-processing of CRISPR off-target predictions) (C: -p3)
     BindingSite,
-
-    // ========================================================================
-    // TODO: Placeholder output format from C implementation - not yet implemented
-    // ========================================================================
-    /// TODO: Minimal format - target, start, strand, and energy only (C: -p4)
+    /// Report predictions in a simple format - target, start, strand, and energy only (C: -p4)
+    #[default]
     Minimal,
 }
 
@@ -386,16 +357,16 @@ pub struct SearchArgs {
 
 impl From<SearchArgs> for core::SearchArgs {
     fn from(value: SearchArgs) -> Self {
-        // Resolve output format: preferred > legacy > default (Detailed)
         let format = if let Some(f) = value.report_format {
             f.into()
         } else if let Some(legacy_mode) = value.report_legacy {
+            warn!("-p/--report-alignment is deprecated. Use -f/--format instead.");
             match legacy_mode {
                 1 => core::OutputFormat::Detailed,
                 2 => core::OutputFormat::Cigar,
                 3 => core::OutputFormat::BindingSite,
                 4 => core::OutputFormat::Minimal,
-                _ => core::OutputFormat::Detailed, // Fallback/Default
+                _ => core::OutputFormat::Detailed,
             }
         } else {
             core::OutputFormat::Detailed
@@ -405,7 +376,7 @@ impl From<SearchArgs> for core::SearchArgs {
             seed: value.seed.into(),
             extend: value.extend.into(),
             output: core::OutputConfig {
-                format: Some(format),
+                format,
                 compress: value.output_compress.map(Into::into),
                 level: value.output_level,
             },

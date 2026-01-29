@@ -17,6 +17,7 @@
 pub mod c_runner;
 pub mod comparison;
 pub mod runner;
+pub mod search_hit;
 pub mod status;
 pub mod table;
 
@@ -29,6 +30,9 @@ pub mod table;
 // Used by c_parity.rs (not necessarily used in every test crate)
 #[allow(unused_imports)]
 pub use runner::{ParityRunner, SingleSeqRunner};
+
+// Re-export test extensions for SearchHit
+pub use search_hit::{SearchHitExt, parse_c_output};
 
 // =============================================================================
 // LOGGING SETUP
@@ -83,7 +87,7 @@ pub fn parse_output(
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        .filter_map(|l| risearch::SearchHit::from_c_output(l, query_registry, target_registry))
+        .filter_map(|l| parse_c_output(l, query_registry, target_registry))
         .collect();
     let parsed_count = hits.len();
     // Sort by group_key, then all coordinates for deterministic dedup

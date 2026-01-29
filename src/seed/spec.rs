@@ -171,11 +171,7 @@ impl FromStr for SeedSpec {
                         let end = parse_i64(end_str, "end")?;
                         let length = parse_i64(len_str, "length")?;
 
-                        Ok(SeedSpec::IntervalWithLength {
-                            start,
-                            end,
-                            length,
-                        })
+                        Ok(SeedSpec::IntervalWithLength { start, end, length })
                     }
                 }
             }

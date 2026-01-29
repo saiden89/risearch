@@ -1,5 +1,5 @@
-use crate::types::{Pairing};
 use crate::seq::Sequence;
+use crate::types::Pairing;
 /// Build alignment for the seed region.
 ///
 /// Creates a vector of Pairing entries representing the base-pair interactions

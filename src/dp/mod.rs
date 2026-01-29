@@ -355,14 +355,11 @@ impl ScoreGrid {
         self.data.as_mut_ptr()
     }
 
-    #[inline(always)]
     pub fn width(&self) -> usize {
         self.width
     }
-
 }
 
-// =============================================================================
 // DP EXTENDER - Stateful extension with reusable matrices (score-only)
 // =============================================================================
 
@@ -676,7 +673,6 @@ impl<M: DsmModel> DpExtender<M> {
         // 3. Direct slice access (eliminates method call overhead)
         // 4. Raw DSM lookup (bypasses abstraction layers)
 
-        // Skip if too short for main loop
         if q_len >= 3 && t_len >= 3 {
             if view.dir == ExtendDir::Left {
                 dp_main_loop_generic::<true, M>(
