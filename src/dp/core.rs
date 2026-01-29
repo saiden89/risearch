@@ -3,7 +3,7 @@ use std::cmp::max;
 use crate::dsm::DsmModel;
 
 use super::init::{add_e, max3, update_best_with_term};
-use super::{GAP, MIN_SCORE, ScoreGrid};
+use super::{MIN_SCORE, ScoreGrid};
 
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
@@ -21,6 +21,8 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     best_i: &mut usize,
     best_j: &mut usize,
 ) {
+    const GAP: usize = 0; // Base::Gap as usize
+
     // SAFETY invariants:
     // - q_ptr/t_ptr valid for indices [0, q_len) / [0, t_len)
     // - matrices sized at least (q_len+1) x (t_len+1)
@@ -28,11 +30,36 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
         let m_ptr = m.ptr();
         let bq_ptr = bq.ptr();
         let bt_ptr = bt.ptr();
+
+        // Precompute GAP-GAP profile (constant across all rows)
+        // Store lookup_raw(GAP, GAP, t1, t2) at index [t1 * 6 + t2]
+        let mut gap_gap_profile = [0i32; 36];
+        for t1 in 0..6 {
+            for t2 in 0..6 {
+                gap_gap_profile[t1 * 6 + t2] = M::lookup_raw(GAP, GAP, t1, t2);
+            }
+        }
+
         for i in 3..q_len {
             let row_i = i * width;
             let row_prev = (i - 1) * width;
             let qi = *q_ptr.add(i);
             let qi_prev = *q_ptr.add(i - 1);
+
+            // Precompute q-profile for this row (36 lookups, amortized over t_len iterations)
+            // Store lookup_raw(q1, q2, t1, t2) at index [t1 * 6 + t2]
+            // LEFT:  q1=qi, q2=qi_prev
+            // RIGHT: q1=qi_prev, q2=qi
+            let mut q_profile = [0i32; 36];
+            for t1 in 0..6 {
+                for t2 in 0..6 {
+                    q_profile[t1 * 6 + t2] = if LEFT {
+                        M::lookup_raw(qi, qi_prev, t1, t2)
+                    } else {
+                        M::lookup_raw(qi_prev, qi, t1, t2)
+                    };
+                }
+            }
 
             for j in 3..t_len {
                 let diag_idx = row_prev + j - 1;
@@ -46,15 +73,19 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                 let bq_diag = *bq_ptr.add(diag_idx);
                 let bt_diag = *bt_ptr.add(diag_idx);
 
+                // LEFT:  lookup_raw(qi, qi_prev, tj, tj_prev) → [tj * 6 + tj_prev]
+                // RIGHT: lookup_raw(qi_prev, qi, tj_prev, tj) → [tj_prev * 6 + tj]
                 let s_mm = if LEFT {
-                    add_e(m_diag, M::lookup_raw(qi, qi_prev, tj, tj_prev))
+                    add_e(m_diag, q_profile[tj * 6 + tj_prev])
                 } else {
-                    add_e(m_diag, M::lookup_raw(qi_prev, qi, tj_prev, tj))
+                    add_e(m_diag, q_profile[tj_prev * 6 + tj])
                 };
+                // LEFT:  lookup_raw(qi, qi_prev, tj, GAP) → [tj * 6 + GAP]
+                // RIGHT: lookup_raw(qi_prev, qi, GAP, tj) → [GAP * 6 + tj]
                 let s_mq = if LEFT {
-                    add_e(bq_diag, M::lookup_raw(qi, qi_prev, tj, GAP))
+                    add_e(bq_diag, q_profile[tj * 6 + GAP])
                 } else {
-                    add_e(bq_diag, M::lookup_raw(qi_prev, qi, GAP, tj))
+                    add_e(bq_diag, q_profile[GAP * 6 + tj])
                 };
                 let s_mt = if LEFT {
                     add_e(bt_diag, M::lookup_raw(qi, GAP, tj, tj_prev))
@@ -80,16 +111,14 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
 
                 let m_up = *m_ptr.add(up_idx);
                 let bq_up = *bq_ptr.add(up_idx);
+                // LEFT:  lookup_raw(qi, qi_prev, GAP, tj) → [GAP * 6 + tj]
+                // RIGHT: lookup_raw(qi_prev, qi, tj, GAP) → [tj * 6 + GAP]
                 let s_qm = if LEFT {
-                    add_e(m_up, M::lookup_raw(qi, qi_prev, GAP, tj))
+                    add_e(m_up, q_profile[GAP * 6 + tj])
                 } else {
-                    add_e(m_up, M::lookup_raw(qi_prev, qi, tj, GAP))
+                    add_e(m_up, q_profile[tj * 6 + GAP])
                 };
-                let s_qq = if LEFT {
-                    add_e(bq_up, M::lookup_raw(qi, qi_prev, GAP, GAP))
-                } else {
-                    add_e(bq_up, M::lookup_raw(qi_prev, qi, GAP, GAP))
-                };
+                let s_qq = add_e(bq_up, q_profile[GAP * 6 + GAP]);
                 *bq_ptr.add(curr_idx) = max(s_qm, s_qq);
 
                 let m_left = *m_ptr.add(left_idx);
@@ -99,10 +128,12 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                 } else {
                     add_e(m_left, M::lookup_raw(qi, GAP, tj_prev, tj))
                 };
+                // LEFT:  lookup_raw(GAP, GAP, tj, tj_prev) → [tj * 6 + tj_prev]
+                // RIGHT: lookup_raw(GAP, GAP, tj_prev, tj) → [tj_prev * 6 + tj]
                 let s_tt = if LEFT {
-                    add_e(bt_left, M::lookup_raw(GAP, GAP, tj, tj_prev))
+                    add_e(bt_left, gap_gap_profile[tj * 6 + tj_prev])
                 } else {
-                    add_e(bt_left, M::lookup_raw(GAP, GAP, tj_prev, tj))
+                    add_e(bt_left, gap_gap_profile[tj_prev * 6 + tj])
                 };
                 *bt_ptr.add(curr_idx) = max(s_tm, s_tt);
             }
