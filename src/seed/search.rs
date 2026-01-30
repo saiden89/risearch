@@ -1,67 +1,50 @@
 use crate::config::SeedConfig;
-use crate::registry::QueryEntry;
+use crate::registry::QueryData;
 use crate::sa::{SuffixArray, TargetRegistry};
 use crate::seq::Sequence;
 use crate::types::Strand;
 
 use super::{SeedHit, SeedMatch, SeedSearcher};
 
-/// Pre-computed query data to avoid rebuilding per-target.
-struct QueryCache<'a> {
-    /// Normalized query sequence
-    pub q_norm: &'a Sequence,
-    /// Reverse complement of normalized query
-    pub q_rc: &'a Sequence,
-    /// Suffix array of reverse complement
-    pub q_rc_sa: &'a SuffixArray,
+/// Config-dependent view of query data for seed search.
+///
+/// Borrows immutable `QueryData` and adds seed interval bounds
+/// computed from `SeedConfig`.
+struct QueryView<'a> {
+    /// Reference to the query's immutable data
+    data: &'a QueryData,
     /// Seed interval start (0-based)
-    pub start0: usize,
+    start0: usize,
     /// Seed interval end (1-based, exclusive)
-    pub end1: usize,
+    end1: usize,
     /// Minimum seed length
-    pub mi_len: usize,
-    /// Prefix sum of N positions for O(1) N-checking
-    n_prefix: &'a [u32],
-    /// Fast path when query has no Ns
-    has_n_any: bool,
+    mi_len: usize,
 }
 
-impl<'a> QueryCache<'a> {
-    /// Build query preprocessing data (called once per query)
-    fn new(query: &'a QueryEntry, config: &SeedConfig) -> Option<Self> {
-        let q_norm = query.sequence();
-        let q_len = q_norm.len();
-
-        let n_prefix = query.n_prefix();
-        let has_n_any = query.has_n_any();
+impl<'a> QueryView<'a> {
+    /// Build query view with config-dependent interval bounds.
+    fn new(data: &'a QueryData, config: &SeedConfig) -> Option<Self> {
+        let q_len = data.sequence().len();
 
         // Get seed interval bounds
         let (start1, end1, mi_len) = config.seed.normalize(q_len).ok()?;
 
-        // Build query RC and its SA once
-        let q_rc = query.sequence_rc();
-        let q_rc_sa = query.reverse_sa();
-
         Some(Self {
-            q_norm,
-            q_rc,
-            q_rc_sa,
+            data,
             start0: start1 - 1,
             end1,
             mi_len,
-            n_prefix,
-            has_n_any,
         })
     }
 
     /// Check if any position in range [start, start+len) contains 'N'
     #[inline]
     fn has_n_in_range(&self, start: usize, len: usize) -> bool {
-        if !self.has_n_any {
+        if !self.data.has_n_any() {
             return false;
         }
         let end = start + len;
-        self.n_prefix[end] != self.n_prefix[start]
+        self.data.n_prefix()[end] != self.data.n_prefix()[start]
     }
 }
 
@@ -69,7 +52,7 @@ impl<'a> QueryCache<'a> {
 ///
 /// Clears `candidates` and `matches` before filling.
 pub(crate) fn find_seeds(
-    query: &QueryEntry,
+    query: &QueryData,
     index: &TargetRegistry,
     config: &SeedConfig,
     candidates: &mut Vec<SeedHit>,
@@ -79,13 +62,13 @@ pub(crate) fn find_seeds(
     matches.clear();
 
     // Pre-compute query data once (SA, RC, etc.)
-    let Some(prep) = QueryCache::new(query, config) else {
+    let Some(view) = QueryView::new(query, config) else {
         return;
     };
 
     for (idx, target) in index.entries().iter().enumerate() {
         collect_target_seeds(
-            &prep,
+            &view,
             idx,
             config,
             candidates,
@@ -95,7 +78,7 @@ pub(crate) fn find_seeds(
             &target.sequence,
         );
         collect_target_seeds(
-            &prep,
+            &view,
             idx,
             config,
             candidates,
@@ -110,7 +93,7 @@ pub(crate) fn find_seeds(
 /// Collect seeds from a single target strand, reusing the provided scratch buffers.
 #[allow(clippy::too_many_arguments)]
 fn collect_target_seeds(
-    query: &QueryCache,
+    view: &QueryView,
     target_idx: usize,
     config: &SeedConfig,
     candidates: &mut Vec<SeedHit>,
@@ -119,18 +102,24 @@ fn collect_target_seeds(
     t_sa: &SuffixArray,
     t_seq: &Sequence,
 ) {
-    let q_len = query.q_norm.len();
-    let start0 = query.start0;
-    let end1 = query.end1;
-    let mi_len = query.mi_len;
+    let q_len = view.data.sequence().len();
+    let start0 = view.start0;
+    let end1 = view.end1;
+    let mi_len = view.mi_len;
 
     matches.clear();
-    let searcher = SeedSearcher::new(query.q_rc_sa, query.q_rc, t_sa, t_seq, config);
+    let searcher = SeedSearcher::new(
+        view.data.reverse_sa(),
+        view.data.sequence_rc(),
+        t_sa,
+        t_seq,
+        config,
+    );
     searcher.search_length_range(mi_len, q_len, matches);
 
     for m in matches.iter() {
         let seed_len = m.depth;
-        for &q_rc_pos_i32 in &query.q_rc_sa[m.query_interval.start..m.query_interval.end] {
+        for &q_rc_pos_i32 in &view.data.reverse_sa()[m.query_interval.start..m.query_interval.end] {
             let q_rc_pos = q_rc_pos_i32 as usize;
             if q_rc_pos + seed_len > q_len {
                 continue;
@@ -139,7 +128,7 @@ fn collect_target_seeds(
             if q_pos < start0 || q_pos + seed_len > end1 {
                 continue;
             }
-            if query.has_n_in_range(q_pos, seed_len) {
+            if view.has_n_in_range(q_pos, seed_len) {
                 continue;
             }
 

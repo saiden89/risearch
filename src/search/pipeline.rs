@@ -60,7 +60,7 @@ impl<M: DsmModel> Default for QueryProcessingState<M> {
 /// All seeding, extension, and filtering happens here.
 pub(super) fn process_query_hits<M: DsmModel>(
     q_idx: u32,
-    q: &crate::registry::QueryEntry,
+    q: &crate::registry::QueryData,
     state: &mut QueryProcessingState<M>,
     queries: &QueryRegistry,
     index: &TargetRegistry,

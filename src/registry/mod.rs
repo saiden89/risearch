@@ -57,14 +57,31 @@ impl<T: RegistryEntry> Registry<T> {
     }
 }
 
-pub struct QueryEntry {
-    pub index: SequenceIndex,
+/// Query data computed once at load time.
+///
+/// Owns all sequence data, suffix arrays, and N-position metadata.
+/// For config-dependent views (interval bounds), use `QueryView`.
+pub struct QueryData {
+    /// Sequence identifier
+    name: String,
+    /// Forward sequence
+    sequence: Sequence,
+    /// Reverse complement sequence
+    sequence_rc: Sequence,
+    /// Suffix array for forward strand (kept for symmetry, currently unused)
+    #[allow(dead_code)]
+    forward_sa: SuffixArray,
+    /// Suffix array for reverse complement
+    reverse_sa: SuffixArray,
+    /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
+    /// Fast path when query has no Ns
     has_n_any: bool,
 }
 
-impl QueryEntry {
-    pub fn new(index: SequenceIndex) -> Self {
+impl QueryData {
+    /// Build QueryData from a SequenceIndex, computing N-prefix metadata.
+    pub fn from_index(index: SequenceIndex) -> Self {
         let q_len = index.sequence.len();
         let mut n_prefix = Vec::with_capacity(q_len + 1);
         n_prefix.push(0);
@@ -77,57 +94,67 @@ impl QueryEntry {
         }
         let has_n_any = n_total != 0;
         Self {
-            index,
+            name: index.name,
+            sequence: index.sequence,
+            sequence_rc: index.sequence_rc,
+            forward_sa: index.forward_sa,
+            reverse_sa: index.reverse_sa,
             n_prefix,
             has_n_any,
         }
     }
 
+    #[inline]
     pub fn name(&self) -> &str {
-        &self.index.name
+        &self.name
     }
 
+    #[inline]
     pub fn sequence(&self) -> &Sequence {
-        &self.index.sequence
+        &self.sequence
     }
 
+    #[inline]
     pub fn sequence_rc(&self) -> &Sequence {
-        &self.index.sequence_rc
+        &self.sequence_rc
     }
 
+    #[inline]
     pub fn reverse_sa(&self) -> &SuffixArray {
-        &self.index.reverse_sa
+        &self.reverse_sa
     }
 
+    #[inline]
     pub fn n_prefix(&self) -> &[u32] {
         &self.n_prefix
     }
 
+    #[inline]
     pub fn has_n_any(&self) -> bool {
         self.has_n_any
     }
 }
 
-impl RegistryEntry for QueryEntry {
+impl RegistryEntry for QueryData {
     fn name(&self) -> &str {
-        self.name()
+        QueryData::name(self)
     }
 }
 
-pub type QueryRegistry = Registry<QueryEntry>;
+pub type QueryRegistry = Registry<QueryData>;
 pub type TargetEntry = SequenceIndex;
 pub type TargetRegistry = Registry<TargetEntry>;
 
 impl QueryRegistry {
     pub fn from_indices(indices: Vec<SequenceIndex>) -> Self {
-        Self::new(indices.into_iter().map(QueryEntry::new).collect())
+        Self::new(indices.into_iter().map(QueryData::from_index).collect())
     }
 
     pub fn from_names(names: Vec<String>) -> Self {
         let entries = names
             .into_iter()
             .map(|name| {
-                QueryEntry::new(SequenceIndex {
+                QueryData::from_index(SequenceIndex {
                     name,
                     forward_sa: SuffixArray::from(Vec::new()),
                     reverse_sa: SuffixArray::from(Vec::new()),
