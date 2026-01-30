@@ -35,16 +35,20 @@ tempfile = "3.24.0"
 rstest = "0.24"
 
 
-[profile.release]
-debug = false
-lto = "fat"
-codegen-units = 1
+[[bench]]
+name = "dp"
+harness = false
 
 [profile.profiling]
 inherits = "release"
 debug = true
 lto = false
 
-[[bench]]
-name = "dsm_bench"
-harness = false
+[profile.release]
+debug = false
+lto = "fat"
+codegen-units = 1
+
+
+[lints.rust]
+unreachable_pub = "warn"
