@@ -6,11 +6,12 @@
 use log::trace;
 use smallvec::SmallVec;
 
+use crate::alignment::{Alignment, Pairing};
 use crate::dp::{self, DpExtension};
 use crate::dsm::{DsmModel, pair_mat};
 use crate::seed::{SeedHit, build_seed_alignment};
 use crate::seq::Sequence;
-use crate::types::{Alignment, Base, Pairing};
+use crate::types::Base;
 
 use super::{FilterReason, MAX_DP_EXT, SearchContext, SearchStage};
 
@@ -304,28 +305,20 @@ pub(super) fn build_alignment_from_extension(
     let mut left_alignment: SmallVec<[Pairing; 64]> = SmallVec::new();
     let mut li = left_res.q_len;
     let mut lj = left_res.t_len;
-    for step in &left_res.trace {
-        let pairing = match step {
+    for &step in &left_res.trace {
+        let q_base = left_base(q_seq, ext.q_pos, li);
+        let t_base = base_or_gap(t_seq, ext.t_match_end + lj);
+        let pairing = Pairing::from_dp_op(step, q_base, t_base);
+
+        // Update positions based on operation type
+        match step {
             dp::DpOp::Match | dp::DpOp::Stop => {
-                let p = Pairing::from_bases(
-                    left_base(q_seq, ext.q_pos, li),
-                    base_or_gap(t_seq, ext.t_match_end + lj),
-                );
                 li = li.saturating_sub(1);
                 lj = lj.saturating_sub(1);
-                p
             }
-            dp::DpOp::GapQ => {
-                let p = Pairing::GapTarget(left_base(q_seq, ext.q_pos, li));
-                li = li.saturating_sub(1);
-                p
-            }
-            dp::DpOp::GapT => {
-                let p = Pairing::GapQuery(base_or_gap(t_seq, ext.t_match_end + lj));
-                lj = lj.saturating_sub(1);
-                p
-            }
-        };
+            dp::DpOp::GapQ => li = li.saturating_sub(1),
+            dp::DpOp::GapT => lj = lj.saturating_sub(1),
+        }
         left_alignment.push(pairing);
     }
 
@@ -336,23 +329,21 @@ pub(super) fn build_alignment_from_extension(
     // Right trace
     let mut right_alignment: SmallVec<[Pairing; 64]> = SmallVec::new();
     let (mut ri, mut rj) = (0, 0);
-    let q_base = ext.q_pos + ext.seed_len - 1;
-    for step in right_res.trace.iter().rev() {
-        let pairing = match step {
+    let q_anchor = ext.q_pos + ext.seed_len - 1;
+    for &step in right_res.trace.iter().rev() {
+        // Update positions BEFORE getting bases (right extension)
+        match step {
             dp::DpOp::Match | dp::DpOp::Stop => {
                 ri += 1;
                 rj += 1;
-                Pairing::from_bases(base_or_gap(q_seq, q_base + ri), left_base(t_seq, t_pos, rj))
             }
-            dp::DpOp::GapQ => {
-                ri += 1;
-                Pairing::GapTarget(base_or_gap(q_seq, q_base + ri))
-            }
-            dp::DpOp::GapT => {
-                rj += 1;
-                Pairing::GapQuery(left_base(t_seq, t_pos, rj))
-            }
-        };
+            dp::DpOp::GapQ => ri += 1,
+            dp::DpOp::GapT => rj += 1,
+        }
+
+        let q_base = base_or_gap(q_seq, q_anchor + ri);
+        let t_base = left_base(t_seq, t_pos, rj);
+        let pairing = Pairing::from_dp_op(step, q_base, t_base);
         right_alignment.push(pairing);
     }
 

@@ -15,10 +15,10 @@ use std::process::Command;
 // =============================================================================
 
 /// Marker for an unindexed C runner.
-pub struct NoIndex;
+pub(crate) struct NoIndex;
 
 /// Marker for an indexed C runner.
-pub struct Indexed {
+pub(crate) struct Indexed {
     index_path: PathBuf,
 }
 
@@ -29,14 +29,14 @@ pub struct Indexed {
 /// Runner for the legacy C risearch2 binary.
 ///
 /// Uses type-state pattern to ensure you can only search after indexing.
-pub struct CRunner<S> {
+pub(crate) struct CRunner<S> {
     bin_path: PathBuf,
     state: S,
 }
 
 impl CRunner<NoIndex> {
     /// Create a new C runner pointing to the binary.
-    pub fn new(root: &Path) -> Self {
+    pub(crate) fn new(root: &Path) -> Self {
         let bin_path = c_binary_path(root);
         Self {
             bin_path,
@@ -46,7 +46,7 @@ impl CRunner<NoIndex> {
 
     /// Create an index from the target file.
     /// Consumes self and returns an indexed runner.
-    pub fn create_index(self, target: &Path, index_out: &Path) -> CRunner<Indexed> {
+    pub(crate) fn create_index(self, target: &Path, index_out: &Path) -> CRunner<Indexed> {
         let output = Command::new(&self.bin_path)
             .arg("-c")
             .arg(target)
@@ -74,7 +74,7 @@ impl CRunner<NoIndex> {
 
 impl CRunner<Indexed> {
     /// Run a search against the indexed target.
-    pub fn search(&self, query: &Path, args: &[&str]) -> String {
+    pub(crate) fn search(&self, query: &Path, args: &[&str]) -> String {
         let tmpdir = tempfile::tempdir().expect("tempdir");
 
         let mut final_args = vec![
@@ -160,7 +160,7 @@ impl CRunner<Indexed> {
 
     /// Get the index path.
     #[allow(dead_code)] // Useful API for debugging
-    pub fn index_path(&self) -> &Path {
+    pub(crate) fn index_path(&self) -> &Path {
         &self.state.index_path
     }
 }
@@ -171,7 +171,7 @@ impl CRunner<Indexed> {
 
 /// Get path to C risearch2 binary.
 /// Prefers debug binary (risearch2.dbg.x) for seed boundary markers, falls back to release.
-pub fn c_binary_path(root: &Path) -> PathBuf {
+fn c_binary_path(root: &Path) -> PathBuf {
     let debug_bin = root.join("legacy_c/RIsearch2/bin/risearch2.dbg.x");
     let release_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
 

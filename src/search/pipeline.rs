@@ -30,7 +30,7 @@ pub(super) struct QueryProcessingState<M: DsmModel> {
 }
 
 impl<M: DsmModel> QueryProcessingState<M> {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             extender: dp::DpExtender::<M>::new(),
             seeds: Vec::with_capacity(128_000),
@@ -38,7 +38,7 @@ impl<M: DsmModel> QueryProcessingState<M> {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.seeds.clear();
         self.matches.clear();
     }

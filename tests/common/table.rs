@@ -14,7 +14,7 @@ use tabled::{Table, Tabled, builder::Builder, settings::Style};
 
 /// Row for summary tables.
 #[derive(Tabled)]
-pub struct SummaryRow {
+pub(crate) struct SummaryRow {
     #[tabled(rename = "Metric")]
     pub metric: String,
     #[tabled(rename = "Count")]
@@ -22,7 +22,7 @@ pub struct SummaryRow {
 }
 
 impl SummaryRow {
-    pub fn new(metric: &str, count: impl ToString) -> Self {
+    pub(crate) fn new(metric: &str, count: impl ToString) -> Self {
         Self {
             metric: metric.to_string(),
             count: count.to_string(),
@@ -31,7 +31,7 @@ impl SummaryRow {
 }
 
 /// Render a list of summary rows as a table string.
-pub fn render_summary_table(rows: Vec<SummaryRow>) -> String {
+pub(crate) fn render_summary_table(rows: Vec<SummaryRow>) -> String {
     Table::new(rows).with(Style::rounded()).to_string()
 }
 
@@ -42,7 +42,7 @@ pub fn render_summary_table(rows: Vec<SummaryRow>) -> String {
 /// The type of parity comparison being displayed.
 #[derive(Debug)]
 #[allow(dead_code)] // Some variants used only in detailed debugging
-pub enum ParityKind<'a> {
+pub(crate) enum ParityKind<'a> {
     /// Mismatch between Rust and C results (same coordinates, different content)
     Mismatch {
         rust: &'a SearchHit,
@@ -65,7 +65,7 @@ pub enum ParityKind<'a> {
 
 /// Column types for parity tables.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ColumnKind {
+enum ColumnKind {
     Label,
     Ctx5,
     Ext5,
@@ -75,7 +75,7 @@ pub enum ColumnKind {
 }
 
 impl ColumnKind {
-    pub fn header(&self) -> &'static str {
+    fn header(&self) -> &'static str {
         match self {
             Self::Label => "",
             Self::Ctx5 => "5' Ctx",
@@ -92,8 +92,8 @@ impl ColumnKind {
 // =============================================================================
 
 /// Configuration for parity table output.
-pub struct TableConfig {
-    pub columns: Vec<ColumnKind>,
+pub(crate) struct TableConfig {
+    columns: Vec<ColumnKind>,
 }
 
 impl Default for TableConfig {
@@ -117,7 +117,7 @@ impl Default for TableConfig {
 
 /// Labels for table rows.
 #[derive(Debug, Clone, Copy)]
-pub enum RowLabel {
+enum RowLabel {
     SingleFP,
     SingleTarget,
     SingleQuery,
@@ -153,13 +153,13 @@ impl std::fmt::Display for RowLabel {
 
 /// Character-level diff indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffChar {
+enum DiffChar {
     Match,    // ' '
     Mismatch, // 'X'
 }
 
 impl DiffChar {
-    pub fn as_char(&self) -> char {
+    fn as_char(&self) -> char {
         match self {
             Self::Match => ' ',
             Self::Mismatch => 'X',
@@ -174,7 +174,7 @@ impl From<(char, char)> for DiffChar {
 }
 
 /// Build a diff string comparing two strings character by character.
-pub fn build_diff(a: &str, b: &str) -> String {
+fn build_diff(a: &str, b: &str) -> String {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
     let len = a_chars.len().max(b_chars.len());
@@ -192,7 +192,7 @@ pub fn build_diff(a: &str, b: &str) -> String {
 // =============================================================================
 
 /// Parsed interaction string split into components.
-pub struct ParsedInteraction {
+struct ParsedInteraction {
     pub ctx_5: String,
     pub ext_5: String,
     pub seed: String,
@@ -202,12 +202,12 @@ pub struct ParsedInteraction {
 
 impl ParsedInteraction {
     /// Parse from a hit using its seed range.
-    pub fn from_hit(hit: &SearchHit) -> Self {
+    fn from_hit(hit: &SearchHit) -> Self {
         Self::from_hit_with_range(hit, hit.seed_start(), hit.seed_end())
     }
 
     /// Parse with explicit seed range override (for diff alignment).
-    pub fn from_hit_with_range(
+    fn from_hit_with_range(
         hit: &SearchHit,
         seed_start: Option<usize>,
         seed_end: Option<usize>,
@@ -242,7 +242,7 @@ impl ParsedInteraction {
     }
 
     /// Parse target sequence using reference parts for alignment.
-    pub fn from_hit_target(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
+    fn from_hit_target(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
         let chars: Vec<char> = hit
             .target_seq()
             .expect("hit missing alignment for target_seq")
@@ -266,7 +266,7 @@ impl ParsedInteraction {
     }
 
     /// Parse query sequence using reference parts for alignment.
-    pub fn from_hit_query(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
+    fn from_hit_query(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
         let chars: Vec<char> = hit
             .query_seq()
             .expect("hit missing alignment for query_seq")
@@ -295,9 +295,9 @@ impl ParsedInteraction {
 // =============================================================================
 
 /// Table for displaying parity comparison results.
-pub struct ParityTable<'a> {
-    pub kind: ParityKind<'a>,
-    pub config: TableConfig,
+pub(crate) struct ParityTable<'a> {
+    pub(crate) kind: ParityKind<'a>,
+    pub(crate) config: TableConfig,
 }
 
 impl<'a> std::fmt::Display for ParityTable<'a> {

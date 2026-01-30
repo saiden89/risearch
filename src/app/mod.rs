@@ -10,7 +10,7 @@ use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
 
 /// Initialize logging based on verbosity level with colored output.
-pub fn init_logging(verbosity: u8) {
+pub(crate) fn init_logging(verbosity: u8) {
     let level = match verbosity {
         0 => log::LevelFilter::Warn,
         1 => log::LevelFilter::Info,
@@ -83,7 +83,7 @@ pub fn init_logging(verbosity: u8) {
         .init();
 }
 
-pub fn run(cli: Cli) -> Result<()> {
+pub(crate) fn run(cli: Cli) -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
 
     // Initialize logging based on verbosity

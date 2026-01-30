@@ -1,3 +1,4 @@
+pub mod alignment;
 pub mod cli_args;
 pub mod config;
 pub mod dp;
@@ -10,9 +11,10 @@ pub mod sa;
 pub mod search;
 pub mod seed;
 pub mod seq;
-pub mod types; // Core domain types - must be first
+pub mod types; // Core domain types
 
 // Re-exports for convenience
+pub use alignment::{Alignment, Pairing};
 pub use registry::{QueryRegistry, TargetRegistry};
 pub use seq::{AlignedSeq, Sequence};
 pub use types::{BASE_COUNT, Base, Energy, QueryId, SeedPairingMode, Span, Strand, TargetId};
@@ -20,4 +22,3 @@ pub use types::{BASE_COUNT, Base, Energy, QueryId, SeedPairingMode, Span, Strand
 // Search API re-exports for library usage
 pub use search::SearchHit;
 pub use seed::{SeedHit, SeedSpec};
-pub use types::{Alignment, Pairing};

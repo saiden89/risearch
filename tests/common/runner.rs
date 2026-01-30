@@ -17,10 +17,10 @@ use crate::common::{init_test_logging, parse_output, workspace_root};
 // =============================================================================
 
 /// Marker for an unindexed Rust runner.
-pub struct NoIndex;
+struct NoIndex;
 
 /// Marker for an indexed Rust runner.
-pub struct Indexed {
+struct Indexed {
     index_path: PathBuf,
     #[allow(dead_code)]
     index_file: risearch::sa::TargetRegistry,
@@ -33,14 +33,14 @@ pub struct Indexed {
 /// Runner for the Rust risearch implementation.
 ///
 /// Uses type-state pattern to ensure you can only search after indexing.
-pub struct RustRunner<S> {
+struct RustRunner<S> {
     target_path: PathBuf,
     state: S,
 }
 
 impl RustRunner<NoIndex> {
     /// Create a new Rust runner for the given target.
-    pub fn new(target: &Path) -> Self {
+    fn new(target: &Path) -> Self {
         Self {
             target_path: target.to_path_buf(),
             state: NoIndex,
@@ -50,7 +50,7 @@ impl RustRunner<NoIndex> {
     /// Create an index from the target file.
     /// Consumes self and returns an indexed runner.
     /// If `index_path` is None, uses a temporary directory.
-    pub fn create_index(self, index_path: Option<&Path>) -> RustRunner<Indexed> {
+    fn create_index(self, index_path: Option<&Path>) -> RustRunner<Indexed> {
         let (index_path, _tmpdir) = match index_path {
             Some(p) => (p.to_path_buf(), None),
             None => {
@@ -76,7 +76,7 @@ impl RustRunner<NoIndex> {
 
 impl RustRunner<Indexed> {
     /// Search using risearch as a library.
-    pub fn search(
+    fn search(
         &self,
         query_path: &Path,
         args: &risearch::config::SearchArgs,
@@ -101,7 +101,7 @@ impl RustRunner<Indexed> {
 
     /// Get the index path.
     #[allow(dead_code)] // Useful API for debugging
-    pub fn index_path(&self) -> &Path {
+    fn index_path(&self) -> &Path {
         &self.state.index_path
     }
 }
@@ -113,7 +113,7 @@ impl RustRunner<Indexed> {
 /// Combined runner for parity testing between Rust and C.
 ///
 /// Manages both runners and provides comparison methods.
-pub struct ParityRunner {
+pub(crate) struct ParityRunner {
     rust: RustRunner<Indexed>,
     c: CRunner<crate::common::c_runner::Indexed>,
     #[allow(dead_code)]
@@ -123,7 +123,7 @@ pub struct ParityRunner {
 impl ParityRunner {
     /// Create a new parity runner for the given target.
     /// Creates indexes for both Rust and C implementations.
-    pub fn new(target: &Path) -> Self {
+    pub(crate) fn new(target: &Path) -> Self {
         init_test_logging();
 
         let root = workspace_root();
@@ -142,7 +142,7 @@ impl ParityRunner {
 
     /// Compare Rust and C results, returning the parsed outputs.
     #[allow(dead_code)] // Useful API for detailed analysis
-    pub fn compare(
+    fn compare(
         &self,
         query: &Path,
         args: &[&str],
@@ -245,7 +245,7 @@ impl ParityRunner {
     }
 
     /// Run comparison and assert parity passes.
-    pub fn assert_pass(&self, query: &Path, test_name: &str, args: &[&str]) {
+    pub(crate) fn assert_pass(&self, query: &Path, test_name: &str, args: &[&str]) {
         let (rust_recs, c_recs) = self.compare(query, args);
 
         let result = ParityComparator::new(&rust_recs, &c_recs).compare();
@@ -288,7 +288,7 @@ impl ParityRunner {
 ///
 /// Creates temporary FASTA files from raw sequences.
 #[allow(dead_code)] // Used by some parity suites, unused in others.
-pub struct SingleSeqRunner {
+pub(crate) struct SingleSeqRunner {
     query_path: PathBuf,
     #[allow(dead_code)] // Kept for potential future use
     target_path: PathBuf,
@@ -300,7 +300,7 @@ pub struct SingleSeqRunner {
 #[allow(dead_code)] // Methods are only used by specific parity suites.
 impl SingleSeqRunner {
     /// Create a new single-sequence runner.
-    pub fn new(query_seq: &str, target_seq: &str) -> Self {
+    pub(crate) fn new(query_seq: &str, target_seq: &str) -> Self {
         let tmpdir = tempfile::tempdir().expect("tempdir");
 
         let query_path = tmpdir.path().join("query.fa");
@@ -323,7 +323,7 @@ impl SingleSeqRunner {
     }
 
     /// Run comparison and assert parity passes.
-    pub fn assert_pass(&self, test_name: &str, args: &[&str]) {
+    pub(crate) fn assert_pass(&self, test_name: &str, args: &[&str]) {
         self.runner.assert_pass(&self.query_path, test_name, args);
     }
 }
@@ -334,7 +334,7 @@ impl SingleSeqRunner {
 
 /// Parse CLI-style args into SearchArgs using clap.
 /// Always includes --no-dedup-shadow for C parity (C doesn't filter contained hits).
-pub fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
+fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
     use clap::Parser;
 
     let mut cli_args: Vec<String> = vec!["risearch".into()];

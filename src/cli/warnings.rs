@@ -115,7 +115,7 @@ fn has_format_arg(args: &[String]) -> bool {
         .any(|arg| arg == "-f" || arg == "--format" || arg.starts_with("--format="))
 }
 
-pub fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -> Result<()> {
+pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -> Result<()> {
     let legacy_mismatch = extract_legacy_mismatch_arg(raw_args);
     let legacy_seed = extract_legacy_seed_arg(raw_args);
     let legacy_no_guseed = has_no_guseed_arg(raw_args);

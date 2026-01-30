@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 /// Status of a hit in parity comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HitStatus {
+pub(crate) enum HitStatus {
     /// Exact match between Rust and C (markers already stripped)
     Identical,
     /// Equal energy, different trace (co-optimal alignment)
@@ -45,7 +45,7 @@ impl std::fmt::Display for HitStatus {
 
 /// Why a C hit was not found in Rust output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MissingReason {
+pub(crate) enum MissingReason {
     /// Rust found overlapping hit with better (lower) energy
     BetterEnergy,
     /// Rust found overlapping hit with equal energy (co-optimal)
@@ -69,7 +69,7 @@ impl std::fmt::Display for MissingReason {
 
 impl MissingReason {
     /// Check if this reason is acceptable given the parity mode.
-    pub fn is_acceptable(&self, mode: ParityMode) -> bool {
+    pub(crate) fn is_acceptable(&self, mode: ParityMode) -> bool {
         match mode {
             ParityMode::Absolute => false,
             ParityMode::Strict => false,
@@ -94,7 +94,7 @@ impl MissingReason {
 ///
 /// *Missing is acceptable in Relaxed only if covered by better/equal energy hit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ParityMode {
+pub(crate) enum ParityMode {
     /// 100% identical to C - no differences at all
     Absolute,
     /// Allow co-optimal alignments (same energy, different trace)
@@ -115,7 +115,7 @@ pub enum ParityMode {
 /// - `relaxed` - accept all improvements including covered missings
 ///
 /// Example: `PARITY_MODE=balanced cargo test --test c_parity`
-pub static TEST_PARITY_MODE: LazyLock<ParityMode> = LazyLock::new(|| {
+pub(crate) static TEST_PARITY_MODE: LazyLock<ParityMode> = LazyLock::new(|| {
     match std::env::var("PARITY_MODE").as_deref() {
         Ok("absolute") => ParityMode::Absolute,
         Ok("balanced") => ParityMode::Balanced,

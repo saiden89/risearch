@@ -10,13 +10,14 @@ use log::info;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
+use crate::alignment::Alignment;
 use crate::config::{Matrix, SearchArgs};
 use crate::dp;
 use crate::dsm::{DsmModel, T04, T99};
 use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
 use crate::seq::Sequence;
-use crate::types::{Alignment, Energy, Strand};
+use crate::types::{Energy, Strand};
 
 mod extend;
 mod pipeline;

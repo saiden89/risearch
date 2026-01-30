@@ -5,16 +5,17 @@
 //! - `parse_c_output()`: Parse C risearch output into `SearchHit`
 
 use risearch::SearchHit;
+use risearch::alignment::Alignment;
 use risearch::registry::{QueryRegistry, TargetRegistry};
 use risearch::seq::Sequence;
-use risearch::types::{Alignment, Energy, Strand};
+use risearch::types::{Energy, Strand};
 
 // =============================================================================
 // EXTENSION TRAIT: Parity-testing helpers
 // =============================================================================
 
 /// Extension trait providing parity-testing methods for `SearchHit`.
-pub trait SearchHitExt {
+pub(crate) trait SearchHitExt {
     /// Returns true if coordinates and strand match another hit.
     fn coords_match(&self, other: &Self) -> bool;
 
@@ -113,7 +114,7 @@ impl SearchHitExt for SearchHit {
 /// - Seed markers 'y' and 'x' in interaction/target strings
 /// - Missing optional columns (flanks)
 /// - 1-based coordinates
-pub fn parse_c_output(
+pub(crate) fn parse_c_output(
     line: &str,
     query_registry: &QueryRegistry,
     target_registry: &TargetRegistry,

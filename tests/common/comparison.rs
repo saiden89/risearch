@@ -13,7 +13,7 @@ use risearch::SearchHit;
 // =============================================================================
 
 #[allow(dead_code)] // Some tags are only used in specific parity modes/tests.
-pub enum LogTag {
+pub(crate) enum LogTag {
     Pair,
     Parity,
 }
@@ -34,10 +34,10 @@ impl std::fmt::Display for LogTag {
 /// A hit that was matched between Rust and C with its status.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Part of public API for future use
-pub struct MatchedHit {
-    pub rust: SearchHit,
-    pub c: SearchHit,
-    pub status: HitStatus,
+pub(crate) struct MatchedHit {
+    pub(crate) rust: SearchHit,
+    pub(crate) c: SearchHit,
+    pub(crate) status: HitStatus,
 }
 
 // =============================================================================
@@ -46,19 +46,19 @@ pub struct MatchedHit {
 
 /// Result of a parity comparison.
 #[derive(Debug, Default)]
-pub struct ParityResult {
-    pub exact_matches: usize,
-    pub rust_better: Vec<MatchedHit>,
-    pub rust_worse: Vec<MatchedHit>,
-    pub co_optimal: Vec<MatchedHit>,
-    pub extras: Vec<SearchHit>,
+pub(crate) struct ParityResult {
+    pub(crate) exact_matches: usize,
+    pub(crate) rust_better: Vec<MatchedHit>,
+    pub(crate) rust_worse: Vec<MatchedHit>,
+    pub(crate) co_optimal: Vec<MatchedHit>,
+    pub(crate) extras: Vec<SearchHit>,
     /// Missing hits: (C hit, reason, optional overlapping Rust hit)
-    pub missings: Vec<(SearchHit, MissingReason, Option<SearchHit>)>,
+    pub(crate) missings: Vec<(SearchHit, MissingReason, Option<SearchHit>)>,
 }
 
 impl ParityResult {
     /// Check if the result is a pass given the parity mode.
-    pub fn is_pass(&self, mode: ParityMode) -> bool {
+    pub(crate) fn is_pass(&self, mode: ParityMode) -> bool {
         // Rust-worse is always a failure
         if !self.rust_worse.is_empty() {
             return false;
@@ -88,7 +88,7 @@ impl ParityResult {
     }
 
     /// Log detailed comparison results for all hit types.
-    pub fn log_details(&self, test_name: &str) {
+    pub(crate) fn log_details(&self, test_name: &str) {
         use crate::common::table::{ParityKind, ParityTable, TableConfig};
         use std::collections::BTreeMap;
 
@@ -388,13 +388,13 @@ impl ParityResult {
 // =============================================================================
 
 /// Check if two coordinate ranges overlap.
-pub fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
+fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
     a_start <= b_end && b_start <= a_end
 }
 
 /// Check if two hits overlap in both query and target coordinates.
 /// Also requires same query_id and target_id to be meaningful.
-pub fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
+fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
     a.query_idx == b.query_idx
         && a.target_idx == b.target_idx
         && a.strand == b.strand
@@ -409,7 +409,7 @@ pub fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
 
 /// Classify why a C hit is missing from Rust output.
 /// Returns the reason and optionally the best overlapping Rust hit.
-pub fn classify_missing<'a>(
+fn classify_missing<'a>(
     c_hit: &SearchHit,
     rust_hits: &[&'a SearchHit],
 ) -> (MissingReason, Option<&'a SearchHit>) {
@@ -447,14 +447,14 @@ pub fn classify_missing<'a>(
 
 /// Builder for comparing Rust and C parity results.
 #[allow(dead_code)] // Part of public API for future use
-pub struct ParityComparator<'a> {
+pub(crate) struct ParityComparator<'a> {
     rust_hits: &'a [SearchHit],
     c_hits: &'a [SearchHit],
     mode: ParityMode,
 }
 
 impl<'a> ParityComparator<'a> {
-    pub fn new(rust_hits: &'a [SearchHit], c_hits: &'a [SearchHit]) -> Self {
+    pub(crate) fn new(rust_hits: &'a [SearchHit], c_hits: &'a [SearchHit]) -> Self {
         Self {
             rust_hits,
             c_hits,
@@ -463,13 +463,13 @@ impl<'a> ParityComparator<'a> {
     }
 
     #[allow(dead_code)] // Builder API for future use
-    pub fn mode(mut self, mode: ParityMode) -> Self {
+    pub(crate) fn mode(mut self, mode: ParityMode) -> Self {
         self.mode = mode;
         self
     }
 
     /// Perform the comparison and return results.
-    pub fn compare(self) -> ParityResult {
+    pub(crate) fn compare(self) -> ParityResult {
         let mut result = ParityResult::default();
 
         // Group by (query_idx, target_idx)

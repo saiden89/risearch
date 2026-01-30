@@ -14,12 +14,12 @@
 // SUBMODULES
 // =============================================================================
 
-pub mod c_runner;
-pub mod comparison;
-pub mod runner;
-pub mod search_hit;
-pub mod status;
-pub mod table;
+mod c_runner;
+mod comparison;
+mod runner;
+mod search_hit;
+mod status;
+mod table;
 
 // =============================================================================
 // RE-EXPORTS (public API)
@@ -29,10 +29,10 @@ pub mod table;
 
 // Used by c_parity.rs (not necessarily used in every test crate)
 #[allow(unused_imports)]
-pub use runner::{ParityRunner, SingleSeqRunner};
+pub(crate) use runner::{ParityRunner, SingleSeqRunner};
 
 // Re-export test extensions for SearchHit
-pub use search_hit::{SearchHitExt, parse_c_output};
+pub(crate) use search_hit::{SearchHitExt, parse_c_output};
 
 // =============================================================================
 // LOGGING SETUP
@@ -43,7 +43,7 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
-pub fn init_test_logging() {
+pub(crate) fn init_test_logging() {
     INIT.call_once(|| {
         let _ = env_logger::builder()
             .is_test(true)
@@ -73,12 +73,12 @@ pub fn init_test_logging() {
 // ERROR - Reserved for panics (test failures)
 // =============================================================================
 
-pub fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Returns (records after dedup, count before dedup)
-pub fn parse_output(
+pub(crate) fn parse_output(
     output: &str,
     query_registry: &risearch::QueryRegistry,
     target_registry: &risearch::TargetRegistry,

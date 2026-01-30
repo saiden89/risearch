@@ -1,11 +1,11 @@
 use std::io::Write;
 
+use crate::alignment::Alignment;
 use crate::config::OutputFormat;
 use crate::registry::{QueryRegistry, TargetRegistry};
 use crate::search::SearchHit;
 use crate::seq::Sequence;
 use crate::seq::utils::push_bases_as_rna;
-use crate::types::Alignment;
 
 struct OutputBuffers {
     line: Vec<u8>,
