@@ -39,6 +39,10 @@ rstest = "0.24"
 name = "dp"
 harness = false
 
+[[bench]]
+name = "output"
+harness = false
+
 [profile.profiling]
 inherits = "release"
 debug = true
