@@ -75,8 +75,16 @@ impl<T> Registry<T> {
 }
 
 impl<T: RegistryEntry> Registry<T> {
+    /// Get name by index (unchecked for hot path).
+    ///
+    /// # Safety
+    /// Caller must ensure idx is valid (< number of entries).
+    /// In practice, idx comes from hit.query_idx which is always valid.
+    #[inline(always)]
     pub fn get_name(&self, idx: u32) -> &str {
-        self.entries[idx as usize].name()
+        debug_assert!((idx as usize) < self.entries.len(), "Registry index out of bounds: {} >= {}", idx, self.entries.len());
+        // SAFETY: idx comes from generated hits, guaranteed to be valid
+        unsafe { self.entries.get_unchecked(idx as usize).name() }
     }
 
     pub fn index_of(&self, name: &str) -> Option<u32> {
