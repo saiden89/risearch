@@ -73,20 +73,15 @@ pub(super) fn extend_seed<M: DsmModel>(
     q_seq: &Sequence,
     t_seq: &Sequence,
     candidate: &SeedHit,
+    interval: crate::registry::SeedInterval,
 ) -> Option<ExtensionResult> {
     let q_pos = candidate.query_pos;
     let t_pos = candidate.target_start;
     let len = candidate.len;
     let opts = &ctx.args.extend;
 
-    // Get interval bounds from SeedSpec for maximality constraint
-    let (interval_start, interval_end) = ctx
-        .args
-        .seed
-        .seed
-        .normalize(q_seq.len())
-        .map(|(s1, e1, _)| (s1 - 1, e1))
-        .unwrap_or((0, q_seq.len()));
+    // Use pre-computed interval bounds for maximality constraint
+    let (interval_start, interval_end) = (interval.start, interval.end);
 
     let query = q_seq;
     let target = t_seq;

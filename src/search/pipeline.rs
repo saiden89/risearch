@@ -117,8 +117,10 @@ fn extend_and_build_hit<M: DsmModel>(
     t_seq: &Sequence,
     ctx: &mut SearchContext<'_, '_, M>,
 ) -> Option<SearchHit> {
-    let query_seq = queries.get(query_idx).sequence();
-    let extension = extend_seed(ctx, query_seq, t_seq, candidate)?;
+    let query = queries.get(query_idx);
+    let query_seq = query.sequence();
+    let interval = query.seed_interval();
+    let extension = extend_seed(ctx, query_seq, t_seq, candidate, interval)?;
 
     Some(build_hit::<M>(
         query_idx, ctx, candidate, extension, query_seq, t_seq,

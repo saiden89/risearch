@@ -1,9 +1,43 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::SeedConfig;
 use crate::index::sa::SequenceIndex;
 use crate::sa::SuffixArray;
 use crate::seq::Sequence;
 use crate::types::Base;
+
+#[derive(Clone, Copy, Debug)]
+pub struct SeedInterval {
+    /// Start position (0-based, inclusive)
+    pub start: usize,
+    /// End position (0-based, exclusive)
+    pub end: usize,
+    /// Minimum seed length
+    pub min_len: usize,
+}
+
+impl SeedInterval {
+    /// Compute interval from SeedConfig and query length.
+    ///
+    /// Converts from 1-based (SeedSpec) to 0-based indexing.
+    pub fn from_config(config: &SeedConfig, query_len: usize) -> Self {
+        match config.seed.normalize(query_len) {
+            Ok((start1, end1, min_len)) => Self {
+                start: start1 - 1, // Convert to 0-based
+                end: end1,         // end1 is already exclusive in 0-based terms
+                min_len,
+            },
+            Err(_) => {
+                // Fallback for invalid spec: use entire sequence
+                Self {
+                    start: 0,
+                    end: query_len,
+                    min_len: query_len,
+                }
+            }
+        }
+    }
+}
 
 pub trait RegistryEntry {
     fn name(&self) -> &str;
@@ -73,6 +107,8 @@ pub struct QueryData {
     forward_sa: SuffixArray,
     /// Suffix array for reverse complement
     reverse_sa: SuffixArray,
+    /// Pre-computed seed interval bounds
+    seed_interval: SeedInterval,
     /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
@@ -80,9 +116,11 @@ pub struct QueryData {
 }
 
 impl QueryData {
-    /// Build QueryData from a SequenceIndex, computing N-prefix metadata.
-    pub fn from_index(index: SequenceIndex) -> Self {
+    /// Build QueryData from a SequenceIndex, computing N-prefix and seed interval.
+    pub fn from_index(index: SequenceIndex, config: &SeedConfig) -> Self {
         let q_len = index.sequence.len();
+
+        // Compute N-prefix for O(1) N-checking
         let mut n_prefix = Vec::with_capacity(q_len + 1);
         n_prefix.push(0);
         let mut n_total = 0;
@@ -93,12 +131,17 @@ impl QueryData {
             n_prefix.push(n_total);
         }
         let has_n_any = n_total != 0;
+
+        // Compute seed interval once
+        let seed_interval = SeedInterval::from_config(config, q_len);
+
         Self {
             name: index.name,
             sequence: index.sequence,
             sequence_rc: index.sequence_rc,
             forward_sa: index.forward_sa,
             reverse_sa: index.reverse_sa,
+            seed_interval,
             n_prefix,
             has_n_any,
         }
@@ -133,6 +176,11 @@ impl QueryData {
     pub fn has_n_any(&self) -> bool {
         self.has_n_any
     }
+
+    #[inline]
+    pub fn seed_interval(&self) -> SeedInterval {
+        self.seed_interval
+    }
 }
 
 impl RegistryEntry for QueryData {
@@ -146,21 +194,29 @@ pub type TargetEntry = SequenceIndex;
 pub type TargetRegistry = Registry<TargetEntry>;
 
 impl QueryRegistry {
-    pub fn from_indices(indices: Vec<SequenceIndex>) -> Self {
-        Self::new(indices.into_iter().map(QueryData::from_index).collect())
+    pub fn from_indices(indices: Vec<SequenceIndex>, config: &SeedConfig) -> Self {
+        Self::new(
+            indices
+                .into_iter()
+                .map(|idx| QueryData::from_index(idx, config))
+                .collect(),
+        )
     }
 
-    pub fn from_names(names: Vec<String>) -> Self {
+    pub fn from_names(names: Vec<String>, config: &SeedConfig) -> Self {
         let entries = names
             .into_iter()
             .map(|name| {
-                QueryData::from_index(SequenceIndex {
-                    name,
-                    forward_sa: SuffixArray::from(Vec::new()),
-                    reverse_sa: SuffixArray::from(Vec::new()),
-                    sequence: Sequence::from(Vec::new()),
-                    sequence_rc: Sequence::from(Vec::new()),
-                })
+                QueryData::from_index(
+                    SequenceIndex {
+                        name,
+                        forward_sa: SuffixArray::from(Vec::new()),
+                        reverse_sa: SuffixArray::from(Vec::new()),
+                        sequence: Sequence::from(Vec::new()),
+                        sequence_rc: Sequence::from(Vec::new()),
+                    },
+                    config,
+                )
             })
             .collect();
         Self { entries }

@@ -118,7 +118,16 @@ pub fn run(cli: Cli) -> Result<()> {
 
             let queries =
                 sa::process_sequences(query).context("Failed to process query sequences")?;
-            let queries = QueryRegistry::from_indices(queries.into_entries());
+
+            // Capture compression settings before converting (they're CLI-only fields)
+            let output_compress = opts.output_compress.map(Into::into);
+            let output_level = opts.output_level;
+
+            // Convert CLI opts to SearchArgs to get SeedConfig
+            let mut opts: risearch::config::SearchArgs = opts.clone().into();
+            emit_legacy_warnings(&raw_args, &mut opts)?;
+
+            let queries = QueryRegistry::from_indices(queries.into_entries(), &opts.seed);
 
             info!("Loaded {} query sequences", queries.len());
 
@@ -130,11 +139,9 @@ pub fn run(cli: Cli) -> Result<()> {
             // Use streaming compression - encoder wraps the writer directly
             let mut writer = output::open_compressed_output(
                 Some(output.as_path()),
-                opts.output_compress.map(Into::into),
-                opts.output_level,
+                output_compress,
+                output_level,
             )?;
-            let mut opts: risearch::config::SearchArgs = opts.clone().into();
-            emit_legacy_warnings(&raw_args, &mut opts)?;
             // Clear compression from opts - it's now handled by the writer
             opts.output.compress = Some(risearch::config::OutputCompression::None);
 

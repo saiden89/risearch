@@ -83,7 +83,8 @@ impl RustRunner<Indexed> {
     ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
         let index = &self.state.index_file;
         let processed = risearch::sa::process_sequences(query_path).expect("read query FASTA");
-        let query_registry = risearch::QueryRegistry::from_indices(processed.into_entries());
+        let query_registry =
+            risearch::QueryRegistry::from_indices(processed.into_entries(), &args.seed);
         let hits = risearch::search::run_search(&query_registry, index, args).expect("search");
 
         // Normalize to 1-based coordinates to match C output format for comparison
