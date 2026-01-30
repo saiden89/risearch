@@ -1,13 +1,11 @@
-//! Benchmark output formatting (where get_name is called)
+//! Benchmark registry name lookups (where get_name optimization applies)
 //!
 //! Run with: cargo bench --bench output
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use risearch::config::OutputFormat;
-use risearch::registry::{QueryRegistry, Registry, SequenceIndex};
-use risearch::search::SearchHit;
+use risearch::registry::Registry;
 use risearch::seq::Sequence;
-use risearch::types::{Base, Energy, Strand};
+use risearch::types::Base;
 
 // =============================================================================
 // TEST DATA GENERATION
@@ -29,81 +27,45 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
     Sequence::from(bases)
 }
 
-fn setup_registries(num_queries: usize, _num_targets: usize) -> QueryRegistry {
-    // Create simple sequence indices for benchmarking
-    let query_entries: Vec<_> = (0..num_queries)
-        .map(|i| {
-            let name = format!("query_{}", i);
-            let seq = generate_sequence(100, i as u64);
-            SequenceIndex::new(name, seq)
-        })
-        .collect();
-    Registry::new(query_entries)
+// Simple struct that implements RegistryEntry for testing
+struct TestEntry {
+    name: String,
+    _sequence: Sequence,
 }
 
-fn generate_hits(num_hits: usize, num_queries: u32, num_targets: u32) -> Vec<SearchHit> {
-    (0..num_hits)
-        .map(|i| SearchHit {
-            query_idx: (i as u32) % num_queries,
-            target_idx: (i as u32) % num_targets,
-            q_start: 10,
-            q_end: 30,
-            t_start: 50,
-            t_end: 70,
-            output_q_start: 10,
-            output_q_end: 30,
-            output_t_start: 50,
-            output_t_end: 70,
-            strand: Strand::Forward,
-            energy: Energy::from(-500),
-            alignment: None,
-            flank_5: vec![].into(),
-            flank_3: vec![].into(),
+impl TestEntry {
+    fn new(name: String, sequence: Sequence) -> Self {
+        Self { name, _sequence: sequence }
+    }
+}
+
+impl risearch::registry::RegistryEntry for TestEntry {
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+fn setup_registry(num_entries: usize) -> Registry<TestEntry> {
+    let entries: Vec<_> = (0..num_entries)
+        .map(|i| {
+            let name = format!("entry_{:06}", i);
+            let seq = generate_sequence(100, i as u64);
+            TestEntry::new(name, seq)
         })
-        .collect()
+        .collect();
+    Registry::new(entries)
 }
 
 // =============================================================================
 // BENCHMARKS
 // =============================================================================
 
-fn bench_output_formatting(c: &mut Criterion) {
-    let mut group = c.benchmark_group("output_formatting");
-
-    // Test with different numbers of hits
-    for num_hits in [100, 1000, 10000] {
-        let registry = setup_registries(100, 100);
-        let hits = generate_hits(num_hits, 100, 100);
-
-        group.bench_with_input(
-            BenchmarkId::from_parameter(num_hits),
-            &num_hits,
-            |b, _| {
-                b.iter(|| {
-                    let mut output = Vec::with_capacity(num_hits * 128);
-                    for hit in &hits {
-                        hit.write_with_format(
-                            &mut output,
-                            OutputFormat::BindingSite,
-                            &registry,
-                            &registry, // Use same registry for both
-                        )
-                        .ok();
-                    }
-                    black_box(output);
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
-fn bench_get_name_only(c: &mut Criterion) {
+/// Microbenchmark: Just the get_name call in a tight loop
+fn bench_get_name_microbench(c: &mut Criterion) {
     let mut group = c.benchmark_group("get_name_microbench");
 
     for num_entries in [10, 100, 1000] {
-        let registry = setup_registries(num_entries, 1);
+        let registry = setup_registry(num_entries);
 
         group.bench_with_input(
             BenchmarkId::from_parameter(num_entries),
@@ -112,7 +74,7 @@ fn bench_get_name_only(c: &mut Criterion) {
                 b.iter(|| {
                     // Simulate looking up names for many hits
                     let mut sum = 0usize;
-                    for idx in 0..1000 {
+                    for idx in 0..10000 {
                         let name = registry.get_name((idx % n) as u32);
                         sum += name.len();
                     }
@@ -125,5 +87,43 @@ fn bench_get_name_only(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_output_formatting, bench_get_name_only);
+/// Realistic benchmark: Simulates the output path where get_name is called
+fn bench_simulated_output(c: &mut Criterion) {
+    let mut group = c.benchmark_group("simulated_output");
+
+    for num_hits in [100, 1000, 10000] {
+        let query_registry = setup_registry(100);
+        let target_registry = setup_registry(100);
+
+        // Simulate hit indices
+        let hit_indices: Vec<(u32, u32)> = (0..num_hits)
+            .map(|i| ((i % 100) as u32, ((i * 7) % 100) as u32))
+            .collect();
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(num_hits),
+            &num_hits,
+            |b, _| {
+                b.iter(|| {
+                    // Simulate the output formatting path
+                    let mut output = Vec::with_capacity(num_hits * 64);
+                    for (q_idx, t_idx) in &hit_indices {
+                        let q_name = query_registry.get_name(*q_idx);
+                        let t_name = target_registry.get_name(*t_idx);
+                        // Simulate formatting (concatenate names)
+                        output.extend_from_slice(q_name.as_bytes());
+                        output.push(b'\t');
+                        output.extend_from_slice(t_name.as_bytes());
+                        output.push(b'\n');
+                    }
+                    black_box(output);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_get_name_microbench, bench_simulated_output);
 criterion_main!(benches);
