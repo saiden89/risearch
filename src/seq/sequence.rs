@@ -84,6 +84,17 @@ impl Sequence {
     pub fn iter(&self) -> impl Iterator<Item = &Base> {
         self.0.iter()
     }
+
+    /// Unchecked access to base at index (for DP hot path).
+    ///
+    /// # Safety
+    /// Caller must ensure `index < self.len()`.
+    /// Use only in performance-critical code where bounds are pre-validated.
+    #[inline(always)]
+    pub unsafe fn get_unchecked(&self, index: usize) -> Base {
+        // SAFETY: Caller guarantees index is in bounds
+        unsafe { *self.0.get_unchecked(index) }
+    }
 }
 
 // Implement Deref to allow treating Sequence as &[Base]

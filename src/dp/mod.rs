@@ -110,7 +110,8 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         if pos >= seq.len() {
             Base::Gap
         } else {
-            seq[pos]
+            // SAFETY: bounds checked above
+            unsafe { seq.get_unchecked(pos) }
         }
     }
 
@@ -119,7 +120,8 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         if offset > anchor {
             Base::Gap
         } else {
-            seq[anchor - offset]
+            // SAFETY: offset <= anchor, and anchor < seq.len() by construction
+            unsafe { seq.get_unchecked(anchor - offset) }
         }
     }
 
