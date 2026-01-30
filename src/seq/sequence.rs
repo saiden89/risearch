@@ -95,6 +95,19 @@ impl Sequence {
         // SAFETY: Caller guarantees index is in bounds
         unsafe { *self.0.get_unchecked(index) }
     }
+
+    /// Get raw pointer to underlying data (for DP hot path).
+    ///
+    /// Avoids repeated Vec metadata access when doing many unchecked reads.
+    /// Get the pointer once, then use `ptr.add(idx)` for subsequent accesses.
+    ///
+    /// # Safety
+    /// The returned pointer is valid as long as the Sequence is not modified
+    /// and remains alive. Caller must ensure all indices are < self.len().
+    #[inline(always)]
+    pub fn as_ptr(&self) -> *const Base {
+        self.0.as_ptr()
+    }
 }
 
 // Implement Deref to allow treating Sequence as &[Base]

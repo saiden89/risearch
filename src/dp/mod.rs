@@ -110,7 +110,8 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         if pos >= seq.len() {
             Base::Gap
         } else {
-            // SAFETY: bounds checked above
+            // SAFETY: bounds checked above (pos < seq.len())
+            debug_assert!(pos < seq.len(), "base_or_gap: pos {} >= len {}", pos, seq.len());
             unsafe { seq.get_unchecked(pos) }
         }
     }
@@ -120,8 +121,10 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         if offset > anchor {
             Base::Gap
         } else {
-            // SAFETY: offset <= anchor, and anchor < seq.len() by construction
-            unsafe { seq.get_unchecked(anchor - offset) }
+            let idx = anchor - offset;
+            // SAFETY: offset <= anchor (checked above), anchor < seq.len() by DpView construction
+            debug_assert!(idx < seq.len(), "left_base: idx {} >= len {} (anchor={}, offset={})", idx, seq.len(), anchor, offset);
+            unsafe { seq.get_unchecked(idx) }
         }
     }
 
@@ -491,24 +494,51 @@ impl<M: DsmModel> DpExtender<M> {
         debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
         debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
 
+        // Cache raw pointers to avoid repeated Vec metadata access
+        let q_data = view.query.as_ptr();
+        let t_data = view.target.as_ptr();
+        let q_anchor = view.q_anchor;
+        let t_anchor = view.t_anchor;
+
         // Avoid per-iteration branching in view.q/view.t by specializing on direction.
-        if view.dir == ExtendDir::Left {
-            for i in 0..q_len.min(MAX_EXT) {
-                let qi = DpView::<M>::left_base(view.query, view.q_anchor, i).idx();
-                unsafe { *q_ptr.add(i) = qi };
-            }
-            for j in 0..t_len.min(MAX_EXT) {
-                let tj = DpView::<M>::right_base(view.target, view.t_anchor, j).idx();
-                unsafe { *t_ptr.add(j) = tj };
-            }
-        } else {
-            for i in 0..q_len.min(MAX_EXT) {
-                let qi = DpView::<M>::right_base(view.query, view.q_anchor, i).idx();
-                unsafe { *q_ptr.add(i) = qi };
-            }
-            for j in 0..t_len.min(MAX_EXT) {
-                let tj = DpView::<M>::left_base(view.target, view.t_anchor, j).idx();
-                unsafe { *t_ptr.add(j) = tj };
+        // SAFETY: Bounds are validated by the offset checks and view construction
+        unsafe {
+            if view.dir == ExtendDir::Left {
+                for i in 0..q_len.min(MAX_EXT) {
+                    let qi = if i > q_anchor {
+                        Base::Gap.idx()
+                    } else {
+                        (*q_data.add(q_anchor - i)) as usize
+                    };
+                    *q_ptr.add(i) = qi;
+                }
+                for j in 0..t_len.min(MAX_EXT) {
+                    let pos = t_anchor + j;
+                    let tj = if pos >= view.target.len() {
+                        Base::Gap.idx()
+                    } else {
+                        (*t_data.add(pos)) as usize
+                    };
+                    *t_ptr.add(j) = tj;
+                }
+            } else {
+                for i in 0..q_len.min(MAX_EXT) {
+                    let pos = q_anchor + i;
+                    let qi = if pos >= view.query.len() {
+                        Base::Gap.idx()
+                    } else {
+                        (*q_data.add(pos)) as usize
+                    };
+                    *q_ptr.add(i) = qi;
+                }
+                for j in 0..t_len.min(MAX_EXT) {
+                    let tj = if j > t_anchor {
+                        Base::Gap.idx()
+                    } else {
+                        (*t_data.add(t_anchor - j)) as usize
+                    };
+                    *t_ptr.add(j) = tj;
+                }
             }
         }
 
