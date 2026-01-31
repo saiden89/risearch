@@ -1,168 +1,30 @@
-//! Search module for miRNA target finding.
+//! Search module - finds miRNA-target interactions.
 //!
-//! ## Module Structure
-//! - `mod.rs` - Entry points and shared types
-//! - `pipeline.rs` - Unified query processing logic  
-//! - `extend.rs` - DP extension algorithm
+//! Flow: queries → seed finding → DP extension → hits
 
 use anyhow::{Result, bail};
-use log::info;
+use log::{info, trace};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use smallvec::SmallVec;
 
-use crate::alignment::Alignment;
-use crate::config::{Matrix, SearchArgs};
-use crate::dp;
-use crate::dsm::{DsmModel, T04, T99};
+use crate::alignment::{Alignment, Pairing};
+use crate::config::{Matrix, OutputFormat, SearchArgs};
+use crate::dp::{self, DpExtender, DpExtension};
+use crate::dsm::{DsmModel, T04, T99, pair_mat};
 use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
+use crate::seed::{SeedHit, build_seed_alignment};
 use crate::seq::Sequence;
-use crate::types::{Energy, Strand};
-
-mod extend;
-mod pipeline;
-
-use pipeline::{QueryProcessingState, process_query_hits};
+use crate::types::{Base, Energy, Strand};
 
 const MAX_DP_EXT: usize = 50;
 
 // =============================================================================
-// PUBLIC ENTRY POINTS
+// PUBLIC API
 // =============================================================================
-
-/// Run search and return all hits (in-memory mode).
-pub fn run_search(
-    queries: &QueryRegistry,
-    index: &TargetRegistry,
-    opts: &SearchArgs,
-) -> Result<Vec<SearchHit>> {
-    match opts.extend.matrix {
-        Matrix::T04 => pipeline::run_search_impl::<T04>(queries, index, opts),
-        Matrix::T99 => pipeline::run_search_impl::<T99>(queries, index, opts),
-    }
-}
-
-/// Run search and stream results directly to writer (streaming mode).
-pub fn run_search_streaming<W: std::io::Write>(
-    queries: &QueryRegistry,
-    index: &TargetRegistry,
-    opts: &SearchArgs,
-    writer: &mut W,
-) -> Result<usize> {
-    match opts.extend.matrix {
-        Matrix::T04 => run_search_streaming_impl::<T04, W>(queries, index, opts, writer),
-        Matrix::T99 => run_search_streaming_impl::<T99, W>(queries, index, opts, writer),
-    }
-}
-
-/// Streaming search implementation using shared pipeline.
-fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
-    queries: &QueryRegistry,
-    index: &TargetRegistry,
-    opts: &SearchArgs,
-    writer: &mut W,
-) -> Result<usize> {
-    // Validate seed specs upfront
-    for (q_idx, q) in queries.iter() {
-        if let Err(err) = opts.seed.seed.normalize(q.sequence().len()) {
-            bail!(
-                "Invalid seed spec for query '{}': {}",
-                queries.get_name(q_idx),
-                err
-            );
-        }
-    }
-
-    info!(
-        "Starting streaming search: {} queries, seed={:?}, max_ext={}, delta_g={}",
-        queries.len(),
-        opts.seed.seed,
-        opts.extend.max_extension,
-        opts.extend.delta_g
-    );
-
-    let format = opts.output.format;
-    let chunk_size = std::cmp::max(1, rayon::current_num_threads() * 4);
-
-    let mut hit_count = 0;
-    let mut chunk_start = 0usize;
-
-    for chunk in queries.entries().chunks(chunk_size) {
-        let outputs: Vec<(Vec<u8>, usize)> = chunk
-            .par_iter()
-            .enumerate()
-            .map_init(QueryProcessingState::<M>::new, |state, (i, q)| {
-                let q_idx = (chunk_start + i) as u32;
-                let hits = process_query_hits(q_idx, q, state, queries, index, opts);
-
-                let mut out_buf = Vec::with_capacity(4096);
-                for hit in &hits {
-                    hit.write_with_format(&mut out_buf, format, queries, index)
-                        .ok();
-                }
-                (out_buf, hits.len())
-            })
-            .collect();
-
-        for (buf, count) in outputs {
-            if !buf.is_empty() {
-                writer.write_all(&buf)?;
-            }
-            hit_count += count;
-        }
-        chunk_start += chunk.len();
-    }
-
-    info!("Streaming search complete: {} hits", hit_count);
-    Ok(hit_count)
-}
-
-// =============================================================================
-// TYPES
-// =============================================================================
-
-/// High-level algorithm stages for structured logging
-#[derive(Debug, Clone, Copy)]
-enum SearchStage {
-    Extend,
-}
-
-impl std::fmt::Display for SearchStage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Extend => write!(f, "[EXTEND]"),
-        }
-    }
-}
-
-/// Reasons why a seed, candidate, or hit was filtered out
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FilterReason {
-    SeedContainsN,
-    SeedOutOfBounds,
-    MaximalityLeft,
-    MaximalityRight,
-    EnergyAboveThreshold,
-}
-
-/// Statistics for search filtering
-#[derive(Debug, Default)]
-pub struct SearchStats {
-    pub seeds_tried: usize,
-    pub candidates_processed: usize,
-    pub hits_final: usize,
-    pub filtered: HashMap<FilterReason, usize>,
-}
-
-impl SearchStats {
-    pub fn record_filter(&mut self, reason: FilterReason) {
-        *self.filtered.entry(reason).or_insert(0) += 1;
-    }
-}
 
 /// A search hit representing a miRNA-target interaction.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SearchHit {
     pub query_idx: u32,
     pub target_idx: u32,
@@ -181,56 +43,416 @@ pub struct SearchHit {
     pub flank_3: Sequence,
 }
 
-/// Search context holding index, args, and per-query state.
-pub struct SearchContext<'a, 'e, M: DsmModel> {
-    pub index: &'a TargetRegistry,
-    pub args: &'a SearchArgs,
-    pub extender: &'e mut dp::DpExtender<M>,
-    pub stats: SearchStats,
+/// Run search and return all hits (in-memory, parallel).
+pub fn run_search(
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
+    opts: &SearchArgs,
+) -> Result<Vec<SearchHit>> {
+    match opts.extend.matrix {
+        Matrix::T04 => run_search_parallel::<T04>(queries, index, opts),
+        Matrix::T99 => run_search_parallel::<T99>(queries, index, opts),
+    }
 }
 
-impl<'a, 'e, M: DsmModel> SearchContext<'a, 'e, M> {
-    pub fn with_extender(
-        index: &'a TargetRegistry,
-        args: &'a SearchArgs,
-        extender: &'e mut dp::DpExtender<M>,
-    ) -> Self {
-        Self {
-            index,
-            args,
-            extender,
-            stats: SearchStats::default(),
+/// Run search and stream results directly to writer.
+pub fn run_search_streaming<W: std::io::Write>(
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
+    opts: &SearchArgs,
+    writer: &mut W,
+) -> Result<usize> {
+    // Validate seed specs upfront
+    for (q_idx, q) in queries.iter() {
+        if let Err(err) = opts.seed.seed.normalize(q.sequence().len()) {
+            bail!(
+                "Invalid seed spec for query '{}': {}",
+                queries.get_name(q_idx),
+                err
+            );
         }
     }
+
+    info!(
+        "Starting search: {} queries, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.extend.delta_g
+    );
+
+    let count = match opts.extend.matrix {
+        Matrix::T04 => run_search_streaming_impl::<T04, W>(queries, index, opts, writer)?,
+        Matrix::T99 => run_search_streaming_impl::<T99, W>(queries, index, opts, writer)?,
+    };
+
+    info!("Search complete: {} hits", count);
+    Ok(count)
 }
 
 // =============================================================================
-// SHARED FILTER FUNCTIONS
+// IMPLEMENTATION
 // =============================================================================
 
-/// Validate that the seed hit is within target sequence bounds.
-#[inline]
-fn validate_seed_bounds<M: DsmModel>(
-    candidate: &crate::seed::SeedHit,
+/// Reusable state for processing queries.
+struct SearchState<M: DsmModel> {
+    extender: DpExtender<M>,
+    seeds: Vec<SeedHit>,
+    matches: Vec<crate::seed::SeedMatch>,
+    out_buf: Vec<u8>,
+    fmt_bufs: crate::output::OutputBuffers,
+}
+
+impl<M: DsmModel> SearchState<M> {
+    fn new() -> Self {
+        Self {
+            extender: DpExtender::<M>::new(),
+            seeds: Vec::with_capacity(128_000),
+            matches: Vec::with_capacity(1024),
+            out_buf: Vec::with_capacity(64 * 1024),
+            fmt_bufs: crate::output::OutputBuffers::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.seeds.clear();
+        self.matches.clear();
+        self.out_buf.clear();
+    }
+}
+
+fn run_search_parallel<M: DsmModel>(
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
+    opts: &SearchArgs,
+) -> Result<Vec<SearchHit>> {
+    let hits: Vec<Vec<SearchHit>> = queries
+        .entries()
+        .par_iter()
+        .enumerate()
+        .map_init(SearchState::<M>::new, |state, (i, q)| {
+            let mut hits = Vec::new();
+            process_query::<M, _>(i as u32, q, state, queries, index, opts, |hit| {
+                hits.push(hit);
+            });
+            hits
+        })
+        .collect();
+
+    Ok(hits.into_iter().flatten().collect())
+}
+
+fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
+    opts: &SearchArgs,
+    writer: &mut W,
+) -> Result<usize> {
+    let format = opts.output.format;
+    let mut hit_count = 0;
+    let mut state = SearchState::<M>::new();
+
+    for (q_idx, q) in queries.entries().iter().enumerate() {
+        // Move buffers out to avoid borrow conflicts with closure
+        let mut out_buf = std::mem::take(&mut state.out_buf);
+        let mut fmt_bufs = std::mem::take(&mut state.fmt_bufs);
+
+        process_query::<M, _>(q_idx as u32, q, &mut state, queries, index, opts, |hit| {
+            let _ = crate::output::write_hit_with_format(
+                &mut fmt_bufs,
+                &hit,
+                format,
+                &mut out_buf,
+                queries,
+                index,
+            );
+            hit_count += 1;
+
+            // Flush periodically
+            if out_buf.len() >= 64 * 1024 {
+                let _ = writer.write_all(&out_buf);
+                out_buf.clear();
+            }
+        });
+
+        // Flush remaining and restore buffers
+        if !out_buf.is_empty() {
+            writer.write_all(&out_buf)?;
+            out_buf.clear();
+        }
+        state.out_buf = out_buf;
+        state.fmt_bufs = fmt_bufs;
+    }
+
+    Ok(hit_count)
+}
+
+/// Core query processing: find seeds → extend → filter → emit hits.
+fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
+    q_idx: u32,
+    q: &crate::registry::QueryData,
+    state: &mut SearchState<M>,
+    queries: &QueryRegistry,
+    index: &TargetRegistry,
+    opts: &SearchArgs,
+    mut on_hit: F,
+) {
+    state.clear();
+
+    // Find seeds
+    crate::seed::find_seeds(q, index, &opts.seed, &mut state.seeds, &mut state.matches);
+
+    let query = queries.get(q_idx);
+    let q_seq = query.sequence();
+    let interval = query.seed_interval();
+
+    for seed in state.seeds.iter() {
+        let t_seq = match seed.strand {
+            Strand::Reverse => index.get_sequence_rc(seed.target_idx),
+            Strand::Forward => index.get_sequence(seed.target_idx),
+        };
+
+        // Bounds check
+        if seed.target_start + seed.len > t_seq.len() {
+            continue;
+        }
+
+        // Extend seed
+        let Some(ext) = extend_seed::<M>(&mut state.extender, q_seq, t_seq, seed, interval, opts)
+        else {
+            continue;
+        };
+
+        // Energy filter
+        if ext.score > opts.extend.delta_g {
+            continue;
+        }
+
+        on_hit(build_hit(
+            q_idx,
+            index,
+            seed,
+            ext,
+            q_seq,
+            t_seq,
+            opts.output.format,
+        ));
+    }
+}
+
+// =============================================================================
+// DP EXTENSION
+// =============================================================================
+
+struct Extension {
+    score: f64,
+    l_q: usize,
+    l_t: usize,
+    r_q: usize,
+    r_t: usize,
+    left: Option<DpExtension>,
+    right: Option<DpExtension>,
+    q_pos: usize,
+    t_match_end: usize,
+    seed_len: usize,
+}
+
+fn extend_seed<M: DsmModel>(
+    extender: &mut DpExtender<M>,
+    q_seq: &Sequence,
     t_seq: &Sequence,
-    ctx: &mut SearchContext<'_, '_, M>,
-) -> bool {
-    let t_start_idx = candidate.target_start;
-    let seed_len = candidate.len;
+    seed: &SeedHit,
+    interval: crate::registry::SeedInterval,
+    opts: &SearchArgs,
+) -> Option<Extension> {
+    let q_pos = seed.query_pos;
+    let t_pos = seed.target_start;
+    let len = seed.len;
+    let pair_mat = pair_mat(opts.seed.allows_wobble());
 
-    if t_start_idx + seed_len > t_seq.len() {
-        ctx.stats.record_filter(FilterReason::SeedOutOfBounds);
-        return false;
+    // Maximality check: left
+    if q_pos > interval.start && t_pos + len < t_seq.len() {
+        let p_class = pair_mat[q_seq[q_pos - 1].idx()][t_seq[t_pos + len].idx()];
+        if p_class != 0 && !opts.extend.no_max_prune {
+            trace!("Filtered: non-maximal left");
+            return None;
+        }
     }
-    true
+
+    // Maximality check: right
+    if q_pos + len < interval.end && t_pos > 0 {
+        let p_class = pair_mat[q_seq[q_pos + len].idx()][t_seq[t_pos - 1].idx()];
+        if p_class != 0 && !opts.extend.no_max_prune {
+            trace!("Filtered: non-maximal right");
+            return None;
+        }
+    }
+
+    let t_match_end = t_pos + len - 1;
+    let max_ext = (opts.extend.max_extension as usize).min(MAX_DP_EXT);
+
+    // Seed energy
+    let seed_energy = M::seed_energy(q_seq, t_seq, q_pos, t_match_end, len);
+
+    // Check if extension is possible
+    let can_extend_left = q_pos > 0 && t_pos + len < t_seq.len();
+    let can_extend_right = q_pos + len < q_seq.len() && t_pos > 0;
+
+    if max_ext == 0 || (!can_extend_left && !can_extend_right) {
+        // Seed only - add terminal penalties
+        let term_5p = M::terminal_5p(q_seq[q_pos], t_seq[t_match_end]);
+        let term_3p = M::terminal_3p(q_seq[q_pos + len - 1], t_seq[t_pos]);
+        return Some(Extension {
+            score: M::to_kcal(seed_energy + term_5p + term_3p),
+            l_q: 0,
+            l_t: 0,
+            r_q: 0,
+            r_t: 0,
+            left: None,
+            right: None,
+            q_pos,
+            t_match_end,
+            seed_len: len,
+        });
+    }
+
+    // DP extension in both directions
+    let left = extender.extend_left(q_seq, t_seq, q_pos, t_match_end, max_ext);
+    let right = extender.extend_right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext);
+
+    Some(Extension {
+        score: M::to_kcal(seed_energy + left.score + right.score),
+        l_q: left.q_len,
+        l_t: left.t_len,
+        r_q: right.q_len,
+        r_t: right.t_len,
+        left: Some(left),
+        right: Some(right),
+        q_pos,
+        t_match_end,
+        seed_len: len,
+    })
 }
 
-/// Filter by energy threshold.
-#[inline]
-fn filter_by_energy<M: DsmModel>(score: f64, ctx: &mut SearchContext<'_, '_, M>) -> bool {
-    if score > ctx.args.extend.delta_g {
-        ctx.stats.record_filter(FilterReason::EnergyAboveThreshold);
-        return false;
+// =============================================================================
+// HIT BUILDING
+// =============================================================================
+
+fn build_hit(
+    query_idx: u32,
+    index: &TargetRegistry,
+    seed: &SeedHit,
+    ext: Extension,
+    q_seq: &Sequence,
+    t_seq: &Sequence,
+    format: OutputFormat,
+) -> SearchHit {
+    let q_pos = seed.query_pos;
+    let t_start = seed.target_start;
+    let len = seed.len;
+
+    let final_q_start = q_pos.saturating_sub(ext.l_q);
+    let final_q_end = (q_pos + len - 1) + ext.r_q;
+    let final_t_start = t_start.saturating_sub(ext.r_t);
+    let final_t_end = (t_start + len - 1) + ext.l_t;
+
+    let original_len = index.get_sequence_len(seed.target_idx);
+    let (out_t_start, out_t_end, strand_char) = match seed.strand {
+        Strand::Reverse => {
+            let fwd_start = original_len - 1 - final_t_end;
+            let fwd_end = original_len - 1 - final_t_start;
+            (fwd_start + 1, fwd_end + 1, '-')
+        }
+        Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
+    };
+
+    let alignment = match format {
+        OutputFormat::Minimal => None,
+        _ => Some(build_alignment(&ext, q_seq, t_seq, t_start)),
+    };
+
+    SearchHit {
+        query_idx,
+        target_idx: seed.target_idx as u32,
+        q_start: final_q_start,
+        q_end: final_q_end,
+        t_start: final_t_start,
+        t_end: final_t_end,
+        output_q_start: final_q_start + 1,
+        output_q_end: final_q_end + 1,
+        output_t_start: out_t_start,
+        output_t_end: out_t_end,
+        strand: strand_char.into(),
+        energy: ext.score.into(),
+        alignment,
+        flank_5: Sequence::from(Vec::new()),
+        flank_3: Sequence::from(Vec::new()),
     }
-    true
+}
+
+fn build_alignment(ext: &Extension, q_seq: &Sequence, t_seq: &Sequence, t_pos: usize) -> Alignment {
+    // Seed-only case
+    if ext.left.is_none() {
+        let seed = build_seed_alignment(q_seq, t_seq, ext.q_pos, ext.t_match_end, ext.seed_len);
+        return Alignment::new(&[], &seed, &[]);
+    }
+
+    let left_ext = ext.left.as_ref().unwrap();
+    let right_ext = ext.right.as_ref().unwrap();
+
+    // Left alignment (walking backward)
+    let mut left: SmallVec<[Pairing; 64]> = SmallVec::new();
+    let (mut li, mut lj) = (ext.l_q, ext.l_t);
+    for &op in &left_ext.trace {
+        let q_base = if li > ext.q_pos {
+            Base::Gap
+        } else {
+            q_seq[ext.q_pos - li]
+        };
+        let t_base = if ext.t_match_end + lj >= t_seq.len() {
+            Base::Gap
+        } else {
+            t_seq[ext.t_match_end + lj]
+        };
+        left.push(Pairing::from_dp_op(op, q_base, t_base));
+        match op {
+            dp::DpOp::Match | dp::DpOp::Stop => {
+                li = li.saturating_sub(1);
+                lj = lj.saturating_sub(1);
+            }
+            dp::DpOp::GapQ => li = li.saturating_sub(1),
+            dp::DpOp::GapT => lj = lj.saturating_sub(1),
+        }
+    }
+
+    // Seed alignment
+    let seed = build_seed_alignment(q_seq, t_seq, ext.q_pos, ext.t_match_end, ext.seed_len);
+
+    // Right alignment (walking forward)
+    let mut right: SmallVec<[Pairing; 64]> = SmallVec::new();
+    let (mut ri, mut rj) = (0usize, 0usize);
+    let q_anchor = ext.q_pos + ext.seed_len - 1;
+    for &op in right_ext.trace.iter().rev() {
+        match op {
+            dp::DpOp::Match | dp::DpOp::Stop => {
+                ri += 1;
+                rj += 1;
+            }
+            dp::DpOp::GapQ => ri += 1,
+            dp::DpOp::GapT => rj += 1,
+        }
+        let q_base = if q_anchor + ri >= q_seq.len() {
+            Base::Gap
+        } else {
+            q_seq[q_anchor + ri]
+        };
+        let t_base = if rj > t_pos {
+            Base::Gap
+        } else {
+            t_seq[t_pos - rj]
+        };
+        right.push(Pairing::from_dp_op(op, q_base, t_base));
+    }
+
+    Alignment::new(&left, &seed, &right)
 }

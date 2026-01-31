@@ -83,8 +83,3 @@ impl AlignedSeq {
         self.data_len == 0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // No seq-specific tests remain.
-}

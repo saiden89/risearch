@@ -1,76 +1,8 @@
-use clap::ValueEnum;
 use log::warn;
 
-use crate::config as core;
+use crate::config::{self, Matrix, OutputCompression, OutputFormat};
 use crate::seed::{MismatchSpec, SeedSpec};
 use crate::types::SeedPairingMode;
-
-#[derive(ValueEnum, Clone, Debug, Default)]
-#[clap(rename_all = "snake_case")]
-pub enum Matrix {
-    /// Turner 1999 RNA-RNA parameters
-    T99,
-    /// Turner 2004 RNA-RNA parameters
-    #[default]
-    T04,
-}
-
-impl From<Matrix> for core::Matrix {
-    fn from(value: Matrix) -> Self {
-        match value {
-            Matrix::T99 => core::Matrix::T99,
-            Matrix::T04 => core::Matrix::T04,
-        }
-    }
-}
-
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
-#[value(rename_all = "lowercase")]
-pub enum OutputFormat {
-    /// Report predictions in detailed format (C: -p or -p1)
-    Detailed,
-    /// Report predictions in a simple format together with CIGAR-like string for interaction structure (C: -p2)
-    Cigar,
-    /// Report predictions in a simple format together with binding site (3'->5'), flanking 5'end (3'->5') and flanking 3'end (5'->3') sequences of the target (required for post-processing of CRISPR off-target predictions) (C: -p3)
-    BindingSite,
-    /// Report predictions in a simple format - target, start, strand, and energy only (C: -p4)
-    #[default]
-    Minimal,
-}
-
-impl From<OutputFormat> for core::OutputFormat {
-    fn from(value: OutputFormat) -> Self {
-        match value {
-            OutputFormat::Detailed => core::OutputFormat::Detailed,
-            OutputFormat::Cigar => core::OutputFormat::Cigar,
-            OutputFormat::BindingSite => core::OutputFormat::BindingSite,
-            OutputFormat::Minimal => core::OutputFormat::Minimal,
-        }
-    }
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-#[clap(rename_all = "lowercase")]
-pub enum OutputCompression {
-    /// No compression (default)
-    None,
-    /// Gzip compression
-    #[value(alias = "gz")]
-    Gzip,
-    /// Zstandard compression
-    #[value(alias = "zst")]
-    Zstd,
-}
-
-impl From<OutputCompression> for core::OutputCompression {
-    fn from(value: OutputCompression) -> Self {
-        match value {
-            OutputCompression::None => core::OutputCompression::None,
-            OutputCompression::Gzip => core::OutputCompression::Gzip,
-            OutputCompression::Zstd => core::OutputCompression::Zstd,
-        }
-    }
-}
 
 /// Arguments for seed generation
 #[derive(clap::Args, Debug, Clone)]
@@ -154,7 +86,7 @@ pub struct SeedConfig {
     pub mismatch_suffix: Option<usize>,
 }
 
-impl From<SeedConfig> for core::SeedConfig {
+impl From<SeedConfig> for config::SeedConfig {
     fn from(value: SeedConfig) -> Self {
         let seed = if value.seed_start.is_some()
             || value.seed_end.is_some()
@@ -174,7 +106,7 @@ impl From<SeedConfig> for core::SeedConfig {
         } else {
             value.seed_legacy
         };
-        core::SeedConfig {
+        config::SeedConfig {
             seed,
             no_guseed: value.no_guseed,
             pairing: value.pairing,
@@ -196,7 +128,7 @@ pub struct ExtendArgs {
         value_name = "LENGTH",
         default_value_t = 20
     )]
-    pub max_extension: u8, // TODO: should be strictly positive
+    pub max_extension: u8,
 
     /// Set deltaG energy threshold (in kcal/mol) to filter predictions
     #[arg(
@@ -265,12 +197,12 @@ pub struct ExtendArgs {
     pub weights: Option<String>,
 }
 
-impl From<ExtendArgs> for core::ExtendConfig {
+impl From<ExtendArgs> for config::ExtendConfig {
     fn from(value: ExtendArgs) -> Self {
-        core::ExtendConfig {
+        config::ExtendConfig {
             max_extension: value.max_extension,
             delta_g: value.delta_g,
-            matrix: value.matrix.into(),
+            matrix: value.matrix,
             penalty: value.penalty,
             seed_energy: value.seed_energy,
             no_max_prune: value.no_max_prune,
@@ -355,29 +287,29 @@ pub struct SearchArgs {
     pub five_prime_match: Option<String>,
 }
 
-impl From<SearchArgs> for core::SearchArgs {
+impl From<SearchArgs> for config::SearchArgs {
     fn from(value: SearchArgs) -> Self {
         let format = if let Some(f) = value.report_format {
-            f.into()
+            f
         } else if let Some(legacy_mode) = value.report_legacy {
             warn!("-p/--report-alignment is deprecated. Use -f/--format instead.");
             match legacy_mode {
-                1 => core::OutputFormat::Detailed,
-                2 => core::OutputFormat::Cigar,
-                3 => core::OutputFormat::BindingSite,
-                4 => core::OutputFormat::Minimal,
-                _ => core::OutputFormat::Detailed,
+                1 => config::OutputFormat::Detailed,
+                2 => config::OutputFormat::Cigar,
+                3 => config::OutputFormat::BindingSite,
+                4 => config::OutputFormat::Minimal,
+                _ => config::OutputFormat::Detailed,
             }
         } else {
-            core::OutputFormat::Detailed
+            config::OutputFormat::Detailed
         };
 
-        core::SearchArgs {
+        config::SearchArgs {
             seed: value.seed.into(),
             extend: value.extend.into(),
-            output: core::OutputConfig {
+            output: config::OutputConfig {
                 format,
-                compress: value.output_compress.map(Into::into),
+                compress: value.output_compress,
                 level: value.output_level,
             },
             one_vs_one: value.one_vs_one,

@@ -11,16 +11,6 @@
 //! Target: 3'─ t1 ─ t2 ─ 5'
 //! ```
 
-// TODO: maybe also try to do this
-
-// Pre-compute the q-part of the index for all possible target base pairs
-// let mut current_q_profile = [0i32; 36];
-// for t1 in 0..6 {
-//     for t2 in 0..6 {
-//         current_q_profile[t1 * 6 + t2] = M::lookup_raw(qi, qi_prev, t1, t2);
-//     }
-// }
-
 use crate::types::{BASE_COUNT, Base};
 
 /// DSM table type: 4D array [q1][q2][t1][t2]

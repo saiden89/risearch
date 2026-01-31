@@ -150,93 +150,8 @@ impl ParityRunner {
         let search_args = parse_search_args(args);
         let (rust_hits, query_registry) = self.rust.search(query, &search_args);
 
-        // Translate Rust args to C args
-        let mut c_args: Vec<String> = Vec::new();
-        let mut seed_start: Option<&str> = None;
-        let mut seed_end: Option<&str> = None;
-        let mut seed_length: Option<&str> = None;
-        let mut has_legacy_seed = false;
-        let mut iter = args.iter().copied().peekable();
-        while let Some(arg) = iter.next() {
-            match arg {
-                "--no-max-prune" => continue, // Rust-only flag
-                "--experimental" => continue, // Rust-only flag
-                "--dp-band" => {
-                    // Skip value
-                    let _ = iter.next();
-                    continue;
-                }
-                "--dp-band-mode" => {
-                    let _ = iter.next();
-                    continue;
-                }
-                "-s" | "--seed" => {
-                    has_legacy_seed = true;
-                    if let Some(val) = iter.next() {
-                        c_args.push("-s".to_string());
-                        c_args.push(val.to_string());
-                    }
-                }
-                _ if arg.starts_with("--seed=") => {
-                    has_legacy_seed = true;
-                    let val = &arg["--seed=".len()..];
-                    c_args.push("-s".to_string());
-                    c_args.push(val.to_string());
-                    continue;
-                }
-                "--seed-start" => {
-                    if let Some(val) = iter.next() {
-                        seed_start = Some(val);
-                    }
-                    continue;
-                }
-                "--seed-end" => {
-                    if let Some(val) = iter.next() {
-                        seed_end = Some(val);
-                    }
-                    continue;
-                }
-                "--seed-length" => {
-                    if let Some(val) = iter.next() {
-                        seed_length = Some(val);
-                    }
-                    continue;
-                }
-                _ if arg.starts_with("--seed-start=") => {
-                    seed_start = Some(&arg["--seed-start=".len()..]);
-                    continue;
-                }
-                _ if arg.starts_with("--seed-end=") => {
-                    seed_end = Some(&arg["--seed-end=".len()..]);
-                    continue;
-                }
-                _ if arg.starts_with("--seed-length=") => {
-                    seed_length = Some(&arg["--seed-length=".len()..]);
-                    continue;
-                }
-                "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed".to_string()),
-                "--seed-pairing" => {
-                    if let Some(val) = iter.next()
-                        && val == "strict"
-                    {
-                        c_args.push("--noGUseed".to_string());
-                    }
-                }
-                _ => c_args.push(arg.to_string()),
-            }
-        }
-        if !has_legacy_seed {
-            let spec = match (seed_start, seed_end, seed_length) {
-                (Some(start), Some(end), Some(len)) => Some(format!("{}:{}/{}", start, end, len)),
-                (Some(start), Some(end), None) => Some(format!("{}:{}", start, end)),
-                (None, None, Some(len)) => Some(len.to_string()),
-                _ => None,
-            };
-            if let Some(s) = spec {
-                c_args.push("-s".to_string());
-                c_args.push(s);
-            }
-        }
+        // Translate args to C format
+        let c_args = translate_args_for_c(args);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
         let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.index_file);
@@ -331,6 +246,84 @@ impl SingleSeqRunner {
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+/// Translate Rust CLI args to C-compatible args.
+///
+/// Handles:
+/// - Rust-only flags (--no-max-prune, --experimental, --dp-band*)
+/// - New seed syntax (--seed-start/end/length) → legacy -s format
+/// - Flag name differences (--seed-pairing strict → --noGUseed)
+fn translate_args_for_c(args: &[&str]) -> Vec<String> {
+    let mut c_args: Vec<String> = Vec::new();
+    let mut seed_start: Option<&str> = None;
+    let mut seed_end: Option<&str> = None;
+    let mut seed_length: Option<&str> = None;
+    let mut has_legacy_seed = false;
+
+    let mut iter = args.iter().copied().peekable();
+    while let Some(arg) = iter.next() {
+        match arg {
+            // Rust-only flags - skip
+            "--no-max-prune" | "--experimental" => continue,
+            "--dp-band" | "--dp-band-mode" => {
+                let _ = iter.next(); // skip value
+                continue;
+            }
+
+            // Legacy seed format - pass through
+            "-s" | "--seed" => {
+                has_legacy_seed = true;
+                if let Some(val) = iter.next() {
+                    c_args.push("-s".to_string());
+                    c_args.push(val.to_string());
+                }
+            }
+            _ if arg.starts_with("--seed=") => {
+                has_legacy_seed = true;
+                c_args.push("-s".to_string());
+                c_args.push(arg["--seed=".len()..].to_string());
+            }
+
+            // New seed syntax - collect for later
+            "--seed-start" => seed_start = iter.next(),
+            "--seed-end" => seed_end = iter.next(),
+            "--seed-length" => seed_length = iter.next(),
+            _ if arg.starts_with("--seed-start=") => {
+                seed_start = Some(&arg["--seed-start=".len()..])
+            }
+            _ if arg.starts_with("--seed-end=") => seed_end = Some(&arg["--seed-end=".len()..]),
+            _ if arg.starts_with("--seed-length=") => {
+                seed_length = Some(&arg["--seed-length=".len()..])
+            }
+
+            // Pairing flags - translate names
+            "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed".to_string()),
+            "--seed-pairing" => {
+                if iter.next_if(|v| *v == "strict").is_some() {
+                    c_args.push("--noGUseed".to_string());
+                }
+            }
+
+            // Pass through everything else
+            _ => c_args.push(arg.to_string()),
+        }
+    }
+
+    // Convert new seed syntax to legacy format
+    if !has_legacy_seed {
+        let spec = match (seed_start, seed_end, seed_length) {
+            (Some(s), Some(e), Some(l)) => Some(format!("{}:{}/{}", s, e, l)),
+            (Some(s), Some(e), None) => Some(format!("{}:{}", s, e)),
+            (None, None, Some(l)) => Some(l.to_string()),
+            _ => None,
+        };
+        if let Some(s) = spec {
+            c_args.extend(["-s".to_string(), s]);
+        }
+    }
+
+    c_args
+}
 
 /// Parse CLI-style args into SearchArgs using clap.
 /// Always includes --no-dedup-shadow for C parity (C doesn't filter contained hits).

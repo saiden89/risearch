@@ -82,7 +82,12 @@ impl<T: RegistryEntry> Registry<T> {
     /// In practice, idx comes from hit.query_idx which is always valid.
     #[inline(always)]
     pub fn get_name(&self, idx: u32) -> &str {
-        debug_assert!((idx as usize) < self.entries.len(), "Registry index out of bounds: {} >= {}", idx, self.entries.len());
+        debug_assert!(
+            (idx as usize) < self.entries.len(),
+            "Registry index out of bounds: {} >= {}",
+            idx,
+            self.entries.len()
+        );
         // SAFETY: idx comes from generated hits, guaranteed to be valid
         unsafe { self.entries.get_unchecked(idx as usize).name() }
     }
@@ -198,8 +203,7 @@ impl RegistryEntry for QueryData {
 }
 
 pub type QueryRegistry = Registry<QueryData>;
-pub type TargetEntry = SequenceIndex;
-pub type TargetRegistry = Registry<TargetEntry>;
+pub type TargetRegistry = Registry<SequenceIndex>;
 
 impl QueryRegistry {
     pub fn from_indices(indices: Vec<SequenceIndex>, config: &SeedConfig) -> Self {

@@ -283,6 +283,17 @@ pub enum DpOp {
     GapT,  // Gap in target, query base unpaired
 }
 
+impl std::fmt::Display for DpOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DpOp::Stop => write!(f, "Stop"),
+            DpOp::Match => write!(f, "Match"),
+            DpOp::GapQ => write!(f, "GapQ"),
+            DpOp::GapT => write!(f, "GapT"),
+        }
+    }
+}
+
 /// Sentinel value for invalid/uninitialized score (~ -1 billion).
 /// Safe for arithmetic: MIN_SCORE + energy (±2000) will not overflow/underflow i32.
 const MIN_SCORE: i32 = -1_000_000_000;

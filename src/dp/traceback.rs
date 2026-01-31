@@ -41,7 +41,14 @@ pub(super) fn traceback<M: DsmModel>(
                     DpOp::Stop
                 };
 
-                trace!("{} TB Match({},{}): next={:?}", view.dir, i, j, next);
+                trace!(
+                    "{} TB {}({},{}): next={:?}",
+                    view.dir,
+                    DpOp::Match,
+                    i,
+                    j,
+                    next
+                );
                 i -= 1;
                 j -= 1;
                 state = next;
@@ -63,7 +70,14 @@ pub(super) fn traceback<M: DsmModel>(
                     DpOp::Stop
                 };
 
-                trace!("{} TB GapQ({},{}): next={:?}", view.dir, i, j, next);
+                trace!(
+                    "{} TB {}({},{}): next={:?}",
+                    view.dir,
+                    DpOp::GapQ,
+                    i,
+                    j,
+                    next
+                );
                 i -= 1;
                 state = next;
             }
@@ -84,7 +98,14 @@ pub(super) fn traceback<M: DsmModel>(
                     DpOp::Stop
                 };
 
-                trace!("{} TB GapT({},{}): next={:?}", view.dir, i, j, next);
+                trace!(
+                    "{} TB {}({},{}): next={:?}",
+                    view.dir,
+                    DpOp::GapT,
+                    i,
+                    j,
+                    next
+                );
                 j -= 1;
                 state = next;
             }

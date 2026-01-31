@@ -7,19 +7,32 @@ use crate::search::SearchHit;
 use crate::seq::Sequence;
 use crate::seq::utils::push_bases_as_rna;
 
-struct OutputBuffers {
+/// Reusable buffers for hit formatting (avoids per-hit allocation).
+pub struct OutputBuffers {
     line: Vec<u8>,
     itoa: itoa::Buffer,
     zmij: zmij::Buffer,
 }
 
 impl OutputBuffers {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            line: Vec::new(),
+            line: Vec::with_capacity(256), // Preallocate typical line size
             itoa: itoa::Buffer::new(),
             zmij: zmij::Buffer::new(),
         }
+    }
+
+    /// Clear buffers for reuse (keeps capacity allocated)
+    fn clear(&mut self) {
+        self.line.clear();
+        // itoa and zmij buffers are stack-allocated, no need to clear
+    }
+}
+
+impl Default for OutputBuffers {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -222,7 +235,10 @@ pub(crate) fn fill_line_buf(
     }
 }
 
-fn write_hit_with_format<W: Write + ?Sized>(
+/// Write a hit with format using provided buffers (for efficient reuse).
+///
+/// Buffers should be cleared between calls using `bufs.clear()`.
+pub fn write_hit_with_format<W: Write + ?Sized>(
     bufs: &mut OutputBuffers,
     hit: &SearchHit,
     format: OutputFormat,
@@ -230,6 +246,7 @@ fn write_hit_with_format<W: Write + ?Sized>(
     query_registry: &QueryRegistry,
     target_registry: &TargetRegistry,
 ) -> std::io::Result<()> {
+    bufs.clear(); // Clear from previous use
     let q_name = query_registry.get_name(hit.query_idx);
     let t_name = target_registry.get_name(hit.target_idx);
     fill_line_buf(

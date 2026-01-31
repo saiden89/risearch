@@ -1,7 +1,14 @@
+use clap::ValueEnum;
+
 use crate::seed::{MismatchSpec, SeedSpec};
 use crate::types::SeedPairingMode;
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+// =============================================================================
+// ENUMS (shared by config and CLI via clap derives)
+// =============================================================================
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[clap(rename_all = "lowercase")]
 pub enum Matrix {
     /// Turner 1999 RNA-RNA parameters
     T99,
@@ -19,27 +26,28 @@ impl std::fmt::Display for Matrix {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[clap(rename_all = "lowercase")]
 pub enum OutputFormat {
-    /// Report predictions in detailed format (C: -p or -p1)
+    /// Detailed format with alignment (C: -p1)
     Detailed,
-    /// Report predictions in a simple format together with CIGAR-like string for interaction structure (C: -p2)
+    /// CIGAR-like interaction structure (C: -p2)
     Cigar,
-    /// Report predictions in a simple format together with binding site (3'->5'), flanking 5'end (3'->5') and flanking 3'end (5'->3') sequences of the target (required for post-processing of CRISPR off-target predictions) (C: -p3)
+    /// Binding site with flanks for CRISPR (C: -p3)
     BindingSite,
-    /// Report predictions in minimal format (C: -p4)
+    /// Minimal: target, position, strand, energy (C: -p4)
     #[default]
     Minimal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[clap(rename_all = "lowercase")]
 pub enum OutputCompression {
-    /// No compression (default)
     #[default]
     None,
-    /// Gzip compression
+    #[value(alias = "gz")]
     Gzip,
-    /// Zstandard compression
+    #[value(alias = "zst")]
     Zstd,
 }
 
@@ -141,29 +149,12 @@ pub struct ExtendConfig {
     /// Default: true (filters contained hits). Set --no-dedup-shadow for C-compatible behavior.
     pub dedup_shadow: bool,
 
-    // ========================================================================
-    // TODO: Placeholder flags from C implementation - not yet implemented
-    // ========================================================================
-    /// TODO: Banded search - limits the search for bulged matches.
-    /// In C: `-b band, --band=band` - Integer size of bands limiting bulge search.
-    /// The minimum size is 1; use seed option to avoid any bulge.
+    // Placeholder flags from C implementation - not yet implemented
+    // (see cli_args.rs for detailed documentation)
     pub band: Option<u32>,
-
-    /// TODO: Secondary energy matrix for custom energy parameters.
-    /// In C: `-y mat2, --matrix2=mat2` - Only needed for custom energy matrices.
     pub matrix2: Option<String>,
-
-    /// TODO: Path to directory holding custom energy matrices.
-    /// In C: `-M PATH, --matpath=PATH` - Directory with energy matrix files.
     pub matpath: Option<String>,
-
-    /// TODO: Temperature scaling for energy calculations.
-    /// In C: `-K T1[,T2,T3], --temperature=T0[,T1,T2]` - Temperatures in Kelvin.
-    /// T0 is the target temperature; T1/T2 only needed for custom energy parameters.
     pub temperature: Option<String>,
-
-    /// TODO: CRISPR weighting for gRNA-target interactions.
-    /// In C: `-w arr, --weights=arr` - Use "CRISPR_gRNApPAM" to weight by CRISPR/Cas9 impact.
     pub weights: Option<String>,
 }
 
@@ -174,23 +165,10 @@ pub struct SearchArgs {
     pub extend: ExtendConfig,
     pub output: OutputConfig,
 
-    // ========================================================================
-    // TODO: Placeholder flags from C implementation - not yet implemented
-    // ========================================================================
-    /// TODO: One-vs-one mode - only print results where query name matches target name.
-    /// In C: `-1, --one_vs_one` - Filters results to matching query/target names.
+    // Placeholder flags from C implementation - not yet implemented
+    // (see cli_args.rs for detailed documentation)
     pub one_vs_one: bool,
-
-    /// TODO: 3' PAM filter - report only predictions matching a 3' PAM pattern.
-    /// In C: `-3 <reg>, --three_prime_match=PC` - Regex for 3' PAM forward complement.
-    /// Example for cas9: `^(.cc|.uc|.cu)` matching NGG/NAG/NGA 3' PAMs.
-    /// Requires output format 3 or 4 (binding_site).
     pub three_prime_match: Option<String>,
-
-    /// TODO: 5' PAM filter - report only predictions matching a 5' PAM pattern.
-    /// In C: `-5 <reg>, --five_prime_match=PC` - Regex for 5' PAM reverse complement.
-    /// Example for cas12a: `^([^a]aaa)` matching TTTV 5' PAMs.
-    /// Requires output format 3 or 4 (binding_site).
     pub five_prime_match: Option<String>,
 }
 

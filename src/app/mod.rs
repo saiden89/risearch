@@ -1,4 +1,7 @@
+//! Application entry point - handles CLI dispatch and orchestration.
+
 use std::io::Write;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::CommandFactory;
@@ -9,8 +12,90 @@ use risearch::{QueryRegistry, output, sa, search};
 use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
 
-/// Initialize logging based on verbosity level with colored output.
+pub(crate) fn run(cli: Cli) -> Result<()> {
+    init_logging(cli.verbose);
+    init_thread_pool(cli.threads)?;
+
+    match &cli.command {
+        Some(Commands::Index { input, output }) => cmd_index(input, output),
+        Some(Commands::Search {
+            query,
+            target,
+            output,
+            opts,
+        }) => cmd_search(query, target, output, opts),
+        None => {
+            Cli::command().print_help()?;
+            println!();
+            Ok(())
+        }
+    }
+}
+
+// =============================================================================
+// COMMAND HANDLERS
+// =============================================================================
+
+fn cmd_index(input: &Path, output: &Path) -> Result<()> {
+    info!("Creating index: {:?} -> {:?}", input, output);
+    sa::create_suffix_array(input, output)?;
+    info!("Index saved to {:?}", output);
+    Ok(())
+}
+
+fn cmd_search(
+    query_path: &Path,
+    index_path: &Path,
+    output_path: &Path,
+    cli_opts: &risearch::cli_args::SearchArgs,
+) -> Result<()> {
+    let raw_args: Vec<String> = std::env::args().collect();
+
+    debug!("Loading queries from {:?}", query_path);
+    let queries = sa::process_sequences(query_path).context("Failed to load queries")?;
+
+    // Convert CLI args to config (handles deprecated flag translation)
+    let output_compress = cli_opts.output_compress;
+    let output_level = cli_opts.output_level;
+    let mut opts: risearch::config::SearchArgs = cli_opts.clone().into();
+    emit_legacy_warnings(&raw_args, &mut opts)?;
+
+    let queries = QueryRegistry::from_indices(queries.into_entries(), &opts.seed);
+    info!("Loaded {} queries", queries.len());
+
+    debug!("Loading index from {:?}", index_path);
+    let targets = sa::load_index_file(index_path).context("Failed to load index")?;
+    trace!("Index loaded: {} targets", targets.len());
+
+    // Open output with compression
+    let mut writer =
+        output::open_compressed_output(Some(output_path), output_compress, output_level)?;
+    opts.output.compress = Some(risearch::config::OutputCompression::None);
+
+    debug!("Starting search...");
+    let hits = search::run_search_streaming(&queries, &targets, &opts, &mut writer)?;
+    writer.flush().context("Failed to flush output")?;
+
+    info!("Done: {} hits", hits);
+    Ok(())
+}
+
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
+fn init_thread_pool(threads: usize) -> Result<()> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .context("Failed to initialize thread pool")?;
+    debug!("Thread pool: {} threads", threads);
+    Ok(())
+}
+
 pub(crate) fn init_logging(verbosity: u8) {
+    use std::io::Write;
+
     let level = match verbosity {
         0 => log::LevelFilter::Warn,
         1 => log::LevelFilter::Info,
@@ -18,143 +103,24 @@ pub(crate) fn init_logging(verbosity: u8) {
         _ => log::LevelFilter::Trace,
     };
 
-    // ANSI color codes (matching tracing palette)
-    const RESET: &str = "\x1b[0m";
-    const BOLD: &str = "\x1b[1m";
-    const RED: &str = "\x1b[31m";
-    const GREEN: &str = "\x1b[32m";
-    const YELLOW: &str = "\x1b[33m";
-    const BLUE: &str = "\x1b[34m";
-    const MAGENTA: &str = "\x1b[35m";
-    const CYAN: &str = "\x1b[36m";
-
     env_logger::Builder::new()
         .filter_level(level)
         .format_timestamp(None)
-        .format(move |buf, record| {
-            let msg = record.args().to_string();
-
-            // Color code for log level (matching tracing: trace=purple)
-            let level_color = match record.level() {
-                log::Level::Error => RED,
-                log::Level::Warn => YELLOW,
-                log::Level::Info => GREEN,
-                log::Level::Debug => BLUE,
-                log::Level::Trace => MAGENTA, // Purple like tracing
+        .format(|buf, record| {
+            let color = match record.level() {
+                log::Level::Error => "\x1b[31m", // red
+                log::Level::Warn => "\x1b[33m",  // yellow
+                log::Level::Info => "\x1b[32m",  // green
+                log::Level::Debug => "\x1b[34m", // blue
+                log::Level::Trace => "\x1b[35m", // magenta
             };
-
-            // Color code for message based on component prefix
-            // Messages without recognized prefix use level color for consistency
-            let msg_color = if msg.starts_with("DP_LEFT") || msg.starts_with("DP_RIGHT") {
-                CYAN
-            } else if msg.starts_with("SA_SEARCH") || msg.starts_with("[FIND_CAND]") {
-                YELLOW
-            } else if msg.starts_with("SEED") {
-                GREEN
-            } else if msg.starts_with("EXTEND") || msg.starts_with("[MAXIMALITY]") {
-                MAGENTA
-            } else if msg.starts_with("DEDUP")
-                || msg.starts_with("[HIT")
-                || msg.starts_with("[PROC_CAND]")
-            {
-                BLUE
-            } else if msg.starts_with("[QUERY]")
-                || msg.starts_with("Starting")
-                || msg.starts_with("Search")
-            {
-                GREEN
-            } else {
-                // Fallback: use level color for consistent appearance
-                level_color
-            };
-
             writeln!(
                 buf,
-                "[{}{}{:<5}{}] {}{}{}",
-                BOLD,
-                level_color,
+                "[\x1b[1m{}{:<5}\x1b[0m] {}",
+                color,
                 record.level(),
-                RESET,
-                msg_color,
-                msg,
-                RESET
+                record.args()
             )
         })
         .init();
-}
-
-pub(crate) fn run(cli: Cli) -> Result<()> {
-    let raw_args: Vec<String> = std::env::args().collect();
-
-    // Initialize logging based on verbosity
-    init_logging(cli.verbose);
-
-    // Configure rayon thread pool globally
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(cli.threads)
-        .build_global()
-        .context("Failed to initialize thread pool")?;
-
-    debug!("Thread pool initialized with {} threads", cli.threads);
-    trace!("CLI arguments: {:?}", cli);
-
-    match &cli.command {
-        Some(Commands::Index { input, output }) => {
-            info!("Creating index from {:?} -> {:?}", input, output);
-            sa::create_suffix_array(input, output)?;
-            info!("Saved index to {:?}", output);
-        }
-        Some(Commands::Search {
-            query,
-            target: index,
-            output,
-            opts,
-        }) => {
-            debug!(
-                "Search command: query={:?} index={:?} output={:?}",
-                query, index, output
-            );
-            trace!("Search options: {:?}", opts);
-
-            let queries =
-                sa::process_sequences(query).context("Failed to process query sequences")?;
-
-            // Capture compression settings before converting (they're CLI-only fields)
-            let output_compress = opts.output_compress.map(Into::into);
-            let output_level = opts.output_level;
-
-            // Convert CLI opts to SearchArgs to get SeedConfig
-            let mut opts: risearch::config::SearchArgs = opts.clone().into();
-            emit_legacy_warnings(&raw_args, &mut opts)?;
-
-            let queries = QueryRegistry::from_indices(queries.into_entries(), &opts.seed);
-
-            info!("Loaded {} query sequences", queries.len());
-
-            debug!("Loading suffix array index...");
-            let targets = sa::load_index_file(index).context("Failed to load index file")?;
-            trace!("Index loaded successfully");
-            debug!("Starting search with streaming output...");
-
-            // Use streaming compression - encoder wraps the writer directly
-            let mut writer = output::open_compressed_output(
-                Some(output.as_path()),
-                output_compress,
-                output_level,
-            )?;
-            // Clear compression from opts - it's now handled by the writer
-            opts.output.compress = Some(risearch::config::OutputCompression::None);
-
-            let hit_count = search::run_search_streaming(&queries, &targets, &opts, &mut writer)?;
-            writer.flush().context("Failed to flush output")?;
-            info!("Search completed: {} hits written", hit_count);
-        }
-        None => {
-            // No subcommand: show help
-            Cli::command().print_help()?;
-            println!();
-        }
-    }
-
-    Ok(())
 }

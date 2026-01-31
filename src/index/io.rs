@@ -4,7 +4,6 @@ use anyhow::{Context, Result, bail};
 
 use crate::registry::TargetRegistry;
 
-// TODO: validate also for wrong bases
 pub(crate) fn validate_readable_file(path: &Path) -> Result<()> {
     let md = std::fs::metadata(path)
         .with_context(|| format!("Failed to access input path: {}", path.display()))?;
