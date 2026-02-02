@@ -115,9 +115,6 @@ pub struct QueryData {
     sequence: Sequence,
     /// Reverse complement sequence
     sequence_rc: Sequence,
-    /// Suffix array for forward strand (kept for symmetry, currently unused)
-    #[allow(dead_code)]
-    forward_sa: SuffixArray,
     /// Suffix array for reverse complement
     reverse_sa: SuffixArray,
     /// Pre-computed seed interval bounds
@@ -152,7 +149,6 @@ impl QueryData {
             name: index.name,
             sequence: index.sequence,
             sequence_rc: index.sequence_rc,
-            forward_sa: index.forward_sa,
             reverse_sa: index.reverse_sa,
             seed_interval,
             n_prefix,

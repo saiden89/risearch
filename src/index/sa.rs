@@ -51,7 +51,7 @@ pub fn process_sequences(filename: impl AsRef<Path>) -> Result<TargetRegistry> {
         );
     }
 
-    // TODO debouple processing from decoupling
+    // TODO: decouple validation from processing
     let mut seen = HashSet::with_capacity(sequences.len());
     for (id, _) in &sequences {
         if id.trim().is_empty() {

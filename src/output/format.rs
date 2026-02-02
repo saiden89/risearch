@@ -172,15 +172,15 @@ pub(crate) fn fill_line_buf(
         line_buf.reserve(approx - line_buf.capacity());
     }
 
-    if format == OutputFormat::Detailed
-        && let Some(align) = alignment
-    {
-        align.write_query_seq(line_buf);
-        line_buf.push(b'\n');
-        align.write_alignment_line(line_buf);
-        line_buf.push(b'\n');
-        align.write_target_seq(line_buf);
-        line_buf.push(b'\n');
+    if format == OutputFormat::Detailed {
+        if let Some(align) = alignment {
+            align.write_query_seq(line_buf);
+            line_buf.push(b'\n');
+            align.write_alignment_line(line_buf);
+            line_buf.push(b'\n');
+            align.write_target_seq(line_buf);
+            line_buf.push(b'\n');
+        }
     }
 
     push_result_fields(
