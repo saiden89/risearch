@@ -1,4 +1,4 @@
-use crate::dsm::DsmModel;
+use crate::dsm::{stack_with_penalty, DsmModel};
 use crate::seq::Sequence;
 use crate::types::Base;
 use log::trace;
@@ -63,6 +63,7 @@ pub struct DpView<'a, M: DsmModel> {
     pub dir: ExtendDir,
     pub q_len: usize,
     pub t_len: usize,
+    penalty: i32,
     _model: std::marker::PhantomData<M>,
 }
 
@@ -71,13 +72,13 @@ const GAP: usize = Base::Gap as usize;
 const DSM_DIM: usize = 6;
 
 #[inline]
-fn max_dsm_stack<M: DsmModel>() -> i32 {
+fn max_dsm_stack<M: DsmModel>(penalty: i32) -> i32 {
     let mut max = i32::MIN;
     for q1 in 0..DSM_DIM {
         for q2 in 0..DSM_DIM {
             for t1 in 0..DSM_DIM {
                 for t2 in 0..DSM_DIM {
-                    let val = M::stack_idx(q1, q2, t1, t2);
+                    let val = stack_with_penalty::<M>(q1, q2, t1, t2, penalty);
                     if val > max {
                         max = val;
                     }
@@ -89,12 +90,12 @@ fn max_dsm_stack<M: DsmModel>() -> i32 {
 }
 
 #[inline]
-fn max_dsm_terminal<M: DsmModel>() -> i32 {
+fn max_dsm_terminal<M: DsmModel>(penalty: i32) -> i32 {
     let mut max = i32::MIN;
     for q in 0..DSM_DIM {
         for t in 0..DSM_DIM {
-            let left = M::stack_idx(GAP, q, GAP, t);
-            let right = M::stack_idx(q, GAP, t, GAP);
+            let left = stack_with_penalty::<M>(GAP, q, GAP, t, penalty);
+            let right = stack_with_penalty::<M>(q, GAP, t, GAP, penalty);
             let val = if left > right { left } else { right };
             if val > max {
                 max = val;
@@ -137,6 +138,7 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         q_start: usize,
         t_start: usize,
         max_ext: usize,
+        penalty: i32,
     ) -> Self {
         Self {
             query,
@@ -146,6 +148,7 @@ impl<'a, M: DsmModel> DpView<'a, M> {
             dir: ExtendDir::Left,
             q_len: (q_start + 1).min(max_ext),
             t_len: (target.len() - t_start).min(max_ext),
+            penalty,
             _model: std::marker::PhantomData,
         }
     }
@@ -157,6 +160,7 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         q_end: usize,
         t_end: usize,
         max_ext: usize,
+        penalty: i32,
     ) -> Self {
         Self {
             query,
@@ -166,6 +170,7 @@ impl<'a, M: DsmModel> DpView<'a, M> {
             dir: ExtendDir::Right,
             q_len: (query.len() - q_end).min(max_ext),
             t_len: (t_end + 1).min(max_ext),
+            penalty,
             _model: std::marker::PhantomData,
         }
     }
@@ -196,9 +201,9 @@ impl<'a, M: DsmModel> DpView<'a, M> {
     pub fn e(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
         match self.dir {
             // Left: DSM[curr, prev, curr, prev] - stacking toward 5'
-            ExtendDir::Left => M::stack_idx(q2, q1, t2, t1),
+            ExtendDir::Left => stack_with_penalty::<M>(q2, q1, t2, t1, self.penalty),
             // Right: DSM[prev, curr, prev, curr] - stacking toward 3'
-            ExtendDir::Right => M::stack_idx(q1, q2, t1, t2),
+            ExtendDir::Right => stack_with_penalty::<M>(q1, q2, t1, t2, self.penalty),
         }
     }
 
@@ -210,8 +215,12 @@ impl<'a, M: DsmModel> DpView<'a, M> {
     #[inline(always)]
     pub fn terminal(&self, i: usize, j: usize) -> i32 {
         match self.dir {
-            ExtendDir::Left => M::stack_idx(GAP, self.q(i), GAP, self.t(j)),
-            ExtendDir::Right => M::stack_idx(self.q(i), GAP, self.t(j), GAP),
+            ExtendDir::Left => {
+                stack_with_penalty::<M>(GAP, self.q(i), GAP, self.t(j), self.penalty)
+            }
+            ExtendDir::Right => {
+                stack_with_penalty::<M>(self.q(i), GAP, self.t(j), GAP, self.penalty)
+            }
         }
     }
 
@@ -407,13 +416,18 @@ pub struct DpExtender<M: DsmModel> {
     trace_buf: TracebackPath,
     max_stack: i32,
     max_terminal: i32,
+    penalty: i32,
     _model: std::marker::PhantomData<M>,
 }
 
 impl<M: DsmModel> DpExtender<M> {
     pub fn new() -> Self {
-        let max_stack = max_dsm_stack::<M>();
-        let max_terminal = max_dsm_terminal::<M>();
+        Self::with_penalty(0)
+    }
+
+    pub fn with_penalty(penalty: i32) -> Self {
+        let max_stack = max_dsm_stack::<M>(penalty);
+        let max_terminal = max_dsm_terminal::<M>(penalty);
         debug_assert!(max_stack >= MIN_SCORE, "invalid DSM max stack");
         debug_assert!(max_terminal >= MIN_SCORE, "invalid DSM max terminal");
 
@@ -423,6 +437,7 @@ impl<M: DsmModel> DpExtender<M> {
             trace_buf: TracebackPath::new(),
             max_stack,
             max_terminal,
+            penalty,
             _model: std::marker::PhantomData,
         }
     }
@@ -435,7 +450,7 @@ impl<M: DsmModel> DpExtender<M> {
         t_start: usize,
         max_ext: usize,
     ) -> DpExtension {
-        let view = DpView::<M>::left(query, target, q_start, t_start, max_ext);
+        let view = DpView::<M>::left(query, target, q_start, t_start, max_ext, self.penalty);
         self.extend(&view)
     }
 
@@ -448,7 +463,7 @@ impl<M: DsmModel> DpExtender<M> {
         t_end: usize,
         max_ext: usize,
     ) -> DpExtension {
-        let view = DpView::<M>::right(query, target, q_end, t_end, max_ext);
+        let view = DpView::<M>::right(query, target, q_end, t_end, max_ext, self.penalty);
         self.extend(&view)
     }
 
@@ -699,6 +714,7 @@ impl<M: DsmModel> DpExtender<M> {
                     t_len,
                     max_stack,
                     max_terminal,
+                    self.penalty,
                     &mut best_e,
                     &mut best_i,
                     &mut best_j,
@@ -715,6 +731,7 @@ impl<M: DsmModel> DpExtender<M> {
                     t_len,
                     max_stack,
                     max_terminal,
+                    self.penalty,
                     &mut best_e,
                     &mut best_i,
                     &mut best_j,
@@ -730,7 +747,10 @@ impl<M: DsmModel> DpExtender<M> {
 
         trace!(
             "{} TB start: best=({},{}) score={}",
-            view.dir, best_i, best_j, best_e
+            view.dir,
+            best_i,
+            best_j,
+            best_e
         );
 
         // Reuse traceback buffer (cleared each call, capacity preserved)
@@ -739,7 +759,11 @@ impl<M: DsmModel> DpExtender<M> {
 
         trace!(
             "{} result: score={} q_len={} t_len={} trace={:?}",
-            view.dir, best_e, best_i, best_j, self.trace_buf
+            view.dir,
+            best_e,
+            best_i,
+            best_j,
+            self.trace_buf
         );
         // Move trace out using mem::take (zero-copy) - SmallVec::default() is inline-empty
         DpExtension {

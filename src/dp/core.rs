@@ -1,9 +1,9 @@
 use std::cmp::max;
 
-use crate::dsm::DsmModel;
+use crate::dsm::{stack_with_penalty, DsmModel};
 
 use super::init::{add_e, max3, update_best_with_term};
-use super::{MIN_SCORE, ScoreGrid};
+use super::{ScoreGrid, MIN_SCORE};
 
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "prof", inline(never))]
@@ -18,6 +18,7 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     t_len: usize,
     max_stack: i32,
     max_terminal: i32,
+    penalty: i32,
     best_e: &mut i32,
     best_i: &mut usize,
     best_j: &mut usize,
@@ -37,7 +38,8 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
         let mut gap_gap_profile = [0i32; 36];
         for t1 in 0..6 {
             for t2 in 0..6 {
-                gap_gap_profile[t1 * 6 + t2] = M::lookup_raw(GAP, GAP, t1, t2);
+                gap_gap_profile[t1 * 6 + t2] =
+                    stack_with_penalty::<M>(GAP, GAP, t1, t2, penalty);
             }
         }
 
@@ -55,9 +57,9 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
             for t1 in 0..6 {
                 for t2 in 0..6 {
                     q_profile[t1 * 6 + t2] = if LEFT {
-                        M::lookup_raw(qi, qi_prev, t1, t2)
+                        stack_with_penalty::<M>(qi, qi_prev, t1, t2, penalty)
                     } else {
-                        M::lookup_raw(qi_prev, qi, t1, t2)
+                        stack_with_penalty::<M>(qi_prev, qi, t1, t2, penalty)
                     };
                 }
             }
@@ -78,8 +80,8 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                     tj_prev * 6 + tj
                 };
                 let tj_x6 = tj * 6; // for tj * 6 + GAP cases (GAP = 0)
-                // Note: GAP * 6 + tj = tj (no computation needed)
-                // Note: GAP * 6 + GAP = 0 (constant)
+                                    // Note: GAP * 6 + tj = tj (no computation needed)
+                                    // Note: GAP * 6 + GAP = 0 (constant)
 
                 let m_diag = *m_ptr.add(diag_idx);
                 let bq_diag = *bq_ptr.add(diag_idx);
@@ -96,9 +98,15 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                 };
 
                 let s_mt = if LEFT {
-                    add_e(bt_diag, M::lookup_raw(qi, GAP, tj, tj_prev))
+                    add_e(
+                        bt_diag,
+                        stack_with_penalty::<M>(qi, GAP, tj, tj_prev, penalty),
+                    )
                 } else {
-                    add_e(bt_diag, M::lookup_raw(GAP, qi, tj_prev, tj))
+                    add_e(
+                        bt_diag,
+                        stack_with_penalty::<M>(GAP, qi, tj_prev, tj, penalty),
+                    )
                 };
                 let val_m = max3(s_mm, s_mq, s_mt);
 
@@ -107,9 +115,9 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                     let upper = val_m + remaining * max_stack + max_terminal;
                     if upper > *best_e {
                         let term = if LEFT {
-                            M::lookup_raw(GAP, qi, GAP, tj)
+                            stack_with_penalty::<M>(GAP, qi, GAP, tj, penalty)
                         } else {
-                            M::lookup_raw(qi, GAP, tj, GAP)
+                            stack_with_penalty::<M>(qi, GAP, tj, GAP, penalty)
                         };
                         update_best_with_term(best_e, best_i, best_j, val_m, term, i, j);
                     }
@@ -132,9 +140,15 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                 let m_left = *m_ptr.add(left_idx);
                 let bt_left = *bt_ptr.add(left_idx);
                 let s_tm = if LEFT {
-                    add_e(m_left, M::lookup_raw(GAP, qi, tj, tj_prev))
+                    add_e(
+                        m_left,
+                        stack_with_penalty::<M>(GAP, qi, tj, tj_prev, penalty),
+                    )
                 } else {
-                    add_e(m_left, M::lookup_raw(qi, GAP, tj_prev, tj))
+                    add_e(
+                        m_left,
+                        stack_with_penalty::<M>(qi, GAP, tj_prev, tj, penalty),
+                    )
                 };
 
                 // Use precomputed t_stack_idx

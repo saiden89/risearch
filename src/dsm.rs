@@ -11,7 +11,8 @@
 //! Target: 3'─ t1 ─ t2 ─ 5'
 //! ```
 
-use crate::types::{BASE_COUNT, Base};
+use crate::dsm_extend::DSM_EXTEND_FLAT;
+use crate::types::{Base, BASE_COUNT};
 
 /// DSM table type: 4D array [q1][q2][t1][t2]
 pub(crate) type DsmTable = [[[[i16; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
@@ -70,6 +71,73 @@ pub trait DsmModel {
     fn to_kcal(raw: i32) -> f64 {
         (raw as f64 - 559.0) / -100.0
     }
+}
+
+/// RIsearch2 extension mask lookup (dsm_extend_pos), flattened.
+/// Index layout matches DSM: q1*216 + q2*36 + t1*6 + t2.
+#[inline(always)]
+pub(crate) fn extend_lookup_raw(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+    let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+    DSM_EXTEND_FLAT[idx]
+}
+
+/// Apply per-nucleotide extension penalty in dacal/mol units.
+#[inline(always)]
+pub(crate) fn stack_with_penalty<M: DsmModel>(
+    q1: usize,
+    q2: usize,
+    t1: usize,
+    t2: usize,
+    penalty: i32,
+) -> i32 {
+    let base = M::lookup_raw(q1, q2, t1, t2);
+    if penalty == 0 {
+        base
+    } else {
+        base - penalty * extend_lookup_raw(q1, q2, t1, t2)
+    }
+}
+
+#[inline(always)]
+pub(crate) fn terminal_5p_with_penalty<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
+    stack_with_penalty::<M>(
+        Base::Gap.idx(),
+        q.idx(),
+        Base::Gap.idx(),
+        t.idx(),
+        penalty,
+    )
+}
+
+#[inline(always)]
+pub(crate) fn terminal_3p_with_penalty<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
+    stack_with_penalty::<M>(
+        q.idx(),
+        Base::Gap.idx(),
+        t.idx(),
+        Base::Gap.idx(),
+        penalty,
+    )
+}
+
+/// Full seed energy with optional extension-penalty-adjusted DSM.
+pub(crate) fn seed_energy_with_penalty<M: DsmModel>(
+    query: &[Base],
+    target: &[Base],
+    q_pos: usize,
+    t_end: usize,
+    len: usize,
+    penalty: i32,
+) -> i32 {
+    (0..len.saturating_sub(1))
+        .map(|k| {
+            let q1 = query[q_pos + k];
+            let q2 = query[q_pos + k + 1];
+            let t1 = target[t_end - k];
+            let t2 = target[t_end - (k + 1)];
+            stack_with_penalty::<M>(q1.idx(), q2.idx(), t1.idx(), t2.idx(), penalty)
+        })
+        .sum()
 }
 
 /// Build a flattened DSM lookup table.

@@ -3,6 +3,7 @@ pub mod cli_args;
 pub mod config;
 pub mod dp;
 pub mod dsm;
+mod dsm_extend;
 pub mod fastx;
 pub mod index;
 pub mod output;
@@ -17,7 +18,7 @@ pub mod types; // Core domain types
 pub use alignment::{Alignment, Pairing};
 pub use registry::{QueryRegistry, TargetRegistry};
 pub use seq::{AlignedSeq, Sequence};
-pub use types::{BASE_COUNT, Base, Energy, SeedPairingMode, Span, Strand};
+pub use types::{Base, Energy, SeedPairingMode, Span, Strand, BASE_COUNT};
 
 // Search API re-exports for library usage
 pub use search::SearchHit;

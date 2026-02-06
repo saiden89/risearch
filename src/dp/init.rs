@@ -1,6 +1,6 @@
 use std::cmp::max;
 
-use crate::dsm::DsmModel;
+use crate::dsm::{stack_with_penalty, DsmModel};
 
 use super::{DpView, ExtendDir, GAP, MAX_EXT, MIN_SCORE};
 
@@ -68,9 +68,9 @@ pub(super) fn init_limited_rows<M: DsmModel>(
     let left = view.dir == ExtendDir::Left;
     let stack = |q1: usize, q2: usize, t1: usize, t2: usize| -> i32 {
         if left {
-            M::lookup_raw(q2, q1, t2, t1)
+            stack_with_penalty::<M>(q2, q1, t2, t1, view.penalty)
         } else {
-            M::lookup_raw(q1, q2, t1, t2)
+            stack_with_penalty::<M>(q1, q2, t1, t2, view.penalty)
         }
     };
 
@@ -107,9 +107,9 @@ pub(super) fn init_limited_rows<M: DsmModel>(
             let m2 = max(from_m, from_b);
             *m_ptr.add(idx(2, k)) = m2;
             let term = if left {
-                M::lookup_raw(GAP, qi2, GAP, tj)
+                stack_with_penalty::<M>(GAP, qi2, GAP, tj, view.penalty)
             } else {
-                M::lookup_raw(qi2, GAP, tj, GAP)
+                stack_with_penalty::<M>(qi2, GAP, tj, GAP, view.penalty)
             };
             update_best_with_term(best_e, best_i, best_j, m2, term, 2, k);
 
@@ -153,9 +153,9 @@ pub(super) fn init_limited_cols<M: DsmModel>(
     let left = view.dir == ExtendDir::Left;
     let stack = |q1: usize, q2: usize, t1: usize, t2: usize| -> i32 {
         if left {
-            M::lookup_raw(q2, q1, t2, t1)
+            stack_with_penalty::<M>(q2, q1, t2, t1, view.penalty)
         } else {
-            M::lookup_raw(q1, q2, t1, t2)
+            stack_with_penalty::<M>(q1, q2, t1, t2, view.penalty)
         }
     };
 
@@ -181,9 +181,9 @@ pub(super) fn init_limited_cols<M: DsmModel>(
             let val = max(from_m, from_b);
             *m_ptr.add(idx(k, 2)) = val;
             let term = if left {
-                M::lookup_raw(GAP, qi, GAP, tj2)
+                stack_with_penalty::<M>(GAP, qi, GAP, tj2, view.penalty)
             } else {
-                M::lookup_raw(qi, GAP, tj2, GAP)
+                stack_with_penalty::<M>(qi, GAP, tj2, GAP, view.penalty)
             };
             update_best_with_term(best_e, best_i, best_j, val, term, k, 2);
 

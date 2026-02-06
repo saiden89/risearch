@@ -93,7 +93,7 @@ Search options (selected):
   matches at seed ends.
 - `-l, --extension <L>`: max extension length on each side (default 20).
 - `-e, --energy <dG>`: energy threshold in kcal/mol (default -20.0).
-- `-p, --penalty <P>`: per-nucleotide extension penalty.
+- `-d, --penalty <P>`: per-nucleotide extension penalty.
 - `-f, --format <detailed|cigar|bindingsite>`: output format.
 
 Run `risearch --help` or `risearch search --help` for the full list.

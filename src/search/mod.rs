@@ -2,7 +2,7 @@
 //!
 //! Flow: queries → seed finding → DP extension → hits
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use log::{info, trace};
 use rayon::prelude::*;
 use smallvec::SmallVec;
@@ -10,10 +10,13 @@ use smallvec::SmallVec;
 use crate::alignment::{Alignment, Pairing};
 use crate::config::{Matrix, OutputFormat, SearchArgs};
 use crate::dp::{self, DpExtender, DpExtension};
-use crate::dsm::{DsmModel, T04, T99, pair_mat};
+use crate::dsm::{
+    pair_mat, seed_energy_with_penalty, terminal_3p_with_penalty, terminal_5p_with_penalty,
+    DsmModel, T04, T99,
+};
 use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
-use crate::seed::{SeedHit, build_seed_alignment};
+use crate::seed::{build_seed_alignment, SeedHit};
 use crate::seq::Sequence;
 use crate::types::{Base, Energy, Strand};
 
@@ -97,6 +100,7 @@ pub fn run_search_streaming<W: std::io::Write>(
 /// Reusable state for processing queries.
 struct SearchState<M: DsmModel> {
     extender: DpExtender<M>,
+    penalty: i32,
     seeds: Vec<SeedHit>,
     matches: Vec<crate::seed::SeedMatch>,
     out_buf: Vec<u8>,
@@ -104,9 +108,10 @@ struct SearchState<M: DsmModel> {
 }
 
 impl<M: DsmModel> SearchState<M> {
-    fn new() -> Self {
+    fn new(penalty: i32) -> Self {
         Self {
-            extender: DpExtender::<M>::new(),
+            extender: DpExtender::<M>::with_penalty(penalty),
+            penalty,
             seeds: Vec::with_capacity(128_000),
             matches: Vec::with_capacity(1024),
             out_buf: Vec::with_capacity(64 * 1024),
@@ -126,11 +131,12 @@ fn run_search_parallel<M: DsmModel>(
     index: &TargetRegistry,
     opts: &SearchArgs,
 ) -> Result<Vec<SearchHit>> {
+    let penalty = (opts.extend.penalty * 100.0).round() as i32;
     let hits: Vec<Vec<SearchHit>> = queries
         .entries()
         .par_iter()
         .enumerate()
-        .map_init(SearchState::<M>::new, |state, (i, q)| {
+        .map_init(|| SearchState::<M>::new(penalty), |state, (i, q)| {
             let mut hits = Vec::new();
             process_query::<M, _>(i as u32, q, state, queries, index, opts, |hit| {
                 hits.push(hit);
@@ -150,7 +156,8 @@ fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
 ) -> Result<usize> {
     let format = opts.output.format;
     let mut hit_count = 0;
-    let mut state = SearchState::<M>::new();
+    let penalty = (opts.extend.penalty * 100.0).round() as i32;
+    let mut state = SearchState::<M>::new(penalty);
 
     for (q_idx, q) in queries.entries().iter().enumerate() {
         // Move buffers out to avoid borrow conflicts with closure
@@ -218,7 +225,15 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
         }
 
         // Extend seed
-        let Some(ext) = extend_seed::<M>(&mut state.extender, q_seq, t_seq, seed, interval, opts)
+        let Some(ext) = extend_seed::<M>(
+            &mut state.extender,
+            state.penalty,
+            q_seq,
+            t_seq,
+            seed,
+            interval,
+            opts,
+        )
         else {
             continue;
         };
@@ -259,6 +274,7 @@ struct Extension {
 
 fn extend_seed<M: DsmModel>(
     extender: &mut DpExtender<M>,
+    penalty: i32,
     q_seq: &Sequence,
     t_seq: &Sequence,
     seed: &SeedHit,
@@ -292,7 +308,7 @@ fn extend_seed<M: DsmModel>(
     let max_ext = (opts.extend.max_extension as usize).min(MAX_DP_EXT);
 
     // Seed energy
-    let seed_energy = M::seed_energy(q_seq, t_seq, q_pos, t_match_end, len);
+    let seed_energy = seed_energy_with_penalty::<M>(q_seq, t_seq, q_pos, t_match_end, len, penalty);
 
     // Check if extension is possible
     let can_extend_left = q_pos > 0 && t_pos + len < t_seq.len();
@@ -300,10 +316,11 @@ fn extend_seed<M: DsmModel>(
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
         // Seed only - add terminal penalties
-        let term_5p = M::terminal_5p(q_seq[q_pos], t_seq[t_match_end]);
-        let term_3p = M::terminal_3p(q_seq[q_pos + len - 1], t_seq[t_pos]);
+        let term_5p = terminal_5p_with_penalty::<M>(q_seq[q_pos], t_seq[t_match_end], penalty);
+        let term_3p = terminal_3p_with_penalty::<M>(q_seq[q_pos + len - 1], t_seq[t_pos], penalty);
+        let nt_count = (2 * len) as i32;
         return Some(Extension {
-            score: M::to_kcal(seed_energy + term_5p + term_3p),
+            score: M::to_kcal(seed_energy + term_5p + term_3p + nt_count * penalty),
             l_q: 0,
             l_t: 0,
             r_q: 0,
@@ -319,9 +336,10 @@ fn extend_seed<M: DsmModel>(
     // DP extension in both directions
     let left = extender.extend_left(q_seq, t_seq, q_pos, t_match_end, max_ext);
     let right = extender.extend_right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext);
+    let nt_count = (left.q_len + left.t_len + right.q_len + right.t_len + 2 * len) as i32;
 
     Some(Extension {
-        score: M::to_kcal(seed_energy + left.score + right.score),
+        score: M::to_kcal(seed_energy + left.score + right.score + nt_count * penalty),
         l_q: left.q_len,
         l_t: left.t_len,
         r_q: right.q_len,
