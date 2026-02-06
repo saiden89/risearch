@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{ParityRunner, workspace_root};
+use common::{workspace_root, ParityRunner};
 use rstest::rstest;
 
 #[rstest]

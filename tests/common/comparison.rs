@@ -546,13 +546,17 @@ impl<'a> ParityComparator<'a> {
 
             for r in &r_remaining {
                 let mut best_match_idx = None;
+                let mut best_delta = f64::MAX;
                 for (i, c) in c_remaining.iter().enumerate() {
                     if c_rem_matched[i] {
                         continue;
                     }
                     if r.coords_match(c) {
-                        best_match_idx = Some(i);
-                        break;
+                        let delta = (r.energy.as_f64() - c.energy.as_f64()).abs();
+                        if delta < best_delta {
+                            best_delta = delta;
+                            best_match_idx = Some(i);
+                        }
                     }
                 }
 

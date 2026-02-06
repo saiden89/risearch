@@ -9,7 +9,11 @@ fn wc_complement(seq: &str) -> String {
     seq.chars()
         .rev()
         .map(|c| match c {
-            'A' => 'U', 'U' => 'A', 'C' => 'G', 'G' => 'C', _ => c,
+            'A' => 'U',
+            'U' => 'A',
+            'C' => 'G',
+            'G' => 'C',
+            _ => c,
         })
         .collect()
 }
@@ -76,5 +80,6 @@ fn test_ext_both(
     let args = ["-l", "10", "-e", "10000.0", "--seed-length", "2", "-p3"];
     let query = format!("{}{}{}{}", el, s1, s2, er);
     let target = wc_complement(&query);
-    SingleSeqRunner::new(&query, &target).assert_pass(&format!("b_{}_{}{}_{}", el, s1, s2, er), &args);
+    SingleSeqRunner::new(&query, &target)
+        .assert_pass(&format!("b_{}_{}{}_{}", el, s1, s2, er), &args);
 }

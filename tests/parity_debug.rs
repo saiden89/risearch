@@ -23,8 +23,18 @@ fn test_custom_seq() {
 #[test]
 fn test_mir24_isolated() {
     let query = "uggcucaguucagcaggaacag";
-    let target = "GGAAGACCTGCCTCCTCATCGTCTTCAGCAAGGATCAGTTTCCGGAGGTCTACGTCCCTACTGTCTTTGAGAACTATATTG";
-    let args = ["-l", "20", "-e", "100.0", "--seed-length", "6", "-p3", "--no-max-prune"];
+    let target =
+        "GGAAGACCTGCCTCCTCATCGTCTTCAGCAAGGATCAGTTTCCGGAGGTCTACGTCCCTACTGTCTTTGAGAACTATATTG";
+    let args = [
+        "-l",
+        "20",
+        "-e",
+        "100.0",
+        "--seed-length",
+        "6",
+        "-p3",
+        "--no-max-prune",
+    ];
     SingleSeqRunner::new(query, target).assert_pass("mir24_isolated", &args);
 }
 

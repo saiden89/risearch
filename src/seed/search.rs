@@ -1,8 +1,8 @@
 use crate::config::SeedConfig;
-use crate::registry::{QueryData, SeedInterval};
+use crate::registry::QueryData;
 use crate::sa::{SuffixArray, TargetRegistry};
 use crate::seq::Sequence;
-use crate::types::Strand;
+use crate::types::{Interval, SeedLen, Strand, TargetId};
 
 use super::{SeedHit, SeedMatch, SeedSearcher};
 
@@ -13,7 +13,9 @@ struct QueryView<'a> {
     /// Reference to the query's immutable data
     data: &'a QueryData,
     /// Pre-computed seed interval (borrowed from QueryData)
-    interval: SeedInterval,
+    interval: Interval,
+    /// Minimum seed length
+    min_seed_len: usize,
 }
 
 impl<'a> QueryView<'a> {
@@ -23,6 +25,7 @@ impl<'a> QueryView<'a> {
         Self {
             data,
             interval: data.seed_interval(),
+            min_seed_len: data.min_seed_len(),
         }
     }
 
@@ -92,7 +95,7 @@ fn collect_target_seeds(
     let q_len = view.data.sequence().len();
     let start = view.interval.start;
     let end = view.interval.end;
-    let min_len = view.interval.min_len;
+    let min_len = view.min_seed_len;
 
     matches.clear();
     let searcher = SeedSearcher::new(
@@ -105,7 +108,7 @@ fn collect_target_seeds(
     searcher.search_length_range(min_len, q_len, matches);
 
     for m in matches.iter() {
-        let seed_len = m.depth;
+        let seed_len = m.seed_len;
         for &q_rc_pos_i32 in &view.data.reverse_sa()[m.query_interval.start..m.query_interval.end] {
             let q_rc_pos = q_rc_pos_i32 as usize;
             if q_rc_pos + seed_len > q_len {
@@ -126,9 +129,10 @@ fn collect_target_seeds(
                 }
                 candidates.push(SeedHit {
                     query_pos: q_pos,
-                    target_idx,
+                    target_id: TargetId(target_idx as u32),
                     target_start: t_pos,
-                    len: seed_len,
+                    seed_len: SeedLen::new(seed_len)
+                        .expect("seed length from search must be positive and fit in u16"),
                     strand,
                 });
             }

@@ -4,40 +4,7 @@ use crate::config::SeedConfig;
 use crate::index::sa::SequenceIndex;
 use crate::sa::SuffixArray;
 use crate::seq::Sequence;
-use crate::types::Base;
-
-#[derive(Clone, Copy, Debug)]
-pub struct SeedInterval {
-    /// Start position (0-based, inclusive)
-    pub start: usize,
-    /// End position (0-based, exclusive)
-    pub end: usize,
-    /// Minimum seed length
-    pub min_len: usize,
-}
-
-impl SeedInterval {
-    /// Compute interval from SeedConfig and query length.
-    ///
-    /// Converts from 1-based (SeedSpec) to 0-based indexing.
-    pub fn from_config(config: &SeedConfig, query_len: usize) -> Self {
-        match config.seed.normalize(query_len) {
-            Ok((start1, end1, min_len)) => Self {
-                start: start1 - 1, // Convert to 0-based
-                end: end1,         // end1 is already exclusive in 0-based terms
-                min_len,
-            },
-            Err(_) => {
-                // Fallback for invalid spec: use entire sequence
-                Self {
-                    start: 0,
-                    end: query_len,
-                    min_len: query_len,
-                }
-            }
-        }
-    }
-}
+use crate::types::{Base, Interval};
 
 pub trait RegistryEntry {
     fn name(&self) -> &str;
@@ -118,7 +85,9 @@ pub struct QueryData {
     /// Suffix array for reverse complement
     reverse_sa: SuffixArray,
     /// Pre-computed seed interval bounds
-    seed_interval: SeedInterval,
+    seed_interval: Interval,
+    /// Minimum seed length
+    min_seed_len: usize,
     /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
@@ -143,7 +112,10 @@ impl QueryData {
         let has_n_any = n_total != 0;
 
         // Compute seed interval once
-        let seed_interval = SeedInterval::from_config(config, q_len);
+        let (seed_interval, min_seed_len) = match config.seed.normalize(q_len) {
+            Ok((start1, end1, min_len)) => (Interval::new(start1 - 1, end1), min_len),
+            Err(_) => (Interval::new(0, q_len), q_len),
+        };
 
         Self {
             name: index.name,
@@ -151,6 +123,7 @@ impl QueryData {
             sequence_rc: index.sequence_rc,
             reverse_sa: index.reverse_sa,
             seed_interval,
+            min_seed_len,
             n_prefix,
             has_n_any,
         }
@@ -187,8 +160,13 @@ impl QueryData {
     }
 
     #[inline]
-    pub fn seed_interval(&self) -> SeedInterval {
+    pub fn seed_interval(&self) -> Interval {
         self.seed_interval
+    }
+
+    #[inline]
+    pub fn min_seed_len(&self) -> usize {
+        self.min_seed_len
     }
 }
 

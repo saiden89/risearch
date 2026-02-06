@@ -1,3 +1,4 @@
+use crate::alignment::Pairing;
 use crate::dsm::{stack_with_penalty, DsmModel};
 use crate::seq::Sequence;
 use crate::types::Base;
@@ -11,10 +12,6 @@ mod traceback;
 use core::dp_main_loop_generic;
 use init::{add_e, init_limited_cols, init_limited_rows, update_best_with_term};
 use traceback::traceback;
-
-/// Stack-allocated trace buffer. 64 ops covers most extensions without heap allocation.
-/// DpOp is 1 byte, so 64 * 1 = 64 bytes on stack.
-pub type TracebackPath = SmallVec<[DpOp; 64]>;
 
 /// Maximum extension length for precomputed index arrays.
 /// Matches the typical max_ext parameter (100-200 bases).
@@ -273,36 +270,6 @@ impl<'a, M: DsmModel> DpView<'a, M> {
     }
 }
 
-/// Result of DP extension
-#[derive(Debug, Clone)]
-pub struct DpExtension {
-    pub score: i32,
-    pub q_len: usize,
-    pub t_len: usize,
-    pub trace: TracebackPath,
-}
-
-/// Alignment operation for traceback
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DpOp {
-    #[default]
-    Stop, // Traceback termination
-    Match, // Diagonal move - paired bases
-    GapQ,  // Gap in query, target base unpaired
-    GapT,  // Gap in target, query base unpaired
-}
-
-impl std::fmt::Display for DpOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DpOp::Stop => write!(f, "Stop"),
-            DpOp::Match => write!(f, "Match"),
-            DpOp::GapQ => write!(f, "GapQ"),
-            DpOp::GapT => write!(f, "GapT"),
-        }
-    }
-}
-
 /// Sentinel value for invalid/uninitialized score (~ -1 billion).
 /// Safe for arithmetic: MIN_SCORE + energy (±2000) will not overflow/underflow i32.
 const MIN_SCORE: i32 = -1_000_000_000;
@@ -387,14 +354,14 @@ impl ScoreGrid {
 
 /// Score-only DP matrices for extension (matches C implementation).
 /// Traceback is reconstructed post-hoc by comparing scores.
-pub struct DpMatrices {
-    pub m: ScoreGrid,  // Match/mismatch state
-    pub bq: ScoreGrid, // Query bulge (gap in target)
-    pub bt: ScoreGrid, // Target bulge (gap in query)
+struct DpMatrices {
+    m: ScoreGrid,  // Match/mismatch state
+    bq: ScoreGrid, // Query bulge (gap in target)
+    bt: ScoreGrid, // Target bulge (gap in query)
 }
 
 impl DpMatrices {
-    pub fn new(width: usize, height: usize) -> Self {
+    fn new(width: usize, height: usize) -> Self {
         Self {
             m: ScoreGrid::new(width, height),
             bq: ScoreGrid::new(width, height),
@@ -402,7 +369,7 @@ impl DpMatrices {
         }
     }
 
-    pub fn resize(&mut self, width: usize, height: usize) {
+    fn resize(&mut self, width: usize, height: usize) {
         self.m.resize(width, height);
         self.bq.resize(width, height);
         self.bt.resize(width, height);
@@ -412,12 +379,39 @@ impl DpMatrices {
 /// Stateful DP extender with reusable matrices
 pub struct DpExtender<M: DsmModel> {
     matrices: DpMatrices,
-    /// Reusable traceback buffer - cleared and reused on each extend() call.
-    trace_buf: TracebackPath,
     max_stack: i32,
     max_terminal: i32,
     penalty: i32,
     _model: std::marker::PhantomData<M>,
+}
+
+/// Guard holding a reference to DP matrices after forward pass.
+/// While this exists, the extender cannot be used for another extension
+/// (borrow checker enforces this via the lifetime on `matrices`).
+pub struct ExtendResult<'a, M: DsmModel> {
+    matrices: &'a DpMatrices,
+    pub score: i32,
+    pub q_len: usize,
+    pub t_len: usize,
+    _model: std::marker::PhantomData<M>,
+}
+
+impl<M: DsmModel> ExtendResult<'_, M> {
+    /// Run traceback to reconstruct alignment as Pairings.
+    /// Only call when alignment output is needed (skip for Minimal format).
+    pub fn traceback(&self, view: &DpView<'_, M>) -> SmallVec<[Pairing; 64]> {
+        let mut out = SmallVec::new();
+        traceback::<M>(
+            view,
+            &self.matrices.m,
+            &self.matrices.bq,
+            &self.matrices.bt,
+            self.q_len,
+            self.t_len,
+            &mut out,
+        );
+        out
+    }
 }
 
 impl<M: DsmModel> DpExtender<M> {
@@ -433,38 +427,11 @@ impl<M: DsmModel> DpExtender<M> {
 
         Self {
             matrices: DpMatrices::new(200, 200),
-            // SmallVec doesn't need with_capacity for inline storage
-            trace_buf: TracebackPath::new(),
             max_stack,
             max_terminal,
             penalty,
             _model: std::marker::PhantomData,
         }
-    }
-    /// Extend to the left (query 5', target 3')
-    pub fn extend_left(
-        &mut self,
-        query: &Sequence,
-        target: &Sequence,
-        q_start: usize,
-        t_start: usize,
-        max_ext: usize,
-    ) -> DpExtension {
-        let view = DpView::<M>::left(query, target, q_start, t_start, max_ext, self.penalty);
-        self.extend(&view)
-    }
-
-    /// Extend to the right (query 3', target 5')
-    pub fn extend_right(
-        &mut self,
-        query: &Sequence,
-        target: &Sequence,
-        q_end: usize,
-        t_end: usize,
-        max_ext: usize,
-    ) -> DpExtension {
-        let view = DpView::<M>::right(query, target, q_end, t_end, max_ext, self.penalty);
-        self.extend(&view)
     }
 
     // =========================================================================
@@ -472,7 +439,9 @@ impl<M: DsmModel> DpExtender<M> {
     // =========================================================================
 
     #[cfg_attr(feature = "prof", inline(never))]
-    pub fn extend(&mut self, view: &DpView<'_, M>) -> DpExtension {
+    /// Run DP forward pass and return an ExtendResult guard.
+    /// Call `.traceback()` on the result if alignment is needed.
+    pub fn extend(&mut self, view: &DpView<'_, M>) -> ExtendResult<'_, M> {
         let (q_len, t_len) = (view.q_len, view.t_len);
         let max_stack = self.max_stack;
         let max_terminal = self.max_terminal;
@@ -486,11 +455,12 @@ impl<M: DsmModel> DpExtender<M> {
 
         // Early return
         if q_len <= 1 || t_len <= 1 {
-            return DpExtension {
+            return ExtendResult {
+                matrices: &self.matrices,
                 score: best_e,
                 q_len: 0,
                 t_len: 0,
-                trace: TracebackPath::new(),
+                _model: std::marker::PhantomData,
             };
         }
 
@@ -627,11 +597,12 @@ impl<M: DsmModel> DpExtender<M> {
 
         // Early return when either axis is too small for row/col 2 cells
         if q_len <= 2 || t_len <= 2 {
-            return DpExtension {
+            return ExtendResult {
+                matrices: &self.matrices,
                 score: best_e,
                 q_len: best_i,
                 t_len: best_j,
-                trace: TracebackPath::new(),
+                _model: std::marker::PhantomData,
             };
         }
 
@@ -739,38 +710,20 @@ impl<M: DsmModel> DpExtender<M> {
             }
         }
 
-        // =======================================================================
-        // TRACEBACK - Reconstructed from scores (like C implementation)
-        // =======================================================================
-        // C doesn't store traceback during DP. It reconstructs the path by
-        // comparing scores to determine which transition was taken.
-
         trace!(
-            "{} TB start: best=({},{}) score={}",
-            view.dir,
-            best_i,
-            best_j,
-            best_e
-        );
-
-        // Reuse traceback buffer (cleared each call, capacity preserved)
-        self.trace_buf.clear();
-        traceback::<M>(view, m, bq, bt, best_i, best_j, &mut self.trace_buf);
-
-        trace!(
-            "{} result: score={} q_len={} t_len={} trace={:?}",
+            "{} result: score={} q_len={} t_len={}",
             view.dir,
             best_e,
             best_i,
             best_j,
-            self.trace_buf
         );
-        // Move trace out using mem::take (zero-copy) - SmallVec::default() is inline-empty
-        DpExtension {
+
+        ExtendResult {
+            matrices: &self.matrices,
             score: best_e,
             q_len: best_i,
             t_len: best_j,
-            trace: std::mem::take(&mut self.trace_buf),
+            _model: std::marker::PhantomData,
         }
     }
 }

@@ -25,33 +25,9 @@
 use crate::config::SeedConfig;
 use crate::sa::SuffixArray;
 use crate::seq::Sequence;
-use crate::types::Base;
+use crate::types::{Base, Interval};
 
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
-
-/// Interval in a suffix array [start, end) - half-open range
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SaInterval {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl SaInterval {
-    #[inline]
-    pub const fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
-    }
-
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.start >= self.end
-    }
-
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-}
 
 /// Partitioned intervals for all RNA bases within an SA range.
 ///
@@ -77,22 +53,22 @@ impl BaseIntervals {
     /// Get interval for a specific base
     /// Indexing: 0=A, 1=G, 2=C, 3=U, 4=N (matches discriminant order)
     #[inline]
-    pub fn get(&self, base: Base) -> SaInterval {
+    pub fn get(&self, base: Base) -> Interval {
         match base {
-            Base::Gap => SaInterval::new(0, 0),
-            Base::A => SaInterval::new(self.bounds[0], self.bounds[1]),
-            Base::G => SaInterval::new(self.bounds[1], self.bounds[2]),
-            Base::C => SaInterval::new(self.bounds[2], self.bounds[3]),
-            Base::U => SaInterval::new(self.bounds[3], self.bounds[4]),
-            Base::N => SaInterval::new(self.bounds[4], self.bounds[5]),
+            Base::Gap => Interval::new(0, 0),
+            Base::A => Interval::new(self.bounds[0], self.bounds[1]),
+            Base::G => Interval::new(self.bounds[1], self.bounds[2]),
+            Base::C => Interval::new(self.bounds[2], self.bounds[3]),
+            Base::U => Interval::new(self.bounds[3], self.bounds[4]),
+            Base::N => Interval::new(self.bounds[4], self.bounds[5]),
         }
     }
 
     /// Get interval by index (0=A, 1=G, 2=C, 3=U, 4=N)
     #[inline]
-    pub fn get_by_idx(&self, idx: usize) -> SaInterval {
+    pub fn get_by_idx(&self, idx: usize) -> Interval {
         debug_assert!(idx < 5);
-        SaInterval::new(self.bounds[idx], self.bounds[idx + 1])
+        Interval::new(self.bounds[idx], self.bounds[idx + 1])
     }
 
     /// Check if any base has a non-empty interval
@@ -106,11 +82,11 @@ impl BaseIntervals {
 #[derive(Debug, Clone)]
 pub struct SeedMatch {
     /// Interval in query SA containing matching suffixes
-    pub query_interval: SaInterval,
+    pub query_interval: Interval,
     /// Interval in target SA containing matching suffixes
-    pub target_interval: SaInterval,
-    /// Depth at which match was found (= seed length)
-    pub depth: usize,
+    pub target_interval: Interval,
+    /// Seed length for this match.
+    pub seed_len: usize,
 }
 
 impl SeedMatch {
@@ -125,8 +101,8 @@ impl SeedMatch {
 /// Search state during parallel SA traversal
 #[derive(Debug, Clone, Copy)]
 struct SearchState {
-    query_interval: SaInterval,
-    target_interval: SaInterval,
+    query_interval: Interval,
+    target_interval: Interval,
     depth: usize,
     matches_since_mismatch: usize,
     mismatch_count: usize,
@@ -207,8 +183,8 @@ impl<'a> SeedSearcher<'a> {
         results: &mut Vec<SeedMatch>,
     ) {
         let initial_state = SearchState {
-            query_interval: SaInterval::new(0, self.query_sa.len()),
-            target_interval: SaInterval::new(0, self.target_comp_sa.len()),
+            query_interval: Interval::new(0, self.query_sa.len()),
+            target_interval: Interval::new(0, self.target_comp_sa.len()),
             depth: 0,
             matches_since_mismatch: 0,
             mismatch_count: 0,
@@ -235,7 +211,7 @@ impl<'a> SeedSearcher<'a> {
             results.push(SeedMatch {
                 query_interval: state.query_interval,
                 target_interval: state.target_interval,
-                depth: state.depth,
+                seed_len: state.depth,
             });
         }
 
@@ -390,8 +366,8 @@ impl<'a> SeedSearcher<'a> {
     #[inline]
     fn recurse_match(
         &self,
-        q_int: SaInterval,
-        s_int: SaInterval,
+        q_int: Interval,
+        s_int: Interval,
         depth: usize,
         prev_state: &SearchState,
         min_len: usize,
@@ -513,7 +489,7 @@ impl<'a> SeedSearcher<'a> {
         &self,
         sa: &SuffixArray,
         seq: &Sequence,
-        interval: SaInterval,
+        interval: Interval,
         offset: usize,
     ) -> BaseIntervals {
         if interval.is_empty() {
@@ -540,7 +516,7 @@ impl<'a> SeedSearcher<'a> {
         &self,
         sa: &SuffixArray,
         seq: &Sequence,
-        interval: SaInterval,
+        interval: Interval,
         offset: usize,
     ) -> (usize, usize) {
         let start = interval.start;
@@ -581,7 +557,7 @@ impl<'a> SeedSearcher<'a> {
         &self,
         sa: &SuffixArray,
         seq: &Sequence,
-        interval: SaInterval,
+        interval: Interval,
         min_len: usize,
     ) -> bool {
         if min_len == 0 {
@@ -662,7 +638,7 @@ mod tests {
 
         let searcher = SeedSearcher::new(&sa, &seq, &sa, &seq, &seed_args);
 
-        let interval = SaInterval::new(0, sa.len());
+        let interval = Interval::new(0, sa.len());
         let parts = searcher.partition_interval(&sa, &seq, interval, 0);
 
         // Each base should have exactly one entry

@@ -9,16 +9,16 @@ use smallvec::SmallVec;
 
 use crate::alignment::{Alignment, Pairing};
 use crate::config::{Matrix, OutputFormat, SearchArgs};
-use crate::dp::{self, DpExtender, DpExtension};
+use crate::dp::{DpExtender, DpView};
 use crate::dsm::{
     pair_mat, seed_energy_with_penalty, terminal_3p_with_penalty, terminal_5p_with_penalty,
     DsmModel, T04, T99,
 };
 use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
-use crate::seed::{build_seed_alignment, SeedHit};
+use crate::seed::SeedHit;
 use crate::seq::Sequence;
-use crate::types::{Base, Energy, Strand};
+use crate::types::{Energy, Strand};
 
 const MAX_DP_EXT: usize = 50;
 
@@ -215,12 +215,12 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
 
     for seed in state.seeds.iter() {
         let t_seq = match seed.strand {
-            Strand::Reverse => index.get_sequence_rc(seed.target_idx),
-            Strand::Forward => index.get_sequence(seed.target_idx),
+            Strand::Reverse => index.get_sequence_rc(seed.target_id.0 as usize),
+            Strand::Forward => index.get_sequence(seed.target_id.0 as usize),
         };
 
         // Bounds check
-        if seed.target_start + seed.len > t_seq.len() {
+        if seed.target_start + seed.seed_len.get() > t_seq.len() {
             continue;
         }
 
@@ -243,15 +243,7 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
             continue;
         }
 
-        on_hit(build_hit(
-            q_idx,
-            index,
-            seed,
-            ext,
-            q_seq,
-            t_seq,
-            opts.output.format,
-        ));
+        on_hit(build_hit(q_idx, index, seed, ext));
     }
 }
 
@@ -265,11 +257,7 @@ struct Extension {
     l_t: usize,
     r_q: usize,
     r_t: usize,
-    left: Option<DpExtension>,
-    right: Option<DpExtension>,
-    q_pos: usize,
-    t_match_end: usize,
-    seed_len: usize,
+    alignment: Option<Alignment>,
 }
 
 fn extend_seed<M: DsmModel>(
@@ -278,12 +266,12 @@ fn extend_seed<M: DsmModel>(
     q_seq: &Sequence,
     t_seq: &Sequence,
     seed: &SeedHit,
-    interval: crate::registry::SeedInterval,
+    interval: crate::types::Interval,
     opts: &SearchArgs,
 ) -> Option<Extension> {
     let q_pos = seed.query_pos;
     let t_pos = seed.target_start;
-    let len = seed.len;
+    let len = seed.seed_len.get();
     let pair_mat = pair_mat(opts.seed.allows_wobble());
 
     // Maximality check: left
@@ -306,6 +294,7 @@ fn extend_seed<M: DsmModel>(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = (opts.extend.max_extension as usize).min(MAX_DP_EXT);
+    let needs_alignment = opts.output.format != OutputFormat::Minimal;
 
     // Seed energy
     let seed_energy = seed_energy_with_penalty::<M>(q_seq, t_seq, q_pos, t_match_end, len, penalty);
@@ -319,36 +308,53 @@ fn extend_seed<M: DsmModel>(
         let term_5p = terminal_5p_with_penalty::<M>(q_seq[q_pos], t_seq[t_match_end], penalty);
         let term_3p = terminal_3p_with_penalty::<M>(q_seq[q_pos + len - 1], t_seq[t_pos], penalty);
         let nt_count = (2 * len) as i32;
+        let alignment = if needs_alignment {
+            let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
+            Some(Alignment::new(&[], &seed_pairs, &[]))
+        } else {
+            None
+        };
         return Some(Extension {
             score: M::to_kcal(seed_energy + term_5p + term_3p + nt_count * penalty),
             l_q: 0,
             l_t: 0,
             r_q: 0,
             r_t: 0,
-            left: None,
-            right: None,
-            q_pos,
-            t_match_end,
-            seed_len: len,
+            alignment,
         });
     }
 
-    // DP extension in both directions
-    let left = extender.extend_left(q_seq, t_seq, q_pos, t_match_end, max_ext);
-    let right = extender.extend_right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext);
-    let nt_count = (left.q_len + left.t_len + right.q_len + right.t_len + 2 * len) as i32;
+    // DP extension: left (scope block releases borrow on extender)
+    let (l_score, l_q, l_t, left_pairs) = {
+        let view = DpView::<M>::left(q_seq, t_seq, q_pos, t_match_end, max_ext, penalty);
+        let result = extender.extend(&view);
+        let pairs = if needs_alignment { result.traceback(&view) } else { SmallVec::new() };
+        (result.score, result.q_len, result.t_len, pairs)
+    };
+
+    // DP extension: right
+    let (r_score, r_q, r_t, right_pairs) = {
+        let view = DpView::<M>::right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext, penalty);
+        let result = extender.extend(&view);
+        let pairs = if needs_alignment { result.traceback(&view) } else { SmallVec::new() };
+        (result.score, result.q_len, result.t_len, pairs)
+    };
+
+    let nt_count = (l_q + l_t + r_q + r_t + 2 * len) as i32;
+    let alignment = if needs_alignment {
+        let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
+        Some(Alignment::new(&left_pairs, &seed_pairs, &right_pairs))
+    } else {
+        None
+    };
 
     Some(Extension {
-        score: M::to_kcal(seed_energy + left.score + right.score + nt_count * penalty),
-        l_q: left.q_len,
-        l_t: left.t_len,
-        r_q: right.q_len,
-        r_t: right.t_len,
-        left: Some(left),
-        right: Some(right),
-        q_pos,
-        t_match_end,
-        seed_len: len,
+        score: M::to_kcal(seed_energy + l_score + r_score + nt_count * penalty),
+        l_q,
+        l_t,
+        r_q,
+        r_t,
+        alignment,
     })
 }
 
@@ -356,25 +362,36 @@ fn extend_seed<M: DsmModel>(
 // HIT BUILDING
 // =============================================================================
 
+fn build_seed_pairs(
+    q_seq: &Sequence,
+    t_seq: &Sequence,
+    q_pos: usize,
+    t_match_end: usize,
+    len: usize,
+) -> SmallVec<[Pairing; 64]> {
+    let mut pairs = SmallVec::with_capacity(len);
+    for i in 0..len {
+        pairs.push(Pairing::from_bases(q_seq[q_pos + i], t_seq[t_match_end - i]));
+    }
+    pairs
+}
+
 fn build_hit(
     query_idx: u32,
     index: &TargetRegistry,
     seed: &SeedHit,
     ext: Extension,
-    q_seq: &Sequence,
-    t_seq: &Sequence,
-    format: OutputFormat,
 ) -> SearchHit {
     let q_pos = seed.query_pos;
     let t_start = seed.target_start;
-    let len = seed.len;
+    let len = seed.seed_len.get();
 
     let final_q_start = q_pos.saturating_sub(ext.l_q);
     let final_q_end = (q_pos + len - 1) + ext.r_q;
     let final_t_start = t_start.saturating_sub(ext.r_t);
     let final_t_end = (t_start + len - 1) + ext.l_t;
 
-    let original_len = index.get_sequence_len(seed.target_idx);
+    let original_len = index.get_sequence_len(seed.target_id.0 as usize);
     let (out_t_start, out_t_end, strand_char) = match seed.strand {
         Strand::Reverse => {
             let fwd_start = original_len - 1 - final_t_end;
@@ -384,14 +401,9 @@ fn build_hit(
         Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
     };
 
-    let alignment = match format {
-        OutputFormat::Minimal => None,
-        _ => Some(build_alignment(&ext, q_seq, t_seq, t_start)),
-    };
-
     SearchHit {
         query_idx,
-        target_idx: seed.target_idx as u32,
+        target_idx: seed.target_id.0,
         q_start: final_q_start,
         q_end: final_q_end,
         t_start: final_t_start,
@@ -402,75 +414,8 @@ fn build_hit(
         output_t_end: out_t_end,
         strand: strand_char.into(),
         energy: ext.score.into(),
-        alignment,
+        alignment: ext.alignment,
         flank_5: Sequence::from(Vec::new()),
         flank_3: Sequence::from(Vec::new()),
     }
-}
-
-fn build_alignment(ext: &Extension, q_seq: &Sequence, t_seq: &Sequence, t_pos: usize) -> Alignment {
-    // Seed-only case
-    if ext.left.is_none() {
-        let seed = build_seed_alignment(q_seq, t_seq, ext.q_pos, ext.t_match_end, ext.seed_len);
-        return Alignment::new(&[], &seed, &[]);
-    }
-
-    let left_ext = ext.left.as_ref().unwrap();
-    let right_ext = ext.right.as_ref().unwrap();
-
-    // Left alignment (walking backward)
-    let mut left: SmallVec<[Pairing; 64]> = SmallVec::new();
-    let (mut li, mut lj) = (ext.l_q, ext.l_t);
-    for &op in &left_ext.trace {
-        let q_base = if li > ext.q_pos {
-            Base::Gap
-        } else {
-            q_seq[ext.q_pos - li]
-        };
-        let t_base = if ext.t_match_end + lj >= t_seq.len() {
-            Base::Gap
-        } else {
-            t_seq[ext.t_match_end + lj]
-        };
-        left.push(Pairing::from_dp_op(op, q_base, t_base));
-        match op {
-            dp::DpOp::Match | dp::DpOp::Stop => {
-                li = li.saturating_sub(1);
-                lj = lj.saturating_sub(1);
-            }
-            dp::DpOp::GapQ => li = li.saturating_sub(1),
-            dp::DpOp::GapT => lj = lj.saturating_sub(1),
-        }
-    }
-
-    // Seed alignment
-    let seed = build_seed_alignment(q_seq, t_seq, ext.q_pos, ext.t_match_end, ext.seed_len);
-
-    // Right alignment (walking forward)
-    let mut right: SmallVec<[Pairing; 64]> = SmallVec::new();
-    let (mut ri, mut rj) = (0usize, 0usize);
-    let q_anchor = ext.q_pos + ext.seed_len - 1;
-    for &op in right_ext.trace.iter().rev() {
-        match op {
-            dp::DpOp::Match | dp::DpOp::Stop => {
-                ri += 1;
-                rj += 1;
-            }
-            dp::DpOp::GapQ => ri += 1,
-            dp::DpOp::GapT => rj += 1,
-        }
-        let q_base = if q_anchor + ri >= q_seq.len() {
-            Base::Gap
-        } else {
-            q_seq[q_anchor + ri]
-        };
-        let t_base = if rj > t_pos {
-            Base::Gap
-        } else {
-            t_seq[t_pos - rj]
-        };
-        right.push(Pairing::from_dp_op(op, q_base, t_base));
-    }
-
-    Alignment::new(&left, &seed, &right)
 }

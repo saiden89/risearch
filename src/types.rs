@@ -173,6 +173,84 @@ impl Base {
 pub const BASE_COUNT: usize = 6;
 
 // =============================================================================
+// IDENTIFIERS / UNITS
+// =============================================================================
+
+/// Index into query registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct QueryId(pub u32);
+
+impl From<u32> for QueryId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<QueryId> for u32 {
+    fn from(value: QueryId) -> Self {
+        value.0
+    }
+}
+
+/// Index into target registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub struct TargetId(pub u32);
+
+impl From<u32> for TargetId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<TargetId> for u32 {
+    fn from(value: TargetId) -> Self {
+        value.0
+    }
+}
+
+/// Seed length (always positive by construction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SeedLen(u16);
+
+impl SeedLen {
+    pub fn new(len: usize) -> Option<Self> {
+        let len_u16 = u16::try_from(len).ok()?;
+        if len_u16 == 0 {
+            return None;
+        }
+        Some(Self(len_u16))
+    }
+
+    pub const fn get(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Half-open interval [start, end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Interval {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Interval {
+    #[inline]
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.start >= self.end
+    }
+
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+}
+
+// =============================================================================
 // SPAN - Lightweight region reference
 // =============================================================================
 

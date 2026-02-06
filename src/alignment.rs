@@ -7,7 +7,6 @@
 use smallvec::SmallVec;
 use std::ops::Range;
 
-use crate::dp::DpOp;
 use crate::types::Base;
 
 // =============================================================================
@@ -34,21 +33,6 @@ impl Pairing {
             }
             (Base::G, Base::U) | (Base::U, Base::G) => Pairing::Wobble(q, t),
             _ => Pairing::Mismatch(q, t),
-        }
-    }
-
-    /// Construct from DP traceback operation and the relevant bases.
-    ///
-    /// This is the primary constructor for building alignments from DP traces.
-    /// - `Match`/`Stop` ops require both query and target bases
-    /// - `GapQ` (query bulge) requires only the query base
-    /// - `GapT` (target bulge) requires only the target base
-    #[inline]
-    pub fn from_dp_op(op: DpOp, q_base: Base, t_base: Base) -> Self {
-        match op {
-            DpOp::Match | DpOp::Stop => Self::from_bases(q_base, t_base),
-            DpOp::GapQ => Pairing::QueryBulge(q_base),
-            DpOp::GapT => Pairing::TargetBulge(t_base),
         }
     }
 
