@@ -4,9 +4,9 @@
 //! differences between Rust and C implementations.
 
 use crate::common::search_hit::SearchHitExt;
-use risearch::SearchHit;
 use risearch::seq::bases_to_rna_string;
-use tabled::{Table, Tabled, builder::Builder, settings::Style};
+use risearch::SearchHit;
+use tabled::{builder::Builder, settings::Style, Table, Tabled};
 
 // =============================================================================
 // SUMMARY TABLE
@@ -169,7 +169,11 @@ impl DiffChar {
 
 impl From<(char, char)> for DiffChar {
     fn from((a, b): (char, char)) -> Self {
-        if a == b { Self::Match } else { Self::Mismatch }
+        if a == b {
+            Self::Match
+        } else {
+            Self::Mismatch
+        }
     }
 }
 

@@ -207,7 +207,11 @@ impl SeedSpec {
                         let to_pos = |v: i64| -> usize {
                             let x = v + 1; // Adjust negative index
                             let r = (x + n) % n;
-                            if r == 0 { n as usize } else { r as usize }
+                            if r == 0 {
+                                n as usize
+                            } else {
+                                r as usize
+                            }
                         };
                         (to_pos(start), to_pos(end))
                     }

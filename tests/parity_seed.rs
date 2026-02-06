@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{ParityRunner, workspace_root};
+use common::{workspace_root, ParityRunner};
 use rstest::rstest;
 
 /// Main seed length × extension limit matrix.
@@ -45,8 +45,15 @@ fn test_interval(
     let l_str = l.to_string();
     let (start, end) = spec.split_once(':').unwrap();
     let args = [
-        "-l", &l_str, "-e", "100.0",
-        "--seed-start", start, "--seed-end", end, "-p3",
+        "-l",
+        &l_str,
+        "-e",
+        "100.0",
+        "--seed-start",
+        start,
+        "--seed-end",
+        end,
+        "-p3",
     ];
 
     let test_name = format!("interval_{}_l{}", spec.replace(':', "_"), l);
@@ -67,8 +74,17 @@ fn test_interval_with_length(
     let (start, rest) = spec.split_once(':').unwrap();
     let (end, len) = rest.split_once('/').unwrap();
     let args = [
-        "-l", &l_str, "-e", "100.0",
-        "--seed-start", start, "--seed-end", end, "--seed-length", len, "-p3",
+        "-l",
+        &l_str,
+        "-e",
+        "100.0",
+        "--seed-start",
+        start,
+        "--seed-end",
+        end,
+        "--seed-length",
+        len,
+        "-p3",
     ];
 
     let test_name = format!("interval_{}_l{}", spec.replace([':', '/'], "_"), l);

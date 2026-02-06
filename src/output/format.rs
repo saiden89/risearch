@@ -4,8 +4,8 @@ use crate::alignment::Alignment;
 use crate::config::OutputFormat;
 use crate::registry::{QueryRegistry, TargetRegistry};
 use crate::search::SearchHit;
-use crate::seq::Sequence;
 use crate::seq::utils::push_bases_as_rna;
+use crate::seq::Sequence;
 
 /// Reusable buffers for hit formatting (avoids per-hit allocation).
 pub struct OutputBuffers {
@@ -132,7 +132,11 @@ pub(super) fn push_result_fields(
 fn truncate_id(id: &str, max_len: Option<usize>) -> &str {
     let base = id.split_whitespace().next().unwrap_or(id);
     if let Some(max) = max_len {
-        if base.len() > max { &base[..max] } else { base }
+        if base.len() > max {
+            &base[..max]
+        } else {
+            base
+        }
     } else {
         base
     }
@@ -216,7 +220,7 @@ pub(crate) fn fill_line_buf(
                 align.write_target_seq(line_buf);
             } else {
                 line_buf.push(b'\t'); // empty pairing
-                // empty target seq
+                                      // empty target seq
             }
             line_buf.push(b'\t');
             push_bases_as_rna(

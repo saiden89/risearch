@@ -9,7 +9,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::ops::{Deref, Index, Range, RangeFrom, RangeFull, RangeTo};
 
-use super::normalize::{NormalizationStats, normalize_rna_sequence};
+use super::normalize::{normalize_rna_sequence, NormalizationStats};
 
 /// A normalized RNA sequence stored as Vec<Base>.
 ///

@@ -4,11 +4,11 @@
 //! - `SearchHitExt` trait: Comparison helpers for parity testing
 //! - `parse_c_output()`: Parse C risearch output into `SearchHit`
 
-use risearch::SearchHit;
 use risearch::alignment::Alignment;
 use risearch::registry::{QueryRegistry, TargetRegistry};
 use risearch::seq::Sequence;
 use risearch::types::{Energy, Strand};
+use risearch::SearchHit;
 
 // =============================================================================
 // EXTENSION TRAIT: Parity-testing helpers
@@ -22,7 +22,7 @@ pub(crate) trait SearchHitExt {
     /// Group key for matching hits (query_idx:target_idx -> names).
     #[allow(dead_code)]
     fn group_key(&self, query_registry: &QueryRegistry, target_registry: &TargetRegistry)
-    -> String;
+        -> String;
 
     /// Fingerprint string for comparison. None if no alignment data.
     fn fingerprint(&self) -> Option<String>;

@@ -237,7 +237,7 @@ impl ParityResult {
         }
 
         // Final summary table (matching old compare_recs_impl format)
-        use crate::common::table::{SummaryRow, render_summary_table};
+        use crate::common::table::{render_summary_table, SummaryRow};
 
         let total_rust = self.exact_matches
             + self.rust_better.len()

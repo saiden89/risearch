@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --bench output
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::registry::Registry;
 use risearch::seq::Sequence;
 use risearch::types::Base;
@@ -15,7 +15,9 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
     let mut rng = seed;
     let bases: Vec<Base> = (0..len)
         .map(|_| {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             match (rng >> 32) % 4 {
                 0 => Base::A,
                 1 => Base::G,
@@ -35,7 +37,10 @@ struct TestEntry {
 
 impl TestEntry {
     fn new(name: String, sequence: Sequence) -> Self {
-        Self { name, _sequence: sequence }
+        Self {
+            name,
+            _sequence: sequence,
+        }
     }
 }
 
@@ -100,26 +105,22 @@ fn bench_simulated_output(c: &mut Criterion) {
             .map(|i| ((i % 100) as u32, ((i * 7) % 100) as u32))
             .collect();
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(num_hits),
-            &num_hits,
-            |b, _| {
-                b.iter(|| {
-                    // Simulate the output formatting path
-                    let mut output = Vec::with_capacity(num_hits * 64);
-                    for (q_idx, t_idx) in &hit_indices {
-                        let q_name = query_registry.get_name(*q_idx);
-                        let t_name = target_registry.get_name(*t_idx);
-                        // Simulate formatting (concatenate names)
-                        output.extend_from_slice(q_name.as_bytes());
-                        output.push(b'\t');
-                        output.extend_from_slice(t_name.as_bytes());
-                        output.push(b'\n');
-                    }
-                    black_box(output);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(num_hits), &num_hits, |b, _| {
+            b.iter(|| {
+                // Simulate the output formatting path
+                let mut output = Vec::with_capacity(num_hits * 64);
+                for (q_idx, t_idx) in &hit_indices {
+                    let q_name = query_registry.get_name(*q_idx);
+                    let t_name = target_registry.get_name(*t_idx);
+                    // Simulate formatting (concatenate names)
+                    output.extend_from_slice(q_name.as_bytes());
+                    output.push(b'\t');
+                    output.extend_from_slice(t_name.as_bytes());
+                    output.push(b'\n');
+                }
+                black_box(output);
+            });
+        });
     }
 
     group.finish();

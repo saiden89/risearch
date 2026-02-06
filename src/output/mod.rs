@@ -3,15 +3,15 @@
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
-use flate2::Compression;
+use anyhow::{bail, Context, Result};
 use flate2::write::GzEncoder;
+use flate2::Compression;
 use zstd::stream;
 
 use crate::config::OutputCompression;
 
 pub mod format;
-pub use format::{OutputBuffers, write_hit_with_format};
+pub use format::{write_hit_with_format, OutputBuffers};
 
 /// Open output file with optional compression.
 /// Compression is inferred from file extension if not specified.

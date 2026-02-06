@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use std::sync::OnceLock;
 
 use crate::types::Base;

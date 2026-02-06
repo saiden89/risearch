@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::Path};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 

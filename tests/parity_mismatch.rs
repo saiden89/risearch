@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{ParityRunner, workspace_root};
+use common::{workspace_root, ParityRunner};
 use rstest::rstest;
 
 #[rstest]
@@ -18,8 +18,15 @@ fn test_mismatch(
     let l_str = l.to_string();
     let s_str = s.to_string();
     let args = [
-        "-l", &l_str, "-e", "100.0", "--seed-length", &s_str,
-        "-m", spec, "-p3",
+        "-l",
+        &l_str,
+        "-e",
+        "100.0",
+        "--seed-length",
+        &s_str,
+        "-m",
+        spec,
+        "-p3",
     ];
 
     let test_name = format!("{}_s{}_l{}", spec.replace(':', "_"), s, l);

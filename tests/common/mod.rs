@@ -32,7 +32,7 @@ mod table;
 pub(crate) use runner::{ParityRunner, SingleSeqRunner};
 
 // Re-export test extensions for SearchHit
-pub(crate) use search_hit::{SearchHitExt, parse_c_output};
+pub(crate) use search_hit::{parse_c_output, SearchHitExt};
 
 // =============================================================================
 // LOGGING SETUP

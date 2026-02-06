@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-use risearch::{QueryRegistry, output, sa, search};
+use risearch::{output, sa, search, QueryRegistry};
 
 use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};

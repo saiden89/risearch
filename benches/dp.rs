@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::dp::DpExtender;
 use risearch::dsm::T04;
 use risearch::seq::Sequence;

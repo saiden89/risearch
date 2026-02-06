@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use log::warn;
 
 use risearch::config::SearchArgs;
