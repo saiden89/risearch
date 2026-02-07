@@ -99,29 +99,17 @@ pub(crate) fn stack_with_penalty<M: DsmModel>(
 }
 
 #[inline(always)]
-pub(crate) fn terminal_5p_with_penalty<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
-    stack_with_penalty::<M>(
-        Base::Gap.idx(),
-        q.idx(),
-        Base::Gap.idx(),
-        t.idx(),
-        penalty,
-    )
+pub(crate) fn terminal_5p<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
+    stack_with_penalty::<M>(Base::Gap.idx(), q.idx(), Base::Gap.idx(), t.idx(), penalty)
 }
 
 #[inline(always)]
-pub(crate) fn terminal_3p_with_penalty<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
-    stack_with_penalty::<M>(
-        q.idx(),
-        Base::Gap.idx(),
-        t.idx(),
-        Base::Gap.idx(),
-        penalty,
-    )
+pub(crate) fn terminal_3p<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
+    stack_with_penalty::<M>(q.idx(), Base::Gap.idx(), t.idx(), Base::Gap.idx(), penalty)
 }
 
 /// Full seed energy with optional extension-penalty-adjusted DSM.
-pub(crate) fn seed_energy_with_penalty<M: DsmModel>(
+pub(crate) fn seed_energy<M: DsmModel>(
     query: &[Base],
     target: &[Base],
     q_pos: usize,

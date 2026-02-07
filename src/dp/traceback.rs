@@ -12,18 +12,6 @@ enum State {
     Match,
     GapQ,
     GapT,
-    Stop,
-}
-
-impl std::fmt::Display for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            State::Match => write!(f, "Match"),
-            State::GapQ => write!(f, "GapQ"),
-            State::GapT => write!(f, "GapT"),
-            State::Stop => write!(f, "Stop"),
-        }
-    }
 }
 
 /// Reconstruct alignment from score-only DP matrices, emitting `Pairing` directly.
@@ -46,7 +34,6 @@ pub(super) fn traceback<M: DsmModel>(
 
     while i > 0 || j > 0 {
         match state {
-            State::Stop => break,
             State::Match if i > 0 && j > 0 => {
                 let q_base = Base::from_idx(view.q(i));
                 let t_base = Base::from_idx(view.t(j));
@@ -62,23 +49,34 @@ pub(super) fn traceback<M: DsmModel>(
                 let m_from_bt = view.m_from_bt(i, j);
 
                 let next = if m_diag > MIN_SCORE && m_val == m_diag + match_e {
-                    State::Match
+                    Some(State::Match)
                 } else if bq_diag > MIN_SCORE && m_val == bq_diag + m_from_bq {
-                    State::GapQ
+                    Some(State::GapQ)
                 } else if bt_diag > MIN_SCORE && m_val == bt_diag + m_from_bt {
-                    State::GapT
+                    Some(State::GapT)
                 } else {
-                    State::Stop
+                    None
                 };
 
-                trace!("{} TB {}({},{}): next={}", view.dir, State::Match, i, j, next);
+                trace!(
+                    "{} TB {:?}({},{}): next={:?}",
+                    view.dir,
+                    State::Match,
+                    i,
+                    j,
+                    next
+                );
                 i -= 1;
                 j -= 1;
-                state = next;
+                if let Some(next_state) = next {
+                    state = next_state;
+                } else {
+                    break;
+                }
             }
             State::GapQ if i > 0 => {
                 let q_base = Base::from_idx(view.q(i));
-                out.push(Pairing::QueryBulge(q_base));
+                out.push(Pairing::query_bulge(q_base));
 
                 let bq_val = bq.get(i, j);
                 let m_up = m.get(i - 1, j);
@@ -88,20 +86,31 @@ pub(super) fn traceback<M: DsmModel>(
                 let bq_ext = view.bq_ext(i);
 
                 let next = if m_up > MIN_SCORE && bq_val == m_up + bq_open {
-                    State::Match
+                    Some(State::Match)
                 } else if bq_up > MIN_SCORE && bq_val == bq_up + bq_ext {
-                    State::GapQ
+                    Some(State::GapQ)
                 } else {
-                    State::Stop
+                    None
                 };
 
-                trace!("{} TB {}({},{}): next={}", view.dir, State::GapQ, i, j, next);
+                trace!(
+                    "{} TB {:?}({},{}): next={:?}",
+                    view.dir,
+                    State::GapQ,
+                    i,
+                    j,
+                    next
+                );
                 i -= 1;
-                state = next;
+                if let Some(next_state) = next {
+                    state = next_state;
+                } else {
+                    break;
+                }
             }
             State::GapT if j > 0 => {
                 let t_base = Base::from_idx(view.t(j));
-                out.push(Pairing::TargetBulge(t_base));
+                out.push(Pairing::target_bulge(t_base));
 
                 let bt_val = bt.get(i, j);
                 let m_left = m.get(i, j - 1);
@@ -111,16 +120,27 @@ pub(super) fn traceback<M: DsmModel>(
                 let bt_ext = view.bt_ext(j);
 
                 let next = if m_left > MIN_SCORE && bt_val == m_left + bt_open {
-                    State::Match
+                    Some(State::Match)
                 } else if bt_left > MIN_SCORE && bt_val == bt_left + bt_ext {
-                    State::GapT
+                    Some(State::GapT)
                 } else {
-                    State::Stop
+                    None
                 };
 
-                trace!("{} TB {}({},{}): next={}", view.dir, State::GapT, i, j, next);
+                trace!(
+                    "{} TB {:?}({},{}): next={:?}",
+                    view.dir,
+                    State::GapT,
+                    i,
+                    j,
+                    next
+                );
                 j -= 1;
-                state = next;
+                if let Some(next_state) = next {
+                    state = next_state;
+                } else {
+                    break;
+                }
             }
             _ => break,
         }

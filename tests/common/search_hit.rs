@@ -142,7 +142,7 @@ pub(crate) fn parse_c_output(
     // Parse energy
     let energy = Energy::parse(fields[7])?;
 
-    // Create alignment from fingerprint and target sequence
+    // Create alignment from C interaction/target columns.
     let alignment = Alignment::from_c_output(&interaction, &target_seq, seed_start, seed_end);
 
     // Optional flanks

@@ -38,8 +38,7 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
         let mut gap_gap_profile = [0i32; 36];
         for t1 in 0..6 {
             for t2 in 0..6 {
-                gap_gap_profile[t1 * 6 + t2] =
-                    stack_with_penalty::<M>(GAP, GAP, t1, t2, penalty);
+                gap_gap_profile[t1 * 6 + t2] = stack_with_penalty::<M>(GAP, GAP, t1, t2, penalty);
             }
         }
 

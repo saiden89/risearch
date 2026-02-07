@@ -10,10 +10,7 @@ use smallvec::SmallVec;
 use crate::alignment::{Alignment, Pairing};
 use crate::config::{Matrix, OutputFormat, SearchArgs};
 use crate::dp::{DpExtender, DpView};
-use crate::dsm::{
-    pair_mat, seed_energy_with_penalty, terminal_3p_with_penalty, terminal_5p_with_penalty,
-    DsmModel, T04, T99,
-};
+use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::registry::QueryRegistry;
 use crate::sa::TargetRegistry;
 use crate::seed::SeedHit;
@@ -136,13 +133,16 @@ fn run_search_parallel<M: DsmModel>(
         .entries()
         .par_iter()
         .enumerate()
-        .map_init(|| SearchState::<M>::new(penalty), |state, (i, q)| {
-            let mut hits = Vec::new();
-            process_query::<M, _>(i as u32, q, state, queries, index, opts, |hit| {
-                hits.push(hit);
-            });
-            hits
-        })
+        .map_init(
+            || SearchState::<M>::new(penalty),
+            |state, (i, q)| {
+                let mut hits = Vec::new();
+                process_query::<M, _>(i as u32, q, state, queries, index, opts, |hit| {
+                    hits.push(hit);
+                });
+                hits
+            },
+        )
         .collect();
 
     Ok(hits.into_iter().flatten().collect())
@@ -205,6 +205,7 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
     mut on_hit: F,
 ) {
     state.clear();
+    let include_alignment = opts.output.format != OutputFormat::Minimal;
 
     // Find seeds
     crate::seed::find_seeds(q, index, &opts.seed, &mut state.seeds, &mut state.matches);
@@ -233,8 +234,8 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
             seed,
             interval,
             opts,
-        )
-        else {
+            include_alignment,
+        ) else {
             continue;
         };
 
@@ -243,7 +244,15 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
             continue;
         }
 
-        on_hit(build_hit(q_idx, index, seed, ext));
+        on_hit(build_hit(
+            q_idx,
+            index,
+            q_seq,
+            t_seq,
+            seed,
+            ext,
+            include_alignment,
+        ));
     }
 }
 
@@ -257,7 +266,8 @@ struct Extension {
     l_t: usize,
     r_q: usize,
     r_t: usize,
-    alignment: Option<Alignment>,
+    left_pairs: SmallVec<[Pairing; 64]>,
+    right_pairs: SmallVec<[Pairing; 64]>,
 }
 
 fn extend_seed<M: DsmModel>(
@@ -268,6 +278,7 @@ fn extend_seed<M: DsmModel>(
     seed: &SeedHit,
     interval: crate::types::Interval,
     opts: &SearchArgs,
+    include_alignment: bool,
 ) -> Option<Extension> {
     let q_pos = seed.query_pos;
     let t_pos = seed.target_start;
@@ -294,10 +305,8 @@ fn extend_seed<M: DsmModel>(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = (opts.extend.max_extension as usize).min(MAX_DP_EXT);
-    let needs_alignment = opts.output.format != OutputFormat::Minimal;
-
     // Seed energy
-    let seed_energy = seed_energy_with_penalty::<M>(q_seq, t_seq, q_pos, t_match_end, len, penalty);
+    let seed_energy = seed_energy::<M>(q_seq, t_seq, q_pos, t_match_end, len, penalty);
 
     // Check if extension is possible
     let can_extend_left = q_pos > 0 && t_pos + len < t_seq.len();
@@ -305,22 +314,17 @@ fn extend_seed<M: DsmModel>(
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
         // Seed only - add terminal penalties
-        let term_5p = terminal_5p_with_penalty::<M>(q_seq[q_pos], t_seq[t_match_end], penalty);
-        let term_3p = terminal_3p_with_penalty::<M>(q_seq[q_pos + len - 1], t_seq[t_pos], penalty);
+        let term_5p = terminal_5p::<M>(q_seq[q_pos], t_seq[t_match_end], penalty);
+        let term_3p = terminal_3p::<M>(q_seq[q_pos + len - 1], t_seq[t_pos], penalty);
         let nt_count = (2 * len) as i32;
-        let alignment = if needs_alignment {
-            let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
-            Some(Alignment::new(&[], &seed_pairs, &[]))
-        } else {
-            None
-        };
         return Some(Extension {
             score: M::to_kcal(seed_energy + term_5p + term_3p + nt_count * penalty),
             l_q: 0,
             l_t: 0,
             r_q: 0,
             r_t: 0,
-            alignment,
+            left_pairs: SmallVec::new(),
+            right_pairs: SmallVec::new(),
         });
     }
 
@@ -328,7 +332,11 @@ fn extend_seed<M: DsmModel>(
     let (l_score, l_q, l_t, left_pairs) = {
         let view = DpView::<M>::left(q_seq, t_seq, q_pos, t_match_end, max_ext, penalty);
         let result = extender.extend(&view);
-        let pairs = if needs_alignment { result.traceback(&view) } else { SmallVec::new() };
+        let pairs = if include_alignment {
+            result.traceback(&view)
+        } else {
+            SmallVec::new()
+        };
         (result.score, result.q_len, result.t_len, pairs)
     };
 
@@ -336,17 +344,15 @@ fn extend_seed<M: DsmModel>(
     let (r_score, r_q, r_t, right_pairs) = {
         let view = DpView::<M>::right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext, penalty);
         let result = extender.extend(&view);
-        let pairs = if needs_alignment { result.traceback(&view) } else { SmallVec::new() };
+        let pairs = if include_alignment {
+            result.traceback(&view)
+        } else {
+            SmallVec::new()
+        };
         (result.score, result.q_len, result.t_len, pairs)
     };
 
     let nt_count = (l_q + l_t + r_q + r_t + 2 * len) as i32;
-    let alignment = if needs_alignment {
-        let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
-        Some(Alignment::new(&left_pairs, &seed_pairs, &right_pairs))
-    } else {
-        None
-    };
 
     Some(Extension {
         score: M::to_kcal(seed_energy + l_score + r_score + nt_count * penalty),
@@ -354,7 +360,8 @@ fn extend_seed<M: DsmModel>(
         l_t,
         r_q,
         r_t,
-        alignment,
+        left_pairs,
+        right_pairs,
     })
 }
 
@@ -371,7 +378,10 @@ fn build_seed_pairs(
 ) -> SmallVec<[Pairing; 64]> {
     let mut pairs = SmallVec::with_capacity(len);
     for i in 0..len {
-        pairs.push(Pairing::from_bases(q_seq[q_pos + i], t_seq[t_match_end - i]));
+        pairs.push(Pairing::from_bases(
+            q_seq[q_pos + i],
+            t_seq[t_match_end - i],
+        ));
     }
     pairs
 }
@@ -379,17 +389,30 @@ fn build_seed_pairs(
 fn build_hit(
     query_idx: u32,
     index: &TargetRegistry,
+    q_seq: &Sequence,
+    t_seq: &Sequence,
     seed: &SeedHit,
     ext: Extension,
+    include_alignment: bool,
 ) -> SearchHit {
+    let Extension {
+        score,
+        l_q,
+        l_t,
+        r_q,
+        r_t,
+        left_pairs,
+        right_pairs,
+    } = ext;
+
     let q_pos = seed.query_pos;
     let t_start = seed.target_start;
     let len = seed.seed_len.get();
 
-    let final_q_start = q_pos.saturating_sub(ext.l_q);
-    let final_q_end = (q_pos + len - 1) + ext.r_q;
-    let final_t_start = t_start.saturating_sub(ext.r_t);
-    let final_t_end = (t_start + len - 1) + ext.l_t;
+    let final_q_start = q_pos.saturating_sub(l_q);
+    let final_q_end = (q_pos + len - 1) + r_q;
+    let final_t_start = t_start.saturating_sub(r_t);
+    let final_t_end = (t_start + len - 1) + l_t;
 
     let original_len = index.get_sequence_len(seed.target_id.0 as usize);
     let (out_t_start, out_t_end, strand_char) = match seed.strand {
@@ -399,6 +422,14 @@ fn build_hit(
             (fwd_start + 1, fwd_end + 1, '-')
         }
         Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
+    };
+
+    let alignment = if include_alignment {
+        let t_match_end = t_start + len - 1;
+        let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
+        Some(Alignment::new(&left_pairs, &seed_pairs, &right_pairs))
+    } else {
+        None
     };
 
     SearchHit {
@@ -413,8 +444,8 @@ fn build_hit(
         output_t_start: out_t_start,
         output_t_end: out_t_end,
         strand: strand_char.into(),
-        energy: ext.score.into(),
-        alignment: ext.alignment,
+        energy: score.into(),
+        alignment,
         flank_5: Sequence::from(Vec::new()),
         flank_3: Sequence::from(Vec::new()),
     }
