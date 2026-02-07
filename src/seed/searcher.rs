@@ -44,14 +44,7 @@ pub(crate) struct BaseIntervals {
 }
 
 impl BaseIntervals {
-    /// Create from raw bounds array
-    /// Expected order: [a_start, g_start, c_start, u_start, n_start, end]
-    pub(crate) fn from_bounds(bounds: [usize; 6]) -> Self {
-        Self { bounds }
-    }
-
     /// Get interval for a specific base
-    /// Indexing: 0=A, 1=G, 2=C, 3=U, 4=N (matches discriminant order)
     #[inline]
     pub(crate) fn get(&self, base: Base) -> Interval {
         match base {
@@ -63,7 +56,6 @@ impl BaseIntervals {
             Base::N => Interval::new(self.bounds[4], self.bounds[5]),
         }
     }
-
 
     /// Check if any base has a non-empty interval
     #[inline]
@@ -151,7 +143,6 @@ impl<'a> SeedSearcher<'a> {
     }
 
     /// Recursive parallel search over a length range (mirrors C's sa_parallel_match_neg)
-    #[allow(clippy::too_many_arguments)]
     #[inline(never)] // Keep separate for flamegraph
     fn recurse_length_range(
         &self,
@@ -177,9 +168,10 @@ impl<'a> SeedSearcher<'a> {
         }
 
         // If a mismatch has occurred, ensure we can still satisfy min_suffix_matches
-        if state.mismatch_count > 0 && self.seed_config.mismatch.min_suffix_matches > 0 {
+        let mismatch = &self.seed_config.mismatch;
+        if state.mismatch_count > 0 && mismatch.min_suffix_matches > 0 {
             let max_possible = state.matches_since_mismatch + (max_len - state.depth);
-            if max_possible < self.seed_config.mismatch.min_suffix_matches {
+            if max_possible < mismatch.min_suffix_matches {
                 return;
             }
         }
@@ -187,12 +179,12 @@ impl<'a> SeedSearcher<'a> {
         // If we haven't reached min_len yet, ensure both intervals have at least
         // one suffix long enough to ever reach min_len.
         if state.depth < min_len
-            && (!self.has_suffix_len_at_least(
+            && (!has_suffix_len_at_least(
                 self.query_sa,
                 self.query_seq,
                 state.query_interval,
                 min_len,
-            ) || !self.has_suffix_len_at_least(
+            ) || !has_suffix_len_at_least(
                 self.target_comp_sa,
                 self.target_comp_seq,
                 state.target_interval,
@@ -203,13 +195,13 @@ impl<'a> SeedSearcher<'a> {
         }
 
         // Partition both SA intervals by base at current depth
-        let qint = self.partition_interval(
+        let qint = partition_interval(
             self.query_sa,
             self.query_seq,
             state.query_interval,
             state.depth,
         );
-        let sint = self.partition_interval(
+        let sint = partition_interval(
             self.target_comp_sa,
             self.target_comp_seq,
             state.target_interval,
@@ -223,132 +215,15 @@ impl<'a> SeedSearcher<'a> {
 
         let next_depth = state.depth + 1;
 
-        // === CANONICAL MATCHES (same character = complementary base pair) ===
-        self.explore_canonical_matches(&qint, &sint, next_depth, &state, min_len, max_len, results);
-
-        // === WOBBLE PAIRS ===
-        if self.seed_config.allows_wobble() {
-            self.explore_wobble_matches(
-                &qint, &sint, next_depth, &state, min_len, max_len, results,
-            );
-        }
-
-        // === MISMATCH EXPLORATION ===
-        if self.should_explore_mismatches(&state, max_len) {
-            self.explore_mismatches(&qint, &sint, next_depth, &state, min_len, max_len, results);
-        }
-    }
-
-    /// Explore canonical base pair matches (A-U, C-G, G-C, U-A)
-    ///
-    /// Always inlined since this is called on every recursion.
-    /// For profiling wobble/mismatch overhead, these remain #[inline(never)].
-    #[allow(clippy::too_many_arguments)]
-    #[inline(always)]
-    fn explore_canonical_matches(
-        &self,
-        qint: &BaseIntervals,
-        sint: &BaseIntervals,
-        next_depth: usize,
-        state: &SearchState,
-        min_len: usize,
-        max_len: usize,
-        results: &mut Vec<SeedMatch>,
-    ) {
-        for &base in BASES.iter() {
-            let q = qint.get(base);
-            let s = sint.get(base);
-            if !q.is_empty() && !s.is_empty() {
-                self.recurse_match(q, s, next_depth, state, min_len, max_len, results);
-            }
-        }
-    }
-
-    /// Explore wobble base pair matches (G-U, U-G)
-    #[allow(clippy::too_many_arguments)]
-    #[inline(never)] // Keep separate for flamegraph
-    fn explore_wobble_matches(
-        &self,
-        qint: &BaseIntervals,
-        sint: &BaseIntervals,
-        next_depth: usize,
-        state: &SearchState,
-        min_len: usize,
-        max_len: usize,
-        results: &mut Vec<SeedMatch>,
-    ) {
-        // For direct matching (query_RC vs target, both NOT complemented):
-        // - G-U wobble: query G (query_RC has C) pairs with target U (T)
-        // - U-G wobble: query U (query_RC has A) pairs with target G
-
-        // G-U wobble: query_RC C with target U (stored as T)
-        let q_c = qint.get(Base::C);
-        let s_u = sint.get(Base::U);
-        if !q_c.is_empty() && !s_u.is_empty() {
-            self.recurse_match(q_c, s_u, next_depth, state, min_len, max_len, results);
-        }
-
-        // U-G wobble: query_RC A with target G
-        let q_a = qint.get(Base::A);
-        let s_g = sint.get(Base::G);
-        if !q_a.is_empty() && !s_g.is_empty() {
-            self.recurse_match(q_a, s_g, next_depth, state, min_len, max_len, results);
-        }
-    }
-
-    /// Recurse with a match (increment match counter)
-    #[allow(clippy::too_many_arguments)]
-    #[inline]
-    fn recurse_match(
-        &self,
-        q_int: Interval,
-        s_int: Interval,
-        depth: usize,
-        prev_state: &SearchState,
-        min_len: usize,
-        max_len: usize,
-        results: &mut Vec<SeedMatch>,
-    ) {
-        let new_state = SearchState {
-            query_interval: q_int,
-            target_interval: s_int,
-            depth,
-            matches_since_mismatch: prev_state.matches_since_mismatch + 1,
-            mismatch_count: prev_state.mismatch_count,
-        };
-        self.recurse_length_range(min_len, max_len, new_state, results);
-    }
-
-    /// Check if we should explore mismatch branches
-    #[inline]
-    fn should_explore_mismatches(&self, state: &SearchState, seed_len: usize) -> bool {
-        let mismatch = &self.seed_config.mismatch;
-        mismatch.max_mismatches > 0
+        // Pre-compute whether mismatch exploration is allowed at this depth
+        let can_mismatch = mismatch.max_mismatches > 0
             && state.mismatch_count < mismatch.max_mismatches
-            && state.depth + 1 > mismatch.min_prefix_matches
-            && state.matches_since_mismatch < seed_len
-    }
+            && next_depth > mismatch.min_prefix_matches
+            && state.matches_since_mismatch < max_len
+            && next_depth < max_len
+            && max_len - next_depth >= mismatch.min_suffix_matches;
 
-    /// Explore mismatch branches (non-complementary pairs)
-    #[allow(clippy::too_many_arguments)]
-    #[inline(never)] // Keep separate for flamegraph
-    fn explore_mismatches(
-        &self,
-        qint: &BaseIntervals,
-        sint: &BaseIntervals,
-        depth: usize,
-        state: &SearchState,
-        min_len: usize,
-        max_len: usize,
-        results: &mut Vec<SeedMatch>,
-    ) {
-        if max_len <= depth || max_len - depth < self.seed_config.mismatch.min_suffix_matches {
-            return;
-        }
-
-        // For each query base, explore target bases that DON'T form valid pairs
-        // This mirrors C's mismatch logic
-
+        // Explore all base pair combinations in a single pass
         for &q_base in BASES.iter() {
             let q_int = qint.get(q_base);
             if q_int.is_empty() {
@@ -356,25 +231,30 @@ impl<'a> SeedSearcher<'a> {
             }
 
             for &t_base in BASES.iter() {
-                // Skip if this is a valid match (canonical or wobble)
-                if self.is_valid_pair(q_base, t_base) {
-                    continue;
-                }
-
                 let t_int = sint.get(t_base);
                 if t_int.is_empty() {
                     continue;
                 }
 
-                // This is a mismatch
-                let new_state = SearchState {
-                    query_interval: q_int,
-                    target_interval: t_int,
-                    depth,
-                    matches_since_mismatch: 0, // Reset on mismatch
-                    mismatch_count: state.mismatch_count + 1,
-                };
-                self.recurse_length_range(min_len, max_len, new_state, results);
+                if self.is_valid_pair(q_base, t_base) {
+                    // Canonical or wobble match
+                    self.recurse_length_range(min_len, max_len, SearchState {
+                        query_interval: q_int,
+                        target_interval: t_int,
+                        depth: next_depth,
+                        matches_since_mismatch: state.matches_since_mismatch + 1,
+                        mismatch_count: state.mismatch_count,
+                    }, results);
+                } else if can_mismatch {
+                    // Mismatch
+                    self.recurse_length_range(min_len, max_len, SearchState {
+                        query_interval: q_int,
+                        target_interval: t_int,
+                        depth: next_depth,
+                        matches_since_mismatch: 0,
+                        mismatch_count: state.mismatch_count + 1,
+                    }, results);
+                }
             }
         }
     }
@@ -413,132 +293,126 @@ impl<'a> SeedSearcher<'a> {
             && state.matches_since_mismatch < seed_len
     }
 
-    /// Partition an SA interval by base at given offset (C's sa_search_interval)
-    ///
-    /// Uses binary search to find boundaries where bases change.
-    /// Returns intervals for [a, g, c, u, n] with end boundary.
-    ///
-    /// Short suffixes (pos + offset >= seq_len) must be filtered out via linear scan
-    /// because they're scattered throughout the SA (sorted by earlier characters).
-    fn partition_interval(
-        &self,
-        sa: &SuffixArray,
-        seq: &Sequence,
-        interval: Interval,
-        offset: usize,
-    ) -> BaseIntervals {
-        if interval.is_empty() {
-            return BaseIntervals::default();
-        }
-
-        // Step 1: Find valid suffix range
-        let (valid_start, valid_end) = self.find_valid_suffix_range(sa, seq, interval, offset);
-
-        if valid_start >= valid_end {
-            return BaseIntervals::default();
-        }
-
-        // Step 2: Partition valid range by base (O(log n) binary search)
-        self.partition_by_base(sa, seq, valid_start, valid_end, offset)
-    }
-
-    /// Find the range of suffixes long enough for this offset
-    ///
-    /// Optimized: uses two linear scans from both ends with early exit.
-    /// For typical workloads, most suffixes are valid, so scans terminate quickly.
-    #[inline]
-    fn find_valid_suffix_range(
-        &self,
-        sa: &SuffixArray,
-        seq: &Sequence,
-        interval: Interval,
-        offset: usize,
-    ) -> (usize, usize) {
-        let start = interval.start;
-        let end = interval.end;
-        let seq_len = seq.len();
-
-        // For seed lengths (6-22bp) and typical sequences (>1000bp),
-        // almost all suffixes are valid, so scan from start until we find first valid
-        let mut valid_start = start;
-        while valid_start < end {
-            let pos = sa[valid_start] as usize;
-            if pos + offset < seq_len {
-                break;
-            }
-            valid_start += 1;
-        }
-
-        if valid_start >= end {
-            return (end, end);
-        }
-
-        // Scan from end to find last valid
-        let mut valid_end = end;
-        while valid_end > valid_start {
-            let pos = sa[valid_end - 1] as usize;
-            if pos + offset < seq_len {
-                break;
-            }
-            valid_end -= 1;
-        }
-
-        (valid_start, valid_end)
-    }
-
-    /// Check if any suffix in interval has length >= min_len
-    #[inline]
-    fn has_suffix_len_at_least(
-        &self,
-        sa: &SuffixArray,
-        seq: &Sequence,
-        interval: Interval,
-        min_len: usize,
-    ) -> bool {
-        if min_len == 0 {
-            return true;
-        }
-        let offset = min_len - 1;
-        let (valid_start, valid_end) = self.find_valid_suffix_range(sa, seq, interval, offset);
-        valid_start < valid_end
-    }
-
-    /// Partition a valid SA range by base character (O(log n) binary search)
-    ///
-    /// Assumes all suffixes in [valid_start..valid_end] have pos + offset < seq.len()
-    ///
-    /// Base ordering: Gap(0) < A(1) < G(2) < C(3) < U(4) < N(5)
-    /// This differs from ASCII ordering: a < c < g < n < t
-    #[inline]
-    fn partition_by_base(
-        &self,
-        sa: &SuffixArray,
-        seq: &Sequence,
-        valid_start: usize,
-        valid_end: usize,
-        offset: usize,
-    ) -> BaseIntervals {
-        let sa_slice = &sa[valid_start..valid_end];
-
-        // Find partition points for each base boundary
-        // Base discriminant ordering: A(1) < G(2) < C(3) < U(4) < N(5)
-        let a_start = valid_start;
-        let g_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::G);
-        let c_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::C);
-        let u_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::U);
-        let n_start =
-            valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::N);
-
-        BaseIntervals::from_bounds([a_start, g_start, c_start, u_start, n_start, valid_end])
-    }
 }
 
-// ============================================================================
-// HIGH-LEVEL API
-// ============================================================================
+/// Partition an SA interval by base at given offset (C's sa_search_interval)
+///
+/// Uses binary search to find boundaries where bases change.
+/// Returns intervals for [a, g, c, u, n] with end boundary.
+///
+/// Short suffixes (pos + offset >= seq_len) must be filtered out via linear scan
+/// because they're scattered throughout the SA (sorted by earlier characters).
+fn partition_interval(
+    sa: &SuffixArray,
+    seq: &Sequence,
+    interval: Interval,
+    offset: usize,
+) -> BaseIntervals {
+    if interval.is_empty() {
+        return BaseIntervals::default();
+    }
+
+    // Step 1: Find valid suffix range
+    let (valid_start, valid_end) = find_valid_suffix_range(sa, seq, interval, offset);
+
+    if valid_start >= valid_end {
+        return BaseIntervals::default();
+    }
+
+    // Step 2: Partition valid range by base (O(log n) binary search)
+    partition_by_base(sa, seq, valid_start, valid_end, offset)
+}
+
+/// Find the range of suffixes long enough for this offset
+///
+/// Optimized: uses two linear scans from both ends with early exit.
+/// For typical workloads, most suffixes are valid, so scans terminate quickly.
+#[inline]
+fn find_valid_suffix_range(
+    sa: &SuffixArray,
+    seq: &Sequence,
+    interval: Interval,
+    offset: usize,
+) -> (usize, usize) {
+    let start = interval.start;
+    let end = interval.end;
+    let seq_len = seq.len();
+
+    // For seed lengths (6-22bp) and typical sequences (>1000bp),
+    // almost all suffixes are valid, so scan from start until we find first valid
+    let mut valid_start = start;
+    while valid_start < end {
+        let pos = sa[valid_start] as usize;
+        if pos + offset < seq_len {
+            break;
+        }
+        valid_start += 1;
+    }
+
+    if valid_start >= end {
+        return (end, end);
+    }
+
+    // Scan from end to find last valid
+    let mut valid_end = end;
+    while valid_end > valid_start {
+        let pos = sa[valid_end - 1] as usize;
+        if pos + offset < seq_len {
+            break;
+        }
+        valid_end -= 1;
+    }
+
+    (valid_start, valid_end)
+}
+
+/// Check if any suffix in interval has length >= min_len
+#[inline]
+fn has_suffix_len_at_least(
+    sa: &SuffixArray,
+    seq: &Sequence,
+    interval: Interval,
+    min_len: usize,
+) -> bool {
+    if min_len == 0 {
+        return true;
+    }
+    let offset = min_len - 1;
+    let (valid_start, valid_end) = find_valid_suffix_range(sa, seq, interval, offset);
+    valid_start < valid_end
+}
+
+/// Partition a valid SA range by base character (O(log n) binary search)
+///
+/// Assumes all suffixes in [valid_start..valid_end] have pos + offset < seq.len()
+///
+/// Base ordering: Gap(0) < A(1) < G(2) < C(3) < U(4) < N(5)
+/// This differs from ASCII ordering: a < c < g < n < t
+#[inline]
+fn partition_by_base(
+    sa: &SuffixArray,
+    seq: &Sequence,
+    valid_start: usize,
+    valid_end: usize,
+    offset: usize,
+) -> BaseIntervals {
+    let sa_slice = &sa[valid_start..valid_end];
+
+    // Find partition points for each base boundary
+    // Base discriminant ordering: A(1) < G(2) < C(3) < U(4) < N(5)
+    let a_start = valid_start;
+    let g_start =
+        valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::G);
+    let c_start =
+        valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::C);
+    let u_start =
+        valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::U);
+    let n_start =
+        valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::N);
+
+    BaseIntervals { bounds: [a_start, g_start, c_start, u_start, n_start, valid_end] }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,12 +442,8 @@ mod tests {
         let seq_bases = vec![Base::A, Base::C, Base::G, Base::U];
         let seq = Sequence::from(seq_bases.clone());
         let sa = SuffixArray::try_from(&seq).expect("SA construction failed");
-        let seed_args = test_seed_config(true);
-
-        let searcher = SeedSearcher::new(&sa, &seq, &sa, &seq, &seed_args);
-
         let interval = Interval::new(0, sa.len());
-        let parts = searcher.partition_interval(&sa, &seq, interval, 0);
+        let parts = partition_interval(&sa, &seq, interval, 0);
 
         // Each base should have exactly one entry
         assert_eq!(parts.get(Base::A).len(), 1);
