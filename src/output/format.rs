@@ -41,6 +41,93 @@ fn append_score_2dp(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, score: f64) 
     buf.push(b'0' + (frac % 10));
 }
 
+#[derive(Clone, Copy)]
+enum FieldKind {
+    QueryId,
+    QStart,
+    QEnd,
+    TargetId,
+    TStart,
+    TEnd,
+    Strand,
+    Energy2dp,
+    Pairing,
+    TargetSeq,
+    Flank5,
+    Flank3,
+}
+
+#[derive(Clone, Copy)]
+enum PreludeKind {
+    None,
+    DetailedAlignment,
+}
+
+struct FormatSpec {
+    prelude: PreludeKind,
+    fields: &'static [FieldKind],
+}
+
+const FIELDS_BASE: &[FieldKind] = &[
+    FieldKind::QueryId,
+    FieldKind::QStart,
+    FieldKind::QEnd,
+    FieldKind::TargetId,
+    FieldKind::TStart,
+    FieldKind::TEnd,
+    FieldKind::Strand,
+    FieldKind::Energy2dp,
+];
+
+const FIELDS_CIGAR: &[FieldKind] = &[
+    FieldKind::QueryId,
+    FieldKind::QStart,
+    FieldKind::QEnd,
+    FieldKind::TargetId,
+    FieldKind::TStart,
+    FieldKind::TEnd,
+    FieldKind::Strand,
+    FieldKind::Energy2dp,
+    FieldKind::Pairing,
+];
+
+const FIELDS_BINDING_SITE: &[FieldKind] = &[
+    FieldKind::QueryId,
+    FieldKind::QStart,
+    FieldKind::QEnd,
+    FieldKind::TargetId,
+    FieldKind::TStart,
+    FieldKind::TEnd,
+    FieldKind::Strand,
+    FieldKind::Energy2dp,
+    FieldKind::Pairing,
+    FieldKind::TargetSeq,
+    FieldKind::Flank5,
+    FieldKind::Flank3,
+];
+
+#[inline]
+fn format_spec(format: OutputFormat) -> FormatSpec {
+    match format {
+        OutputFormat::Minimal => FormatSpec {
+            prelude: PreludeKind::None,
+            fields: FIELDS_BASE,
+        },
+        OutputFormat::Detailed => FormatSpec {
+            prelude: PreludeKind::DetailedAlignment,
+            fields: FIELDS_BASE,
+        },
+        OutputFormat::Cigar => FormatSpec {
+            prelude: PreludeKind::None,
+            fields: FIELDS_CIGAR,
+        },
+        OutputFormat::BindingSite => FormatSpec {
+            prelude: PreludeKind::None,
+            fields: FIELDS_BINDING_SITE,
+        },
+    }
+}
+
 fn build_line(
     line_buf: &mut Vec<u8>,
     itoa_buf: &mut itoa::Buffer,
@@ -49,6 +136,7 @@ fn build_line(
     t_id: &str,
     format: OutputFormat,
 ) {
+    let spec = format_spec(format);
     let alignment = hit.alignment.as_ref();
     let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
     let flank_5 = (&hit.flank_5, 0..hit.flank_5.len(), false);
@@ -65,7 +153,7 @@ fn build_line(
         line_buf.reserve(approx - line_buf.capacity());
     }
 
-    if format == OutputFormat::Detailed {
+    if matches!(spec.prelude, PreludeKind::DetailedAlignment) {
         if let Some(align) = alignment {
             align.write_query_seq(line_buf);
             line_buf.push(b'\n');
@@ -76,58 +164,50 @@ fn build_line(
         }
     }
 
-    line_buf.extend_from_slice(q_id.as_bytes());
-    line_buf.push(b'\t');
-    line_buf.extend_from_slice(itoa_buf.format(hit.output_q_start).as_bytes());
-    line_buf.push(b'\t');
-    line_buf.extend_from_slice(itoa_buf.format(hit.output_q_end).as_bytes());
-    line_buf.push(b'\t');
-    line_buf.extend_from_slice(t_id.as_bytes());
-    line_buf.push(b'\t');
-    line_buf.extend_from_slice(itoa_buf.format(hit.output_t_start).as_bytes());
-    line_buf.push(b'\t');
-    line_buf.extend_from_slice(itoa_buf.format(hit.output_t_end).as_bytes());
-    line_buf.push(b'\t');
-    line_buf.push(char::from(hit.strand) as u8);
-    line_buf.push(b'\t');
-    append_score_2dp(line_buf, itoa_buf, hit.energy.as_f64());
-
-    match format {
-        OutputFormat::Minimal | OutputFormat::Detailed => {
-            line_buf.push(b'\n');
+    for (idx, field) in spec.fields.iter().enumerate() {
+        if idx > 0 {
+            line_buf.push(b'\t');
         }
-        OutputFormat::Cigar => {
-            line_buf.push(b'\t');
-            if let Some(align) = alignment {
-                align.write_pairing_string(line_buf);
+        match field {
+            FieldKind::QueryId => line_buf.extend_from_slice(q_id.as_bytes()),
+            FieldKind::QStart => {
+                line_buf.extend_from_slice(itoa_buf.format(hit.output_q_start).as_bytes())
             }
-            line_buf.push(b'\n');
-        }
-        OutputFormat::BindingSite => {
-            line_buf.push(b'\t');
-            if let Some(align) = alignment {
-                align.write_pairing_string(line_buf);
-                line_buf.push(b'\t');
-                align.write_target_seq(line_buf);
-            } else {
-                line_buf.push(b'\t'); // empty pairing
-                                      // empty target seq
+            FieldKind::QEnd => {
+                line_buf.extend_from_slice(itoa_buf.format(hit.output_q_end).as_bytes())
             }
-            line_buf.push(b'\t');
-            push_bases_as_rna(
+            FieldKind::TargetId => line_buf.extend_from_slice(t_id.as_bytes()),
+            FieldKind::TStart => {
+                line_buf.extend_from_slice(itoa_buf.format(hit.output_t_start).as_bytes())
+            }
+            FieldKind::TEnd => {
+                line_buf.extend_from_slice(itoa_buf.format(hit.output_t_end).as_bytes())
+            }
+            FieldKind::Strand => line_buf.push(char::from(hit.strand) as u8),
+            FieldKind::Energy2dp => append_score_2dp(line_buf, itoa_buf, hit.energy.as_f64()),
+            FieldKind::Pairing => {
+                if let Some(align) = alignment {
+                    align.write_pairing_string(line_buf);
+                }
+            }
+            FieldKind::TargetSeq => {
+                if let Some(align) = alignment {
+                    align.write_target_seq(line_buf);
+                }
+            }
+            FieldKind::Flank5 => push_bases_as_rna(
                 line_buf,
                 &flank_5.0[flank_5.1.start..flank_5.1.end],
                 flank_5.2,
-            );
-            line_buf.push(b'\t');
-            push_bases_as_rna(
+            ),
+            FieldKind::Flank3 => push_bases_as_rna(
                 line_buf,
                 &flank_3.0[flank_3.1.start..flank_3.1.end],
                 flank_3.2,
-            );
-            line_buf.push(b'\n');
+            ),
         }
     }
+    line_buf.push(b'\n');
 }
 
 /// Write a hit with format using provided reusable buffers.

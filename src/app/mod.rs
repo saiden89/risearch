@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-use risearch::{output, sa, search, QueryRegistry};
+use risearch::{output, search, QueryRegistry, TargetRegistry};
 
 use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
@@ -38,7 +38,8 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 
 fn cmd_index(input: &Path, output: &Path) -> Result<()> {
     info!("Creating index: {:?} -> {:?}", input, output);
-    sa::create_suffix_array(input, output)?;
+    let targets = TargetRegistry::from_fasta(input).context("Failed to process input sequences")?;
+    targets.save(output).context("Failed to write index file")?;
     info!("Index saved to {:?}", output);
     Ok(())
 }
@@ -51,18 +52,17 @@ fn cmd_search(
 ) -> Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
 
-    debug!("Loading queries from {:?}", query_path);
-    let queries = sa::process_sequences(query_path).context("Failed to load queries")?;
-
     // Convert CLI args to config (handles deprecated flag translation)
     let mut opts: risearch::config::SearchArgs = cli_opts.clone().into();
     emit_legacy_warnings(&raw_args, &mut opts)?;
 
-    let queries = QueryRegistry::from_indices(queries.into_entries(), &opts.seed);
+    debug!("Loading queries from {:?}", query_path);
+    let queries =
+        QueryRegistry::from_fasta(query_path, &opts.seed).context("Failed to load queries")?;
     info!("Loaded {} queries", queries.len());
 
     debug!("Loading index from {:?}", index_path);
-    let targets = sa::load_index_file(index_path).context("Failed to load index")?;
+    let targets = TargetRegistry::load(index_path).context("Failed to load index")?;
     trace!("Index loaded: {} targets", targets.len());
 
     // Open output with compression

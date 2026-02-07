@@ -23,7 +23,7 @@ struct NoIndex;
 struct Indexed {
     index_path: PathBuf,
     #[allow(dead_code)]
-    index_file: risearch::sa::TargetRegistry,
+    index_file: risearch::TargetRegistry,
 }
 
 // =============================================================================
@@ -61,8 +61,10 @@ impl RustRunner<NoIndex> {
             }
         };
 
-        risearch::sa::create_suffix_array(&self.target_path, &index_path).expect("build index");
-        let index_file = risearch::sa::load_index_file(&index_path).expect("load index");
+        let index_file =
+            risearch::TargetRegistry::from_fasta(&self.target_path).expect("build index");
+        index_file.save(&index_path).expect("save index");
+        let index_file = risearch::TargetRegistry::load(&index_path).expect("load index");
 
         RustRunner {
             target_path: self.target_path,
@@ -82,9 +84,8 @@ impl RustRunner<Indexed> {
         args: &risearch::config::SearchArgs,
     ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
         let index = &self.state.index_file;
-        let processed = risearch::sa::process_sequences(query_path).expect("read query FASTA");
         let query_registry =
-            risearch::QueryRegistry::from_indices(processed.into_entries(), &args.seed);
+            risearch::QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let hits = risearch::search::run_search(&query_registry, index, args).expect("search");
 
         // Normalize to 1-based coordinates to match C output format for comparison

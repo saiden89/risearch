@@ -8,7 +8,6 @@ pub mod fastx;
 pub mod index;
 pub mod output;
 pub mod registry;
-pub mod sa;
 pub mod search;
 pub mod seed;
 pub mod seq;

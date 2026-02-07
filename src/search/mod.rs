@@ -12,7 +12,7 @@ use crate::config::{ExtendConfig, Matrix, OutputFormat, SearchArgs};
 use crate::dp::{DpExtender, DpView};
 use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::registry::QueryRegistry;
-use crate::sa::TargetRegistry;
+use crate::registry::TargetRegistry;
 use crate::seed::SeedHit;
 use crate::seq::Sequence;
 use crate::types::{Energy, Strand};

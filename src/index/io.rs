@@ -28,6 +28,7 @@ pub(crate) fn validate_output_path(path: &Path) -> Result<()> {
 }
 
 pub fn write_index_file(index: &TargetRegistry, output_file: impl AsRef<Path>) -> Result<()> {
+    validate_output_path(output_file.as_ref())?;
     let encoded = bincode::serialize(index).context("Failed to serialize index")?;
     std::fs::write(&output_file, encoded).context("Failed to write index file")?;
     Ok(())

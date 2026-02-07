@@ -23,7 +23,7 @@
 //! ```
 
 use crate::config::SeedConfig;
-use crate::sa::SuffixArray;
+use crate::index::sa::SuffixArray;
 use crate::seq::Sequence;
 use crate::types::{Base, Interval};
 
@@ -608,7 +608,7 @@ impl<'a> SeedSearcher<'a> {
 mod tests {
     use super::*;
     use crate::config::SeedConfig;
-    use crate::sa::SuffixArray;
+    use crate::index::sa::SuffixArray;
     use crate::seed::{MismatchSpec, SeedSpec};
 
     /// Create a default SeedConfig for testing with specified wobble policy
@@ -633,7 +633,7 @@ mod tests {
         use crate::types::Base;
         let seq_bases = vec![Base::A, Base::C, Base::G, Base::U];
         let seq = Sequence::from(seq_bases.clone());
-        let sa = SuffixArray::build(&seq);
+        let sa = SuffixArray::try_from(&seq).expect("SA construction failed");
         let seed_args = test_seed_config(true);
 
         let searcher = SeedSearcher::new(&sa, &seq, &sa, &seq, &seed_args);
@@ -671,8 +671,8 @@ mod tests {
         let target_comp = Sequence::from(target_comp_bases);
 
         // Step 2: Build SAs
-        let q_sa = SuffixArray::build(&query);
-        let t_sa = SuffixArray::build(&target_comp);
+        let q_sa = SuffixArray::try_from(&query).expect("query SA construction failed");
+        let t_sa = SuffixArray::try_from(&target_comp).expect("target SA construction failed");
         eprintln!("Query SA: {:?}", q_sa);
         eprintln!("Target comp SA: {:?}", t_sa);
 

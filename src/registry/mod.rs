@@ -1,8 +1,13 @@
+use anyhow::{bail, Context, Result};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::Path;
 
 use crate::config::SeedConfig;
-use crate::index::sa::SequenceIndex;
-use crate::sa::SuffixArray;
+use crate::fastx::read_fasta_sequences;
+use crate::index::io::validate_readable_file;
+use crate::index::sa::SuffixArray;
 use crate::seq::Sequence;
 use crate::types::{Base, Interval};
 
@@ -71,6 +76,21 @@ impl<T: RegistryEntry> Registry<T> {
     }
 }
 
+/// Target data computed once at load/index-build time.
+#[derive(Serialize, Deserialize)]
+pub struct TargetData {
+    /// Sequence identifier.
+    pub name: String,
+    /// Suffix array for the forward strand.
+    pub forward_sa: SuffixArray,
+    /// Suffix array for the reverse strand.
+    pub reverse_sa: SuffixArray,
+    /// Forward sequence.
+    pub sequence: Sequence,
+    /// Reverse-complement sequence.
+    pub sequence_rc: Sequence,
+}
+
 /// Query data computed once at load time.
 ///
 /// Owns all sequence data, suffix arrays, and N-position metadata.
@@ -95,15 +115,20 @@ pub struct QueryData {
 }
 
 impl QueryData {
-    /// Build QueryData from a SequenceIndex, computing N-prefix and seed interval.
-    pub fn from_index(index: SequenceIndex, config: &SeedConfig) -> Self {
-        let q_len = index.sequence.len();
+    fn from_parts(
+        name: String,
+        sequence: Sequence,
+        sequence_rc: Sequence,
+        reverse_sa: SuffixArray,
+        config: &SeedConfig,
+    ) -> Self {
+        let q_len = sequence.len();
 
         // Compute N-prefix for O(1) N-checking
         let mut n_prefix = Vec::with_capacity(q_len + 1);
         n_prefix.push(0);
         let mut n_total = 0;
-        for &base in index.sequence.iter() {
+        for &base in sequence.iter() {
             if base == Base::N {
                 n_total += 1;
             }
@@ -118,10 +143,10 @@ impl QueryData {
         };
 
         Self {
-            name: index.name,
-            sequence: index.sequence,
-            sequence_rc: index.sequence_rc,
-            reverse_sa: index.reverse_sa,
+            name,
+            sequence,
+            sequence_rc,
+            reverse_sa,
             seed_interval,
             min_seed_len,
             n_prefix,
@@ -177,45 +202,150 @@ impl RegistryEntry for QueryData {
 }
 
 pub type QueryRegistry = Registry<QueryData>;
-pub type TargetRegistry = Registry<SequenceIndex>;
+pub type TargetRegistry = Registry<TargetData>;
 
-impl QueryRegistry {
-    pub fn from_indices(indices: Vec<SequenceIndex>, config: &SeedConfig) -> Self {
-        Self::new(
-            indices
-                .into_iter()
-                .map(|idx| QueryData::from_index(idx, config))
-                .collect(),
-        )
+fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+    validate_readable_file(path)?;
+
+    let sequences = read_fasta_sequences(path).context("Failed to read FASTA sequences")?;
+    if sequences.is_empty() {
+        bail!("No sequences found in input file: {}", path.display());
     }
 
-    pub fn from_names(names: Vec<String>, config: &SeedConfig) -> Self {
-        let entries = names
-            .into_iter()
-            .map(|name| {
-                QueryData::from_index(
-                    SequenceIndex {
-                        name,
-                        forward_sa: SuffixArray::from(Vec::new()),
-                        reverse_sa: SuffixArray::from(Vec::new()),
-                        sequence: Sequence::from(Vec::new()),
-                        sequence_rc: Sequence::from(Vec::new()),
-                    },
+    let mut seen = HashSet::with_capacity(sequences.len());
+    for (id, _) in &sequences {
+        if id.trim().is_empty() {
+            bail!("Encountered empty FASTA record id in {}", path.display());
+        }
+        if !seen.insert(id.clone()) {
+            bail!("Duplicate FASTA record id '{}' in {}", id, path.display());
+        }
+    }
+
+    Ok(sequences)
+}
+
+fn normalize_record(id: String, seq: Vec<u8>) -> Result<Option<(String, Sequence, Sequence)>> {
+    let (seq_norm, stats) = Sequence::normalize(&id, &seq)
+        .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
+
+    if seq_norm.is_empty() {
+        log::warn!(
+            "Skipping empty sequence after normalization: '{}' (removed_gaps={}, converted_to_n={})",
+            id,
+            stats.removed_gaps,
+            stats.converted_to_n
+        );
+        return Ok(None);
+    }
+
+    if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
+        log::debug!(
+            "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
+            id,
+            stats.removed_gaps,
+            stats.converted_to_n
+        );
+    }
+
+    if seq_norm.len() > u32::MAX as usize {
+        bail!(
+            "Sequence '{}' too long for u32 suffix array ({} bases > {} max). \
+             Consider chunking the sequence or using a future u64-enabled build.",
+            id,
+            seq_norm.len(),
+            u32::MAX
+        );
+    }
+
+    let seq_rc = seq_norm.reverse_complement();
+    Ok(Some((id, seq_norm, seq_rc)))
+}
+
+impl QueryRegistry {
+    pub fn from_fasta(path: &Path, config: &SeedConfig) -> Result<Self> {
+        let sequences = read_and_validate_sequences(path)?;
+
+        let maybe_entries: Vec<Option<QueryData>> = sequences
+            .into_par_iter()
+            .map(|(id, seq)| -> Result<Option<QueryData>> {
+                let Some((name, sequence, sequence_rc)) = normalize_record(id, seq)? else {
+                    return Ok(None);
+                };
+
+                let reverse_sa = SuffixArray::try_from(&sequence_rc)?;
+
+                Ok(Some(QueryData::from_parts(
+                    name,
+                    sequence,
+                    sequence_rc,
+                    reverse_sa,
                     config,
-                )
+                )))
             })
-            .collect();
-        Self { entries }
+            .collect::<Result<Vec<_>>>()?;
+
+        let entries: Vec<QueryData> = maybe_entries.into_iter().flatten().collect();
+        if entries.is_empty() {
+            bail!(
+                "All sequences were empty after normalization in {}",
+                path.display()
+            );
+        }
+
+        Ok(Self::new(entries))
     }
 }
 
-impl RegistryEntry for SequenceIndex {
+impl RegistryEntry for TargetData {
     fn name(&self) -> &str {
         &self.name
     }
 }
 
 impl TargetRegistry {
+    pub fn from_fasta(path: &Path) -> Result<Self> {
+        let sequences = read_and_validate_sequences(path)?;
+
+        let maybe_entries: Vec<Option<TargetData>> = sequences
+            .into_par_iter()
+            .map(|(id, seq)| -> Result<Option<TargetData>> {
+                let Some((name, sequence, sequence_rc)) = normalize_record(id, seq)? else {
+                    return Ok(None);
+                };
+
+                let forward_sa = SuffixArray::try_from(&sequence)?;
+                let reverse_sa = SuffixArray::try_from(&sequence_rc)?;
+
+                Ok(Some(TargetData {
+                    name,
+                    forward_sa,
+                    reverse_sa,
+                    sequence,
+                    sequence_rc,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let entries: Vec<TargetData> = maybe_entries.into_iter().flatten().collect();
+        if entries.is_empty() {
+            bail!(
+                "All sequences were empty after normalization in {}",
+                path.display()
+            );
+        }
+
+        Ok(Self::new(entries))
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        crate::index::io::load_index_file(path)
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        crate::index::io::write_index_file(self, path)
+    }
+
     pub fn get_sequence(&self, seq_idx: usize) -> &Sequence {
         &self.entries[seq_idx].sequence
     }
@@ -226,19 +356,5 @@ impl TargetRegistry {
 
     pub fn get_sequence_len(&self, seq_idx: usize) -> usize {
         self.entries[seq_idx].sequence.len()
-    }
-
-    pub fn from_names(names: Vec<String>) -> Self {
-        let entries = names
-            .into_iter()
-            .map(|name| SequenceIndex {
-                name,
-                forward_sa: SuffixArray::from(Vec::new()),
-                reverse_sa: SuffixArray::from(Vec::new()),
-                sequence: Sequence::from(Vec::new()),
-                sequence_rc: Sequence::from(Vec::new()),
-            })
-            .collect();
-        Self { entries }
     }
 }

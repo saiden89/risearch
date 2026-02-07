@@ -1,6 +1,6 @@
 use crate::config::SeedConfig;
-use crate::registry::QueryData;
-use crate::sa::{SuffixArray, TargetRegistry};
+use crate::index::sa::SuffixArray;
+use crate::registry::{QueryData, TargetRegistry};
 use crate::seq::Sequence;
 use crate::types::{Interval, SeedLen, Strand, TargetId};
 
