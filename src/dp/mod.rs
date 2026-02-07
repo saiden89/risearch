@@ -9,9 +9,9 @@ mod core;
 mod init;
 mod traceback;
 
-use core::dp_main_loop_generic;
-use init::init_frontier;
-use traceback::traceback;
+use self::core::dp_main_loop_generic;
+use self::init::init_frontier;
+use self::traceback::traceback;
 
 /// Maximum extension length for precomputed index arrays.
 /// Matches the typical max_ext parameter (100-200 bases).
@@ -285,119 +285,92 @@ pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
 }
 
 // =============================================================================
-// SCORE-ONLY GRID - Optimized for DP hot loop (matches C implementation)
+// DP GRID - Interleaved AoS layout for cache-friendly cell access
 // =============================================================================
 
-/// Score-only grid for DP. No traceback storage - reconstructed post-hoc.
-/// This matches the C implementation which stores only M, Bq, Bt scores.
-pub struct ScoreGrid {
-    data: Vec<i32>,
+/// Single DP cell: all three state scores packed together.
+///
+/// `repr(C)` guarantees field order and no padding (3 × i32 = 12 bytes).
+/// Every access in the DP touches multiple states at the same (i,j),
+/// so interleaving them maximizes cache line utilization.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct DpCell {
+    pub(super) m: i32,  // Match/mismatch state
+    pub(super) bq: i32, // Query bulge (gap in target)
+    pub(super) bt: i32, // Target bulge (gap in query)
+}
+
+impl DpCell {
+    pub(super) const EMPTY: Self = Self {
+        m: MIN_SCORE,
+        bq: MIN_SCORE,
+        bt: MIN_SCORE,
+    };
+}
+
+/// Interleaved DP grid storing `DpCell` per position.
+///
+/// Row-major layout: cell (i, j) is at index `i * width + j`.
+/// Reused across extensions (resized, not reallocated).
+pub(super) struct DpGrid {
+    data: Vec<DpCell>,
     width: usize,
 }
 
-impl ScoreGrid {
-    pub fn new(width: usize, height: usize) -> Self {
+impl DpGrid {
+    fn new(width: usize, height: usize) -> Self {
         Self {
-            data: vec![MIN_SCORE; width * height],
+            data: vec![DpCell::EMPTY; width * height],
             width,
         }
     }
 
     /// Resize without clearing. Caller must ensure all accessed cells are initialized.
-    /// This matches C behavior where matrices are allocated once and reused.
+    /// This is critical for performance (avoids O(n²) overhead per extension).
     #[inline]
-    pub fn resize(&mut self, width: usize, height: usize) {
+    pub(super) fn resize(&mut self, width: usize, height: usize) {
         let new_len = width * height;
         if self.data.len() < new_len {
-            self.data.resize(new_len, MIN_SCORE);
+            self.data.resize(new_len, DpCell::EMPTY);
         }
         self.width = width;
-        // NOTE: No fill() - cells are initialized on demand during DP.
-        // This is critical for performance (avoids O(n²) overhead per extension).
     }
 
     #[inline(always)]
-    pub fn idx(&self, i: usize, j: usize) -> usize {
-        i * self.width + j
-    }
-
-    #[inline(always)]
-    pub fn get(&self, i: usize, j: usize) -> i32 {
+    pub(super) fn get(&self, i: usize, j: usize) -> DpCell {
         let idx = i * self.width + j;
         debug_assert!(
             idx < self.data.len(),
-            "ScoreOnlyGrid::get out of bounds: ({}, {}) idx={} len={}",
-            i,
-            j,
-            idx,
-            self.data.len()
+            "DpGrid::get out of bounds: ({}, {}) idx={} len={}",
+            i, j, idx, self.data.len()
         );
         unsafe { *self.data.get_unchecked(idx) }
     }
 
     #[inline(always)]
-    pub fn set(&mut self, i: usize, j: usize, val: i32) {
-        let idx = i * self.width + j;
-        debug_assert!(
-            idx < self.data.len(),
-            "ScoreOnlyGrid::set out of bounds: ({}, {}) idx={} len={}",
-            i,
-            j,
-            idx,
-            self.data.len()
-        );
-        unsafe { *self.data.get_unchecked_mut(idx) = val }
-    }
-
-    #[inline(always)]
-    pub fn ptr(&mut self) -> *mut i32 {
+    pub(super) fn ptr(&mut self) -> *mut DpCell {
         self.data.as_mut_ptr()
     }
 
-    pub fn width(&self) -> usize {
+    #[inline(always)]
+    pub(super) fn width(&self) -> usize {
         self.width
     }
 }
 
-// DP EXTENDER - Stateful extension with reusable matrices (score-only)
-// =============================================================================
-
-/// Score-only DP matrices for extension (matches C implementation).
-/// Traceback is reconstructed post-hoc by comparing scores.
-pub(super) struct DpMatrices {
-    pub(super) m: ScoreGrid,  // Match/mismatch state
-    pub(super) bq: ScoreGrid, // Query bulge (gap in target)
-    pub(super) bt: ScoreGrid, // Target bulge (gap in query)
-}
-
-impl DpMatrices {
-    fn new(width: usize, height: usize) -> Self {
-        Self {
-            m: ScoreGrid::new(width, height),
-            bq: ScoreGrid::new(width, height),
-            bt: ScoreGrid::new(width, height),
-        }
-    }
-
-    pub(super) fn resize(&mut self, width: usize, height: usize) {
-        self.m.resize(width, height);
-        self.bq.resize(width, height);
-        self.bt.resize(width, height);
-    }
-}
-
-/// Stateful DP extender with reusable matrices
+/// Stateful DP extender with reusable grid
 pub struct DpExtender<M: DsmModel> {
-    matrices: DpMatrices,
+    grid: DpGrid,
     penalty: i32,
     _model: std::marker::PhantomData<M>,
 }
 
-/// Guard holding a reference to DP matrices after forward pass.
+/// Guard holding a reference to the DP grid after forward pass.
 /// While this exists, the extender cannot be used for another extension
-/// (borrow checker enforces this via the lifetime on `matrices`).
+/// (borrow checker enforces this via the lifetime on `grid`).
 pub struct ExtendResult<'a, M: DsmModel> {
-    matrices: &'a DpMatrices,
+    grid: &'a DpGrid,
     pub score: i32,
     pub q_len: usize,
     pub t_len: usize,
@@ -409,15 +382,7 @@ impl<M: DsmModel> ExtendResult<'_, M> {
     /// Only call when alignment output is needed (skip for Minimal format).
     pub fn traceback(&self, view: &DpView<'_, M>) -> SmallVec<[Pairing; 64]> {
         let mut out = SmallVec::new();
-        traceback::<M>(
-            view,
-            &self.matrices.m,
-            &self.matrices.bq,
-            &self.matrices.bt,
-            self.q_len,
-            self.t_len,
-            &mut out,
-        );
+        traceback::<M>(view, self.grid, self.q_len, self.t_len, &mut out);
         out
     }
 }
@@ -429,15 +394,11 @@ impl<M: DsmModel> DpExtender<M> {
 
     pub fn with_penalty(penalty: i32) -> Self {
         Self {
-            matrices: DpMatrices::new(200, 200),
+            grid: DpGrid::new(200, 200),
             penalty,
             _model: std::marker::PhantomData,
         }
     }
-
-    // =========================================================================
-    // UNIFIED EXTEND - Direction-agnostic DP using DpView abstraction
-    // =========================================================================
 
     #[cfg_attr(feature = "prof", inline(never))]
     /// Run DP forward pass and return an ExtendResult guard.
@@ -453,7 +414,7 @@ impl<M: DsmModel> DpExtender<M> {
         // Early return
         if q_len <= 1 || t_len <= 1 {
             return ExtendResult {
-                matrices: &self.matrices,
+                grid: &self.grid,
                 score: best.score,
                 q_len: 0,
                 t_len: 0,
@@ -461,22 +422,17 @@ impl<M: DsmModel> DpExtender<M> {
             };
         }
 
-        // Resize matrices
-        self.matrices.resize(t_len + 1, q_len + 1);
+        // Resize grid
+        self.grid.resize(t_len + 1, q_len + 1);
 
         // =====================================================================
         // PRECOMPUTE Q/T BASE INDICES (used by init AND main loop)
         // =====================================================================
-        // This eliminates repeated `view.q(i)` and `view.t(j)` calls
-        // which have a match on direction each time.
 
-        // Avoid per-call zeroing of these stack arrays (keeps memset out of hot path).
         let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
         let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
 
-        // SAFETY invariants:
-        // - We only read indices we explicitly write below.
-        // - q_len and t_len are <= MAX_EXT.
+        // SAFETY: We only read indices we explicitly write below.
         let q_ptr = q_idx.as_mut_ptr() as *mut usize;
         let t_ptr = t_idx.as_mut_ptr() as *mut usize;
 
@@ -493,21 +449,19 @@ impl<M: DsmModel> DpExtender<M> {
         // =====================================================================
         // INITIALIZATION - Unconditional writes to avoid stale data
         // =====================================================================
-        // Unlike C which uses calloc (zeroed memory), we reuse buffers.
-        // We must explicitly set ALL cells that might be read, including NA cells.
 
         let has_main_region = init_frontier::<M>(
             view,
             q_ptr,
             t_ptr,
-            &mut self.matrices,
+            &mut self.grid,
             q_len,
             t_len,
             &mut best,
         );
         if !has_main_region {
             return ExtendResult {
-                matrices: &self.matrices,
+                grid: &self.grid,
                 score: best.score,
                 q_len: best.i,
                 t_len: best.j,
@@ -516,20 +470,14 @@ impl<M: DsmModel> DpExtender<M> {
         }
 
         // =======================================================================
-        // MAIN DP LOOP (i >= 3, j >= 3) - OPTIMIZED
+        // MAIN DP LOOP (i >= 3, j >= 3)
         // =======================================================================
-        //
-        // Optimizations applied:
-        // 1. Precompute Q/T base indices into stack arrays (eliminates branch per access)
-        // 2. Cache row offsets (eliminates multiplication per cell)
-        // 3. Direct slice access (eliminates method call overhead)
-        // 4. Raw DSM lookup (bypasses abstraction layers)
 
         if view.dir == ExtendDir::Left {
             dp_main_loop_generic::<true, M>(
                 q_ptr,
                 t_ptr,
-                &mut self.matrices,
+                &mut self.grid,
                 q_len,
                 t_len,
                 self.penalty,
@@ -539,7 +487,7 @@ impl<M: DsmModel> DpExtender<M> {
             dp_main_loop_generic::<false, M>(
                 q_ptr,
                 t_ptr,
-                &mut self.matrices,
+                &mut self.grid,
                 q_len,
                 t_len,
                 self.penalty,
@@ -556,7 +504,7 @@ impl<M: DsmModel> DpExtender<M> {
         );
 
         ExtendResult {
-            matrices: &self.matrices,
+            grid: &self.grid,
             score: best.score,
             q_len: best.i,
             t_len: best.j,

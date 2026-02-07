@@ -2,13 +2,13 @@ use std::cmp::max;
 
 use crate::dsm::{stack_with_penalty, DsmModel};
 
-use super::{add_e, max3, BestScore, DpMatrices, MIN_SCORE};
+use super::{add_e, max3, BestScore, DpGrid, MIN_SCORE};
 
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     q_ptr: *const usize,
     t_ptr: *const usize,
-    matrices: &mut DpMatrices,
+    grid: &mut DpGrid,
     q_len: usize,
     t_len: usize,
     penalty: i32,
@@ -18,12 +18,10 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
 
     // SAFETY invariants:
     // - q_ptr/t_ptr valid for indices [0, q_len) / [0, t_len)
-    // - matrices sized at least (q_len+1) x (t_len+1)
+    // - grid sized at least (q_len+1) x (t_len+1)
     unsafe {
-        let m_ptr = matrices.m.ptr();
-        let bq_ptr = matrices.bq.ptr();
-        let bt_ptr = matrices.bt.ptr();
-        let width = matrices.m.width();
+        let ptr = grid.ptr();
+        let width = grid.width();
 
         // Precompute GAP-GAP profile (constant across all rows)
         // Store lookup_raw(GAP, GAP, t1, t2) at index [t1 * 6 + t2]
@@ -74,28 +72,27 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                                     // Note: GAP * 6 + tj = tj (no computation needed)
                                     // Note: GAP * 6 + GAP = 0 (constant)
 
-                let m_diag = *m_ptr.add(diag_idx);
-                let bq_diag = *bq_ptr.add(diag_idx);
-                let bt_diag = *bt_ptr.add(diag_idx);
+                // Read diagonal cell once (m, bq, bt all from same index)
+                let diag = *ptr.add(diag_idx);
 
                 // Use precomputed t_stack_idx
-                let s_mm = add_e(m_diag, q_profile[t_stack_idx]);
+                let s_mm = add_e(diag.m, q_profile[t_stack_idx]);
 
                 // Use tj_x6 for LEFT, tj for RIGHT
                 let s_mq = if LEFT {
-                    add_e(bq_diag, q_profile[tj_x6])
+                    add_e(diag.bq, q_profile[tj_x6])
                 } else {
-                    add_e(bq_diag, q_profile[tj])
+                    add_e(diag.bq, q_profile[tj])
                 };
 
                 let s_mt = if LEFT {
                     add_e(
-                        bt_diag,
+                        diag.bt,
                         stack_with_penalty::<M>(qi, GAP, tj, tj_prev, penalty),
                     )
                 } else {
                     add_e(
-                        bt_diag,
+                        diag.bt,
                         stack_with_penalty::<M>(GAP, qi, tj_prev, tj, penalty),
                     )
                 };
@@ -110,37 +107,37 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                     best.update(val_m, term, i, j);
                 }
 
-                *m_ptr.add(curr_idx) = val_m;
+                (*ptr.add(curr_idx)).m = val_m;
 
-                let m_up = *m_ptr.add(up_idx);
-                let bq_up = *bq_ptr.add(up_idx);
+                // Read up cell once (m, bq from same index)
+                let up = *ptr.add(up_idx);
 
                 // Use tj for LEFT, tj_x6 for RIGHT
                 let s_qm = if LEFT {
-                    add_e(m_up, q_profile[tj])
+                    add_e(up.m, q_profile[tj])
                 } else {
-                    add_e(m_up, q_profile[tj_x6])
+                    add_e(up.m, q_profile[tj_x6])
                 };
-                let s_qq = add_e(bq_up, q_profile[0]); // GAP * 6 + GAP = 0
-                *bq_ptr.add(curr_idx) = max(s_qm, s_qq);
+                let s_qq = add_e(up.bq, q_profile[0]); // GAP * 6 + GAP = 0
+                (*ptr.add(curr_idx)).bq = max(s_qm, s_qq);
 
-                let m_left = *m_ptr.add(left_idx);
-                let bt_left = *bt_ptr.add(left_idx);
+                // Read left cell once (m, bt from same index)
+                let left = *ptr.add(left_idx);
                 let s_tm = if LEFT {
                     add_e(
-                        m_left,
+                        left.m,
                         stack_with_penalty::<M>(GAP, qi, tj, tj_prev, penalty),
                     )
                 } else {
                     add_e(
-                        m_left,
+                        left.m,
                         stack_with_penalty::<M>(qi, GAP, tj_prev, tj, penalty),
                     )
                 };
 
                 // Use precomputed t_stack_idx
-                let s_tt = add_e(bt_left, gap_gap_profile[t_stack_idx]);
-                *bt_ptr.add(curr_idx) = max(s_tm, s_tt);
+                let s_tt = add_e(left.bt, gap_gap_profile[t_stack_idx]);
+                (*ptr.add(curr_idx)).bt = max(s_tm, s_tt);
             }
         }
     }

@@ -1,7 +1,7 @@
 use log::trace;
 use smallvec::SmallVec;
 
-use super::{DpView, ScoreGrid, MIN_SCORE};
+use super::{DpView, DpGrid, MIN_SCORE};
 use crate::alignment::Pairing;
 use crate::dsm::DsmModel;
 use crate::types::Base;
@@ -22,9 +22,7 @@ enum State {
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn traceback<M: DsmModel>(
     view: &DpView<'_, M>,
-    m: &ScoreGrid,
-    bq: &ScoreGrid,
-    bt: &ScoreGrid,
+    grid: &DpGrid,
     best_i: usize,
     best_j: usize,
     out: &mut SmallVec<[Pairing; 64]>,
@@ -39,20 +37,19 @@ pub(super) fn traceback<M: DsmModel>(
                 let t_base = Base::from_idx(view.t(j));
                 out.push(Pairing::from_bases(q_base, t_base));
 
-                let m_val = m.get(i, j);
-                let m_diag = m.get(i - 1, j - 1);
-                let bq_diag = bq.get(i - 1, j - 1);
-                let bt_diag = bt.get(i - 1, j - 1);
+                let c = grid.get(i, j);
+                let m_val = c.m;
+                let diag = grid.get(i - 1, j - 1);
 
                 let match_e = view.match_e(i, j);
                 let m_from_bq = view.m_from_bq(i, j);
                 let m_from_bt = view.m_from_bt(i, j);
 
-                let next = if m_diag > MIN_SCORE && m_val == m_diag + match_e {
+                let next = if diag.m > MIN_SCORE && m_val == diag.m + match_e {
                     Some(State::Match)
-                } else if bq_diag > MIN_SCORE && m_val == bq_diag + m_from_bq {
+                } else if diag.bq > MIN_SCORE && m_val == diag.bq + m_from_bq {
                     Some(State::GapQ)
-                } else if bt_diag > MIN_SCORE && m_val == bt_diag + m_from_bt {
+                } else if diag.bt > MIN_SCORE && m_val == diag.bt + m_from_bt {
                     Some(State::GapT)
                 } else {
                     None
@@ -78,16 +75,16 @@ pub(super) fn traceback<M: DsmModel>(
                 let q_base = Base::from_idx(view.q(i));
                 out.push(Pairing::query_bulge(q_base));
 
-                let bq_val = bq.get(i, j);
-                let m_up = m.get(i - 1, j);
-                let bq_up = bq.get(i - 1, j);
+                let c = grid.get(i, j);
+                let bq_val = c.bq;
+                let up = grid.get(i - 1, j);
 
                 let bq_open = view.bq_open(i, j);
                 let bq_ext = view.bq_ext(i);
 
-                let next = if m_up > MIN_SCORE && bq_val == m_up + bq_open {
+                let next = if up.m > MIN_SCORE && bq_val == up.m + bq_open {
                     Some(State::Match)
-                } else if bq_up > MIN_SCORE && bq_val == bq_up + bq_ext {
+                } else if up.bq > MIN_SCORE && bq_val == up.bq + bq_ext {
                     Some(State::GapQ)
                 } else {
                     None
@@ -112,16 +109,16 @@ pub(super) fn traceback<M: DsmModel>(
                 let t_base = Base::from_idx(view.t(j));
                 out.push(Pairing::target_bulge(t_base));
 
-                let bt_val = bt.get(i, j);
-                let m_left = m.get(i, j - 1);
-                let bt_left = bt.get(i, j - 1);
+                let c = grid.get(i, j);
+                let bt_val = c.bt;
+                let left = grid.get(i, j - 1);
 
                 let bt_open = view.bt_open(i, j);
                 let bt_ext = view.bt_ext(j);
 
-                let next = if m_left > MIN_SCORE && bt_val == m_left + bt_open {
+                let next = if left.m > MIN_SCORE && bt_val == left.m + bt_open {
                     Some(State::Match)
-                } else if bt_left > MIN_SCORE && bt_val == bt_left + bt_ext {
+                } else if left.bt > MIN_SCORE && bt_val == left.bt + bt_ext {
                     Some(State::GapT)
                 } else {
                     None

@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use risearch::dp::DpExtender;
+use risearch::dp::{DpExtender, DpView};
 use risearch::dsm::T04;
 use risearch::seq::Sequence;
 use risearch::types::Base;
@@ -68,13 +68,15 @@ fn bench_extend_left(c: &mut Criterion) {
             let mut extender = DpExtender::<T04>::new();
 
             b.iter(|| {
-                let _ = extender.extend_left(
+                let view = DpView::<T04>::left(
                     black_box(&query),
                     black_box(&target),
                     black_box(q_start),
                     black_box(t_start),
                     black_box(len),
+                    0,
                 );
+                let _ = extender.extend(black_box(&view));
             });
         });
     }
@@ -95,13 +97,15 @@ fn bench_extend_right(c: &mut Criterion) {
             let mut extender = DpExtender::<T04>::new();
 
             b.iter(|| {
-                let _ = extender.extend_right(
+                let view = DpView::<T04>::right(
                     black_box(&query),
                     black_box(&target),
                     black_box(q_end),
                     black_box(t_end),
                     black_box(len),
+                    0,
                 );
+                let _ = extender.extend(black_box(&view));
             });
         });
     }
@@ -132,13 +136,15 @@ fn bench_throughput(c: &mut Criterion) {
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let result = extender.extend_left(
+                        let view = DpView::<T04>::left(
                             black_box(&query),
                             black_box(&target),
                             black_box(q_start),
                             black_box(t_start),
                             black_box(len),
+                            0,
                         );
+                        let result = extender.extend(black_box(&view));
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -167,13 +173,15 @@ fn bench_throughput(c: &mut Criterion) {
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let result = extender.extend_right(
+                        let view = DpView::<T04>::right(
                             black_box(&query),
                             black_box(&target),
                             black_box(q_end),
                             black_box(t_end),
                             black_box(len),
+                            0,
                         );
+                        let result = extender.extend(black_box(&view));
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -226,23 +234,28 @@ fn bench_many_extensions(c: &mut Criterion) {
                     };
 
                     // Left extension
-                    let left_result = extender.extend_left(
+                    let left_view = DpView::<T04>::left(
                         black_box(query),
                         black_box(target),
                         black_box(q_start),
                         black_box(t_start),
                         black_box(30),
+                        0,
                     );
+                    let left_result = extender.extend(black_box(&left_view));
                     total_score = total_score.wrapping_add(left_result.score);
+                    drop(left_result);
 
                     // Right extension
-                    let right_result = extender.extend_right(
+                    let right_view = DpView::<T04>::right(
                         black_box(query),
                         black_box(target),
                         black_box(q_end),
                         black_box(t_end),
                         black_box(30),
+                        0,
                     );
+                    let right_result = extender.extend(black_box(&right_view));
                     total_score = total_score.wrapping_add(right_result.score);
                 }
             }
