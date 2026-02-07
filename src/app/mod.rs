@@ -23,7 +23,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             target,
             output,
             opts,
-        }) => cmd_search(query, target, output, opts),
+        }) => cmd_search(query, target, &output.path, opts),
         None => {
             Cli::command().print_help()?;
             println!();
@@ -55,8 +55,6 @@ fn cmd_search(
     let queries = sa::process_sequences(query_path).context("Failed to load queries")?;
 
     // Convert CLI args to config (handles deprecated flag translation)
-    let output_compress = cli_opts.output_compress;
-    let output_level = cli_opts.output_level;
     let mut opts: risearch::config::SearchArgs = cli_opts.clone().into();
     emit_legacy_warnings(&raw_args, &mut opts)?;
 
@@ -68,9 +66,7 @@ fn cmd_search(
     trace!("Index loaded: {} targets", targets.len());
 
     // Open output with compression
-    let mut writer =
-        output::open_compressed_output(Some(output_path), output_compress, output_level)?;
-    opts.output.compress = Some(risearch::config::OutputCompression::None);
+    let mut writer = output::open_output(Some(output_path), &opts.output)?;
 
     debug!("Starting search...");
     let hits = search::run_search_streaming(&queries, &targets, &opts, &mut writer)?;

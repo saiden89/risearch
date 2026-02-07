@@ -163,24 +163,35 @@ fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
         // Move buffers out to avoid borrow conflicts with closure
         let mut out_buf = std::mem::take(&mut state.out_buf);
         let mut fmt_bufs = std::mem::take(&mut state.fmt_bufs);
+        let mut write_err: Option<std::io::Error> = None;
 
         process_query::<M, _>(q_idx as u32, q, &mut state, queries, index, opts, |hit| {
-            let _ = crate::output::write_hit_with_format(
-                &mut fmt_bufs,
-                &hit,
-                format,
-                &mut out_buf,
-                queries,
-                index,
-            );
+            if write_err.is_some() {
+                return;
+            }
+
+            if let Err(err) =
+                crate::output::write_hit(&mut fmt_bufs, &hit, format, &mut out_buf, queries, index)
+            {
+                write_err = Some(err);
+                return;
+            }
+
             hit_count += 1;
 
             // Flush periodically
             if out_buf.len() >= 64 * 1024 {
-                let _ = writer.write_all(&out_buf);
+                if let Err(err) = writer.write_all(&out_buf) {
+                    write_err = Some(err);
+                    return;
+                }
                 out_buf.clear();
             }
         });
+
+        if let Some(err) = write_err {
+            return Err(err.into());
+        }
 
         // Flush remaining and restore buffers
         if !out_buf.is_empty() {

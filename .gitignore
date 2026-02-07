@@ -7,3 +7,4 @@ target/
 *.sh
 *.json
 legacy_c/RIsearch2/bin/
+legacy_c/risearch3_src/

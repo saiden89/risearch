@@ -8,18 +8,13 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use zstd::stream;
 
-use crate::config::OutputCompression;
+use crate::config::{OutputCompression, OutputConfig};
 
 pub mod format;
-pub use format::{write_hit_with_format, OutputBuffers};
+pub use format::{write_hit, OutputBuffers};
 
-/// Open output file with optional compression.
-/// Compression is inferred from file extension if not specified.
-pub fn open_compressed_output(
-    path: Option<impl AsRef<Path>>,
-    compress: Option<OutputCompression>,
-    level: Option<i32>,
-) -> Result<Box<dyn Write>> {
+/// Open output writer from parsed search output config.
+pub fn open_output(path: Option<impl AsRef<Path>>, cfg: &OutputConfig) -> Result<Box<dyn Write>> {
     let path_ref = path.as_ref().map(|p| p.as_ref());
 
     // Create underlying writer
@@ -30,38 +25,35 @@ pub fn open_compressed_output(
         _ => Box::new(std::io::stdout()),
     };
 
-    // Determine compression
-    let compression = compress.unwrap_or_else(|| {
-        path_ref
-            .map(infer_compression)
-            .unwrap_or(OutputCompression::None)
-    });
+    let compression = cfg
+        .compress
+        .unwrap_or_else(|| path_ref.map(infer_compression).unwrap_or_default());
 
     // Wrap with compression encoder if needed
     match compression {
         OutputCompression::None => {
-            if level.is_some() {
+            if cfg.level.is_some() {
                 bail!("--output-level requires compressed output");
             }
             Ok(Box::new(BufWriter::with_capacity(256 * 1024, inner)))
         }
         OutputCompression::Gzip => {
-            let lvl = match level {
+            let level = match cfg.level {
                 None => Compression::default(),
                 Some(v) if (0..=9).contains(&v) => Compression::new(v as u32),
                 Some(v) => bail!("gzip level must be 0-9 (got {})", v),
             };
             Ok(Box::new(BufWriter::with_capacity(
                 256 * 1024,
-                GzEncoder::new(inner, lvl),
+                GzEncoder::new(inner, level),
             )))
         }
         OutputCompression::Zstd => {
-            let lvl = level.unwrap_or(0);
-            if !(-7..=22).contains(&lvl) {
-                bail!("zstd level must be -7..22 (got {})", lvl);
+            let level = cfg.level.unwrap_or(0);
+            if !(-7..=22).contains(&level) {
+                bail!("zstd level must be -7..22 (got {})", level);
             }
-            let encoder = stream::write::Encoder::new(inner, lvl)
+            let encoder = stream::write::Encoder::new(inner, level)
                 .context("zstd encoder init failed")?
                 .auto_finish();
             Ok(Box::new(BufWriter::with_capacity(256 * 1024, encoder)))

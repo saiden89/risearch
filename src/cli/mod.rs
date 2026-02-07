@@ -33,6 +33,13 @@ pub(crate) struct Cli {
     pub(crate) command: Option<Commands>,
 }
 
+#[derive(clap::Args, Debug)]
+pub(crate) struct OutputArgs {
+    /// Output file for search results (use '-' for stdout)
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub(crate) path: PathBuf,
+}
+
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)] // CLI parsing - allocation overhead is negligible
 pub(crate) enum Commands {
@@ -57,9 +64,8 @@ pub(crate) enum Commands {
         #[arg(short = 'i', long = "index", value_name = "INDEX")]
         target: PathBuf,
 
-        /// Output file for search results (use '-' for stdout)
-        #[arg(short = 'o', long = "output", value_name = "FILE")]
-        output: PathBuf,
+        #[command(flatten)]
+        output: OutputArgs,
 
         /// Search-related options (seed, extension, energy, matrix, penalty, threads, format)
         #[command(flatten)]
