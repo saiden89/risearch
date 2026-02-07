@@ -66,41 +66,6 @@ pub struct DpView<'a, M: DsmModel> {
 
 /// Gap base index constant
 const GAP: usize = Base::Gap as usize;
-const DSM_DIM: usize = 6;
-
-#[inline]
-fn max_dsm_stack<M: DsmModel>(penalty: i32) -> i32 {
-    let mut max = i32::MIN;
-    for q1 in 0..DSM_DIM {
-        for q2 in 0..DSM_DIM {
-            for t1 in 0..DSM_DIM {
-                for t2 in 0..DSM_DIM {
-                    let val = stack_with_penalty::<M>(q1, q2, t1, t2, penalty);
-                    if val > max {
-                        max = val;
-                    }
-                }
-            }
-        }
-    }
-    max
-}
-
-#[inline]
-fn max_dsm_terminal<M: DsmModel>(penalty: i32) -> i32 {
-    let mut max = i32::MIN;
-    for q in 0..DSM_DIM {
-        for t in 0..DSM_DIM {
-            let left = stack_with_penalty::<M>(GAP, q, GAP, t, penalty);
-            let right = stack_with_penalty::<M>(q, GAP, t, GAP, penalty);
-            let val = if left > right { left } else { right };
-            if val > max {
-                max = val;
-            }
-        }
-    }
-    max
-}
 
 impl<'a, M: DsmModel> DpView<'a, M> {
     #[inline(always)]
@@ -379,8 +344,6 @@ impl DpMatrices {
 /// Stateful DP extender with reusable matrices
 pub struct DpExtender<M: DsmModel> {
     matrices: DpMatrices,
-    max_stack: i32,
-    max_terminal: i32,
     penalty: i32,
     _model: std::marker::PhantomData<M>,
 }
@@ -420,15 +383,8 @@ impl<M: DsmModel> DpExtender<M> {
     }
 
     pub fn with_penalty(penalty: i32) -> Self {
-        let max_stack = max_dsm_stack::<M>(penalty);
-        let max_terminal = max_dsm_terminal::<M>(penalty);
-        debug_assert!(max_stack >= MIN_SCORE, "invalid DSM max stack");
-        debug_assert!(max_terminal >= MIN_SCORE, "invalid DSM max terminal");
-
         Self {
             matrices: DpMatrices::new(200, 200),
-            max_stack,
-            max_terminal,
             penalty,
             _model: std::marker::PhantomData,
         }
@@ -443,8 +399,6 @@ impl<M: DsmModel> DpExtender<M> {
     /// Call `.traceback()` on the result if alignment is needed.
     pub fn extend(&mut self, view: &DpView<'_, M>) -> ExtendResult<'_, M> {
         let (q_len, t_len) = (view.q_len, view.t_len);
-        let max_stack = self.max_stack;
-        let max_terminal = self.max_terminal;
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
 
@@ -683,8 +637,6 @@ impl<M: DsmModel> DpExtender<M> {
                     width,
                     q_len,
                     t_len,
-                    max_stack,
-                    max_terminal,
                     self.penalty,
                     &mut best_e,
                     &mut best_i,
@@ -700,8 +652,6 @@ impl<M: DsmModel> DpExtender<M> {
                     width,
                     q_len,
                     t_len,
-                    max_stack,
-                    max_terminal,
                     self.penalty,
                     &mut best_e,
                     &mut best_i,

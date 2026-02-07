@@ -16,8 +16,6 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     width: usize,
     q_len: usize,
     t_len: usize,
-    max_stack: i32,
-    max_terminal: i32,
     penalty: i32,
     best_e: &mut i32,
     best_i: &mut usize,
@@ -110,16 +108,12 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                 let val_m = max3(s_mm, s_mq, s_mt);
 
                 if val_m > MIN_SCORE {
-                    let remaining = (q_len - i).min(t_len - j) as i32;
-                    let upper = val_m + remaining * max_stack + max_terminal;
-                    if upper > *best_e {
-                        let term = if LEFT {
-                            stack_with_penalty::<M>(GAP, qi, GAP, tj, penalty)
-                        } else {
-                            stack_with_penalty::<M>(qi, GAP, tj, GAP, penalty)
-                        };
-                        update_best_with_term(best_e, best_i, best_j, val_m, term, i, j);
-                    }
+                    let term = if LEFT {
+                        stack_with_penalty::<M>(GAP, qi, GAP, tj, penalty)
+                    } else {
+                        stack_with_penalty::<M>(qi, GAP, tj, GAP, penalty)
+                    };
+                    update_best_with_term(best_e, best_i, best_j, val_m, term, i, j);
                 }
 
                 *m_ptr.add(curr_idx) = val_m;
