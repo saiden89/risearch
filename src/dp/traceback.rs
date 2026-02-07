@@ -1,9 +1,9 @@
 use log::trace;
 use smallvec::SmallVec;
 
-use super::{DpView, DpGrid, MIN_SCORE};
+use super::{DpGrid, DpView, MIN_SCORE};
 use crate::alignment::Pairing;
-use crate::dsm::DsmModel;
+use crate::dsm::{DsmModel, DSM_FLAT_SIZE};
 use crate::types::Base;
 
 /// Traceback state — internal to this module, never stored.
@@ -12,6 +12,12 @@ enum State {
     Match,
     GapQ,
     GapT,
+}
+
+/// Check if a DP transition is valid: predecessor score is valid and produces the expected value.
+#[inline(always)]
+fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
+    pred > MIN_SCORE && val == pred + energy
 }
 
 /// Reconstruct alignment from score-only DP matrices, emitting `Pairing` directly.
@@ -23,6 +29,7 @@ enum State {
 pub(super) fn traceback<M: DsmModel>(
     view: &DpView<'_, M>,
     grid: &DpGrid,
+    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
     best_i: usize,
     best_j: usize,
     out: &mut SmallVec<[Pairing; 64]>,
@@ -41,15 +48,15 @@ pub(super) fn traceback<M: DsmModel>(
                 let m_val = c.m;
                 let diag = grid.get(i - 1, j - 1);
 
-                let match_e = view.match_e(i, j);
-                let m_from_bq = view.m_from_bq(i, j);
-                let m_from_bt = view.m_from_bt(i, j);
+                let match_e = view.match_e(i, j, dsm_adjusted);
+                let m_from_bq = view.m_from_bq(i, j, dsm_adjusted);
+                let m_from_bt = view.m_from_bt(i, j, dsm_adjusted);
 
-                let next = if diag.m > MIN_SCORE && m_val == diag.m + match_e {
+                let next = if is_transition(m_val, diag.m, match_e) {
                     Some(State::Match)
-                } else if diag.bq > MIN_SCORE && m_val == diag.bq + m_from_bq {
+                } else if is_transition(m_val, diag.bq, m_from_bq) {
                     Some(State::GapQ)
-                } else if diag.bt > MIN_SCORE && m_val == diag.bt + m_from_bt {
+                } else if is_transition(m_val, diag.bt, m_from_bt) {
                     Some(State::GapT)
                 } else {
                     None
@@ -79,12 +86,12 @@ pub(super) fn traceback<M: DsmModel>(
                 let bq_val = c.bq;
                 let up = grid.get(i - 1, j);
 
-                let bq_open = view.bq_open(i, j);
-                let bq_ext = view.bq_ext(i);
+                let bq_open = view.bq_open(i, j, dsm_adjusted);
+                let bq_ext = view.bq_ext(i, dsm_adjusted);
 
-                let next = if up.m > MIN_SCORE && bq_val == up.m + bq_open {
+                let next = if is_transition(bq_val, up.m, bq_open) {
                     Some(State::Match)
-                } else if up.bq > MIN_SCORE && bq_val == up.bq + bq_ext {
+                } else if is_transition(bq_val, up.bq, bq_ext) {
                     Some(State::GapQ)
                 } else {
                     None
@@ -113,12 +120,12 @@ pub(super) fn traceback<M: DsmModel>(
                 let bt_val = c.bt;
                 let left = grid.get(i, j - 1);
 
-                let bt_open = view.bt_open(i, j);
-                let bt_ext = view.bt_ext(j);
+                let bt_open = view.bt_open(i, j, dsm_adjusted);
+                let bt_ext = view.bt_ext(j, dsm_adjusted);
 
-                let next = if left.m > MIN_SCORE && bt_val == left.m + bt_open {
+                let next = if is_transition(bt_val, left.m, bt_open) {
                     Some(State::Match)
-                } else if left.bt > MIN_SCORE && bt_val == left.bt + bt_ext {
+                } else if is_transition(bt_val, left.bt, bt_ext) {
                     Some(State::GapT)
                 } else {
                     None

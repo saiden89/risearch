@@ -74,7 +74,6 @@ fn bench_extend_left(c: &mut Criterion) {
                     black_box(q_start),
                     black_box(t_start),
                     black_box(len),
-                    0,
                 );
                 let _ = extender.extend(black_box(&view));
             });
@@ -103,7 +102,6 @@ fn bench_extend_right(c: &mut Criterion) {
                     black_box(q_end),
                     black_box(t_end),
                     black_box(len),
-                    0,
                 );
                 let _ = extender.extend(black_box(&view));
             });
@@ -142,7 +140,6 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(q_start),
                             black_box(t_start),
                             black_box(len),
-                            0,
                         );
                         let result = extender.extend(black_box(&view));
                         total_duration += start.elapsed();
@@ -179,7 +176,6 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(q_end),
                             black_box(t_end),
                             black_box(len),
-                            0,
                         );
                         let result = extender.extend(black_box(&view));
                         total_duration += start.elapsed();
@@ -240,7 +236,6 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(q_start),
                         black_box(t_start),
                         black_box(30),
-                        0,
                     );
                     let left_result = extender.extend(black_box(&left_view));
                     total_score = total_score.wrapping_add(left_result.score);
@@ -253,7 +248,6 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(q_end),
                         black_box(t_end),
                         black_box(30),
-                        0,
                     );
                     let right_result = extender.extend(black_box(&right_view));
                     total_score = total_score.wrapping_add(right_result.score);

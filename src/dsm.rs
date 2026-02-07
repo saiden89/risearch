@@ -17,16 +17,24 @@ use crate::types::{Base, BASE_COUNT};
 /// DSM table type: 4D array [q1][q2][t1][t2]
 pub(crate) type DsmTable = [[[[i16; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
 
+/// Number of entries in a flattened DSM table (6^4 = 1296).
+pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * BASE_COUNT;
+
+/// Flat DSM index for dimensions `[q1][q2][t1][t2]` where each index is 0..6.
+#[inline(always)]
+pub(crate) const fn dsm_flat_idx(q1: usize, q2: usize, t1: usize, t2: usize) -> usize {
+    q1 * 216 + q2 * 36 + t1 * 6 + t2
+}
+
 /// DSM model API for zero-cost static dispatch in hot loops.
 pub trait DsmModel {
     /// Flattened DSM table for this model.
-    const FLAT: [i32; 1296];
+    const FLAT: [i32; DSM_FLAT_SIZE];
 
     /// Raw DSM lookup for hot path DP (expects indices 0..6).
     #[inline(always)]
     fn lookup_raw(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-        Self::FLAT[idx]
+        Self::FLAT[dsm_flat_idx(q1, q2, t1, t2)]
     }
 
     /// Raw DSM lookup by precomputed flat index (0..1296).
@@ -77,8 +85,7 @@ pub trait DsmModel {
 /// Index layout matches DSM: q1*216 + q2*36 + t1*6 + t2.
 #[inline(always)]
 pub(crate) fn extend_lookup_raw(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-    let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-    DSM_EXTEND_FLAT[idx]
+    DSM_EXTEND_FLAT[dsm_flat_idx(q1, q2, t1, t2)]
 }
 
 /// Apply per-nucleotide extension penalty in dacal/mol units.
@@ -95,6 +102,23 @@ pub(crate) fn stack_with_penalty<M: DsmModel>(
         base
     } else {
         base - penalty * extend_lookup_raw(q1, q2, t1, t2)
+    }
+}
+
+/// Build a penalty-adjusted flattened DSM table for hot-path DP lookups.
+///
+/// Result layout matches `DsmModel::FLAT` and `DSM_EXTEND_FLAT`.
+pub(crate) fn build_penalty_adjusted_flat<M: DsmModel>(penalty: i32) -> [i32; DSM_FLAT_SIZE] {
+    if penalty == 0 {
+        M::FLAT
+    } else {
+        let mut out = [0i32; DSM_FLAT_SIZE];
+        let mut idx = 0;
+        while idx < DSM_FLAT_SIZE {
+            out[idx] = M::FLAT[idx] - penalty * DSM_EXTEND_FLAT[idx];
+            idx += 1;
+        }
+        out
     }
 }
 
@@ -130,8 +154,8 @@ pub(crate) fn seed_energy<M: DsmModel>(
 
 /// Build a flattened DSM lookup table.
 /// Index = q1*216 + q2*36 + t1*6 + t2 where each dim is 0..6.
-const fn build_flat(pos: &DsmTable) -> [i32; 1296] {
-    let mut flat = [0i32; 1296];
+const fn build_flat(pos: &DsmTable) -> [i32; DSM_FLAT_SIZE] {
+    let mut flat = [0i32; DSM_FLAT_SIZE];
     let mut q1 = 0;
     while q1 < 6 {
         let mut q2 = 0;
@@ -140,7 +164,7 @@ const fn build_flat(pos: &DsmTable) -> [i32; 1296] {
             while t1 < 6 {
                 let mut t2 = 0;
                 while t2 < 6 {
-                    let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+                    let idx = dsm_flat_idx(q1, q2, t1, t2);
                     flat[idx] = pos[q1][q2][t1][t2] as i32;
                     t2 += 1;
                 }
@@ -157,7 +181,7 @@ const fn build_flat(pos: &DsmTable) -> [i32; 1296] {
 pub struct T04;
 
 impl DsmModel for T04 {
-    const FLAT: [i32; 1296] = build_flat(&DSM_T04_POS);
+    const FLAT: [i32; DSM_FLAT_SIZE] = build_flat(&DSM_T04_POS);
 }
 
 // No additional public helpers; use DsmModel methods.
@@ -166,7 +190,7 @@ impl DsmModel for T04 {
 pub struct T99;
 
 impl DsmModel for T99 {
-    const FLAT: [i32; 1296] = build_flat(&DSM_T99_POS);
+    const FLAT: [i32; DSM_FLAT_SIZE] = build_flat(&DSM_T99_POS);
 }
 
 // No additional public helpers; use DsmModel methods.

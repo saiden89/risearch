@@ -1,8 +1,8 @@
 use std::cmp::max;
 
-use crate::dsm::{stack_with_penalty, DsmModel};
+use crate::dsm::{dsm_flat_idx, DsmModel, DSM_FLAT_SIZE};
 
-use super::{add_e, BestScore, DpCell, DpGrid, DpView, ExtendDir, GAP, MAX_EXT, MIN_SCORE};
+use super::{add_e, BestScore, DpCell, DpGrid, DpView, ExtendDir, GAP, MIN_SCORE};
 
 // =============================================================================
 // INIT HELPERS - Reduce code duplication in DP initialization
@@ -22,17 +22,17 @@ unsafe fn cell(ptr: *mut DpCell, width: usize, i: usize, j: usize) -> *mut DpCel
 
 /// Direction-aware stack lookup.
 #[inline(always)]
-fn stack_dir<const LEFT: bool, M: DsmModel>(
+fn stack_dir<const LEFT: bool>(
     q1: usize,
     q2: usize,
     t1: usize,
     t2: usize,
-    penalty: i32,
+    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
 ) -> i32 {
     if LEFT {
-        stack_with_penalty::<M>(q2, q1, t2, t1, penalty)
+        dsm_adjusted[dsm_flat_idx(q2, q1, t2, t1)]
     } else {
-        stack_with_penalty::<M>(q1, q2, t1, t2, penalty)
+        dsm_adjusted[dsm_flat_idx(q1, q2, t1, t2)]
     }
 }
 
@@ -40,7 +40,7 @@ fn stack_dir<const LEFT: bool, M: DsmModel>(
 ///
 /// Returns `true` when the main DP region (`i >= 3`, `j >= 3`) exists.
 /// Returns `false` when initialization is complete and no main-loop pass is needed.
-#[inline(always)]
+#[inline]
 pub(super) fn init_frontier<M: DsmModel>(
     view: &DpView<'_, M>,
     q_ptr: *const usize,
@@ -48,6 +48,7 @@ pub(super) fn init_frontier<M: DsmModel>(
     grid: &mut DpGrid,
     q_len: usize,
     t_len: usize,
+    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
     best: &mut BestScore,
 ) -> bool {
     let ptr = grid.ptr();
@@ -56,33 +57,65 @@ pub(super) fn init_frontier<M: DsmModel>(
     debug_assert!(width > t_len, "matrix width too small for t_len");
     unsafe {
         // Corner cells: explicit NA values (like C code)
-        *cell(ptr, width, 0, 0) = DpCell { m: 0, bq: MIN_SCORE, bt: MIN_SCORE };
-        *cell(ptr, width, 0, 1) = DpCell { m: MIN_SCORE, bq: MIN_SCORE, bt: view.bt_open(0, 1) };
-        *cell(ptr, width, 1, 0) = DpCell { m: MIN_SCORE, bq: view.bq_open(1, 0), bt: MIN_SCORE };
+        *cell(ptr, width, 0, 0) = DpCell {
+            m: 0,
+            bq: MIN_SCORE,
+            bt: MIN_SCORE,
+        };
+        *cell(ptr, width, 0, 1) = DpCell {
+            m: MIN_SCORE,
+            bq: MIN_SCORE,
+            bt: view.bt_open(0, 1, dsm_adjusted),
+        };
+        *cell(ptr, width, 1, 0) = DpCell {
+            m: MIN_SCORE,
+            bq: view.bq_open(1, 0, dsm_adjusted),
+            bt: MIN_SCORE,
+        };
 
-        let m11 = view.match_e(1, 1);
-        *cell(ptr, width, 1, 1) = DpCell { m: m11, bq: MIN_SCORE, bt: MIN_SCORE };
-        best.update(m11, view.terminal(1, 1), 1, 1);
+        let m11 = view.match_e(1, 1, dsm_adjusted);
+        *cell(ptr, width, 1, 1) = DpCell {
+            m: m11,
+            bq: MIN_SCORE,
+            bt: MIN_SCORE,
+        };
+        best.update(m11, view.terminal(1, 1, dsm_adjusted), 1, 1);
 
         // Row 0 (Bt only) and Row 1 (M) - unconditional writes
         for k in 2..t_len {
             let prev = (*cell(ptr, width, 0, k - 1)).bt;
             // Always write - use add_e to propagate MIN_SCORE
-            let bt_val = add_e(prev, view.bt_ext(k));
-            let m_val = add_e(prev, view.m_from_bt(1, k));
-            *cell(ptr, width, 0, k) = DpCell { m: MIN_SCORE, bq: MIN_SCORE, bt: bt_val };
-            *cell(ptr, width, 1, k) = DpCell { m: m_val, bq: MIN_SCORE, bt: MIN_SCORE };
-            best.update(m_val, view.terminal(1, k), 1, k);
+            let bt_val = add_e(prev, view.bt_ext(k, dsm_adjusted));
+            let m_val = add_e(prev, view.m_from_bt(1, k, dsm_adjusted));
+            *cell(ptr, width, 0, k) = DpCell {
+                m: MIN_SCORE,
+                bq: MIN_SCORE,
+                bt: bt_val,
+            };
+            *cell(ptr, width, 1, k) = DpCell {
+                m: m_val,
+                bq: MIN_SCORE,
+                bt: MIN_SCORE,
+            };
+            best.update(m_val, view.terminal(1, k, dsm_adjusted), 1, k);
         }
 
         // Col 0 (Bq only) and Col 1 (M) - unconditional writes
         for k in 2..q_len {
             let prev = (*cell(ptr, width, k - 1, 0)).bq;
-            let bq_val = add_e(prev, view.bq_ext(k));
-            let m_val = add_e(prev, view.m_from_bq(k, 1));
-            *cell(ptr, width, k, 0) = DpCell { m: MIN_SCORE, bq: bq_val, bt: MIN_SCORE };
-            *cell(ptr, width, k, 1) = DpCell { m: m_val, bq: MIN_SCORE, bt: MIN_SCORE };
-            best.update(m_val, view.terminal(k, 1), k, 1);
+            let bq_val = add_e(prev, view.bq_ext(k, dsm_adjusted));
+            let m_val = add_e(prev, view.m_from_bq(k, 1, dsm_adjusted));
+            *cell(ptr, width, k, 0) = DpCell {
+                m: MIN_SCORE,
+                bq: bq_val,
+                bt: MIN_SCORE,
+            };
+            *cell(ptr, width, k, 1) = DpCell {
+                m: m_val,
+                bq: MIN_SCORE,
+                bt: MIN_SCORE,
+            };
+            best.update(m_val, view.terminal(k, 1, dsm_adjusted), k, 1);
         }
     }
 
@@ -94,40 +127,32 @@ pub(super) fn init_frontier<M: DsmModel>(
     // Cell (2,2) init: bridge corner to limited rows/cols
     unsafe {
         let m11_val = (*cell(ptr, width, 1, 1)).m;
-        let bt12 = add_e(m11_val, view.bt_open(1, 2));
-        let bq21 = add_e(m11_val, view.bq_open(2, 1));
-        let m22 = add_e(m11_val, view.match_e(2, 2));
+        let bt12 = add_e(m11_val, view.bt_open(1, 2, dsm_adjusted));
+        let bq21 = add_e(m11_val, view.bq_open(2, 1, dsm_adjusted));
+        let m22 = add_e(m11_val, view.match_e(2, 2, dsm_adjusted));
         (*cell(ptr, width, 1, 2)).bt = bt12;
         (*cell(ptr, width, 2, 1)).bq = bq21;
         (*cell(ptr, width, 2, 2)).m = m22;
-        best.update(m22, view.terminal(2, 2), 2, 2);
+        best.update(m22, view.terminal(2, 2, dsm_adjusted), 2, 2);
 
         let m12 = (*cell(ptr, width, 1, 2)).m;
         let m21 = (*cell(ptr, width, 2, 1)).m;
-        (*cell(ptr, width, 2, 2)).bq = add_e(m12, view.bq_open(2, 2));
-        (*cell(ptr, width, 2, 2)).bt = add_e(m21, view.bt_open(2, 2));
+        (*cell(ptr, width, 2, 2)).bq = add_e(m12, view.bq_open(2, 2, dsm_adjusted));
+        (*cell(ptr, width, 2, 2)).bt = add_e(m21, view.bt_open(2, 2, dsm_adjusted));
     }
 
     if view.dir == ExtendDir::Left {
-        init_limited_rows::<true, M>(
-            view, q_ptr, t_ptr, grid, q_len, t_len, best,
-        );
-        init_limited_cols::<true, M>(
-            view, q_ptr, t_ptr, grid, q_len, t_len, best,
-        );
+        init_limited_rows::<true, M>(view, q_ptr, t_ptr, grid, q_len, t_len, dsm_adjusted, best);
+        init_limited_cols::<true, M>(view, q_ptr, t_ptr, grid, q_len, t_len, dsm_adjusted, best);
     } else {
-        init_limited_rows::<false, M>(
-            view, q_ptr, t_ptr, grid, q_len, t_len, best,
-        );
-        init_limited_cols::<false, M>(
-            view, q_ptr, t_ptr, grid, q_len, t_len, best,
-        );
+        init_limited_rows::<false, M>(view, q_ptr, t_ptr, grid, q_len, t_len, dsm_adjusted, best);
+        init_limited_cols::<false, M>(view, q_ptr, t_ptr, grid, q_len, t_len, dsm_adjusted, best);
     }
 
     true
 }
 
-#[inline(always)]
+#[inline]
 /// Initialize the limited top rows (`i=1` and `i=2`) for columns `j>=3`.
 ///
 /// This computes the seed-adjacent band that bridges boundary initialization
@@ -139,6 +164,7 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
     grid: &mut DpGrid,
     q_len: usize,
     t_len: usize,
+    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
     best: &mut BestScore,
 ) {
     let ptr = grid.ptr();
@@ -152,8 +178,6 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
         q_len > 2 && t_len > 2,
         "limited rows require q_len/t_len >= 3"
     );
-    debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
-    debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
     unsafe {
         let qi1 = *q_ptr.add(1);
         let qi2 = *q_ptr.add(2);
@@ -173,32 +197,33 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
             // Primary[1,k] = Bt
             let bt1 = best2(
                 m1_prev,
-                stack_dir::<LEFT, M>(qi1, GAP, tj_prev, tj, view.penalty),
+                stack_dir::<LEFT>(qi1, GAP, tj_prev, tj, dsm_adjusted),
                 bt1_prev,
-                stack_dir::<LEFT, M>(GAP, GAP, tj_prev, tj, view.penalty),
+                stack_dir::<LEFT>(GAP, GAP, tj_prev, tj, dsm_adjusted),
             );
             (*cell(ptr, width, 1, k)).bt = bt1;
 
             // M[2,k]
             let m2 = best2(
                 m1_prev,
-                stack_dir::<LEFT, M>(qi1, qi2, tj_prev, tj, view.penalty),
+                stack_dir::<LEFT>(qi1, qi2, tj_prev, tj, dsm_adjusted),
                 bt1_prev,
-                stack_dir::<LEFT, M>(GAP, qi2, tj_prev, tj, view.penalty),
+                stack_dir::<LEFT>(GAP, qi2, tj_prev, tj, dsm_adjusted),
             );
             (*cell(ptr, width, 2, k)).m = m2;
-            best.update(m2, view.terminal(2, k), 2, k);
+            best.update(m2, view.terminal(2, k, dsm_adjusted), 2, k);
 
             // Secondary[2,k] = Bq
             let m1k = (*cell(ptr, width, 1, k)).m;
-            (*cell(ptr, width, 2, k)).bq = add_e(m1k, stack_dir::<LEFT, M>(qi1, qi2, tj, GAP, view.penalty));
+            (*cell(ptr, width, 2, k)).bq =
+                add_e(m1k, stack_dir::<LEFT>(qi1, qi2, tj, GAP, dsm_adjusted));
 
             // Primary[2,k] = Bt
             let bt2 = best2(
                 m2_prev,
-                stack_dir::<LEFT, M>(qi2, GAP, tj_prev, tj, view.penalty),
+                stack_dir::<LEFT>(qi2, GAP, tj_prev, tj, dsm_adjusted),
                 bt2_prev,
-                stack_dir::<LEFT, M>(GAP, GAP, tj_prev, tj, view.penalty),
+                stack_dir::<LEFT>(GAP, GAP, tj_prev, tj, dsm_adjusted),
             );
             (*cell(ptr, width, 2, k)).bt = bt2;
 
@@ -210,7 +235,7 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
     }
 }
 
-#[inline(always)]
+#[inline]
 /// Initialize the limited left columns (`j=1` and `j=2`) for rows `i>=3`.
 ///
 /// Symmetric companion of `init_limited_rows`, using rolling predecessor
@@ -222,6 +247,7 @@ pub(super) fn init_limited_cols<const LEFT: bool, M: DsmModel>(
     grid: &mut DpGrid,
     q_len: usize,
     t_len: usize,
+    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
     best: &mut BestScore,
 ) {
     let ptr = grid.ptr();
@@ -235,8 +261,6 @@ pub(super) fn init_limited_cols<const LEFT: bool, M: DsmModel>(
         q_len > 2 && t_len > 2,
         "limited cols require q_len/t_len >= 3"
     );
-    debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
-    debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
     unsafe {
         let tj1 = *t_ptr.add(1);
         let tj2 = *t_ptr.add(2);
@@ -256,32 +280,33 @@ pub(super) fn init_limited_cols<const LEFT: bool, M: DsmModel>(
             // Primary[ k,1 ] = Bq
             let bq1 = best2(
                 m1_prev,
-                stack_dir::<LEFT, M>(qi_prev, qi, tj1, GAP, view.penalty),
+                stack_dir::<LEFT>(qi_prev, qi, tj1, GAP, dsm_adjusted),
                 bq1_prev,
-                stack_dir::<LEFT, M>(qi_prev, qi, GAP, GAP, view.penalty),
+                stack_dir::<LEFT>(qi_prev, qi, GAP, GAP, dsm_adjusted),
             );
             (*cell(ptr, width, k, 1)).bq = bq1;
 
             // M[ k,2 ]
             let val = best2(
                 m1_prev,
-                stack_dir::<LEFT, M>(qi_prev, qi, tj1, tj2, view.penalty),
+                stack_dir::<LEFT>(qi_prev, qi, tj1, tj2, dsm_adjusted),
                 bq1_prev,
-                stack_dir::<LEFT, M>(qi_prev, qi, GAP, tj2, view.penalty),
+                stack_dir::<LEFT>(qi_prev, qi, GAP, tj2, dsm_adjusted),
             );
             (*cell(ptr, width, k, 2)).m = val;
-            best.update(val, view.terminal(k, 2), k, 2);
+            best.update(val, view.terminal(k, 2, dsm_adjusted), k, 2);
 
             // Secondary[ k,2 ] = Bt
             let m_k1 = (*cell(ptr, width, k, 1)).m; // Preinitialized in frontier.
-            (*cell(ptr, width, k, 2)).bt = add_e(m_k1, stack_dir::<LEFT, M>(qi, GAP, tj1, tj2, view.penalty));
+            (*cell(ptr, width, k, 2)).bt =
+                add_e(m_k1, stack_dir::<LEFT>(qi, GAP, tj1, tj2, dsm_adjusted));
 
             // Primary[ k,2 ] = Bq
             let bq2 = best2(
                 m2_prev,
-                stack_dir::<LEFT, M>(qi_prev, qi, tj2, GAP, view.penalty),
+                stack_dir::<LEFT>(qi_prev, qi, tj2, GAP, dsm_adjusted),
                 bq2_prev,
-                stack_dir::<LEFT, M>(qi_prev, qi, GAP, GAP, view.penalty),
+                stack_dir::<LEFT>(qi_prev, qi, GAP, GAP, dsm_adjusted),
             );
             (*cell(ptr, width, k, 2)).bq = bq2;
 

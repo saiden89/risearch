@@ -1,5 +1,5 @@
 use crate::alignment::Pairing;
-use crate::dsm::{stack_with_penalty, DsmModel};
+use crate::dsm::{build_penalty_adjusted_flat, dsm_flat_idx, DsmModel, DSM_FLAT_SIZE};
 use crate::seq::Sequence;
 use crate::types::Base;
 use log::trace;
@@ -60,7 +60,6 @@ pub struct DpView<'a, M: DsmModel> {
     pub dir: ExtendDir,
     pub q_len: usize,
     pub t_len: usize,
-    penalty: i32,
     _model: std::marker::PhantomData<M>,
 }
 
@@ -100,7 +99,6 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         q_start: usize,
         t_start: usize,
         max_ext: usize,
-        penalty: i32,
     ) -> Self {
         Self {
             query,
@@ -110,7 +108,6 @@ impl<'a, M: DsmModel> DpView<'a, M> {
             dir: ExtendDir::Left,
             q_len: (q_start + 1).min(max_ext),
             t_len: (target.len() - t_start).min(max_ext),
-            penalty,
             _model: std::marker::PhantomData,
         }
     }
@@ -122,7 +119,6 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         q_end: usize,
         t_end: usize,
         max_ext: usize,
-        penalty: i32,
     ) -> Self {
         Self {
             query,
@@ -132,7 +128,6 @@ impl<'a, M: DsmModel> DpView<'a, M> {
             dir: ExtendDir::Right,
             q_len: (query.len() - q_end).min(max_ext),
             t_len: (t_end + 1).min(max_ext),
-            penalty,
             _model: std::marker::PhantomData,
         }
     }
@@ -160,12 +155,12 @@ impl<'a, M: DsmModel> DpView<'a, M> {
     /// Always called with arguments in (prev, curr, prev, curr) order.
     /// Left extension internally swaps to (curr, prev, curr, prev).
     #[inline(always)]
-    pub fn e(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+    pub fn e(&self, q1: usize, q2: usize, t1: usize, t2: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
         match self.dir {
             // Left: DSM[curr, prev, curr, prev] - stacking toward 5'
-            ExtendDir::Left => stack_with_penalty::<M>(q2, q1, t2, t1, self.penalty),
+            ExtendDir::Left => dsm[dsm_flat_idx(q2, q1, t2, t1)],
             // Right: DSM[prev, curr, prev, curr] - stacking toward 3'
-            ExtendDir::Right => stack_with_penalty::<M>(q1, q2, t1, t2, self.penalty),
+            ExtendDir::Right => dsm[dsm_flat_idx(q1, q2, t1, t2)],
         }
     }
 
@@ -175,21 +170,17 @@ impl<'a, M: DsmModel> DpView<'a, M> {
     /// - LEFT: GAP at 5' side, base at 3' → DSM[GAP, q, GAP, t]
     /// - RIGHT: base at 5' side, GAP at 3' → DSM[q, GAP, t, GAP]
     #[inline(always)]
-    pub fn terminal(&self, i: usize, j: usize) -> i32 {
+    pub fn terminal(&self, i: usize, j: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
         match self.dir {
-            ExtendDir::Left => {
-                stack_with_penalty::<M>(GAP, self.q(i), GAP, self.t(j), self.penalty)
-            }
-            ExtendDir::Right => {
-                stack_with_penalty::<M>(self.q(i), GAP, self.t(j), GAP, self.penalty)
-            }
+            ExtendDir::Left => dsm[dsm_flat_idx(GAP, self.q(i), GAP, self.t(j))],
+            ExtendDir::Right => dsm[dsm_flat_idx(self.q(i), GAP, self.t(j), GAP)],
         }
     }
 
     /// Match/mismatch energy at (i, j) from diagonal (i-1, j-1)
     #[inline(always)]
-    pub fn match_e(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), self.t(j - 1), self.t(j))
+    pub fn match_e(&self, i: usize, j: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
+        self.e(self.q(i - 1), self.q(i), self.t(j - 1), self.t(j), dsm)
     }
 
     // =========================================================================
@@ -200,38 +191,38 @@ impl<'a, M: DsmModel> DpView<'a, M> {
 
     /// M[i,j] from Bq[i-1,j-1]: re-entry to match from query bulge
     #[inline(always)]
-    pub fn m_from_bq(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, self.t(j))
+    pub fn m_from_bq(&self, i: usize, j: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
+        self.e(self.q(i - 1), self.q(i), GAP, self.t(j), dsm)
     }
 
     /// M[i,j] from Bt[i-1,j-1]: re-entry to match from target bulge
     #[inline(always)]
-    pub fn m_from_bt(&self, i: usize, j: usize) -> i32 {
-        self.e(GAP, self.q(i), self.t(j - 1), self.t(j))
+    pub fn m_from_bt(&self, i: usize, j: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
+        self.e(GAP, self.q(i), self.t(j - 1), self.t(j), dsm)
     }
 
     /// Bq[i,j] from M[i-1,j]: open query bulge (gap in target)
     #[inline(always)]
-    pub fn bq_open(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), self.t(j), GAP)
+    pub fn bq_open(&self, i: usize, j: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
+        self.e(self.q(i - 1), self.q(i), self.t(j), GAP, dsm)
     }
 
     /// Bq[i,j] from Bq[i-1,j]: extend query bulge
     #[inline(always)]
-    pub fn bq_ext(&self, i: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, GAP)
+    pub fn bq_ext(&self, i: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
+        self.e(self.q(i - 1), self.q(i), GAP, GAP, dsm)
     }
 
     /// Bt[i,j] from M[i,j-1]: open target bulge (gap in query)
     #[inline(always)]
-    pub fn bt_open(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i), GAP, self.t(j - 1), self.t(j))
+    pub fn bt_open(&self, i: usize, j: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
+        self.e(self.q(i), GAP, self.t(j - 1), self.t(j), dsm)
     }
 
     /// Bt[i,j] from Bt[i,j-1]: extend target bulge
     #[inline(always)]
-    pub fn bt_ext(&self, j: usize) -> i32 {
-        self.e(GAP, GAP, self.t(j - 1), self.t(j))
+    pub fn bt_ext(&self, j: usize, dsm: &[i32; DSM_FLAT_SIZE]) -> i32 {
+        self.e(GAP, GAP, self.t(j - 1), self.t(j), dsm)
     }
 }
 
@@ -343,7 +334,10 @@ impl DpGrid {
         debug_assert!(
             idx < self.data.len(),
             "DpGrid::get out of bounds: ({}, {}) idx={} len={}",
-            i, j, idx, self.data.len()
+            i,
+            j,
+            idx,
+            self.data.len()
         );
         unsafe { *self.data.get_unchecked(idx) }
     }
@@ -362,7 +356,8 @@ impl DpGrid {
 /// Stateful DP extender with reusable grid
 pub struct DpExtender<M: DsmModel> {
     grid: DpGrid,
-    penalty: i32,
+    dsm_adjusted: [i32; DSM_FLAT_SIZE],
+    gap_gap_profile: [i32; 36],
     _model: std::marker::PhantomData<M>,
 }
 
@@ -371,6 +366,7 @@ pub struct DpExtender<M: DsmModel> {
 /// (borrow checker enforces this via the lifetime on `grid`).
 pub struct ExtendResult<'a, M: DsmModel> {
     grid: &'a DpGrid,
+    dsm_adjusted: &'a [i32; DSM_FLAT_SIZE],
     pub score: i32,
     pub q_len: usize,
     pub t_len: usize,
@@ -382,7 +378,14 @@ impl<M: DsmModel> ExtendResult<'_, M> {
     /// Only call when alignment output is needed (skip for Minimal format).
     pub fn traceback(&self, view: &DpView<'_, M>) -> SmallVec<[Pairing; 64]> {
         let mut out = SmallVec::new();
-        traceback::<M>(view, self.grid, self.q_len, self.t_len, &mut out);
+        traceback::<M>(
+            view,
+            self.grid,
+            self.dsm_adjusted,
+            self.q_len,
+            self.t_len,
+            &mut out,
+        );
         out
     }
 }
@@ -393,9 +396,18 @@ impl<M: DsmModel> DpExtender<M> {
     }
 
     pub fn with_penalty(penalty: i32) -> Self {
+        let dsm_adjusted = build_penalty_adjusted_flat::<M>(penalty);
+        let mut gap_gap_profile = [0i32; 36];
+        for t1 in 0..6 {
+            for t2 in 0..6 {
+                gap_gap_profile[t1 * 6 + t2] = dsm_adjusted[dsm_flat_idx(GAP, GAP, t1, t2)];
+            }
+        }
+
         Self {
             grid: DpGrid::new(200, 200),
-            penalty,
+            dsm_adjusted,
+            gap_gap_profile,
             _model: std::marker::PhantomData,
         }
     }
@@ -404,17 +416,18 @@ impl<M: DsmModel> DpExtender<M> {
     /// Run DP forward pass and return an ExtendResult guard.
     /// Call `.traceback()` on the result if alignment is needed.
     pub fn extend(&mut self, view: &DpView<'_, M>) -> ExtendResult<'_, M> {
-        let (q_len, t_len) = (view.q_len, view.t_len);
+        let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
 
         // Initial score: terminal penalty for seed boundary
-        let mut best = BestScore::new(view.terminal(0, 0));
+        let mut best = BestScore::new(view.terminal(0, 0, &self.dsm_adjusted));
 
         // Early return
         if q_len <= 1 || t_len <= 1 {
             return ExtendResult {
                 grid: &self.grid,
+                dsm_adjusted: &self.dsm_adjusted,
                 score: best.score,
                 q_len: 0,
                 t_len: 0,
@@ -436,13 +449,10 @@ impl<M: DsmModel> DpExtender<M> {
         let q_ptr = q_idx.as_mut_ptr() as *mut usize;
         let t_ptr = t_idx.as_mut_ptr() as *mut usize;
 
-        debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
-        debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
-
-        for i in 0..q_len.min(MAX_EXT) {
+        for i in 0..q_len {
             unsafe { *q_ptr.add(i) = view.q(i) };
         }
-        for j in 0..t_len.min(MAX_EXT) {
+        for j in 0..t_len {
             unsafe { *t_ptr.add(j) = view.t(j) };
         }
 
@@ -457,11 +467,13 @@ impl<M: DsmModel> DpExtender<M> {
             &mut self.grid,
             q_len,
             t_len,
+            &self.dsm_adjusted,
             &mut best,
         );
         if !has_main_region {
             return ExtendResult {
                 grid: &self.grid,
+                dsm_adjusted: &self.dsm_adjusted,
                 score: best.score,
                 q_len: best.i,
                 t_len: best.j,
@@ -480,7 +492,8 @@ impl<M: DsmModel> DpExtender<M> {
                 &mut self.grid,
                 q_len,
                 t_len,
-                self.penalty,
+                &self.dsm_adjusted,
+                &self.gap_gap_profile,
                 &mut best,
             );
         } else {
@@ -490,7 +503,8 @@ impl<M: DsmModel> DpExtender<M> {
                 &mut self.grid,
                 q_len,
                 t_len,
-                self.penalty,
+                &self.dsm_adjusted,
+                &self.gap_gap_profile,
                 &mut best,
             );
         }
@@ -505,6 +519,7 @@ impl<M: DsmModel> DpExtender<M> {
 
         ExtendResult {
             grid: &self.grid,
+            dsm_adjusted: &self.dsm_adjusted,
             score: best.score,
             q_len: best.i,
             t_len: best.j,

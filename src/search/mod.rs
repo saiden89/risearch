@@ -340,7 +340,7 @@ fn extend_seed<M: DsmModel>(
 
     // DP extension: left (scope block releases borrow on extender)
     let (l_score, l_q, l_t, left_pairs) = {
-        let view = DpView::<M>::left(q_seq, t_seq, q_pos, t_match_end, max_ext, penalty);
+        let view = DpView::<M>::left(q_seq, t_seq, q_pos, t_match_end, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -352,7 +352,7 @@ fn extend_seed<M: DsmModel>(
 
     // DP extension: right
     let (r_score, r_q, r_t, right_pairs) = {
-        let view = DpView::<M>::right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext, penalty);
+        let view = DpView::<M>::right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
