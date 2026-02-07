@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 
 use crate::alignment::{Alignment, Pairing};
-use crate::config::{Matrix, OutputFormat, SearchArgs};
+use crate::config::{ExtendConfig, Matrix, OutputFormat, SearchArgs};
 use crate::dp::{DpExtender, DpView};
 use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::registry::QueryRegistry;
@@ -206,6 +206,7 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
 ) {
     state.clear();
     let include_alignment = opts.output.format != OutputFormat::Minimal;
+    let pair_matrix = pair_mat(opts.seed.allows_wobble());
 
     // Find seeds
     crate::seed::find_seeds(q, index, &opts.seed, &mut state.seeds, &mut state.matches);
@@ -233,7 +234,8 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
             t_seq,
             seed,
             interval,
-            opts,
+            &opts.extend,
+            pair_matrix,
             include_alignment,
         ) else {
             continue;
@@ -277,18 +279,18 @@ fn extend_seed<M: DsmModel>(
     t_seq: &Sequence,
     seed: &SeedHit,
     interval: crate::types::Interval,
-    opts: &SearchArgs,
-    include_alignment: bool,
+    extend_cfg: &ExtendConfig,
+    pair_matrix: &'static [[u8; 6]; 6],
+    with_traceback: bool,
 ) -> Option<Extension> {
     let q_pos = seed.query_pos;
     let t_pos = seed.target_start;
     let len = seed.seed_len.get();
-    let pair_mat = pair_mat(opts.seed.allows_wobble());
 
     // Maximality check: left
     if q_pos > interval.start && t_pos + len < t_seq.len() {
-        let p_class = pair_mat[q_seq[q_pos - 1].idx()][t_seq[t_pos + len].idx()];
-        if p_class != 0 && !opts.extend.no_max_prune {
+        let p_class = pair_matrix[q_seq[q_pos - 1].idx()][t_seq[t_pos + len].idx()];
+        if p_class != 0 && !extend_cfg.no_max_prune {
             trace!("Filtered: non-maximal left");
             return None;
         }
@@ -296,15 +298,15 @@ fn extend_seed<M: DsmModel>(
 
     // Maximality check: right
     if q_pos + len < interval.end && t_pos > 0 {
-        let p_class = pair_mat[q_seq[q_pos + len].idx()][t_seq[t_pos - 1].idx()];
-        if p_class != 0 && !opts.extend.no_max_prune {
+        let p_class = pair_matrix[q_seq[q_pos + len].idx()][t_seq[t_pos - 1].idx()];
+        if p_class != 0 && !extend_cfg.no_max_prune {
             trace!("Filtered: non-maximal right");
             return None;
         }
     }
 
     let t_match_end = t_pos + len - 1;
-    let max_ext = (opts.extend.max_extension as usize).min(MAX_DP_EXT);
+    let max_ext = (extend_cfg.max_extension as usize).min(MAX_DP_EXT);
     // Seed energy
     let seed_energy = seed_energy::<M>(q_seq, t_seq, q_pos, t_match_end, len, penalty);
 
@@ -332,7 +334,7 @@ fn extend_seed<M: DsmModel>(
     let (l_score, l_q, l_t, left_pairs) = {
         let view = DpView::<M>::left(q_seq, t_seq, q_pos, t_match_end, max_ext, penalty);
         let result = extender.extend(&view);
-        let pairs = if include_alignment {
+        let pairs = if with_traceback {
             result.traceback(&view)
         } else {
             SmallVec::new()
@@ -344,7 +346,7 @@ fn extend_seed<M: DsmModel>(
     let (r_score, r_q, r_t, right_pairs) = {
         let view = DpView::<M>::right(q_seq, t_seq, q_pos + len - 1, t_pos, max_ext, penalty);
         let result = extender.extend(&view);
-        let pairs = if include_alignment {
+        let pairs = if with_traceback {
             result.traceback(&view)
         } else {
             SmallVec::new()
@@ -386,6 +388,25 @@ fn build_seed_pairs(
     pairs
 }
 
+fn build_alignment(
+    include_alignment: bool,
+    q_seq: &Sequence,
+    t_seq: &Sequence,
+    seed: &SeedHit,
+    left_pairs: &[Pairing],
+    right_pairs: &[Pairing],
+) -> Option<Alignment> {
+    if !include_alignment {
+        return None;
+    }
+
+    let len = seed.seed_len.get();
+    let q_pos = seed.query_pos;
+    let t_match_end = seed.target_start + len - 1;
+    let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
+    Some(Alignment::new(left_pairs, &seed_pairs, right_pairs))
+}
+
 fn build_hit(
     query_idx: u32,
     index: &TargetRegistry,
@@ -424,13 +445,14 @@ fn build_hit(
         Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
     };
 
-    let alignment = if include_alignment {
-        let t_match_end = t_start + len - 1;
-        let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
-        Some(Alignment::new(&left_pairs, &seed_pairs, &right_pairs))
-    } else {
-        None
-    };
+    let alignment = build_alignment(
+        include_alignment,
+        q_seq,
+        t_seq,
+        seed,
+        &left_pairs,
+        &right_pairs,
+    );
 
     SearchHit {
         query_idx,

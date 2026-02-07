@@ -10,7 +10,7 @@ mod init;
 mod traceback;
 
 use core::dp_main_loop_generic;
-use init::{add_e, init_limited_cols, init_limited_rows, update_best_with_term};
+use init::init_frontier;
 use traceback::traceback;
 
 /// Maximum extension length for precomputed index arrays.
@@ -472,85 +472,21 @@ impl<M: DsmModel> DpExtender<M> {
         let bq_ptr = bq.ptr();
         let bt_ptr = bt.ptr();
 
-        // SAFETY invariants:
-        // - matrices are sized to at least (q_len+1) x (t_len+1)
-        // - indices used below are within those bounds
-        debug_assert!(width > t_len, "matrix width too small for t_len");
-        unsafe {
-            let idx = |i: usize, j: usize| -> usize { i * width + j };
-
-            // Corner cells: explicit NA values (like C code)
-            *m_ptr.add(idx(0, 0)) = 0;
-            *bq_ptr.add(idx(0, 0)) = MIN_SCORE;
-            *bt_ptr.add(idx(0, 0)) = MIN_SCORE;
-            *m_ptr.add(idx(0, 1)) = MIN_SCORE;
-            *bq_ptr.add(idx(0, 1)) = MIN_SCORE;
-            *m_ptr.add(idx(1, 0)) = MIN_SCORE;
-            *bt_ptr.add(idx(1, 0)) = MIN_SCORE;
-            *bq_ptr.add(idx(1, 1)) = MIN_SCORE;
-            *bt_ptr.add(idx(1, 1)) = MIN_SCORE;
-
-            // Valid corner values
-            *bt_ptr.add(idx(0, 1)) = view.bt_open(0, 1);
-            *bq_ptr.add(idx(1, 0)) = view.bq_open(1, 0);
-            let m11 = view.match_e(1, 1);
-            *m_ptr.add(idx(1, 1)) = m11;
-            update_best_with_term(
-                &mut best_e,
-                &mut best_i,
-                &mut best_j,
-                m11,
-                view.terminal(1, 1),
-                1,
-                1,
-            );
-
-            // Row 0 (Bt only) and Row 1 (M) - unconditional writes
-            for k in 2..t_len {
-                let prev = *bt_ptr.add(idx(0, k - 1));
-                // Always write - use add_e to propagate MIN_SCORE
-                let bt_val = add_e(prev, view.bt_ext(k));
-                let m_val = add_e(prev, view.m_from_bt(1, k));
-                *bt_ptr.add(idx(0, k)) = bt_val;
-                *m_ptr.add(idx(0, k)) = MIN_SCORE; // M[0,k] is NA
-                *bq_ptr.add(idx(0, k)) = MIN_SCORE; // Bq[0,k] is NA
-                *bq_ptr.add(idx(1, k)) = MIN_SCORE; // Bq[1,k] is NA
-                *m_ptr.add(idx(1, k)) = m_val;
-                update_best_with_term(
-                    &mut best_e,
-                    &mut best_i,
-                    &mut best_j,
-                    m_val,
-                    view.terminal(1, k),
-                    1,
-                    k,
-                );
-            }
-
-            // Col 0 (Bq only) and Col 1 (M) - unconditional writes
-            for k in 2..q_len {
-                let prev = *bq_ptr.add(idx(k - 1, 0));
-                let bq_val = add_e(prev, view.bq_ext(k));
-                let m_val = add_e(prev, view.m_from_bq(k, 1));
-                *bq_ptr.add(idx(k, 0)) = bq_val;
-                *m_ptr.add(idx(k, 0)) = MIN_SCORE; // M[k,0] is NA
-                *bt_ptr.add(idx(k, 0)) = MIN_SCORE; // Bt[k,0] is NA
-                *bt_ptr.add(idx(k, 1)) = MIN_SCORE; // Bt[k,1] is NA
-                *m_ptr.add(idx(k, 1)) = m_val;
-                update_best_with_term(
-                    &mut best_e,
-                    &mut best_i,
-                    &mut best_j,
-                    m_val,
-                    view.terminal(k, 1),
-                    k,
-                    1,
-                );
-            }
-        }
-
-        // Early return when either axis is too small for row/col 2 cells
-        if q_len <= 2 || t_len <= 2 {
+        let has_main_region = init_frontier::<M>(
+            view,
+            q_ptr,
+            t_ptr,
+            m_ptr,
+            bq_ptr,
+            bt_ptr,
+            width,
+            q_len,
+            t_len,
+            &mut best_e,
+            &mut best_i,
+            &mut best_j,
+        );
+        if !has_main_region {
             return ExtendResult {
                 matrices: &self.matrices,
                 score: best_e,
@@ -559,62 +495,6 @@ impl<M: DsmModel> DpExtender<M> {
                 _model: std::marker::PhantomData,
             };
         }
-
-        // Cell (2,2) init: bridge corner to limited rows/cols
-        let m11_val = m.get(1, 1);
-        let bt12 = add_e(m11_val, view.bt_open(1, 2));
-        let bq21 = add_e(m11_val, view.bq_open(2, 1));
-        let m22 = add_e(m11_val, view.match_e(2, 2));
-        bt.set(1, 2, bt12);
-        bq.set(2, 1, bq21);
-        m.set(2, 2, m22);
-        update_best_with_term(
-            &mut best_e,
-            &mut best_i,
-            &mut best_j,
-            m22,
-            view.terminal(2, 2),
-            2,
-            2,
-        );
-
-        let m12 = m.get(1, 2);
-        let m21 = m.get(2, 1);
-        bq.set(2, 2, add_e(m12, view.bq_open(2, 2)));
-        bt.set(2, 2, add_e(m21, view.bt_open(2, 2)));
-
-        // =======================================================================
-        // LIMITED ROWS/COLUMNS - unified via macro (score-only)
-        // =======================================================================
-
-        init_limited_rows::<M>(
-            view,
-            q_ptr,
-            t_ptr,
-            m_ptr,
-            bt_ptr,
-            bq_ptr,
-            width,
-            q_len,
-            t_len,
-            &mut best_e,
-            &mut best_i,
-            &mut best_j,
-        );
-
-        init_limited_cols::<M>(
-            view,
-            q_ptr,
-            t_ptr,
-            m_ptr,
-            bq_ptr,
-            bt_ptr,
-            width,
-            q_len,
-            &mut best_e,
-            &mut best_i,
-            &mut best_j,
-        );
 
         // =======================================================================
         // MAIN DP LOOP (i >= 3, j >= 3) - OPTIMIZED
@@ -626,38 +506,36 @@ impl<M: DsmModel> DpExtender<M> {
         // 3. Direct slice access (eliminates method call overhead)
         // 4. Raw DSM lookup (bypasses abstraction layers)
 
-        if q_len >= 3 && t_len >= 3 {
-            if view.dir == ExtendDir::Left {
-                dp_main_loop_generic::<true, M>(
-                    q_ptr,
-                    t_ptr,
-                    m,
-                    bq,
-                    bt,
-                    width,
-                    q_len,
-                    t_len,
-                    self.penalty,
-                    &mut best_e,
-                    &mut best_i,
-                    &mut best_j,
-                );
-            } else {
-                dp_main_loop_generic::<false, M>(
-                    q_ptr,
-                    t_ptr,
-                    m,
-                    bq,
-                    bt,
-                    width,
-                    q_len,
-                    t_len,
-                    self.penalty,
-                    &mut best_e,
-                    &mut best_i,
-                    &mut best_j,
-                );
-            }
+        if view.dir == ExtendDir::Left {
+            dp_main_loop_generic::<true, M>(
+                q_ptr,
+                t_ptr,
+                m,
+                bq,
+                bt,
+                width,
+                q_len,
+                t_len,
+                self.penalty,
+                &mut best_e,
+                &mut best_i,
+                &mut best_j,
+            );
+        } else {
+            dp_main_loop_generic::<false, M>(
+                q_ptr,
+                t_ptr,
+                m,
+                bq,
+                bt,
+                width,
+                q_len,
+                t_len,
+                self.penalty,
+                &mut best_e,
+                &mut best_i,
+                &mut best_j,
+            );
         }
 
         trace!(
