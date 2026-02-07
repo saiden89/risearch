@@ -20,5 +20,6 @@ pub use seq::{AlignedSeq, Sequence};
 pub use types::{Base, Energy, SeedPairingMode, Span, Strand, BASE_COUNT};
 
 // Search API re-exports for library usage
+pub use config::{MismatchSpec, SeedSpec};
 pub use search::SearchHit;
-pub use seed::{SeedHit, SeedSpec};
+pub use seed::SeedHit;

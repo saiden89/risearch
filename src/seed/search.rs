@@ -2,77 +2,52 @@ use crate::config::SeedConfig;
 use crate::index::sa::SuffixArray;
 use crate::registry::{QueryData, TargetRegistry};
 use crate::seq::Sequence;
-use crate::types::{Interval, SeedLen, Strand, TargetId};
+use crate::types::{SeedLen, Strand, TargetId};
 
-use super::{SeedHit, SeedMatch, SeedSearcher};
+use super::searcher::{SeedMatch, SeedSearcher};
+use super::SeedHit;
 
-/// View of query data for seed search.
-///
-/// Borrows immutable `QueryData` which contains the pre-computed seed interval.
-struct QueryView<'a> {
-    /// Reference to the query's immutable data
-    data: &'a QueryData,
-    /// Pre-computed seed interval (borrowed from QueryData)
-    interval: Interval,
-    /// Minimum seed length
-    min_seed_len: usize,
+/// Check if any position in range [start, start+len) contains 'N'
+#[inline]
+fn has_n_in_range(query: &QueryData, start: usize, len: usize) -> bool {
+    if !query.has_n_any() {
+        return false;
+    }
+    let end = start + len;
+    query.n_prefix()[end] != query.n_prefix()[start]
 }
 
-impl<'a> QueryView<'a> {
-    /// Build query view - always succeeds since interval is pre-computed.
-    #[inline]
-    fn new(data: &'a QueryData) -> Self {
-        Self {
-            data,
-            interval: data.seed_interval(),
-            min_seed_len: data.min_seed_len(),
-        }
-    }
-
-    /// Check if any position in range [start, start+len) contains 'N'
-    #[inline]
-    fn has_n_in_range(&self, start: usize, len: usize) -> bool {
-        if !self.data.has_n_any() {
-            return false;
-        }
-        let end = start + len;
-        self.data.n_prefix()[end] != self.data.n_prefix()[start]
-    }
-}
-
-/// Find all seed matches, reusing provided Vecs to avoid allocation.
+/// Find all seed matches, reusing provided Vec to avoid allocation.
 ///
-/// Clears `candidates` and `matches` before filling.
+/// Clears `candidates` before filling.
 pub(crate) fn find_seeds(
     query: &QueryData,
     index: &TargetRegistry,
     config: &SeedConfig,
     candidates: &mut Vec<SeedHit>,
-    matches: &mut Vec<SeedMatch>,
 ) {
     candidates.clear();
-    matches.clear();
 
-    // Build view - always succeeds since interval is pre-computed
-    let view = QueryView::new(query);
+    // Scratch buffer for SeedMatch results - reused across loop iterations
+    let mut matches = Vec::with_capacity(1024);
 
     for (idx, target) in index.entries().iter().enumerate() {
         collect_target_seeds(
-            &view,
+            query,
             idx,
             config,
             candidates,
-            matches,
+            &mut matches,
             Strand::Forward,
             &target.forward_sa,
             &target.sequence,
         );
         collect_target_seeds(
-            &view,
+            query,
             idx,
             config,
             candidates,
-            matches,
+            &mut matches,
             Strand::Reverse,
             &target.reverse_sa,
             &target.sequence_rc,
@@ -83,7 +58,7 @@ pub(crate) fn find_seeds(
 /// Collect seeds from a single target strand, reusing the provided scratch buffers.
 #[allow(clippy::too_many_arguments)]
 fn collect_target_seeds(
-    view: &QueryView,
+    query: &QueryData,
     target_idx: usize,
     config: &SeedConfig,
     candidates: &mut Vec<SeedHit>,
@@ -92,15 +67,16 @@ fn collect_target_seeds(
     t_sa: &SuffixArray,
     t_seq: &Sequence,
 ) {
-    let q_len = view.data.sequence().len();
-    let start = view.interval.start;
-    let end = view.interval.end;
-    let min_len = view.min_seed_len;
+    let q_len = query.sequence().len();
+    let interval = query.seed_interval();
+    let start = interval.start;
+    let end = interval.end;
+    let min_len = query.min_seed_len();
 
     matches.clear();
     let searcher = SeedSearcher::new(
-        view.data.reverse_sa(),
-        view.data.sequence_rc(),
+        query.reverse_sa(),
+        query.sequence_rc(),
         t_sa,
         t_seq,
         config,
@@ -109,7 +85,7 @@ fn collect_target_seeds(
 
     for m in matches.iter() {
         let seed_len = m.seed_len;
-        for &q_rc_pos_i32 in &view.data.reverse_sa()[m.query_interval.start..m.query_interval.end] {
+        for &q_rc_pos_i32 in &query.reverse_sa()[m.query_interval.start..m.query_interval.end] {
             let q_rc_pos = q_rc_pos_i32 as usize;
             if q_rc_pos + seed_len > q_len {
                 continue;
@@ -118,7 +94,7 @@ fn collect_target_seeds(
             if q_pos < start || q_pos + seed_len > end {
                 continue;
             }
-            if view.has_n_in_range(q_pos, seed_len) {
+            if has_n_in_range(query, q_pos, seed_len) {
                 continue;
             }
 

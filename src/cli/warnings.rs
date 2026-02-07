@@ -1,8 +1,7 @@
 use anyhow::{bail, Result};
 use log::warn;
 
-use risearch::config::SearchArgs;
-use risearch::seed::{MismatchSpec, SeedSpec};
+use risearch::config::{MismatchSpec, SearchArgs, SeedSpec};
 
 fn extract_legacy_mismatch_arg(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();

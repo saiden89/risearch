@@ -1,13 +1,7 @@
 pub(crate) mod search;
-pub mod searcher;
-pub mod spec;
+pub(crate) mod searcher;
 
 pub(crate) use search::find_seeds;
-pub use searcher::{SeedMatch, SeedSearcher};
-pub use spec::{MismatchSpec, SeedSpec};
-
-#[cfg(test)]
-mod spec_tests;
 
 use crate::types::{SeedLen, Strand, TargetId};
 

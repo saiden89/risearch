@@ -1,7 +1,6 @@
 use log::warn;
 
-use crate::config::{self, Matrix, OutputCompression, OutputFormat};
-use crate::seed::{MismatchSpec, SeedSpec};
+use crate::config::{self, Matrix, MismatchSpec, OutputCompression, OutputFormat, SeedSpec};
 use crate::types::SeedPairingMode;
 
 /// Arguments for seed generation

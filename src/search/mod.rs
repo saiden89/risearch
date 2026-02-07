@@ -99,7 +99,6 @@ struct SearchState<M: DsmModel> {
     extender: DpExtender<M>,
     penalty: i32,
     seeds: Vec<SeedHit>,
-    matches: Vec<crate::seed::SeedMatch>,
     out_buf: Vec<u8>,
     fmt_bufs: crate::output::OutputBuffers,
 }
@@ -110,7 +109,6 @@ impl<M: DsmModel> SearchState<M> {
             extender: DpExtender::<M>::with_penalty(penalty),
             penalty,
             seeds: Vec::with_capacity(128_000),
-            matches: Vec::with_capacity(1024),
             out_buf: Vec::with_capacity(64 * 1024),
             fmt_bufs: crate::output::OutputBuffers::new(),
         }
@@ -118,7 +116,6 @@ impl<M: DsmModel> SearchState<M> {
 
     fn clear(&mut self) {
         self.seeds.clear();
-        self.matches.clear();
         self.out_buf.clear();
     }
 }
@@ -220,7 +217,7 @@ fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
     let pair_matrix = pair_mat(opts.seed.allows_wobble());
 
     // Find seeds
-    crate::seed::find_seeds(q, index, &opts.seed, &mut state.seeds, &mut state.matches);
+    crate::seed::find_seeds(q, index, &opts.seed, &mut state.seeds);
 
     let query = queries.get(q_idx);
     let q_seq = query.sequence();

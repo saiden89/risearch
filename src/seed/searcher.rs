@@ -37,7 +37,7 @@ const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
 /// Base discriminant ordering: A(1) < G(2) < C(3) < U(4) < N(5)
 /// Boundaries array: [a_start, g_start, c_start, u_start, n_start, end]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct BaseIntervals {
+pub(crate) struct BaseIntervals {
     /// Boundaries: [a_start, g_start, c_start, u_start, n_start, end]
     /// Reflects discriminant ordering: A < G < C < U < N
     bounds: [usize; 6],
@@ -46,14 +46,14 @@ pub struct BaseIntervals {
 impl BaseIntervals {
     /// Create from raw bounds array
     /// Expected order: [a_start, g_start, c_start, u_start, n_start, end]
-    pub fn from_bounds(bounds: [usize; 6]) -> Self {
+    pub(crate) fn from_bounds(bounds: [usize; 6]) -> Self {
         Self { bounds }
     }
 
     /// Get interval for a specific base
     /// Indexing: 0=A, 1=G, 2=C, 3=U, 4=N (matches discriminant order)
     #[inline]
-    pub fn get(&self, base: Base) -> Interval {
+    pub(crate) fn get(&self, base: Base) -> Interval {
         match base {
             Base::Gap => Interval::new(0, 0),
             Base::A => Interval::new(self.bounds[0], self.bounds[1]),
@@ -64,39 +64,24 @@ impl BaseIntervals {
         }
     }
 
-    /// Get interval by index (0=A, 1=G, 2=C, 3=U, 4=N)
-    #[inline]
-    pub fn get_by_idx(&self, idx: usize) -> Interval {
-        debug_assert!(idx < 5);
-        Interval::new(self.bounds[idx], self.bounds[idx + 1])
-    }
 
     /// Check if any base has a non-empty interval
     #[inline]
-    pub fn any_non_empty(&self) -> bool {
+    pub(crate) fn any_non_empty(&self) -> bool {
         self.bounds[5] > self.bounds[0]
     }
 }
 
 /// A seed match found by parallel SA search
 #[derive(Debug, Clone)]
-pub struct SeedMatch {
+pub(crate) struct SeedMatch {
     /// Interval in query SA containing matching suffixes
-    pub query_interval: Interval,
+    pub(crate) query_interval: Interval,
     /// Interval in target SA containing matching suffixes
-    pub target_interval: Interval,
+    pub(crate) target_interval: Interval,
     /// Seed length for this match.
-    pub seed_len: usize,
+    pub(crate) seed_len: usize,
 }
-
-impl SeedMatch {
-    /// Count total number of position pairs in this match
-    pub fn pair_count(&self) -> usize {
-        self.query_interval.len() * self.target_interval.len()
-    }
-}
-
-// MismatchSpec deleted - use MismatchSpec from crate::seed instead
 
 /// Search state during parallel SA traversal
 #[derive(Debug, Clone, Copy)]
@@ -112,7 +97,7 @@ struct SearchState {
 /// - Query SA is built on the query sequence as-is
 /// - Target SA is built on the COMPLEMENT of the target sequence
 /// - Same-character matching finds complementary base pairs
-pub struct SeedSearcher<'a> {
+pub(crate) struct SeedSearcher<'a> {
     /// Query suffix array
     query_sa: &'a SuffixArray,
     /// Query sequence (for base lookup)
@@ -130,7 +115,7 @@ impl<'a> SeedSearcher<'a> {
     ///
     /// IMPORTANT: `target_comp_sa` and `target_comp_seq` should be built on the
     /// COMPLEMENT (not reverse complement) of the target sequence.
-    pub fn new(
+    pub(crate) fn new(
         query_sa: &'a SuffixArray,
         query_seq: &'a Sequence,
         target_comp_sa: &'a SuffixArray,
@@ -146,37 +131,9 @@ impl<'a> SeedSearcher<'a> {
         }
     }
 
-    /// Find all seed matches of given length
-    ///
-    /// Returns all (query_interval, target_interval) pairs where suffixes
-    /// form valid RNA base-pair complementary matches of length `seed_len`.
-    ///
-    /// Note: Short suffixes (length < seed_len) are automatically excluded during
-    /// partitioning via the sentinel value (255) which sorts after all valid bases.
-    pub fn find_seeds(&self, seed_len: usize) -> Vec<SeedMatch> {
-        let mut results = Vec::new();
-        self.find_seeds_into(seed_len, &mut results);
-        results
-    }
-
-    /// Find seeds and append to existing Vec (avoids allocation per call)
-    #[inline]
-    pub fn find_seeds_into(&self, seed_len: usize, results: &mut Vec<SeedMatch>) {
-        use log::trace;
-
-        trace!(
-            "[PSA] find_seeds seed_len={} q_len={} t_len={}",
-            seed_len,
-            self.query_seq.len(),
-            self.target_comp_seq.len(),
-        );
-
-        self.search_length_range(seed_len, seed_len, results);
-    }
-
     /// Find seeds for a range of lengths in a single traversal.
     #[inline]
-    pub fn search_length_range(
+    pub(crate) fn search_length_range(
         &self,
         min_len: usize,
         max_len: usize,
@@ -298,34 +255,12 @@ impl<'a> SeedSearcher<'a> {
         max_len: usize,
         results: &mut Vec<SeedMatch>,
     ) {
-        // C code: query 'a' matches target_comp 'a' → target has 'u' → A-U pair
-
-        // A matches (query A with target_comp A)
-        let q_a = qint.get(Base::A);
-        let s_a = sint.get(Base::A);
-        if !q_a.is_empty() && !s_a.is_empty() {
-            self.recurse_match(q_a, s_a, next_depth, state, min_len, max_len, results);
-        }
-
-        // C matches (query C with target_comp C)
-        let q_c = qint.get(Base::C);
-        let s_c = sint.get(Base::C);
-        if !q_c.is_empty() && !s_c.is_empty() {
-            self.recurse_match(q_c, s_c, next_depth, state, min_len, max_len, results);
-        }
-
-        // G matches (query G with target_comp G)
-        let q_g = qint.get(Base::G);
-        let s_g = sint.get(Base::G);
-        if !q_g.is_empty() && !s_g.is_empty() {
-            self.recurse_match(q_g, s_g, next_depth, state, min_len, max_len, results);
-        }
-
-        // U matches (query U with target_comp U)
-        let q_u = qint.get(Base::U);
-        let s_u = sint.get(Base::U);
-        if !q_u.is_empty() && !s_u.is_empty() {
-            self.recurse_match(q_u, s_u, next_depth, state, min_len, max_len, results);
+        for &base in BASES.iter() {
+            let q = qint.get(base);
+            let s = sint.get(base);
+            if !q.is_empty() && !s.is_empty() {
+                self.recurse_match(q, s, next_depth, state, min_len, max_len, results);
+            }
         }
     }
 
@@ -607,9 +542,8 @@ impl<'a> SeedSearcher<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SeedConfig;
+    use crate::config::{MismatchSpec, SeedConfig, SeedSpec};
     use crate::index::sa::SuffixArray;
-    use crate::seed::{MismatchSpec, SeedSpec};
 
     /// Create a default SeedConfig for testing with specified wobble policy
     fn test_seed_config(allow_wobble: bool) -> SeedConfig {
@@ -679,7 +613,8 @@ mod tests {
         // Step 3: Create searcher and find seeds
         let seed_args = test_seed_config(false);
         let searcher = SeedSearcher::new(&q_sa, &query, &t_sa, &target_comp, &seed_args);
-        let matches = searcher.find_seeds(3);
+        let mut matches = Vec::new();
+        searcher.search_length_range(3, 3, &mut matches);
         eprintln!("Raw matches: {:?}", matches);
 
         // The key assertion

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::super::spec::SeedSpec;
+    use super::super::SeedSpec;
     use std::str::FromStr;
 
     // helper: parse and normalize, returning the tuple or panic with message
