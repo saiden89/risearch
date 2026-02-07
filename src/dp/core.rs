@@ -2,24 +2,17 @@ use std::cmp::max;
 
 use crate::dsm::{stack_with_penalty, DsmModel};
 
-use super::init::{add_e, max3, update_best_with_term};
-use super::{ScoreGrid, MIN_SCORE};
+use super::{add_e, max3, BestScore, DpMatrices, MIN_SCORE};
 
-#[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     q_ptr: *const usize,
     t_ptr: *const usize,
-    m: &mut ScoreGrid,
-    bq: &mut ScoreGrid,
-    bt: &mut ScoreGrid,
-    width: usize,
+    matrices: &mut DpMatrices,
     q_len: usize,
     t_len: usize,
     penalty: i32,
-    best_e: &mut i32,
-    best_i: &mut usize,
-    best_j: &mut usize,
+    best: &mut BestScore,
 ) {
     const GAP: usize = 0; // Base::Gap as usize
 
@@ -27,9 +20,10 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     // - q_ptr/t_ptr valid for indices [0, q_len) / [0, t_len)
     // - matrices sized at least (q_len+1) x (t_len+1)
     unsafe {
-        let m_ptr = m.ptr();
-        let bq_ptr = bq.ptr();
-        let bt_ptr = bt.ptr();
+        let m_ptr = matrices.m.ptr();
+        let bq_ptr = matrices.bq.ptr();
+        let bt_ptr = matrices.bt.ptr();
+        let width = matrices.m.width();
 
         // Precompute GAP-GAP profile (constant across all rows)
         // Store lookup_raw(GAP, GAP, t1, t2) at index [t1 * 6 + t2]
@@ -113,7 +107,7 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
                     } else {
                         stack_with_penalty::<M>(qi, GAP, tj, GAP, penalty)
                     };
-                    update_best_with_term(best_e, best_i, best_j, val_m, term, i, j);
+                    best.update(val_m, term, i, j);
                 }
 
                 *m_ptr.add(curr_idx) = val_m;

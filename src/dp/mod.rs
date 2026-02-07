@@ -239,6 +239,51 @@ impl<'a, M: DsmModel> DpView<'a, M> {
 /// Safe for arithmetic: MIN_SCORE + energy (±2000) will not overflow/underflow i32.
 const MIN_SCORE: i32 = -1_000_000_000;
 
+/// Tracks the best scoring position found during DP extension.
+#[derive(Clone, Copy)]
+struct BestScore {
+    score: i32,
+    i: usize,
+    j: usize,
+}
+
+impl BestScore {
+    fn new(score: i32) -> Self {
+        Self { score, i: 0, j: 0 }
+    }
+
+    /// Update if `val + term` exceeds current best.
+    #[inline(always)]
+    fn update(&mut self, val: i32, term: i32, i: usize, j: usize) {
+        if val > MIN_SCORE {
+            let curr = val + term;
+            if curr > self.score {
+                self.score = curr;
+                self.i = i;
+                self.j = j;
+            }
+        }
+    }
+}
+
+/// Helper: add energy if base is valid (not MIN_SCORE).
+/// Simple branch - LLVM optimizes to CMOV when beneficial.
+#[inline(always)]
+pub(super) fn add_e(base: i32, energy: i32) -> i32 {
+    if base > MIN_SCORE {
+        base + energy
+    } else {
+        MIN_SCORE
+    }
+}
+
+/// max of 3 values - branchless
+#[inline(always)]
+pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
+    use std::cmp::max;
+    max(max(a, b), c)
+}
+
 // =============================================================================
 // SCORE-ONLY GRID - Optimized for DP hot loop (matches C implementation)
 // =============================================================================
@@ -319,10 +364,10 @@ impl ScoreGrid {
 
 /// Score-only DP matrices for extension (matches C implementation).
 /// Traceback is reconstructed post-hoc by comparing scores.
-struct DpMatrices {
-    m: ScoreGrid,  // Match/mismatch state
-    bq: ScoreGrid, // Query bulge (gap in target)
-    bt: ScoreGrid, // Target bulge (gap in query)
+pub(super) struct DpMatrices {
+    pub(super) m: ScoreGrid,  // Match/mismatch state
+    pub(super) bq: ScoreGrid, // Query bulge (gap in target)
+    pub(super) bt: ScoreGrid, // Target bulge (gap in query)
 }
 
 impl DpMatrices {
@@ -334,7 +379,7 @@ impl DpMatrices {
         }
     }
 
-    fn resize(&mut self, width: usize, height: usize) {
+    pub(super) fn resize(&mut self, width: usize, height: usize) {
         self.m.resize(width, height);
         self.bq.resize(width, height);
         self.bt.resize(width, height);
@@ -403,15 +448,13 @@ impl<M: DsmModel> DpExtender<M> {
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
 
         // Initial score: terminal penalty for seed boundary
-        let mut best_e = view.terminal(0, 0);
-        let mut best_i = 0usize;
-        let mut best_j = 0usize;
+        let mut best = BestScore::new(view.terminal(0, 0));
 
         // Early return
         if q_len <= 1 || t_len <= 1 {
             return ExtendResult {
                 matrices: &self.matrices,
-                score: best_e,
+                score: best.score,
                 q_len: 0,
                 t_len: 0,
                 _model: std::marker::PhantomData,
@@ -420,7 +463,6 @@ impl<M: DsmModel> DpExtender<M> {
 
         // Resize matrices
         self.matrices.resize(t_len + 1, q_len + 1);
-        let DpMatrices { m, bq, bt } = &mut self.matrices;
 
         // =====================================================================
         // PRECOMPUTE Q/T BASE INDICES (used by init AND main loop)
@@ -441,25 +483,11 @@ impl<M: DsmModel> DpExtender<M> {
         debug_assert!(q_len <= MAX_EXT, "q_len exceeds precomputed index capacity");
         debug_assert!(t_len <= MAX_EXT, "t_len exceeds precomputed index capacity");
 
-        // Avoid per-iteration branching in view.q/view.t by specializing on direction.
-        if view.dir == ExtendDir::Left {
-            for i in 0..q_len.min(MAX_EXT) {
-                let qi = DpView::<M>::left_base(view.query, view.q_anchor, i).idx();
-                unsafe { *q_ptr.add(i) = qi };
-            }
-            for j in 0..t_len.min(MAX_EXT) {
-                let tj = DpView::<M>::right_base(view.target, view.t_anchor, j).idx();
-                unsafe { *t_ptr.add(j) = tj };
-            }
-        } else {
-            for i in 0..q_len.min(MAX_EXT) {
-                let qi = DpView::<M>::right_base(view.query, view.q_anchor, i).idx();
-                unsafe { *q_ptr.add(i) = qi };
-            }
-            for j in 0..t_len.min(MAX_EXT) {
-                let tj = DpView::<M>::left_base(view.target, view.t_anchor, j).idx();
-                unsafe { *t_ptr.add(j) = tj };
-            }
+        for i in 0..q_len.min(MAX_EXT) {
+            unsafe { *q_ptr.add(i) = view.q(i) };
+        }
+        for j in 0..t_len.min(MAX_EXT) {
+            unsafe { *t_ptr.add(j) = view.t(j) };
         }
 
         // =====================================================================
@@ -467,31 +495,22 @@ impl<M: DsmModel> DpExtender<M> {
         // =====================================================================
         // Unlike C which uses calloc (zeroed memory), we reuse buffers.
         // We must explicitly set ALL cells that might be read, including NA cells.
-        let width = m.width();
-        let m_ptr = m.ptr();
-        let bq_ptr = bq.ptr();
-        let bt_ptr = bt.ptr();
 
         let has_main_region = init_frontier::<M>(
             view,
             q_ptr,
             t_ptr,
-            m_ptr,
-            bq_ptr,
-            bt_ptr,
-            width,
+            &mut self.matrices,
             q_len,
             t_len,
-            &mut best_e,
-            &mut best_i,
-            &mut best_j,
+            &mut best,
         );
         if !has_main_region {
             return ExtendResult {
                 matrices: &self.matrices,
-                score: best_e,
-                q_len: best_i,
-                t_len: best_j,
+                score: best.score,
+                q_len: best.i,
+                t_len: best.j,
                 _model: std::marker::PhantomData,
             };
         }
@@ -510,47 +529,37 @@ impl<M: DsmModel> DpExtender<M> {
             dp_main_loop_generic::<true, M>(
                 q_ptr,
                 t_ptr,
-                m,
-                bq,
-                bt,
-                width,
+                &mut self.matrices,
                 q_len,
                 t_len,
                 self.penalty,
-                &mut best_e,
-                &mut best_i,
-                &mut best_j,
+                &mut best,
             );
         } else {
             dp_main_loop_generic::<false, M>(
                 q_ptr,
                 t_ptr,
-                m,
-                bq,
-                bt,
-                width,
+                &mut self.matrices,
                 q_len,
                 t_len,
                 self.penalty,
-                &mut best_e,
-                &mut best_i,
-                &mut best_j,
+                &mut best,
             );
         }
 
         trace!(
             "{} result: score={} q_len={} t_len={}",
             view.dir,
-            best_e,
-            best_i,
-            best_j,
+            best.score,
+            best.i,
+            best.j,
         );
 
         ExtendResult {
             matrices: &self.matrices,
-            score: best_e,
-            q_len: best_i,
-            t_len: best_j,
+            score: best.score,
+            q_len: best.i,
+            t_len: best.j,
             _model: std::marker::PhantomData,
         }
     }

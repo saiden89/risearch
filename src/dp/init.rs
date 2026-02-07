@@ -2,48 +2,11 @@ use std::cmp::max;
 
 use crate::dsm::{stack_with_penalty, DsmModel};
 
-use super::{DpView, ExtendDir, GAP, MAX_EXT, MIN_SCORE};
+use super::{add_e, BestScore, DpMatrices, DpView, ExtendDir, GAP, MAX_EXT, MIN_SCORE};
 
 // =============================================================================
 // INIT HELPERS - Reduce code duplication in DP initialization
 // =============================================================================
-
-#[inline(always)]
-pub(super) fn update_best_with_term(
-    best_e: &mut i32,
-    best_i: &mut usize,
-    best_j: &mut usize,
-    val: i32,
-    term: i32,
-    i: usize,
-    j: usize,
-) {
-    if val > MIN_SCORE {
-        let curr = val + term;
-        if curr > *best_e {
-            *best_e = curr;
-            *best_i = i;
-            *best_j = j;
-        }
-    }
-}
-
-/// Helper: add energy if base is valid (not MIN_SCORE).
-/// Simple branch - LLVM optimizes to CMOV when beneficial.
-#[inline(always)]
-pub(super) fn add_e(base: i32, energy: i32) -> i32 {
-    if base > MIN_SCORE {
-        base + energy
-    } else {
-        MIN_SCORE
-    }
-}
-
-/// max of 3 values - branchless
-#[inline(always)]
-pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
-    max(max(a, b), c)
-}
 
 /// Transition helper: choose the best of two predecessor paths.
 #[inline(always)]
@@ -83,22 +46,21 @@ fn stack_dir<const LEFT: bool, M: DsmModel>(
 ///
 /// Returns `true` when the main DP region (`i >= 3`, `j >= 3`) exists.
 /// Returns `false` when initialization is complete and no main-loop pass is needed.
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(super) fn init_frontier<M: DsmModel>(
     view: &DpView<'_, M>,
     q_ptr: *const usize,
     t_ptr: *const usize,
-    m_ptr: *mut i32,
-    bq_ptr: *mut i32,
-    bt_ptr: *mut i32,
-    width: usize,
+    matrices: &mut DpMatrices,
     q_len: usize,
     t_len: usize,
-    best_e: &mut i32,
-    best_i: &mut usize,
-    best_j: &mut usize,
+    best: &mut BestScore,
 ) -> bool {
+    let width = matrices.m.width();
+    let m_ptr = matrices.m.ptr();
+    let bq_ptr = matrices.bq.ptr();
+    let bt_ptr = matrices.bt.ptr();
+
     debug_assert!(width > t_len, "matrix width too small for t_len");
     unsafe {
         // Corner cells: explicit NA values (like C code)
@@ -117,7 +79,7 @@ pub(super) fn init_frontier<M: DsmModel>(
         cell_set(bq_ptr, width, 1, 0, view.bq_open(1, 0));
         let m11 = view.match_e(1, 1);
         cell_set(m_ptr, width, 1, 1, m11);
-        update_best_with_term(best_e, best_i, best_j, m11, view.terminal(1, 1), 1, 1);
+        best.update(m11, view.terminal(1, 1), 1, 1);
 
         // Row 0 (Bt only) and Row 1 (M) - unconditional writes
         for k in 2..t_len {
@@ -130,7 +92,7 @@ pub(super) fn init_frontier<M: DsmModel>(
             cell_set(bq_ptr, width, 0, k, MIN_SCORE); // Bq[0,k] is NA
             cell_set(bq_ptr, width, 1, k, MIN_SCORE); // Bq[1,k] is NA
             cell_set(m_ptr, width, 1, k, m_val);
-            update_best_with_term(best_e, best_i, best_j, m_val, view.terminal(1, k), 1, k);
+            best.update(m_val, view.terminal(1, k), 1, k);
         }
 
         // Col 0 (Bq only) and Col 1 (M) - unconditional writes
@@ -143,7 +105,7 @@ pub(super) fn init_frontier<M: DsmModel>(
             cell_set(bt_ptr, width, k, 0, MIN_SCORE); // Bt[k,0] is NA
             cell_set(bt_ptr, width, k, 1, MIN_SCORE); // Bt[k,1] is NA
             cell_set(m_ptr, width, k, 1, m_val);
-            update_best_with_term(best_e, best_i, best_j, m_val, view.terminal(k, 1), k, 1);
+            best.update(m_val, view.terminal(k, 1), k, 1);
         }
     }
 
@@ -161,7 +123,7 @@ pub(super) fn init_frontier<M: DsmModel>(
         cell_set(bt_ptr, width, 1, 2, bt12);
         cell_set(bq_ptr, width, 2, 1, bq21);
         cell_set(m_ptr, width, 2, 2, m22);
-        update_best_with_term(best_e, best_i, best_j, m22, view.terminal(2, 2), 2, 2);
+        best.update(m22, view.terminal(2, 2), 2, 2);
 
         let m12 = cell_get(m_ptr, width, 1, 2);
         let m21 = cell_get(m_ptr, width, 2, 1);
@@ -171,24 +133,23 @@ pub(super) fn init_frontier<M: DsmModel>(
 
     if view.dir == ExtendDir::Left {
         init_limited_rows::<true, M>(
-            view, q_ptr, t_ptr, m_ptr, bt_ptr, bq_ptr, width, q_len, t_len, best_e, best_i, best_j,
+            view, q_ptr, t_ptr, matrices, q_len, t_len, best,
         );
         init_limited_cols::<true, M>(
-            view, q_ptr, t_ptr, m_ptr, bq_ptr, bt_ptr, width, q_len, t_len, best_e, best_i, best_j,
+            view, q_ptr, t_ptr, matrices, q_len, t_len, best,
         );
     } else {
         init_limited_rows::<false, M>(
-            view, q_ptr, t_ptr, m_ptr, bt_ptr, bq_ptr, width, q_len, t_len, best_e, best_i, best_j,
+            view, q_ptr, t_ptr, matrices, q_len, t_len, best,
         );
         init_limited_cols::<false, M>(
-            view, q_ptr, t_ptr, m_ptr, bq_ptr, bt_ptr, width, q_len, t_len, best_e, best_i, best_j,
+            view, q_ptr, t_ptr, matrices, q_len, t_len, best,
         );
     }
 
     true
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 /// Initialize the limited top rows (`i=1` and `i=2`) for columns `j>=3`.
 ///
@@ -198,16 +159,16 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
     view: &DpView<'_, M>,
     q_ptr: *const usize,
     t_ptr: *const usize,
-    m_ptr: *mut i32,
-    bt_ptr: *mut i32,
-    bq_ptr: *mut i32,
-    width: usize,
+    matrices: &mut DpMatrices,
     q_len: usize,
     t_len: usize,
-    best_e: &mut i32,
-    best_i: &mut usize,
-    best_j: &mut usize,
+    best: &mut BestScore,
 ) {
+    let width = matrices.m.width();
+    let m_ptr = matrices.m.ptr();
+    let bq_ptr = matrices.bq.ptr();
+    let bt_ptr = matrices.bt.ptr();
+
     // SAFETY invariants:
     // - q_ptr and t_ptr are valid for indices [0, q_len) and [0, t_len)
     // - q_len and t_len are >= 3 (we index 1 and 2)
@@ -249,7 +210,7 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
                 stack_dir::<LEFT, M>(GAP, qi2, tj_prev, tj, view.penalty),
             );
             cell_set(m_ptr, width, 2, k, m2);
-            update_best_with_term(best_e, best_i, best_j, m2, view.terminal(2, k), 2, k);
+            best.update(m2, view.terminal(2, k), 2, k);
 
             // Secondary[2,k] = Bq
             let m1k = cell_get(m_ptr, width, 1, k);
@@ -278,7 +239,6 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 /// Initialize the limited left columns (`j=1` and `j=2`) for rows `i>=3`.
 ///
@@ -288,16 +248,16 @@ pub(super) fn init_limited_cols<const LEFT: bool, M: DsmModel>(
     view: &DpView<'_, M>,
     q_ptr: *const usize,
     t_ptr: *const usize,
-    m_ptr: *mut i32,
-    bq_ptr: *mut i32,
-    bt_ptr: *mut i32,
-    width: usize,
+    matrices: &mut DpMatrices,
     q_len: usize,
     t_len: usize,
-    best_e: &mut i32,
-    best_i: &mut usize,
-    best_j: &mut usize,
+    best: &mut BestScore,
 ) {
+    let width = matrices.m.width();
+    let m_ptr = matrices.m.ptr();
+    let bq_ptr = matrices.bq.ptr();
+    let bt_ptr = matrices.bt.ptr();
+
     // SAFETY invariants:
     // - q_ptr and t_ptr are valid for indices [0, q_len) and [0, t_len)
     // - q_len and t_len are >= 3 (we index 1 and 2)
@@ -339,7 +299,7 @@ pub(super) fn init_limited_cols<const LEFT: bool, M: DsmModel>(
                 stack_dir::<LEFT, M>(qi_prev, qi, GAP, tj2, view.penalty),
             );
             cell_set(m_ptr, width, k, 2, val);
-            update_best_with_term(best_e, best_i, best_j, val, view.terminal(k, 2), k, 2);
+            best.update(val, view.terminal(k, 2), k, 2);
 
             // Secondary[ k,2 ] = Bt
             let m_k1 = cell_get(m_ptr, width, k, 1); // Preinitialized in frontier.
