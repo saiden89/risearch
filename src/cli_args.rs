@@ -1,5 +1,3 @@
-use log::warn;
-
 use crate::config::{self, Matrix, MismatchSpec, OutputCompression, OutputFormat, SeedSpec};
 use crate::types::SeedPairingMode;
 
@@ -291,7 +289,6 @@ impl From<SearchArgs> for config::SearchArgs {
         let format = if let Some(f) = value.report_format {
             f
         } else if let Some(legacy_mode) = value.report_legacy {
-            warn!("-p/--report-alignment is deprecated. Use -f/--format instead.");
             match legacy_mode {
                 1 => config::OutputFormat::Detailed,
                 2 => config::OutputFormat::Cigar,

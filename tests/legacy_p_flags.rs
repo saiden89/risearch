@@ -27,7 +27,7 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
         .arg("search")
         .arg("-q")
         .arg(query_file.path())
-        .arg("-i")
+        .arg("-t")
         .arg(index_file.path())
         .arg("-o")
         .arg("-")
@@ -43,7 +43,7 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
         .arg("search")
         .arg("-q")
         .arg(query_file.path())
-        .arg("-i")
+        .arg("-t")
         .arg(index_file.path())
         .arg("-o")
         .arg("-")
@@ -52,6 +52,46 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
         .success()
         .stderr(predicate::str::contains(
             "Legacy report syntax '-p' is deprecated; use --format detailed.",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn test_legacy_i_flag_warning() -> Result<(), Box<dyn std::error::Error>> {
+    let mut query_file = NamedTempFile::new()?;
+    writeln!(query_file, ">q\nAAAAUA")?;
+
+    let mut target_file = NamedTempFile::new()?;
+    writeln!(target_file, ">t\nUUUUAU")?;
+
+    let index_file = NamedTempFile::new()?;
+
+    cargo_bin_cmd!("risearch")
+        .arg("index")
+        .arg(target_file.path())
+        .arg(index_file.path())
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("risearch")
+        .arg("search")
+        .arg("-q")
+        .arg(query_file.path())
+        .arg("-i")
+        .arg(index_file.path())
+        .arg("-o")
+        .arg("-")
+        .arg("--seed-length")
+        .arg("2")
+        .arg("-l")
+        .arg("0")
+        .arg("-e")
+        .arg("100.0")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Legacy target flag '-i' is deprecated; use -t/--target.",
         ));
 
     Ok(())

@@ -40,7 +40,7 @@ Search for interactions:
 ```bash
 ./target/release/risearch search \
   -q queries.fa \
-  -i chr22.idx \
+  -t chr22.idx \
   -o results.out
 ```
 
@@ -49,7 +49,7 @@ Or run directly via Cargo:
 ```bash
 cargo run --release -- search \
   -q queries.fa \
-  -i chr22.idx \
+  -t chr22.idx \
   -o results.out
 ```
 
@@ -64,27 +64,27 @@ Common tuning flags:
 ```bash
 ./target/release/risearch search \
   -q queries.fa \
-  -i chr22.idx \
+  -t chr22.idx \
   -o results.out \
   -s 6            \
   -l 20           \
   -e -20          \
   -m 1:3          \
   -f=cigar        \
-  -t 8
+  -j 8
 ```
 
 ## CLI overview
 
 Global options:
 
-- `-t, --threads <N>`: number of worker threads.
+- `-j, --jobs <N>`: number of worker threads.
 - `-v/-vv/-vvv`: increase logging verbosity.
 
 Subcommands:
 
 - `index <INPUT> <OUTPUT>`: build an index from a FASTA/FASTQ file.
-- `search -q <QUERY> -i <INDEX> -o <OUTPUT>`: run the search pipeline.
+- `search -q <QUERY> -t <TARGET> -o <OUTPUT>`: run the search pipeline.
 
 Search options (selected):
 

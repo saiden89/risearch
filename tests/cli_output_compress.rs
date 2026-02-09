@@ -15,7 +15,7 @@ fn build_index(target_path: &std::path::Path, index_path: &std::path::Path) {
 
 fn run_search(
     query_path: &std::path::Path,
-    index_path: &std::path::Path,
+    target_path: &std::path::Path,
     out_path: &std::path::Path,
     extra_args: &[&str],
 ) {
@@ -24,8 +24,8 @@ fn run_search(
         .arg("search")
         .arg("-q")
         .arg(query_path)
-        .arg("-i")
-        .arg(index_path)
+        .arg("-t")
+        .arg(target_path)
         .arg("-o")
         .arg(out_path)
         .arg("-e")

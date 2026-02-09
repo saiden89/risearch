@@ -3,46 +3,65 @@ use log::warn;
 
 use risearch::config::{MismatchSpec, SearchArgs, SeedSpec};
 
-fn extract_legacy_mismatch_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1).peekable();
+fn iter_user_args(args: &[String]) -> impl Iterator<Item = &str> {
+    args.iter().skip(1).map(String::as_str)
+}
+
+fn matches_long_option(arg: &str, long: &str) -> bool {
+    arg == long || arg.strip_prefix(long).is_some_and(|suffix| suffix.starts_with('='))
+}
+
+fn matches_short_with_attached_value(arg: &str, short: &str) -> bool {
+    arg.starts_with(short) && arg.len() > short.len() && !arg.starts_with("--")
+}
+
+fn has_long_option(args: &[String], long: &str) -> bool {
+    iter_user_args(args).any(|arg| matches_long_option(arg, long))
+}
+
+fn has_any_long_option(args: &[String], longs: &[&str]) -> bool {
+    iter_user_args(args).any(|arg| longs.iter().any(|long| matches_long_option(arg, long)))
+}
+
+fn has_any_exact_flag(args: &[String], flags: &[&str]) -> bool {
+    iter_user_args(args).any(|arg| flags.iter().any(|flag| arg == *flag))
+}
+
+fn extract_value_option(args: &[String], short: &str, long: &str) -> Option<String> {
+    let mut iter = args.iter().skip(1).map(String::as_str);
     while let Some(arg) = iter.next() {
-        if arg == "-m" || arg == "--mismatch" {
+        if arg == short || arg == long {
             if let Some(val) = iter.next() {
-                return Some(val.clone());
+                return Some(val.to_string());
             }
-        } else if let Some(val) = arg.strip_prefix("--mismatch=") {
+        } else if let Some(val) = arg
+            .strip_prefix(long)
+            .and_then(|suffix| suffix.strip_prefix('='))
+        {
             return Some(val.to_string());
-        } else if arg.starts_with("-m") && arg.len() > 2 {
-            return Some(arg[2..].to_string());
+        } else if matches_short_with_attached_value(arg, short) {
+            return Some(arg[short.len()..].to_string());
         }
     }
     None
+}
+
+fn extract_legacy_mismatch_arg(args: &[String]) -> Option<String> {
+    extract_value_option(args, "-m", "--mismatch")
 }
 
 fn extract_legacy_seed_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1).peekable();
-    while let Some(arg) = iter.next() {
-        if arg == "-s" || arg == "--seed" {
-            if let Some(val) = iter.next() {
-                return Some(val.clone());
-            }
-        } else if let Some(val) = arg.strip_prefix("--seed=") {
-            return Some(val.to_string());
-        } else if arg.starts_with("-s") && arg.len() > 2 {
-            return Some(arg[2..].to_string());
-        }
-    }
-    None
+    extract_value_option(args, "-s", "--seed")
 }
 
 fn has_seed_pairing_arg(args: &[String]) -> bool {
-    let mut iter = args.iter().skip(1).peekable();
+    let mut iter = args.iter().skip(1).map(String::as_str).peekable();
     while let Some(arg) = iter.next() {
         if arg == "--seed-pairing" {
             if iter.peek().is_some() {
                 return true;
             }
-        } else if arg.starts_with("--seed-pairing=") {
+        } else if matches_long_option(arg, "--seed-pairing") {
             return true;
         }
     }
@@ -50,58 +69,30 @@ fn has_seed_pairing_arg(args: &[String]) -> bool {
 }
 
 fn has_no_guseed_arg(args: &[String]) -> bool {
-    args.iter()
-        .skip(1)
-        .any(|arg| arg == "-U" || arg == "--no-guseed" || arg == "--noGUseed")
+    has_any_exact_flag(args, &["-U", "--no-guseed", "--noGUseed"])
 }
 
 fn has_seed_override_args(args: &[String]) -> bool {
-    args.iter().skip(1).any(|arg| {
-        arg == "--seed-start"
-            || arg.starts_with("--seed-start=")
-            || arg == "--seed-end"
-            || arg.starts_with("--seed-end=")
-            || arg == "--seed-length"
-            || arg.starts_with("--seed-length=")
-    })
-}
-
-fn has_seed_start_arg(args: &[String]) -> bool {
-    args.iter()
-        .skip(1)
-        .any(|arg| arg == "--seed-start" || arg.starts_with("--seed-start="))
-}
-
-fn has_seed_end_arg(args: &[String]) -> bool {
-    args.iter()
-        .skip(1)
-        .any(|arg| arg == "--seed-end" || arg.starts_with("--seed-end="))
-}
-
-fn has_seed_length_arg(args: &[String]) -> bool {
-    args.iter()
-        .skip(1)
-        .any(|arg| arg == "--seed-length" || arg.starts_with("--seed-length="))
+    has_any_long_option(args, &["--seed-start", "--seed-end", "--seed-length"])
 }
 
 fn has_mismatch_override_args(args: &[String]) -> bool {
-    args.iter().skip(1).any(|arg| {
-        arg == "--mismatch-max"
-            || arg.starts_with("--mismatch-max=")
-            || arg == "--mismatch-prefix"
-            || arg.starts_with("--mismatch-prefix=")
-            || arg == "--mismatch-suffix"
-            || arg.starts_with("--mismatch-suffix=")
-    })
+    has_any_long_option(
+        args,
+        &["--mismatch-max", "--mismatch-prefix", "--mismatch-suffix"],
+    )
 }
 
 fn extract_legacy_report_arg(args: &[String]) -> Option<String> {
-    for arg in args.iter().skip(1) {
+    for arg in iter_user_args(args) {
         if arg == "-p" || arg == "--report-alignment" {
             return Some("1".to_string());
-        } else if let Some(val) = arg.strip_prefix("--report-alignment=") {
+        } else if let Some(val) = arg
+            .strip_prefix("--report-alignment")
+            .and_then(|suffix| suffix.strip_prefix('='))
+        {
             return Some(val.to_string());
-        } else if arg.starts_with("-p") && arg.len() > 2 && !arg.starts_with("--") {
+        } else if matches_short_with_attached_value(arg, "-p") {
             return Some(arg[2..].to_string());
         }
     }
@@ -109,9 +100,19 @@ fn extract_legacy_report_arg(args: &[String]) -> Option<String> {
 }
 
 fn has_format_arg(args: &[String]) -> bool {
-    args.iter()
-        .skip(1)
-        .any(|arg| arg == "-f" || arg == "--format" || arg.starts_with("--format="))
+    iter_user_args(args).any(|arg| arg == "-f" || matches_long_option(arg, "--format"))
+}
+
+fn extract_legacy_target_flag(args: &[String]) -> Option<&'static str> {
+    for arg in iter_user_args(args) {
+        if arg == "-i" || matches_short_with_attached_value(arg, "-i") {
+            return Some("-i");
+        }
+        if matches_long_option(arg, "--index") {
+            return Some("--index");
+        }
+    }
+    None
 }
 
 pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -> Result<()> {
@@ -121,6 +122,7 @@ pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -
     let explicit_pairing = has_seed_pairing_arg(raw_args);
     let has_seed_overrides = has_seed_override_args(raw_args);
     let legacy_report = extract_legacy_report_arg(raw_args);
+    let legacy_target_flag = extract_legacy_target_flag(raw_args);
     let has_format = has_format_arg(raw_args);
     let has_mismatch_overrides = has_mismatch_override_args(raw_args);
 
@@ -136,9 +138,9 @@ pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -
         );
     }
 
-    let has_seed_start = has_seed_start_arg(raw_args);
-    let has_seed_end = has_seed_end_arg(raw_args);
-    let has_seed_length = has_seed_length_arg(raw_args);
+    let has_seed_start = has_long_option(raw_args, "--seed-start");
+    let has_seed_end = has_long_option(raw_args, "--seed-end");
+    let has_seed_length = has_long_option(raw_args, "--seed-length");
     let has_any_seed_flag = has_seed_start || has_seed_end || has_seed_length;
     let valid_seed_flags = (!has_any_seed_flag)
         || (!has_seed_start && !has_seed_end && has_seed_length)
@@ -167,6 +169,14 @@ pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -
                 if raw == "1" { "" } else { &raw },
                 replacement
             );
+        }
+    }
+
+    if let Some(flag) = legacy_target_flag {
+        if flag == "-i" {
+            warn!("Legacy target flag '-i' is deprecated; use -t/--target.");
+        } else {
+            warn!("Legacy target flag '--index' is deprecated; use --target.");
         }
     }
 

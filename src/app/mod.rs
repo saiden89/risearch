@@ -14,16 +14,13 @@ use crate::cli::{Cli, Commands};
 
 pub(crate) fn run(cli: Cli) -> Result<()> {
     init_logging(cli.verbose);
-    init_thread_pool(cli.threads)?;
+    init_thread_pool(cli.jobs)?;
 
     match &cli.command {
-        Some(Commands::Index { input, output }) => cmd_index(input, output),
-        Some(Commands::Search {
-            query,
-            target,
-            output,
-            opts,
-        }) => cmd_search(query, target, &output.path, opts),
+        Some(Commands::Index(cmd)) => cmd_index(&cmd.input, &cmd.output),
+        Some(Commands::Search(cmd)) => {
+            cmd_search(&cmd.query, &cmd.target, &cmd.output.path, &cmd.opts)
+        }
         None => {
             Cli::command().print_help()?;
             println!();
@@ -46,7 +43,7 @@ fn cmd_index(input: &Path, output: &Path) -> Result<()> {
 
 fn cmd_search(
     query_path: &Path,
-    index_path: &Path,
+    target_path: &Path,
     output_path: &Path,
     cli_opts: &risearch::cli_args::SearchArgs,
 ) -> Result<()> {
@@ -61,8 +58,8 @@ fn cmd_search(
         QueryRegistry::from_fasta(query_path, &opts.seed).context("Failed to load queries")?;
     info!("Loaded {} queries", queries.len());
 
-    debug!("Loading index from {:?}", index_path);
-    let targets = TargetRegistry::load(index_path).context("Failed to load index")?;
+    debug!("Loading target index from {:?}", target_path);
+    let targets = TargetRegistry::load(target_path).context("Failed to load index")?;
     trace!("Index loaded: {} targets", targets.len());
 
     // Open output with compression

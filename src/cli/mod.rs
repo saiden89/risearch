@@ -19,15 +19,16 @@ pub(crate) struct Cli {
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
     pub(crate) verbose: u8,
 
-    /// Set threads for parallel processing (global)
+    /// Set number of parallel jobs (global)
     #[arg(
-        short = 't',
-        long = "threads",
+        short = 'j',
+        long = "jobs",
+        alias = "threads",
         value_name = "N",
         default_value_t = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         global = true
     )]
-    pub(crate) threads: usize,
+    pub(crate) jobs: usize,
 
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
@@ -40,35 +41,47 @@ pub(crate) struct OutputArgs {
     pub(crate) path: PathBuf,
 }
 
+#[derive(clap::Args, Debug)]
+pub(crate) struct IndexCommand {
+    /// Input file in FASTA format.
+    #[arg(value_name = "INPUT")]
+    pub(crate) input: PathBuf,
+
+    /// Save index to given index file path
+    #[arg(value_name = "OUTPUT")]
+    pub(crate) output: PathBuf,
+}
+
+#[derive(clap::Args, Debug)]
+pub(crate) struct SearchCommand {
+    /// FASTA file for query sequence(s) (.fa or .fa.gz) -- use '-' for stdin
+    #[arg(short = 'q', long = "query", value_name = "FILE")]
+    pub(crate) query: PathBuf,
+
+    /// Target index file (created by `index` command)
+    #[arg(
+        short = 't',
+        long = "target",
+        short_alias = 'i',
+        alias = "index",
+        value_name = "TARGET"
+    )]
+    pub(crate) target: PathBuf,
+
+    #[command(flatten)]
+    pub(crate) output: OutputArgs,
+
+    /// Search-related options (seed, extension, energy, matrix, penalty, threads, format)
+    #[command(flatten)]
+    pub(crate) opts: SearchArgs,
+}
+
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)] // CLI parsing - allocation overhead is negligible
 pub(crate) enum Commands {
     /// Create index for target sequence(s)
-    Index {
-        /// Input file in FASTA format.
-        #[arg(value_name = "INPUT")]
-        input: PathBuf,
-
-        /// Save index to given index file path
-        #[arg(value_name = "OUTPUT")]
-        output: PathBuf,
-    },
+    Index(IndexCommand),
 
     /// Search for interactions in the given sequence(s)
-    Search {
-        /// FASTA file for query sequence(s) (.fa or .fa.gz) -- use '-' for stdin
-        #[arg(short = 'q', long = "query", value_name = "FILE")]
-        query: PathBuf,
-
-        /// Index file (created by `index` command)``
-        #[arg(short = 'i', long = "index", value_name = "INDEX")]
-        target: PathBuf,
-
-        #[command(flatten)]
-        output: OutputArgs,
-
-        /// Search-related options (seed, extension, energy, matrix, penalty, threads, format)
-        #[command(flatten)]
-        opts: SearchArgs,
-    },
+    Search(SearchCommand),
 }

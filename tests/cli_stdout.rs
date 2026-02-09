@@ -30,7 +30,7 @@ fn test_search_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
         .arg("search")
         .arg("-q")
         .arg(query_file.path())
-        .arg("-i")
+        .arg("-t")
         .arg(index_file.path())
         .arg("-o")
         .arg("-") // STDOUT request
