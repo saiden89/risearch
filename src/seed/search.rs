@@ -1,11 +1,16 @@
 use crate::config::SeedConfig;
-use crate::index::sa::SuffixArray;
 use crate::registry::{QueryData, TargetRegistry};
-use crate::seq::Sequence;
-use crate::types::{SeedLen, Strand, TargetId};
+use crate::types::{Base, SeedLen, Strand, TargetId};
 
 use super::searcher::{SeedMatch, SeedSearcher};
 use super::SeedHit;
+
+pub(crate) struct TargetSeedView<'a> {
+    pub sequence: &'a [Base],
+    pub sequence_rc: &'a [Base],
+    pub forward_sa: &'a [u32],
+    pub reverse_sa: &'a [u32],
+}
 
 /// Check if any position in range [start, start+len) contains 'N'
 #[inline]
@@ -28,44 +33,60 @@ pub(crate) fn find_seeds(
 ) {
     candidates.clear();
 
-    // Scratch buffer for SeedMatch results - reused across loop iterations
-    let mut matches = Vec::with_capacity(1024);
-
     for (idx, target) in index.entries().iter().enumerate() {
-        collect_target_seeds(
-            query,
-            idx,
-            config,
-            candidates,
-            &mut matches,
-            Strand::Forward,
-            &target.forward_sa,
-            &target.sequence,
-        );
-        collect_target_seeds(
-            query,
-            idx,
-            config,
-            candidates,
-            &mut matches,
-            Strand::Reverse,
-            &target.reverse_sa,
-            &target.sequence_rc,
-        );
+        let target_view = TargetSeedView {
+            sequence: &target.sequence,
+            sequence_rc: &target.sequence_rc,
+            forward_sa: &target.forward_sa,
+            reverse_sa: &target.reverse_sa,
+        };
+        for_each_seed_one_target(query, idx as u32, &target_view, config, |seed| {
+            candidates.push(seed);
+        });
     }
+}
+
+pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
+    query: &QueryData,
+    target_idx: u32,
+    target: &TargetSeedView<'_>,
+    config: &SeedConfig,
+    mut on_seed: F,
+) {
+    let mut matches = Vec::with_capacity(1024);
+    collect_target_seeds(
+        query,
+        target_idx,
+        config,
+        &mut on_seed,
+        &mut matches,
+        Strand::Forward,
+        target.forward_sa,
+        target.sequence,
+    );
+    collect_target_seeds(
+        query,
+        target_idx,
+        config,
+        &mut on_seed,
+        &mut matches,
+        Strand::Reverse,
+        target.reverse_sa,
+        target.sequence_rc,
+    );
 }
 
 /// Collect seeds from a single target strand, reusing the provided scratch buffers.
 #[allow(clippy::too_many_arguments)]
-fn collect_target_seeds(
+fn collect_target_seeds<F: FnMut(SeedHit)>(
     query: &QueryData,
-    target_idx: usize,
+    target_idx: u32,
     config: &SeedConfig,
-    candidates: &mut Vec<SeedHit>,
+    on_seed: &mut F,
     matches: &mut Vec<SeedMatch>,
     strand: Strand,
-    t_sa: &SuffixArray,
-    t_seq: &Sequence,
+    t_sa: &[u32],
+    t_seq: &[Base],
 ) {
     let q_len = query.sequence().len();
     let interval = query.seed_interval();
@@ -74,13 +95,7 @@ fn collect_target_seeds(
     let min_len = query.min_seed_len();
 
     matches.clear();
-    let searcher = SeedSearcher::new(
-        query.reverse_sa(),
-        query.sequence_rc(),
-        t_sa,
-        t_seq,
-        config,
-    );
+    let searcher = SeedSearcher::new(query.reverse_sa(), query.sequence_rc(), t_sa, t_seq, config);
     searcher.search_length_range(min_len, q_len, matches);
 
     for m in matches.iter() {
@@ -103,9 +118,9 @@ fn collect_target_seeds(
                 if t_pos + seed_len > t_seq.len() {
                     continue;
                 }
-                candidates.push(SeedHit {
+                on_seed(SeedHit {
                     query_pos: q_pos,
-                    target_id: TargetId(target_idx as u32),
+                    target_id: TargetId(target_idx),
                     target_start: t_pos,
                     seed_len: SeedLen::new(seed_len)
                         .expect("seed length from search must be positive and fit in u16"),

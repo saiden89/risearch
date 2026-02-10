@@ -219,10 +219,29 @@ pub fn write_hit<W: Write + ?Sized>(
     query_registry: &QueryRegistry,
     target_registry: &TargetRegistry,
 ) -> std::io::Result<()> {
-    bufs.line.clear();
     let q_name = query_registry.get_name(hit.query_idx);
     let t_name = target_registry.get_name(hit.target_idx);
-    build_line(&mut bufs.line, &mut bufs.itoa, hit, q_name, t_name, format);
+    write_hit_names(bufs, hit, format, writer, q_name, t_name)
+}
+
+/// Write a hit with explicit query/target names.
+pub fn write_hit_names<W: Write + ?Sized>(
+    bufs: &mut OutputBuffers,
+    hit: &SearchHit,
+    format: OutputFormat,
+    writer: &mut W,
+    query_name: &str,
+    target_name: &str,
+) -> std::io::Result<()> {
+    bufs.line.clear();
+    build_line(
+        &mut bufs.line,
+        &mut bufs.itoa,
+        hit,
+        query_name,
+        target_name,
+        format,
+    );
     writer.write_all(&bufs.line)
 }
 

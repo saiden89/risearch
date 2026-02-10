@@ -1,6 +1,5 @@
 use crate::alignment::Pairing;
 use crate::dsm::{build_penalty_adjusted_flat, dsm_flat_idx, DsmModel, DSM_FLAT_SIZE};
-use crate::seq::Sequence;
 use crate::types::Base;
 use log::trace;
 use smallvec::SmallVec;
@@ -53,8 +52,8 @@ impl std::fmt::Display for ExtendDir {
 /// The `e()` method always takes arguments in (prev, curr, prev, curr) order
 /// and internally reorders for left extension.
 pub struct DpView<'a, M: DsmModel> {
-    query: &'a Sequence,
-    target: &'a Sequence,
+    query: &'a [Base],
+    target: &'a [Base],
     q_anchor: usize,
     t_anchor: usize,
     pub dir: ExtendDir,
@@ -68,34 +67,34 @@ const GAP: usize = Base::Gap as usize;
 
 impl<'a, M: DsmModel> DpView<'a, M> {
     #[inline(always)]
-    fn base_or_gap(seq: &Sequence, pos: usize) -> Base {
+    fn base_or_gap(seq: &[Base], pos: usize) -> Base {
         if pos >= seq.len() {
             Base::Gap
         } else {
             // SAFETY: bounds checked above
-            unsafe { seq.get_unchecked(pos) }
+            unsafe { *seq.get_unchecked(pos) }
         }
     }
 
     #[inline(always)]
-    fn left_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
+    fn left_base(seq: &[Base], anchor: usize, offset: usize) -> Base {
         if offset > anchor {
             Base::Gap
         } else {
             // SAFETY: offset <= anchor, and anchor < seq.len() by construction
-            unsafe { seq.get_unchecked(anchor - offset) }
+            unsafe { *seq.get_unchecked(anchor - offset) }
         }
     }
 
     #[inline(always)]
-    fn right_base(seq: &Sequence, anchor: usize, offset: usize) -> Base {
+    fn right_base(seq: &[Base], anchor: usize, offset: usize) -> Base {
         Self::base_or_gap(seq, anchor + offset)
     }
 
     /// Create a left extension view (query toward 5', target toward 3')
     pub fn left(
-        query: &'a Sequence,
-        target: &'a Sequence,
+        query: &'a [Base],
+        target: &'a [Base],
         q_start: usize,
         t_start: usize,
         max_ext: usize,
@@ -114,8 +113,8 @@ impl<'a, M: DsmModel> DpView<'a, M> {
 
     /// Create a right extension view (query toward 3', target toward 5')
     pub fn right(
-        query: &'a Sequence,
-        target: &'a Sequence,
+        query: &'a [Base],
+        target: &'a [Base],
         q_end: usize,
         t_end: usize,
         max_ext: usize,

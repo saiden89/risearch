@@ -2,7 +2,7 @@
 //!
 //! Flow: queries → seed finding → DP extension → hits
 
-use anyhow::{bail, Result};
+use anyhow::{Context, Result};
 use log::{info, trace};
 use rayon::prelude::*;
 use smallvec::SmallVec;
@@ -11,11 +11,11 @@ use crate::alignment::{Alignment, Pairing};
 use crate::config::{ExtendConfig, Matrix, OutputFormat, SearchArgs};
 use crate::dp::{DpExtender, DpView};
 use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
-use crate::registry::QueryRegistry;
-use crate::registry::TargetRegistry;
-use crate::seed::SeedHit;
+use crate::index::store::{TargetStore, TargetView};
+use crate::registry::{QueryRegistry, TargetRegistry};
+use crate::seed::{for_each_seed_one_target, SeedHit, TargetSeedView};
 use crate::seq::Sequence;
-use crate::types::{Energy, Strand};
+use crate::types::{Base, Energy, Strand};
 
 const MAX_DP_EXT: usize = 50;
 
@@ -62,17 +62,6 @@ pub fn run_search_streaming<W: std::io::Write>(
     opts: &SearchArgs,
     writer: &mut W,
 ) -> Result<usize> {
-    // Validate seed specs upfront
-    for (q_idx, q) in queries.iter() {
-        if let Err(err) = opts.seed.seed.normalize(q.sequence().len()) {
-            bail!(
-                "Invalid seed spec for query '{}': {}",
-                queries.get_name(q_idx),
-                err
-            );
-        }
-    }
-
     info!(
         "Starting search: {} queries, seed={:?}, max_ext={}, delta_g={}",
         queries.len(),
@@ -82,8 +71,33 @@ pub fn run_search_streaming<W: std::io::Write>(
     );
 
     let count = match opts.extend.matrix {
-        Matrix::T04 => run_search_streaming_impl::<T04, W>(queries, index, opts, writer)?,
-        Matrix::T99 => run_search_streaming_impl::<T99, W>(queries, index, opts, writer)?,
+        Matrix::T04 => stream_hits::<T04, W>(queries, index, opts, writer)?,
+        Matrix::T99 => stream_hits::<T99, W>(queries, index, opts, writer)?,
+    };
+
+    info!("Search complete: {} hits", count);
+    Ok(count)
+}
+
+/// Run search against mmap-backed target store and stream results directly to writer.
+pub fn run_search_streaming_store<W: std::io::Write>(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchArgs,
+    writer: &mut W,
+) -> Result<usize> {
+    info!(
+        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        store.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.extend.delta_g
+    );
+
+    let count = match opts.extend.matrix {
+        Matrix::T04 => stream_hits_store::<T04, W>(queries, store, opts, writer)?,
+        Matrix::T99 => stream_hits_store::<T99, W>(queries, store, opts, writer)?,
     };
 
     info!("Search complete: {} hits", count);
@@ -134,7 +148,7 @@ fn run_search_parallel<M: DsmModel>(
             || SearchState::<M>::new(penalty),
             |state, (i, q)| {
                 let mut hits = Vec::new();
-                process_query::<M, _>(i as u32, q, state, queries, index, opts, |hit| {
+                process_query::<M, _>(i as u32, q, state, index, opts, |hit| {
                     hits.push(hit);
                 });
                 hits
@@ -145,7 +159,7 @@ fn run_search_parallel<M: DsmModel>(
     Ok(hits.into_iter().flatten().collect())
 }
 
-fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
+fn stream_hits<M: DsmModel, W: std::io::Write>(
     queries: &QueryRegistry,
     index: &TargetRegistry,
     opts: &SearchArgs,
@@ -162,7 +176,7 @@ fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
         let mut fmt_bufs = std::mem::take(&mut state.fmt_bufs);
         let mut write_err: Option<std::io::Error> = None;
 
-        process_query::<M, _>(q_idx as u32, q, &mut state, queries, index, opts, |hit| {
+        process_query::<M, _>(q_idx as u32, q, &mut state, index, opts, |hit| {
             if write_err.is_some() {
                 return;
             }
@@ -202,68 +216,211 @@ fn run_search_streaming_impl<M: DsmModel, W: std::io::Write>(
     Ok(hit_count)
 }
 
+fn stream_hits_store<M: DsmModel, W: std::io::Write>(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchArgs,
+    writer: &mut W,
+) -> Result<usize> {
+    let format = opts.output.format;
+    let mut hit_count = 0;
+    let penalty = (opts.extend.penalty * 100.0).round() as i32;
+    let mut state = SearchState::<M>::new(penalty);
+
+    for (target_idx, _) in store.iter_meta() {
+        let target = store
+            .target_view(target_idx as usize)
+            .with_context(|| format!("Failed to load target #{}", target_idx))?;
+
+        for (q_idx, q) in queries.entries().iter().enumerate() {
+            // Move buffers out to avoid borrow conflicts with closure.
+            let mut out_buf = std::mem::take(&mut state.out_buf);
+            let mut fmt_bufs = std::mem::take(&mut state.fmt_bufs);
+            let mut write_err: Option<std::io::Error> = None;
+
+            process_query_one_target::<M, _>(
+                q_idx as u32,
+                q,
+                &target,
+                target_idx,
+                &mut state,
+                opts,
+                |hit| {
+                    if write_err.is_some() {
+                        return;
+                    }
+
+                    let q_name = queries.get_name(hit.query_idx);
+                    let t_name = target.name;
+                    if let Err(err) = crate::output::write_hit_names(
+                        &mut fmt_bufs,
+                        &hit,
+                        format,
+                        &mut out_buf,
+                        q_name,
+                        t_name,
+                    ) {
+                        write_err = Some(err);
+                        return;
+                    }
+
+                    hit_count += 1;
+
+                    if out_buf.len() >= 64 * 1024 {
+                        if let Err(err) = writer.write_all(&out_buf) {
+                            write_err = Some(err);
+                            return;
+                        }
+                        out_buf.clear();
+                    }
+                },
+            );
+
+            if let Some(err) = write_err {
+                return Err(err.into());
+            }
+
+            if !out_buf.is_empty() {
+                writer.write_all(&out_buf)?;
+                out_buf.clear();
+            }
+            state.out_buf = out_buf;
+            state.fmt_bufs = fmt_bufs;
+        }
+    }
+
+    Ok(hit_count)
+}
+
 /// Core query processing: find seeds → extend → filter → emit hits.
+struct QueryCtx<'a> {
+    q_idx: u32,
+    q_seq: &'a [Base],
+    interval: crate::types::Interval,
+    include_alignment: bool,
+    pair_matrix: &'static [[u8; 6]; 6],
+    delta_g: f64,
+    extend_cfg: &'a ExtendConfig,
+}
+
+fn emit_seed_hit<M: DsmModel, F: FnMut(SearchHit)>(
+    extender: &mut DpExtender<M>,
+    penalty: i32,
+    ctx: &QueryCtx<'_>,
+    seed: &SeedHit,
+    t_seq: &[Base],
+    original_len: usize,
+    on_hit: &mut F,
+) {
+    if seed.target_start + seed.seed_len.get() > t_seq.len() {
+        return;
+    }
+
+    let Some(ext) = extend_seed::<M>(
+        extender,
+        penalty,
+        ctx.q_seq,
+        t_seq,
+        seed,
+        ctx.interval,
+        ctx.extend_cfg,
+        ctx.pair_matrix,
+        ctx.include_alignment,
+    ) else {
+        return;
+    };
+
+    if ext.score > ctx.delta_g {
+        return;
+    }
+
+    on_hit(build_hit(
+        ctx.q_idx,
+        ctx.q_seq,
+        t_seq,
+        seed,
+        ext,
+        ctx.include_alignment,
+        original_len,
+    ));
+}
+
 fn process_query<M: DsmModel, F: FnMut(SearchHit)>(
     q_idx: u32,
     q: &crate::registry::QueryData,
     state: &mut SearchState<M>,
-    queries: &QueryRegistry,
     index: &TargetRegistry,
     opts: &SearchArgs,
     mut on_hit: F,
 ) {
     state.clear();
-    let include_alignment = opts.output.format != OutputFormat::Minimal;
-    let pair_matrix = pair_mat(opts.seed.allows_wobble());
-
-    // Find seeds
     crate::seed::find_seeds(q, index, &opts.seed, &mut state.seeds);
-
-    let query = queries.get(q_idx);
-    let q_seq = query.sequence();
-    let interval = query.seed_interval();
+    let ctx = QueryCtx {
+        q_idx,
+        q_seq: q.sequence(),
+        interval: q.seed_interval(),
+        include_alignment: opts.output.format != OutputFormat::Minimal,
+        pair_matrix: pair_mat(opts.seed.allows_wobble()),
+        delta_g: opts.extend.delta_g,
+        extend_cfg: &opts.extend,
+    };
 
     for seed in state.seeds.iter() {
         let t_seq = match seed.strand {
             Strand::Reverse => index.get_sequence_rc(seed.target_id.0 as usize),
             Strand::Forward => index.get_sequence(seed.target_id.0 as usize),
         };
-
-        // Bounds check
-        if seed.target_start + seed.seed_len.get() > t_seq.len() {
-            continue;
-        }
-
-        // Extend seed
-        let Some(ext) = extend_seed::<M>(
+        emit_seed_hit::<M, _>(
             &mut state.extender,
             state.penalty,
-            q_seq,
-            t_seq,
+            &ctx,
             seed,
-            interval,
-            &opts.extend,
-            pair_matrix,
-            include_alignment,
-        ) else {
-            continue;
-        };
-
-        // Energy filter
-        if ext.score > opts.extend.delta_g {
-            continue;
-        }
-
-        on_hit(build_hit(
-            q_idx,
-            index,
-            q_seq,
             t_seq,
-            seed,
-            ext,
-            include_alignment,
-        ));
+            index.get_sequence_len(seed.target_id.0 as usize),
+            &mut on_hit,
+        );
     }
+}
+
+fn process_query_one_target<M: DsmModel, F: FnMut(SearchHit)>(
+    q_idx: u32,
+    q: &crate::registry::QueryData,
+    target: &TargetView<'_>,
+    target_idx: u32,
+    state: &mut SearchState<M>,
+    opts: &SearchArgs,
+    mut on_hit: F,
+) {
+    let target_seed_view = TargetSeedView {
+        sequence: target.sequence,
+        sequence_rc: target.sequence_rc,
+        forward_sa: target.forward_sa,
+        reverse_sa: target.reverse_sa,
+    };
+    let ctx = QueryCtx {
+        q_idx,
+        q_seq: q.sequence(),
+        interval: q.seed_interval(),
+        include_alignment: opts.output.format != OutputFormat::Minimal,
+        pair_matrix: pair_mat(opts.seed.allows_wobble()),
+        delta_g: opts.extend.delta_g,
+        extend_cfg: &opts.extend,
+    };
+    for_each_seed_one_target(q, target_idx, &target_seed_view, &opts.seed, |seed| {
+        let t_seq = match seed.strand {
+            Strand::Reverse => target.sequence_rc,
+            Strand::Forward => target.sequence,
+        };
+        emit_seed_hit::<M, _>(
+            &mut state.extender,
+            state.penalty,
+            &ctx,
+            &seed,
+            t_seq,
+            target.sequence.len(),
+            &mut on_hit,
+        );
+    });
 }
 
 // =============================================================================
@@ -283,8 +440,8 @@ struct Extension {
 fn extend_seed<M: DsmModel>(
     extender: &mut DpExtender<M>,
     penalty: i32,
-    q_seq: &Sequence,
-    t_seq: &Sequence,
+    q_seq: &[Base],
+    t_seq: &[Base],
     seed: &SeedHit,
     interval: crate::types::Interval,
     extend_cfg: &ExtendConfig,
@@ -380,8 +537,8 @@ fn extend_seed<M: DsmModel>(
 // =============================================================================
 
 fn build_seed_pairs(
-    q_seq: &Sequence,
-    t_seq: &Sequence,
+    q_seq: &[Base],
+    t_seq: &[Base],
     q_pos: usize,
     t_match_end: usize,
     len: usize,
@@ -398,8 +555,8 @@ fn build_seed_pairs(
 
 fn build_alignment(
     include_alignment: bool,
-    q_seq: &Sequence,
-    t_seq: &Sequence,
+    q_seq: &[Base],
+    t_seq: &[Base],
     seed: &SeedHit,
     left_pairs: &[Pairing],
     right_pairs: &[Pairing],
@@ -417,12 +574,12 @@ fn build_alignment(
 
 fn build_hit(
     query_idx: u32,
-    index: &TargetRegistry,
-    q_seq: &Sequence,
-    t_seq: &Sequence,
+    q_seq: &[Base],
+    t_seq: &[Base],
     seed: &SeedHit,
     ext: Extension,
     include_alignment: bool,
+    original_len: usize,
 ) -> SearchHit {
     let Extension {
         score,
@@ -443,7 +600,6 @@ fn build_hit(
     let final_t_start = t_start.saturating_sub(r_t);
     let final_t_end = (t_start + len - 1) + l_t;
 
-    let original_len = index.get_sequence_len(seed.target_id.0 as usize);
     let (out_t_start, out_t_end, strand_char) = match seed.strand {
         Strand::Reverse => {
             let fwd_start = original_len - 1 - final_t_end;

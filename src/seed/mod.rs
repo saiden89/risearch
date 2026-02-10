@@ -1,7 +1,7 @@
 pub(crate) mod search;
 pub(crate) mod searcher;
 
-pub(crate) use search::find_seeds;
+pub(crate) use search::{find_seeds, for_each_seed_one_target, TargetSeedView};
 
 use crate::types::{SeedLen, Strand, TargetId};
 

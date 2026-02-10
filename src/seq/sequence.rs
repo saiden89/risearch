@@ -15,9 +15,7 @@ use super::normalize::{normalize_rna_sequence, NormalizationStats};
 ///
 /// Sequences are normalized once at input (FASTA parsing) and stored as Base enums.
 /// This eliminates repeated ASCII→Base conversions during search and alignment.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, wincode::SchemaWrite, wincode::SchemaRead,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sequence(Vec<Base>);
 
 impl Sequence {

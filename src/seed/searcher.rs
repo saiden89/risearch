@@ -23,8 +23,6 @@
 //! ```
 
 use crate::config::SeedConfig;
-use crate::index::sa::SuffixArray;
-use crate::seq::Sequence;
 use crate::types::{Base, Interval};
 
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
@@ -91,13 +89,13 @@ struct SearchState {
 /// - Same-character matching finds complementary base pairs
 pub(crate) struct SeedSearcher<'a> {
     /// Query suffix array
-    query_sa: &'a SuffixArray,
+    query_sa: &'a [u32],
     /// Query sequence (for base lookup)
-    query_seq: &'a Sequence,
+    query_seq: &'a [Base],
     /// Target suffix array (built on COMPLEMENT of target)
-    target_comp_sa: &'a SuffixArray,
+    target_comp_sa: &'a [u32],
     /// Target complement sequence
-    target_comp_seq: &'a Sequence,
+    target_comp_seq: &'a [Base],
     /// Seed configuration (pairing, mismatch spec, etc.)
     seed_config: &'a SeedConfig,
 }
@@ -108,10 +106,10 @@ impl<'a> SeedSearcher<'a> {
     /// IMPORTANT: `target_comp_sa` and `target_comp_seq` should be built on the
     /// COMPLEMENT (not reverse complement) of the target sequence.
     pub(crate) fn new(
-        query_sa: &'a SuffixArray,
-        query_seq: &'a Sequence,
-        target_comp_sa: &'a SuffixArray,
-        target_comp_seq: &'a Sequence,
+        query_sa: &'a [u32],
+        query_seq: &'a [Base],
+        target_comp_sa: &'a [u32],
+        target_comp_seq: &'a [Base],
         seed_config: &'a SeedConfig,
     ) -> Self {
         Self {
@@ -238,22 +236,32 @@ impl<'a> SeedSearcher<'a> {
 
                 if self.is_valid_pair(q_base, t_base) {
                     // Canonical or wobble match
-                    self.recurse_length_range(min_len, max_len, SearchState {
-                        query_interval: q_int,
-                        target_interval: t_int,
-                        depth: next_depth,
-                        matches_since_mismatch: state.matches_since_mismatch + 1,
-                        mismatch_count: state.mismatch_count,
-                    }, results);
+                    self.recurse_length_range(
+                        min_len,
+                        max_len,
+                        SearchState {
+                            query_interval: q_int,
+                            target_interval: t_int,
+                            depth: next_depth,
+                            matches_since_mismatch: state.matches_since_mismatch + 1,
+                            mismatch_count: state.mismatch_count,
+                        },
+                        results,
+                    );
                 } else if can_mismatch {
                     // Mismatch
-                    self.recurse_length_range(min_len, max_len, SearchState {
-                        query_interval: q_int,
-                        target_interval: t_int,
-                        depth: next_depth,
-                        matches_since_mismatch: 0,
-                        mismatch_count: state.mismatch_count + 1,
-                    }, results);
+                    self.recurse_length_range(
+                        min_len,
+                        max_len,
+                        SearchState {
+                            query_interval: q_int,
+                            target_interval: t_int,
+                            depth: next_depth,
+                            matches_since_mismatch: 0,
+                            mismatch_count: state.mismatch_count + 1,
+                        },
+                        results,
+                    );
                 }
             }
         }
@@ -292,7 +300,6 @@ impl<'a> SeedSearcher<'a> {
             && state.matches_since_mismatch >= self.seed_config.mismatch.min_suffix_matches
             && state.matches_since_mismatch < seed_len
     }
-
 }
 
 /// Partition an SA interval by base at given offset (C's sa_search_interval)
@@ -303,8 +310,8 @@ impl<'a> SeedSearcher<'a> {
 /// Short suffixes (pos + offset >= seq_len) must be filtered out via linear scan
 /// because they're scattered throughout the SA (sorted by earlier characters).
 fn partition_interval(
-    sa: &SuffixArray,
-    seq: &Sequence,
+    sa: &[u32],
+    seq: &[Base],
     interval: Interval,
     offset: usize,
 ) -> BaseIntervals {
@@ -329,8 +336,8 @@ fn partition_interval(
 /// For typical workloads, most suffixes are valid, so scans terminate quickly.
 #[inline]
 fn find_valid_suffix_range(
-    sa: &SuffixArray,
-    seq: &Sequence,
+    sa: &[u32],
+    seq: &[Base],
     interval: Interval,
     offset: usize,
 ) -> (usize, usize) {
@@ -368,12 +375,7 @@ fn find_valid_suffix_range(
 
 /// Check if any suffix in interval has length >= min_len
 #[inline]
-fn has_suffix_len_at_least(
-    sa: &SuffixArray,
-    seq: &Sequence,
-    interval: Interval,
-    min_len: usize,
-) -> bool {
+fn has_suffix_len_at_least(sa: &[u32], seq: &[Base], interval: Interval, min_len: usize) -> bool {
     if min_len == 0 {
         return true;
     }
@@ -390,8 +392,8 @@ fn has_suffix_len_at_least(
 /// This differs from ASCII ordering: a < c < g < n < t
 #[inline]
 fn partition_by_base(
-    sa: &SuffixArray,
-    seq: &Sequence,
+    sa: &[u32],
+    seq: &[Base],
     valid_start: usize,
     valid_end: usize,
     offset: usize,
@@ -410,7 +412,9 @@ fn partition_by_base(
     let n_start =
         valid_start + sa_slice.partition_point(|&idx| seq[idx as usize + offset] < Base::N);
 
-    BaseIntervals { bounds: [a_start, g_start, c_start, u_start, n_start, valid_end] }
+    BaseIntervals {
+        bounds: [a_start, g_start, c_start, u_start, n_start, valid_end],
+    }
 }
 
 #[cfg(test)]
@@ -418,6 +422,7 @@ mod tests {
     use super::*;
     use crate::config::{MismatchSpec, SeedConfig, SeedSpec};
     use crate::index::sa::SuffixArray;
+    use crate::seq::Sequence;
 
     /// Create a default SeedConfig for testing with specified wobble policy
     fn test_seed_config(allow_wobble: bool) -> SeedConfig {

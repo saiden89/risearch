@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -121,7 +121,7 @@ impl QueryData {
         sequence_rc: Sequence,
         reverse_sa: SuffixArray,
         config: &SeedConfig,
-    ) -> Self {
+    ) -> Result<Self> {
         let q_len = sequence.len();
 
         // Compute N-prefix for O(1) N-checking
@@ -136,13 +136,14 @@ impl QueryData {
         }
         let has_n_any = n_total != 0;
 
-        // Compute seed interval once
-        let (seed_interval, min_seed_len) = match config.seed.normalize(q_len) {
-            Ok((start1, end1, min_len)) => (Interval::new(start1 - 1, end1), min_len),
-            Err(_) => (Interval::new(0, q_len), q_len),
-        };
+        // Compute seed interval once and fail early at boundary if invalid.
+        let (start1, end1, min_seed_len) = config
+            .seed
+            .normalize(q_len)
+            .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
+        let seed_interval = Interval::new(start1 - 1, end1);
 
-        Self {
+        Ok(Self {
             name,
             sequence,
             sequence_rc,
@@ -151,7 +152,7 @@ impl QueryData {
             min_seed_len,
             n_prefix,
             has_n_any,
-        }
+        })
     }
 
     #[inline]
@@ -281,7 +282,7 @@ impl QueryRegistry {
                     sequence_rc,
                     reverse_sa,
                     config,
-                )))
+                )?))
             })
             .collect::<Result<Vec<_>>>()?;
 

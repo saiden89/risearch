@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use log::{debug, info, trace};
 
-use risearch::{output, search, QueryRegistry, TargetRegistry};
+use risearch::{output, search, QueryRegistry, TargetStore};
 
 use crate::cli::warnings::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
@@ -35,8 +35,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 
 fn cmd_index(input: &Path, output: &Path) -> Result<()> {
     info!("Creating index: {:?} -> {:?}", input, output);
-    let targets = TargetRegistry::from_fasta(input).context("Failed to process input sequences")?;
-    targets.save(output).context("Failed to write index file")?;
+    TargetStore::build_from_fasta(input, output).context("Failed to write index file")?;
     info!("Index saved to {:?}", output);
     Ok(())
 }
@@ -59,14 +58,14 @@ fn cmd_search(
     info!("Loaded {} queries", queries.len());
 
     debug!("Loading target index from {:?}", target_path);
-    let targets = TargetRegistry::load(target_path).context("Failed to load index")?;
+    let targets = TargetStore::open(target_path).context("Failed to load index")?;
     trace!("Index loaded: {} targets", targets.len());
 
     // Open output with compression
     let mut writer = output::open_output(Some(output_path), &opts.output)?;
 
     debug!("Starting search...");
-    let hits = search::run_search_streaming(&queries, &targets, &opts, &mut writer)?;
+    let hits = search::run_search_streaming_store(&queries, &targets, &opts, &mut writer)?;
     writer.flush().context("Failed to flush output")?;
 
     info!("Done: {} hits", hits);
