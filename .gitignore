@@ -1,6 +1,8 @@
 target/
 *.log
 *.fa
+*.fasta
+*.zip
 *.gz
 *.txt
 *.idx
@@ -8,3 +10,4 @@ target/
 *.json
 legacy_c/RIsearch2/bin/
 legacy_c/risearch3_src/
+docs/
