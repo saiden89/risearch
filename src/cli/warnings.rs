@@ -8,7 +8,10 @@ fn iter_user_args(args: &[String]) -> impl Iterator<Item = &str> {
 }
 
 fn matches_long_option(arg: &str, long: &str) -> bool {
-    arg == long || arg.strip_prefix(long).is_some_and(|suffix| suffix.starts_with('='))
+    arg == long
+        || arg
+            .strip_prefix(long)
+            .is_some_and(|suffix| suffix.starts_with('='))
 }
 
 fn matches_short_with_attached_value(arg: &str, short: &str) -> bool {
