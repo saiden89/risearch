@@ -81,14 +81,12 @@ impl<T: RegistryEntry> Registry<T> {
 pub struct TargetData {
     /// Sequence identifier.
     pub name: String,
-    /// Suffix array for the forward strand.
-    pub forward_sa: SuffixArray,
-    /// Suffix array for the reverse strand.
-    pub reverse_sa: SuffixArray,
-    /// Forward sequence.
-    pub sequence: Sequence,
-    /// Reverse-complement sequence.
-    pub sequence_rc: Sequence,
+    /// Combined sequence: forward ++ [Gap] ++ reverse-complement
+    pub combined_seq: Sequence,
+    /// Suffix array built on combined_seq
+    pub combined_sa: SuffixArray,
+    /// Length of the original forward sequence
+    pub seq_len: usize,
 }
 
 /// Query data computed once at load time.
@@ -315,15 +313,20 @@ impl TargetRegistry {
                     return Ok(None);
                 };
 
-                let forward_sa = SuffixArray::try_from(&sequence)?;
-                let reverse_sa = SuffixArray::try_from(&sequence_rc)?;
+                // Build combined sequence: fwd ++ [Gap] ++ rc
+                let seq_len = sequence.len();
+                let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 1);
+                combined_bases.extend_from_slice(&sequence);
+                combined_bases.push(Base::Gap);
+                combined_bases.extend_from_slice(&sequence_rc);
+                let combined_seq = Sequence::from(combined_bases);
+                let combined_sa = SuffixArray::try_from(&combined_seq)?;
 
                 Ok(Some(TargetData {
                     name,
-                    forward_sa,
-                    reverse_sa,
-                    sequence,
-                    sequence_rc,
+                    combined_seq,
+                    combined_sa,
+                    seq_len,
                 }))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -347,15 +350,17 @@ impl TargetRegistry {
         crate::index::io::write_index_file(self, path)
     }
 
-    pub fn get_sequence(&self, seq_idx: usize) -> &Sequence {
-        &self.entries[seq_idx].sequence
+    pub fn get_sequence(&self, seq_idx: usize) -> &[Base] {
+        let t = &self.entries[seq_idx];
+        &t.combined_seq[..t.seq_len]
     }
 
-    pub fn get_sequence_rc(&self, seq_idx: usize) -> &Sequence {
-        &self.entries[seq_idx].sequence_rc
+    pub fn get_sequence_rc(&self, seq_idx: usize) -> &[Base] {
+        let t = &self.entries[seq_idx];
+        &t.combined_seq[t.seq_len + 1..]
     }
 
     pub fn get_sequence_len(&self, seq_idx: usize) -> usize {
-        self.entries[seq_idx].sequence.len()
+        self.entries[seq_idx].seq_len
     }
 }

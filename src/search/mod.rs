@@ -392,10 +392,9 @@ fn process_query_one_target<M: DsmModel, F: FnMut(SearchHit)>(
     mut on_hit: F,
 ) {
     let target_seed_view = TargetSeedView {
-        sequence: target.sequence,
-        sequence_rc: target.sequence_rc,
-        forward_sa: target.forward_sa,
-        reverse_sa: target.reverse_sa,
+        combined_seq: target.combined_seq,
+        combined_sa: target.combined_sa,
+        seq_len: target.seq_len,
     };
     let ctx = QueryCtx {
         q_idx,
@@ -406,10 +405,13 @@ fn process_query_one_target<M: DsmModel, F: FnMut(SearchHit)>(
         delta_g: opts.extend.delta_g,
         extend_cfg: &opts.extend,
     };
+    let seq_len = target.seq_len;
+    let t_fwd = &target.combined_seq[..seq_len];
+    let t_rc = &target.combined_seq[seq_len + 1..];
     for_each_seed_one_target(q, target_idx, &target_seed_view, &opts.seed, |seed| {
         let t_seq = match seed.strand {
-            Strand::Reverse => target.sequence_rc,
-            Strand::Forward => target.sequence,
+            Strand::Reverse => t_rc,
+            Strand::Forward => t_fwd,
         };
         emit_seed_hit::<M, _>(
             &mut state.extender,
@@ -417,7 +419,7 @@ fn process_query_one_target<M: DsmModel, F: FnMut(SearchHit)>(
             &ctx,
             &seed,
             t_seq,
-            target.sequence.len(),
+            seq_len,
             &mut on_hit,
         );
     });

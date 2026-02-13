@@ -22,10 +22,12 @@ const TARGET_COUNT_OFFSET: u64 = 8;
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct TargetChunk {
-    sequence: Vec<Base>,
-    sequence_rc: Vec<Base>,
-    forward_sa: Vec<u32>,
-    reverse_sa: Vec<u32>,
+    /// Forward sequence ++ [Gap] ++ reverse-complement sequence
+    combined_seq: Vec<Base>,
+    /// Suffix array built on combined_seq
+    combined_sa: Vec<u32>,
+    /// Length of the original (forward) sequence
+    seq_len: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -44,10 +46,12 @@ pub struct TargetStore {
 
 pub struct TargetView<'a> {
     pub name: &'a str,
-    pub sequence: &'a [Base],
-    pub sequence_rc: &'a [Base],
-    pub forward_sa: &'a [u32],
-    pub reverse_sa: &'a [u32],
+    /// Forward sequence ++ [Gap] ++ reverse-complement sequence
+    pub combined_seq: &'a [Base],
+    /// Suffix array built on combined_seq
+    pub combined_sa: &'a [u32],
+    /// Length of the original (forward) sequence
+    pub seq_len: usize,
 }
 
 impl TargetStore {
@@ -106,15 +110,6 @@ impl TargetStore {
                 continue;
             }
 
-            if sequence.len() > u32::MAX as usize {
-                bail!(
-                    "Sequence '{}' too long for u32 suffix array ({} bases > {} max)",
-                    id,
-                    sequence.len(),
-                    u32::MAX
-                );
-            }
-
             if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
                 log::debug!(
                     "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
@@ -125,16 +120,31 @@ impl TargetStore {
             }
 
             let sequence_rc = sequence.reverse_complement();
-            let forward_sa = SuffixArray::try_from(&sequence)
-                .with_context(|| format!("Failed to build forward SA for '{}'", id))?;
-            let reverse_sa = SuffixArray::try_from(&sequence_rc)
-                .with_context(|| format!("Failed to build reverse SA for '{}'", id))?;
+
+            // Build combined sequence: fwd ++ [Gap] ++ rc
+            let seq_len = sequence.len();
+            let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 1);
+            combined_bases.extend_from_slice(&sequence);
+            combined_bases.push(Base::Gap);
+            combined_bases.extend_from_slice(&sequence_rc);
+            let combined_seq = Sequence::from(combined_bases);
+
+            if combined_seq.len() > u32::MAX as usize {
+                bail!(
+                    "Combined sequence '{}' too long for u32 suffix array ({} bases > {} max)",
+                    id,
+                    combined_seq.len(),
+                    u32::MAX
+                );
+            }
+
+            let combined_sa = SuffixArray::try_from(&combined_seq)
+                .with_context(|| format!("Failed to build combined SA for '{}'", id))?;
 
             let chunk = TargetChunk {
-                sequence: sequence.iter().copied().collect(),
-                sequence_rc: sequence_rc.iter().copied().collect(),
-                forward_sa: forward_sa.into_inner(),
-                reverse_sa: reverse_sa.into_inner(),
+                combined_seq: combined_seq.iter().copied().collect(),
+                combined_sa: combined_sa.into_inner(),
+                seq_len: seq_len as u32,
             };
 
             let payload = rkyv::to_bytes::<RkyvError>(&chunk)
@@ -293,38 +303,31 @@ impl TargetStore {
         let chunk = access_archived_chunk(payload)
             .with_context(|| format!("Failed to access target payload '{}'", meta.name))?;
 
-        let sequence = chunk.sequence.as_slice();
-        let sequence_rc = chunk.sequence_rc.as_slice();
-        let forward_sa = chunk.forward_sa.as_slice();
-        let reverse_sa = chunk.reverse_sa.as_slice();
+        let combined_seq = archived_base_slice_as_native(chunk.combined_seq.as_slice());
+        let combined_sa = archived_u32_slice_as_native(chunk.combined_sa.as_slice());
+        let seq_len = chunk.seq_len.to_native() as usize;
+        let expected_combined_len = 2 * seq_len + 1;
 
-        let sequence = archived_base_slice_as_native(sequence);
-        let sequence_rc = archived_base_slice_as_native(sequence_rc);
-        let forward_sa = archived_u32_slice_as_native(forward_sa);
-        let reverse_sa = archived_u32_slice_as_native(reverse_sa);
-
-        if sequence.len() != meta.sequence_len
-            || sequence_rc.len() != meta.sequence_len
-            || forward_sa.len() != meta.sequence_len
-            || reverse_sa.len() != meta.sequence_len
+        if seq_len != meta.sequence_len
+            || combined_seq.len() != expected_combined_len
+            || combined_sa.len() != expected_combined_len
         {
             bail!(
-                "Corrupt payload for '{}': expected length {}, got seq={}, seq_rc={}, sa_fwd={}, sa_rev={}",
+                "Corrupt payload for '{}': expected seq_len={}, combined_len={}, got seq_len={}, combined_seq={}, combined_sa={}",
                 meta.name,
                 meta.sequence_len,
-                sequence.len(),
-                sequence_rc.len(),
-                forward_sa.len(),
-                reverse_sa.len()
+                expected_combined_len,
+                seq_len,
+                combined_seq.len(),
+                combined_sa.len()
             );
         }
 
         Ok(TargetView {
             name: &meta.name,
-            sequence,
-            sequence_rc,
-            forward_sa,
-            reverse_sa,
+            combined_seq,
+            combined_sa,
+            seq_len,
         })
     }
 
@@ -506,10 +509,9 @@ mod tests {
             let got = store.target_view(i).unwrap();
             let exp = expected.get(i as u32);
             assert_eq!(got.name, exp.name.as_str());
-            assert_eq!(got.sequence, &exp.sequence[..]);
-            assert_eq!(got.sequence_rc, &exp.sequence_rc[..]);
-            assert_eq!(got.forward_sa, &exp.forward_sa[..]);
-            assert_eq!(got.reverse_sa, &exp.reverse_sa[..]);
+            assert_eq!(got.seq_len, exp.seq_len);
+            assert_eq!(got.combined_seq, &exp.combined_seq[..]);
+            assert_eq!(got.combined_sa, &exp.combined_sa[..]);
         }
     }
 
