@@ -1,5 +1,5 @@
 pub(crate) mod search;
-pub(crate) mod searcher;
+pub mod searcher;
 
 pub(crate) use search::{find_seeds, for_each_seed_one_target, TargetSeedView};
 

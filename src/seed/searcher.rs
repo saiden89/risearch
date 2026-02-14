@@ -65,7 +65,7 @@ impl BaseIntervals {
 
 /// A seed match found by parallel SA search
 #[derive(Debug, Clone)]
-pub(crate) struct SeedMatch {
+pub struct SeedMatch {
     /// Interval in query SA containing matching suffixes
     pub(crate) query_interval: Interval,
     /// Interval in target SA containing matching suffixes
@@ -93,7 +93,7 @@ struct SearchCtx<'a> {
 /// - Query SA is built on the query sequence as-is
 /// - Target SA is built on the COMPLEMENT of the target sequence
 /// - Same-character matching finds complementary base pairs
-pub(crate) struct SeedSearcher<'a> {
+pub struct SeedSearcher<'a> {
     query_sa: &'a [u32],
     query_seq: &'a [Base],
     target_comp_sa: &'a [u32],
@@ -106,7 +106,7 @@ impl<'a> SeedSearcher<'a> {
     ///
     /// IMPORTANT: `target_comp_sa` and `target_comp_seq` should be built on the
     /// COMPLEMENT (not reverse complement) of the target sequence.
-    pub(crate) fn new(
+    pub fn new(
         query_sa: &'a [u32],
         query_seq: &'a [Base],
         target_comp_sa: &'a [u32],
@@ -123,7 +123,7 @@ impl<'a> SeedSearcher<'a> {
     }
 
     /// Find seeds for a range of lengths in a single traversal.
-    pub(crate) fn search_length_range(
+    pub fn search_length_range(
         &self,
         min_len: usize,
         max_len: usize,
@@ -159,7 +159,6 @@ impl<'a> SeedSearcher<'a> {
 ///
 /// Parameters are flat integers to avoid struct construction overhead per call.
 /// Config is in `ctx` (passed by reference, like C uses globals).
-#[inline(never)]
 fn recurse(
     ctx: &SearchCtx,
     ql: usize,
@@ -195,15 +194,13 @@ fn recurse(
         }
     }
 
-    // Prune: no suffix long enough to reach min_len
-    if depth < ctx.min_len {
-        let qi = Interval::new(ql, qr);
-        let si = Interval::new(sl, sr);
-        if !has_suffix_len_at_least(ctx.q_sa, ctx.q_seq, qi, ctx.min_len)
-            || !has_suffix_len_at_least(ctx.t_sa, ctx.t_seq, si, ctx.min_len)
-        {
-            return;
-        }
+    // Prune: no suffix long enough to reach min_len.
+    // Avoids expensive partition work on branches that can never produce seeds.
+    if depth < ctx.min_len
+        && (!has_suffix_len_at_least(ctx.q_sa, ctx.q_seq, ql, qr, ctx.min_len)
+            || !has_suffix_len_at_least(ctx.t_sa, ctx.t_seq, sl, sr, ctx.min_len))
+    {
+        return;
     }
 
     // Partition both SA intervals by base at current depth
@@ -250,7 +247,8 @@ fn recurse(
 /// Partition an SA interval by base at given offset.
 ///
 /// Returns ranges for [A, C, G, U] in iteration order.
-/// Short suffixes (pos + offset >= seq_len) are filtered via linear scan.
+/// Sentinel Gap bytes appended after each sequence ensure that short suffixes
+/// read Gap(0) < A at depth, naturally excluding them from all ACGU ranges.
 #[inline]
 fn partition_interval(
     sa: &[u32],
@@ -263,67 +261,42 @@ fn partition_interval(
         return BaseIntervals::default();
     }
 
-    let (valid_start, valid_end) = find_valid_suffix_range(sa, seq, start, end, offset);
-
-    if valid_start >= valid_end {
-        return BaseIntervals::default();
-    }
-
-    partition_by_base(sa, seq, valid_start, valid_end, offset)
+    partition_by_base(sa, seq, start, end, offset)
 }
 
-/// Find the range of suffixes long enough for this offset.
+/// Check if any suffix in the SA interval has at least `min_len` real bases.
 ///
-/// Linear scans from both ends with early exit.
-/// For typical workloads, most suffixes are valid so scans terminate in 0-2 steps.
+/// Sequences include a trailing sentinel Gap byte, so the original (pre-sentinel)
+/// length is `seq.len() - 1`. Scans from both ends with early exit; terminates
+/// in 0-2 steps for typical genomic workloads.
 #[inline]
-fn find_valid_suffix_range(
+fn has_suffix_len_at_least(
     sa: &[u32],
     seq: &[Base],
     start: usize,
     end: usize,
-    offset: usize,
-) -> (usize, usize) {
-    let seq_len = seq.len();
-
-    let mut valid_start = start;
-    while valid_start < end {
-        if (sa[valid_start] as usize) + offset < seq_len {
-            break;
-        }
-        valid_start += 1;
-    }
-
-    if valid_start >= end {
-        return (end, end);
-    }
-
-    let mut valid_end = end;
-    while valid_end > valid_start {
-        if (sa[valid_end - 1] as usize) + offset < seq_len {
-            break;
-        }
-        valid_end -= 1;
-    }
-
-    (valid_start, valid_end)
-}
-
-/// Check if any suffix in interval has length >= min_len
-#[inline]
-fn has_suffix_len_at_least(sa: &[u32], seq: &[Base], interval: Interval, min_len: usize) -> bool {
+    min_len: usize,
+) -> bool {
     if min_len == 0 {
         return true;
     }
+    let original_len = seq.len() - 1; // exclude sentinel
     let offset = min_len - 1;
-    let (valid_start, valid_end) = find_valid_suffix_range(sa, seq, interval.start, interval.end, offset);
-    valid_start < valid_end
+
+    let mut lo = start;
+    while lo < end {
+        if (sa[lo] as usize) + offset < original_len {
+            return true;
+        }
+        lo += 1;
+    }
+    false
 }
 
 /// Partition a valid SA range by base, returning ranges in [A, C, G, U] order.
 ///
-/// Uses unsafe pointer access (bounds guaranteed by find_valid_suffix_range).
-/// Base discriminant ordering in SA: A(1) < G(2) < C(3) < U(4) < N(5)
+/// Uses unsafe pointer access (bounds guaranteed by sentinel padding).
+/// Base discriminant ordering in SA: Gap(0) < A(1) < G(2) < C(3) < U(4) < N(5)
 #[inline]
 fn partition_by_base(
     sa: &[u32],
@@ -335,25 +308,20 @@ fn partition_by_base(
     let sa_slice = &sa[valid_start..valid_end];
     let seq_ptr = seq.as_ptr();
 
-    // SAFETY: find_valid_suffix_range guarantees that for all entries in
-    // [valid_start..valid_end], sa[i] as usize + offset < seq.len().
+    // SAFETY: Sentinel Gap bytes appended after each sequence guarantee that
+    // sa[i] + offset < seq.len() for all SA entries, since short suffixes
+    // read the sentinel at seq[len] which is within bounds.
     // Base discriminant ordering: Gap(0) < A(1) < G(2) < C(3) < U(4) < N(5)
-    // The Gap partition_point excludes the Gap separator in combined sequences.
     let a_start = valid_start
-        + sa_slice
-            .partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::A });
+        + sa_slice.partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::A });
     let g_start = valid_start
-        + sa_slice
-            .partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::G });
+        + sa_slice.partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::G });
     let c_start = valid_start
-        + sa_slice
-            .partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::C });
+        + sa_slice.partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::C });
     let u_start = valid_start
-        + sa_slice
-            .partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::U });
+        + sa_slice.partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::U });
     let n_start = valid_start
-        + sa_slice
-            .partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::N });
+        + sa_slice.partition_point(|&idx| unsafe { *seq_ptr.add(idx as usize + offset) < Base::N });
 
     // Ranges in [A, C, G, U] iteration order (matching BASES constant)
     BaseIntervals {
@@ -396,6 +364,10 @@ mod tests {
         let seq_bases = vec![Base::A, Base::C, Base::G, Base::U];
         let seq = Sequence::from(seq_bases.clone());
         let sa = SuffixArray::try_from(&seq).expect("SA construction failed");
+        // Append sentinel after SA construction
+        let mut padded: Vec<Base> = seq.iter().copied().collect();
+        padded.push(Base::Gap);
+        let seq = Sequence::from(padded);
         let interval = Interval::new(0, sa.len());
         let parts = partition_interval(&sa, &seq, interval.start, interval.end, 0);
 
@@ -428,15 +400,22 @@ mod tests {
         let _target = Sequence::from(target_bases);
         let target_comp = Sequence::from(target_comp_bases);
 
-        // Step 2: Build SAs
+        // Step 2: Build SAs on unpadded sequences, then append sentinel
         let q_sa = SuffixArray::try_from(&query).expect("query SA construction failed");
         let t_sa = SuffixArray::try_from(&target_comp).expect("target SA construction failed");
         eprintln!("Query SA: {:?}", q_sa);
         eprintln!("Target comp SA: {:?}", t_sa);
 
+        let mut q_padded: Vec<Base> = query.iter().copied().collect();
+        q_padded.push(Base::Gap);
+        let q_seq = Sequence::from(q_padded);
+        let mut t_padded: Vec<Base> = target_comp.iter().copied().collect();
+        t_padded.push(Base::Gap);
+        let t_seq = Sequence::from(t_padded);
+
         // Step 3: Create searcher and find seeds
         let seed_args = test_seed_config(false);
-        let searcher = SeedSearcher::new(&q_sa, &query, &t_sa, &target_comp, &seed_args);
+        let searcher = SeedSearcher::new(&q_sa, &q_seq, &t_sa, &t_seq, &seed_args);
         let mut matches = Vec::new();
         searcher.search_length_range(3, 3, &mut matches);
         eprintln!("Raw matches: {:?}", matches);

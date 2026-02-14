@@ -407,7 +407,7 @@ fn process_query_one_target<M: DsmModel, F: FnMut(SearchHit)>(
     };
     let seq_len = target.seq_len;
     let t_fwd = &target.combined_seq[..seq_len];
-    let t_rc = &target.combined_seq[seq_len + 1..];
+    let t_rc = &target.combined_seq[seq_len + 1..2 * seq_len + 1];
     for_each_seed_one_target(q, target_idx, &target_seed_view, &opts.seed, |seed| {
         let t_seq = match seed.strand {
             Strand::Reverse => t_rc,

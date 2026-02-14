@@ -123,7 +123,7 @@ impl TargetStore {
 
             // Build combined sequence: fwd ++ [Gap] ++ rc
             let seq_len = sequence.len();
-            let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 1);
+            let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
             combined_bases.extend_from_slice(&sequence);
             combined_bases.push(Base::Gap);
             combined_bases.extend_from_slice(&sequence_rc);
@@ -141,8 +141,14 @@ impl TargetStore {
             let combined_sa = SuffixArray::try_from(&combined_seq)
                 .with_context(|| format!("Failed to build combined SA for '{}'", id))?;
 
+            // Append sentinel Gap byte after SA construction.
+            // This ensures short suffixes read Gap(0) < A at depth,
+            // eliminating bounds-check validation in the search hot path.
+            let mut combined_seq_vec: Vec<Base> = combined_seq.iter().copied().collect();
+            combined_seq_vec.push(Base::Gap);
+
             let chunk = TargetChunk {
-                combined_seq: combined_seq.iter().copied().collect(),
+                combined_seq: combined_seq_vec,
                 combined_sa: combined_sa.into_inner(),
                 seq_len: seq_len as u32,
             };
@@ -306,17 +312,19 @@ impl TargetStore {
         let combined_seq = archived_base_slice_as_native(chunk.combined_seq.as_slice());
         let combined_sa = archived_u32_slice_as_native(chunk.combined_sa.as_slice());
         let seq_len = chunk.seq_len.to_native() as usize;
-        let expected_combined_len = 2 * seq_len + 1;
+        let expected_seq_len = 2 * seq_len + 2; // fwd + Gap + rc + sentinel
+        let expected_sa_len = 2 * seq_len + 1; // SA built before sentinel
 
         if seq_len != meta.sequence_len
-            || combined_seq.len() != expected_combined_len
-            || combined_sa.len() != expected_combined_len
+            || combined_seq.len() != expected_seq_len
+            || combined_sa.len() != expected_sa_len
         {
             bail!(
-                "Corrupt payload for '{}': expected seq_len={}, combined_len={}, got seq_len={}, combined_seq={}, combined_sa={}",
+                "Corrupt payload for '{}': expected seq_len={}, combined_seq={}, combined_sa={}, got seq_len={}, combined_seq={}, combined_sa={}",
                 meta.name,
                 meta.sequence_len,
-                expected_combined_len,
+                expected_seq_len,
+                expected_sa_len,
                 seq_len,
                 combined_seq.len(),
                 combined_sa.len()

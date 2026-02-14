@@ -274,6 +274,11 @@ impl QueryRegistry {
 
                 let reverse_sa = SuffixArray::try_from(&sequence_rc)?;
 
+                // Append sentinel Gap byte after SA construction.
+                let mut rc_bases: Vec<Base> = sequence_rc.iter().copied().collect();
+                rc_bases.push(Base::Gap);
+                let sequence_rc = Sequence::from(rc_bases);
+
                 Ok(Some(QueryData::from_parts(
                     name,
                     sequence,
@@ -315,12 +320,16 @@ impl TargetRegistry {
 
                 // Build combined sequence: fwd ++ [Gap] ++ rc
                 let seq_len = sequence.len();
-                let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 1);
+                let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
                 combined_bases.extend_from_slice(&sequence);
                 combined_bases.push(Base::Gap);
                 combined_bases.extend_from_slice(&sequence_rc);
-                let combined_seq = Sequence::from(combined_bases);
+                let combined_seq = Sequence::from(combined_bases.clone());
                 let combined_sa = SuffixArray::try_from(&combined_seq)?;
+
+                // Append sentinel Gap byte after SA construction.
+                combined_bases.push(Base::Gap);
+                let combined_seq = Sequence::from(combined_bases);
 
                 Ok(Some(TargetData {
                     name,
@@ -357,7 +366,7 @@ impl TargetRegistry {
 
     pub fn get_sequence_rc(&self, seq_idx: usize) -> &[Base] {
         let t = &self.entries[seq_idx];
-        &t.combined_seq[t.seq_len + 1..]
+        &t.combined_seq[t.seq_len + 1..2 * t.seq_len + 1]
     }
 
     pub fn get_sequence_len(&self, seq_idx: usize) -> usize {
