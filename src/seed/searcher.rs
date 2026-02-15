@@ -217,7 +217,6 @@ fn recurse(
         && mc < ctx.max_mm
         && d1 > ctx.min_prefix
         && msm < ctx.max_len
-        && d1 < ctx.max_len
         && ctx.max_len - d1 >= ctx.min_suffix;
 
     // Iterate base pairs in [A, C, G, U] × [A, C, G, U] order.

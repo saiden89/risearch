@@ -170,10 +170,36 @@ impl CRunner<Indexed> {
 // =============================================================================
 
 /// Get path to C risearch2 binary.
-/// Prefers debug binary (risearch2.dbg.x) for seed boundary markers, falls back to release.
+/// Selection order:
+/// 1) `PARITY_C_BIN` env var:
+///    - "debug" -> use risearch2.dbg.x
+///    - "release" -> use risearch2.x
+///    - any other value -> treated as explicit binary path
+/// 2) Default: prefer debug binary (seed boundary markers), fall back to release.
 fn c_binary_path(root: &Path) -> PathBuf {
     let debug_bin = root.join("legacy_c/RIsearch2/bin/risearch2.dbg.x");
     let release_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
+
+    if let Ok(sel) = std::env::var("PARITY_C_BIN") {
+        let sel = sel.trim();
+        let chosen = match sel {
+            "debug" => debug_bin.clone(),
+            "release" => release_bin.clone(),
+            _ => PathBuf::from(sel),
+        };
+        if !chosen.exists() {
+            panic!(
+                "PARITY_C_BIN points to a missing C binary: {}",
+                chosen.display()
+            );
+        }
+        debug!(
+            "[PARITY] Using C binary from PARITY_C_BIN='{}': {}",
+            sel,
+            chosen.display()
+        );
+        return chosen;
+    }
 
     if debug_bin.exists() {
         debug!("[PARITY] Using debug C binary: {}", debug_bin.display());

@@ -1392,6 +1392,23 @@ void really_print_alignment(gzFile qout, aln_result_t *result) {
   // at once and the multi-threading code can print everythin in one
   // go
 
+  if (no_compress) {
+    if (show_alignment == 1) {
+      fprintf(stdout, "%s\n", result->query_str);
+      fprintf(stdout, "%s\n", result->aln_str);
+      fprintf(stdout, "%s\n", result->target_str);
+      fprintf(stdout, "%s\n", result->result_str);
+    } else if (show_alignment == 2) {
+      fprintf(stdout, "%s\t%s\n", result->result_str, result->ia_str);
+    } else if (show_alignment == 3) {
+      fprintf(stdout, "%s\t%s\t%s\t%s\t%s\n", result->result_str, result->ia_str,
+              result->target_str, result->temp_target_str, result->temp_ia_str);
+    } else {
+      fprintf(stdout, "%s\n", result->result_str);
+    }
+    return;
+  }
+
   if (show_alignment == 1) {
     gzprintf(qout, "%s\n", result->query_str);
     gzprintf(qout, "%s\n", result->aln_str);

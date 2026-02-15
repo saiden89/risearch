@@ -86,9 +86,9 @@ extern int seed_mismatch[3], seed_mismatch_flag, seed_threshold_flag;
 //extern char* strdup(const char*);
 extern int verbose;
 extern int noGUseed;
+extern int no_compress;
 
 extern void debug(const char *msg, ...);
 extern void str_rev(char *s);
 
 #endif
-

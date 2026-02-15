@@ -559,15 +559,15 @@ static void *match_worker(void *data) {
           // path/foo_{query->name} or so possibly also warn if file is present
           // before open "w" and overwrite what was there...
           if (no_compress) {
-            // Write to stdout uncompressed for benchmarking
-            query->out = gzdopen(fileno(stdout), "wb0");
+            // Plain-text stdout path for benchmarking (no gzip framing).
+            query->out = NULL;
           } else {
             snprintf(tmpname, 100, "risearch_%s.out.gz", query->name);
             query->out = gzopen(tmpname, "wb");
           }
-          if (query->out == NULL) {
+          if (!no_compress && query->out == NULL) {
             printf("gzopen file %s failed, errno = %d\n",
-                   no_compress ? "stdout" : tmpname, errno);
+                   tmpname, errno);
           }
           // if (i % 10 == 0)
           // fprintf(stderr, "starting: %d tid: %d len: %d\n", i, tid,
@@ -578,6 +578,8 @@ static void *match_worker(void *data) {
             sa_evaluate_interval(query->intervals, query, d->sa, '-');
             if (!no_compress) {
               gzclose(query->out);
+            } else {
+              fflush(stdout);
             }
           }
           // fprintf(stderr, "ending: %d tid: %d\n", i, tid);
