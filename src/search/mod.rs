@@ -334,7 +334,7 @@ fn emit_seed_hit<M: DsmModel, F: FnMut(SearchHit)>(
         return;
     }
 
-    on_hit(build_hit(
+    on_hit(SearchHit::new(
         ctx.q_idx,
         ctx.q_seq,
         t_seq,
@@ -555,86 +555,68 @@ fn build_seed_pairs(
     pairs
 }
 
-fn build_alignment(
-    include_alignment: bool,
-    q_seq: &[Base],
-    t_seq: &[Base],
-    seed: &SeedHit,
-    left_pairs: &[Pairing],
-    right_pairs: &[Pairing],
-) -> Option<Alignment> {
-    if !include_alignment {
-        return None;
-    }
+impl SearchHit {
+    fn new(
+        query_idx: u32,
+        q_seq: &[Base],
+        t_seq: &[Base],
+        seed: &SeedHit,
+        ext: Extension,
+        include_alignment: bool,
+        original_len: usize,
+    ) -> Self {
+        let Extension {
+            score,
+            l_q,
+            l_t,
+            r_q,
+            r_t,
+            left_pairs,
+            right_pairs,
+        } = ext;
 
-    let len = seed.seed_len.get();
-    let q_pos = seed.query_pos;
-    let t_match_end = seed.target_start + len - 1;
-    let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
-    Some(Alignment::new(left_pairs, &seed_pairs, right_pairs))
-}
+        let q_pos = seed.query_pos;
+        let t_start = seed.target_start;
+        let len = seed.seed_len.get();
 
-fn build_hit(
-    query_idx: u32,
-    q_seq: &[Base],
-    t_seq: &[Base],
-    seed: &SeedHit,
-    ext: Extension,
-    include_alignment: bool,
-    original_len: usize,
-) -> SearchHit {
-    let Extension {
-        score,
-        l_q,
-        l_t,
-        r_q,
-        r_t,
-        left_pairs,
-        right_pairs,
-    } = ext;
+        let final_q_start = q_pos.saturating_sub(l_q);
+        let final_q_end = (q_pos + len - 1) + r_q;
+        let final_t_start = t_start.saturating_sub(r_t);
+        let final_t_end = (t_start + len - 1) + l_t;
 
-    let q_pos = seed.query_pos;
-    let t_start = seed.target_start;
-    let len = seed.seed_len.get();
+        let (out_t_start, out_t_end, strand) = match seed.strand {
+            Strand::Reverse => {
+                let fwd_start = original_len - 1 - final_t_end;
+                let fwd_end = original_len - 1 - final_t_start;
+                (fwd_start + 1, fwd_end + 1, Strand::Reverse)
+            }
+            Strand::Forward => (final_t_start + 1, final_t_end + 1, Strand::Forward),
+        };
 
-    let final_q_start = q_pos.saturating_sub(l_q);
-    let final_q_end = (q_pos + len - 1) + r_q;
-    let final_t_start = t_start.saturating_sub(r_t);
-    let final_t_end = (t_start + len - 1) + l_t;
+        let alignment = if include_alignment {
+            let t_match_end = seed.target_start + len - 1;
+            let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
+            Some(Alignment::new(&left_pairs, &seed_pairs, &right_pairs))
+        } else {
+            None
+        };
 
-    let (out_t_start, out_t_end, strand_char) = match seed.strand {
-        Strand::Reverse => {
-            let fwd_start = original_len - 1 - final_t_end;
-            let fwd_end = original_len - 1 - final_t_start;
-            (fwd_start + 1, fwd_end + 1, '-')
+        Self {
+            query_idx,
+            target_idx: seed.target_id.0,
+            q_start: final_q_start,
+            q_end: final_q_end,
+            t_start: final_t_start,
+            t_end: final_t_end,
+            output_q_start: final_q_start + 1,
+            output_q_end: final_q_end + 1,
+            output_t_start: out_t_start,
+            output_t_end: out_t_end,
+            strand,
+            energy: score.into(),
+            alignment,
+            flank_5: Sequence::from(Vec::new()),
+            flank_3: Sequence::from(Vec::new()),
         }
-        Strand::Forward => (final_t_start + 1, final_t_end + 1, '+'),
-    };
-
-    let alignment = build_alignment(
-        include_alignment,
-        q_seq,
-        t_seq,
-        seed,
-        &left_pairs,
-        &right_pairs,
-    );
-
-    SearchHit {
-        query_idx,
-        target_idx: seed.target_id.0,
-        q_start: final_q_start,
-        q_end: final_q_end,
-        t_start: final_t_start,
-        t_end: final_t_end,
-        output_q_start: final_q_start + 1,
-        output_q_end: final_q_end + 1,
-        output_t_start: out_t_start,
-        output_t_end: out_t_end,
-        strand: strand_char.into(),
-        energy: score.into(),
-        alignment,
-        flank_5: Sequence::from(Vec::new()),
-        flank_3: Sequence::from(Vec::new()),
     }
 }
