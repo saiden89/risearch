@@ -252,51 +252,6 @@ impl Interval {
     }
 }
 
-// =============================================================================
-// SPAN - Lightweight region reference
-// =============================================================================
-
-/// Lightweight, Copy-able reference to a sequence region.
-///
-/// 16 bytes total: no lifetime, cache-optimal for batch processing.
-/// Use `seq_id` to look up actual sequence data from an index.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Span {
-    /// Start position in sequence (0-based, inclusive)
-    pub start: u32,
-    /// End position in sequence (0-based, exclusive)
-    pub end: u32,
-    /// Index into sequence database (e.g., target index)
-    pub seq_id: u32,
-    /// Strand direction
-    pub strand: Strand,
-}
-
-impl Span {
-    /// Create a new Span
-    #[inline]
-    pub const fn new(seq_id: u32, start: u32, end: u32, strand: Strand) -> Self {
-        Self {
-            start,
-            end,
-            seq_id,
-            strand,
-        }
-    }
-
-    /// Length of the region
-    #[inline]
-    pub const fn len(&self) -> u32 {
-        self.end.saturating_sub(self.start)
-    }
-
-    /// Check if span is empty
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.start >= self.end
-    }
-}
-
 /// Strand direction for search
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -348,51 +303,23 @@ impl From<Strand> for char {
 // ENERGY NEWTYPE
 // =============================================================================
 
-/// Energy value in kcal/mol (newtype for type safety and formatting).
+/// Energy value in kcal/mol.
+///
+/// Thin wrapper for type safety only.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Energy(pub f64);
 
 impl Energy {
-    /// Create from f64.
+    /// Create from raw kcal/mol value.
+    #[inline]
     pub fn new(value: f64) -> Self {
         Energy(value)
     }
 
-    /// Get the raw f64 value.
+    /// Get the raw kcal/mol value.
+    #[inline]
     pub fn as_f64(&self) -> f64 {
         self.0
-    }
-
-    /// Format as string with 2 decimal places (matches C output).
-    pub fn format(&self) -> String {
-        format!("{:.2}", self.0)
-    }
-
-    /// Parse from string.
-    pub fn parse(s: &str) -> Option<Self> {
-        s.parse::<f64>().ok().map(Energy)
-    }
-}
-
-impl std::fmt::Display for Energy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:.2}", self.0)
-    }
-}
-
-impl Eq for Energy {}
-
-impl PartialOrd for Energy {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Energy {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .partial_cmp(&other.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 

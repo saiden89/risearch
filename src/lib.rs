@@ -18,7 +18,7 @@ pub use alignment::{Alignment, PairClass};
 pub use index::store::TargetStore;
 pub use registry::{QueryRegistry, TargetRegistry};
 pub use seq::{AlignedSeq, Sequence};
-pub use types::{Base, Energy, SeedPairingMode, Span, Strand, BASE_COUNT};
+pub use types::{Base, Energy, SeedPairingMode, Strand, BASE_COUNT};
 
 // Search API re-exports for library usage
 pub use config::{MismatchSpec, SeedSpec};

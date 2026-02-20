@@ -638,7 +638,10 @@ mod tests {
         } else {
             Strand::Reverse
         };
-        let energy_val = Energy::parse(energy).unwrap_or(Energy::new(0.0));
+        let energy_val = energy
+            .parse::<f64>()
+            .map(Energy::new)
+            .unwrap_or(Energy::new(0.0));
 
         // Create a simple alignment with all Match pairings
         let len = q_end.saturating_sub(q_start).max(1);

@@ -136,7 +136,7 @@ pub(crate) fn parse_c_output(
     let strand: Strand = fields[6].chars().next().unwrap_or('+').into();
 
     // Parse energy
-    let energy = Energy::parse(fields[7])?;
+    let energy = Energy::new(fields[7].parse::<f64>().ok()?);
 
     // Create alignment from C interaction/target columns.
     let alignment = Alignment::from_c_output(&interaction, &target_seq);
