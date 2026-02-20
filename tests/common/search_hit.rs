@@ -45,10 +45,10 @@ pub(crate) trait SearchHitExt {
 
 impl SearchHitExt for SearchHit {
     fn coords_match(&self, other: &Self) -> bool {
-        self.output_q_start == other.output_q_start
-            && self.output_q_end == other.output_q_end
-            && self.output_t_start == other.output_t_start
-            && self.output_t_end == other.output_t_end
+        (self.q_start + 1) == (other.q_start + 1)
+            && (self.q_end + 1) == (other.q_end + 1)
+            && (self.t_start + 1) == (other.t_start + 1)
+            && (self.t_end + 1) == (other.t_end + 1)
             && self.strand == other.strand
     }
 
@@ -69,32 +69,32 @@ impl SearchHitExt for SearchHit {
     }
 
     fn target_seq(&self) -> Option<String> {
-        self.alignment.as_ref().map(|a| a.target_sequence())
+        self.alignment
+            .as_ref()
+            .map(|a| a.steps().iter().map(|&p| p.target_char()).collect())
     }
 
     fn query_seq(&self) -> Option<String> {
-        self.alignment.as_ref().map(|a| a.query_sequence())
+        self.alignment
+            .as_ref()
+            .map(|a| a.steps().iter().map(|&p| p.query_char()).collect())
     }
 
     fn seed_start(&self) -> Option<usize> {
-        self.alignment.as_ref().map(|a| a.left_extension().len())
+        self.seed_start
     }
 
     fn seed_end(&self) -> Option<usize> {
-        self.alignment.as_ref().map(|a| {
-            let start = a.left_extension().len();
-            let seed_len = a.seed().len();
-            start + seed_len
-        })
+        self.seed_end
     }
 
     fn fmt_coords(&self) -> String {
         format!(
             "q=[{},{}] t=[{},{}] S={} E={}",
-            self.output_q_start,
-            self.output_q_end,
-            self.output_t_start,
-            self.output_t_end,
+            self.q_start + 1,
+            self.q_end + 1,
+            self.t_start + 1,
+            self.t_end + 1,
             self.strand,
             self.energy
         )
@@ -143,7 +143,15 @@ pub(crate) fn parse_c_output(
     let energy = Energy::parse(fields[7])?;
 
     // Create alignment from C interaction/target columns.
-    let alignment = Alignment::from_c_output(&interaction, &target_seq, seed_start, seed_end);
+    let alignment = Alignment::from_c_output(&interaction, &target_seq);
+    let (seed_start, seed_end) = match (seed_start, seed_end) {
+        (Some(s), Some(e)) => {
+            let s = s.min(interaction.len());
+            let e = e.min(interaction.len()).max(s);
+            (Some(s), Some(e))
+        }
+        _ => (None, None),
+    };
 
     // Optional flanks
     let flank_5 = match fields.get(10) {
@@ -168,12 +176,10 @@ pub(crate) fn parse_c_output(
         q_end: q_end.saturating_sub(1),
         t_start: t_start.saturating_sub(1),
         t_end: t_end.saturating_sub(1),
-        output_q_start: q_start,
-        output_q_end: q_end,
-        output_t_start: t_start,
-        output_t_end: t_end,
         strand,
         energy,
+        seed_start,
+        seed_end,
         alignment: Some(alignment),
         flank_5,
         flank_3,

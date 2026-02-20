@@ -32,12 +32,10 @@ pub struct SearchHit {
     pub q_end: usize,
     pub t_start: usize,
     pub t_end: usize,
-    pub output_q_start: usize,
-    pub output_q_end: usize,
-    pub output_t_start: usize,
-    pub output_t_end: usize,
     pub strand: Strand,
     pub energy: Energy,
+    pub seed_start: Option<usize>,
+    pub seed_end: Option<usize>,
     pub alignment: Option<Alignment>,
     pub flank_5: Sequence,
     pub flank_3: Sequence,
@@ -538,23 +536,6 @@ fn extend_seed<M: DsmModel>(
 // HIT BUILDING
 // =============================================================================
 
-fn build_seed_pairs(
-    q_seq: &[Base],
-    t_seq: &[Base],
-    q_pos: usize,
-    t_match_end: usize,
-    len: usize,
-) -> SmallVec<[Pairing; 64]> {
-    let mut pairs = SmallVec::with_capacity(len);
-    for i in 0..len {
-        pairs.push(Pairing::from_bases(
-            q_seq[q_pos + i],
-            t_seq[t_match_end - i],
-        ));
-    }
-    pairs
-}
-
 impl SearchHit {
     fn new(
         query_idx: u32,
@@ -574,18 +555,24 @@ impl SearchHit {
         let final_t_start = t_start.saturating_sub(ext.r_t);
         let final_t_end = (t_start + len - 1) + ext.l_t;
 
-        let (out_t_start, out_t_end, strand) = match seed.strand {
+        let (final_t_start, final_t_end, strand) = match seed.strand {
             Strand::Reverse => {
                 let fwd_start = original_len - 1 - final_t_end;
                 let fwd_end = original_len - 1 - final_t_start;
-                (fwd_start + 1, fwd_end + 1, Strand::Reverse)
+                (fwd_start, fwd_end, Strand::Reverse)
             }
-            Strand::Forward => (final_t_start + 1, final_t_end + 1, Strand::Forward),
+            Strand::Forward => (final_t_start, final_t_end, Strand::Forward),
         };
 
         let alignment = if include_alignment {
             let t_match_end = seed.target_start + len - 1;
-            let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
+            let mut seed_pairs: SmallVec<[Pairing; 64]> = SmallVec::with_capacity(len);
+            for i in 0..len {
+                seed_pairs.push(Pairing::from_bases(
+                    q_seq[q_pos + i],
+                    t_seq[t_match_end - i],
+                ));
+            }
             Some(Alignment::new(
                 &ext.left_pairs,
                 &seed_pairs,
@@ -593,6 +580,12 @@ impl SearchHit {
             ))
         } else {
             None
+        };
+        let (seed_start, seed_end) = if include_alignment {
+            let start = ext.left_pairs.len();
+            (Some(start), Some(start + len))
+        } else {
+            (None, None)
         };
 
         Self {
@@ -602,12 +595,10 @@ impl SearchHit {
             q_end: final_q_end,
             t_start: final_t_start,
             t_end: final_t_end,
-            output_q_start: final_q_start + 1,
-            output_q_end: final_q_end + 1,
-            output_t_start: out_t_start,
-            output_t_end: out_t_end,
             strand,
             energy: ext.score.into(),
+            seed_start,
+            seed_end,
             alignment,
             flank_5: Sequence::from(Vec::new()),
             flank_3: Sequence::from(Vec::new()),

@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use crate::alignment::{Alignment, Pairing};
 use crate::config::OutputFormat;
 use crate::registry::{QueryRegistry, TargetRegistry};
 use crate::search::SearchHit;
@@ -128,6 +129,33 @@ fn format_spec(format: OutputFormat) -> FormatSpec {
     }
 }
 
+#[inline]
+fn push_alignment_mapped(buf: &mut Vec<u8>, alignment: &Alignment, map: fn(Pairing) -> u8) {
+    for &p in alignment.steps() {
+        buf.push(map(p));
+    }
+}
+
+#[inline]
+fn push_alignment_query_seq(buf: &mut Vec<u8>, alignment: &Alignment) {
+    push_alignment_mapped(buf, alignment, |p| p.query_char() as u8);
+}
+
+#[inline]
+fn push_alignment_target_seq(buf: &mut Vec<u8>, alignment: &Alignment) {
+    push_alignment_mapped(buf, alignment, |p| p.target_char() as u8);
+}
+
+#[inline]
+fn push_alignment_line(buf: &mut Vec<u8>, alignment: &Alignment) {
+    push_alignment_mapped(buf, alignment, |p| p.class().alignment_symbol() as u8);
+}
+
+#[inline]
+fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
+    push_alignment_mapped(buf, alignment, |p| p.class().symbol() as u8);
+}
+
 fn build_line(
     line_buf: &mut Vec<u8>,
     itoa_buf: &mut itoa::Buffer,
@@ -155,11 +183,11 @@ fn build_line(
 
     if matches!(spec.prelude, PreludeKind::DetailedAlignment) {
         if let Some(align) = alignment {
-            align.write_query_seq(line_buf);
+            push_alignment_query_seq(line_buf, align);
             line_buf.push(b'\n');
-            align.write_alignment_line(line_buf);
+            push_alignment_line(line_buf, align);
             line_buf.push(b'\n');
-            align.write_target_seq(line_buf);
+            push_alignment_target_seq(line_buf, align);
             line_buf.push(b'\n');
         }
     }
@@ -171,28 +199,28 @@ fn build_line(
         match field {
             FieldKind::QueryId => line_buf.extend_from_slice(q_id.as_bytes()),
             FieldKind::QStart => {
-                line_buf.extend_from_slice(itoa_buf.format(hit.output_q_start).as_bytes())
+                line_buf.extend_from_slice(itoa_buf.format(hit.q_start + 1).as_bytes())
             }
             FieldKind::QEnd => {
-                line_buf.extend_from_slice(itoa_buf.format(hit.output_q_end).as_bytes())
+                line_buf.extend_from_slice(itoa_buf.format(hit.q_end + 1).as_bytes())
             }
             FieldKind::TargetId => line_buf.extend_from_slice(t_id.as_bytes()),
             FieldKind::TStart => {
-                line_buf.extend_from_slice(itoa_buf.format(hit.output_t_start).as_bytes())
+                line_buf.extend_from_slice(itoa_buf.format(hit.t_start + 1).as_bytes())
             }
             FieldKind::TEnd => {
-                line_buf.extend_from_slice(itoa_buf.format(hit.output_t_end).as_bytes())
+                line_buf.extend_from_slice(itoa_buf.format(hit.t_end + 1).as_bytes())
             }
             FieldKind::Strand => line_buf.push(char::from(hit.strand) as u8),
             FieldKind::Energy2dp => append_score_2dp(line_buf, itoa_buf, hit.energy.as_f64()),
             FieldKind::Pairing => {
                 if let Some(align) = alignment {
-                    align.write_pairing_string(line_buf);
+                    push_pairing_string(line_buf, align);
                 }
             }
             FieldKind::TargetSeq => {
                 if let Some(align) = alignment {
-                    align.write_target_seq(line_buf);
+                    push_alignment_target_seq(line_buf, align);
                 }
             }
             FieldKind::Flank5 => push_bases_as_rna(

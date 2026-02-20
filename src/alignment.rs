@@ -1,6 +1,5 @@
 use smallvec::SmallVec;
 use std::fmt;
-use std::ops::Range;
 
 use crate::types::Base;
 
@@ -127,23 +126,16 @@ impl fmt::Display for Pairing {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alignment {
     steps: SmallVec<[Pairing; 128]>,
-    seed_range: Range<usize>,
 }
 
 impl Alignment {
     pub fn new(left: &[Pairing], seed: &[Pairing], right: &[Pairing]) -> Self {
-        let left_len = left.len();
-        let seed_len = seed.len();
-
-        let mut steps = SmallVec::with_capacity(left_len + seed_len + right.len());
+        let mut steps = SmallVec::with_capacity(left.len() + seed.len() + right.len());
         steps.extend_from_slice(left);
         steps.extend_from_slice(seed);
         steps.extend_from_slice(right);
 
-        Self {
-            steps,
-            seed_range: left_len..(left_len + seed_len),
-        }
+        Self { steps }
     }
 
     #[inline]
@@ -151,55 +143,11 @@ impl Alignment {
         &self.steps
     }
 
-    #[inline]
-    fn write_mapped(&self, buf: &mut Vec<u8>, map: fn(Pairing) -> u8) {
-        for &p in self.steps.iter() {
-            buf.push(map(p));
-        }
-    }
-
-    pub fn write_query_seq(&self, buf: &mut Vec<u8>) {
-        self.write_mapped(buf, |p| p.query_char() as u8);
-    }
-
-    pub fn write_target_seq(&self, buf: &mut Vec<u8>) {
-        self.write_mapped(buf, |p| p.target_char() as u8);
-    }
-
-    pub fn write_alignment_line(&self, buf: &mut Vec<u8>) {
-        self.write_mapped(buf, |p| p.class().alignment_symbol() as u8);
-    }
-
-    pub fn write_pairing_string(&self, buf: &mut Vec<u8>) {
-        self.write_mapped(buf, |p| p.class().symbol() as u8);
-    }
-
-    pub fn seed(&self) -> &[Pairing] {
-        &self.steps[self.seed_range.start..self.seed_range.end]
-    }
-
-    pub fn left_extension(&self) -> &[Pairing] {
-        &self.steps[..self.seed_range.start]
-    }
-
     pub fn fingerprint(&self) -> String {
         self.steps.iter().map(|&p| p.class().symbol()).collect()
     }
 
-    pub fn target_sequence(&self) -> String {
-        self.steps.iter().map(|&p| p.target_char()).collect()
-    }
-
-    pub fn query_sequence(&self) -> String {
-        self.steps.iter().map(|&p| p.query_char()).collect()
-    }
-
-    pub fn from_c_output(
-        interaction: &str,
-        target_seq: &str,
-        seed_start: Option<usize>,
-        seed_end: Option<usize>,
-    ) -> Self {
+    pub fn from_c_output(interaction: &str, target_seq: &str) -> Self {
         let mut target_iter = target_seq.chars();
         let mut steps = Vec::with_capacity(interaction.len());
         for fp in interaction.chars() {
@@ -207,13 +155,6 @@ impl Alignment {
             steps.push(Pairing::from_fingerprint_char(fp, target));
         }
 
-        match (seed_start, seed_end) {
-            (Some(s), Some(e)) => {
-                let s = s.min(steps.len());
-                let e = e.min(steps.len()).max(s);
-                Self::new(&steps[..s], &steps[s..e], &steps[e..])
-            }
-            _ => Self::new(&[], &steps, &[]),
-        }
+        Self::new(&[], &steps, &[])
     }
 }

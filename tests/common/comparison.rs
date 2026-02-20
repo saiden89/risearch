@@ -398,12 +398,7 @@ fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
     a.query_idx == b.query_idx
         && a.target_idx == b.target_idx
         && a.strand == b.strand
-        && ranges_overlap(
-            a.output_t_start,
-            a.output_t_end,
-            b.output_t_start,
-            b.output_t_end,
-        )
+        && ranges_overlap(a.t_start, a.t_end, b.t_start, b.t_end)
         && ranges_overlap(a.q_start, a.q_end, b.q_start, b.q_end)
 }
 
@@ -494,8 +489,8 @@ impl<'a> ParityComparator<'a> {
                 a.q_start
                     .cmp(&b.q_start)
                     .then(a.q_end.cmp(&b.q_end))
-                    .then(a.output_t_start.cmp(&b.output_t_start))
-                    .then(a.output_t_end.cmp(&b.output_t_end))
+                    .then(a.t_start.cmp(&b.t_start))
+                    .then(a.t_end.cmp(&b.t_end))
             });
 
             let mut c_group: Vec<&SearchHit> = self
@@ -507,8 +502,8 @@ impl<'a> ParityComparator<'a> {
                 a.q_start
                     .cmp(&b.q_start)
                     .then(a.q_end.cmp(&b.q_end))
-                    .then(a.output_t_start.cmp(&b.output_t_start))
-                    .then(a.output_t_end.cmp(&b.output_t_end))
+                    .then(a.t_start.cmp(&b.t_start))
+                    .then(a.t_end.cmp(&b.t_end))
             });
 
             // Pass 1: Remove exact matches (same coords, same energy, same fingerprint)
@@ -647,12 +642,10 @@ mod tests {
             q_end,
             t_start,
             t_end,
-            output_q_start: q_start, // Test uses same coords for internal/output
-            output_q_end: q_end,
-            output_t_start: t_start,
-            output_t_end: t_end,
             strand: strand_enum,
             energy: energy_val,
+            seed_start: None,
+            seed_end: None,
             alignment: Some(alignment),
             flank_5: Sequence::from(Vec::new()),
             flank_3: Sequence::from(Vec::new()),

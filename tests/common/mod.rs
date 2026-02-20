@@ -97,8 +97,8 @@ pub(crate) fn parse_output(
             .cmp(&(b.query_idx, b.target_idx))
             .then(a.q_start.cmp(&b.q_start))
             .then(a.q_end.cmp(&b.q_end))
-            .then(a.output_t_start.cmp(&b.output_t_start))
-            .then(a.output_t_end.cmp(&b.output_t_end))
+            .then(a.t_start.cmp(&b.t_start))
+            .then(a.t_end.cmp(&b.t_end))
     });
     hits.dedup_by(|a, b| {
         a.coords_match(b) && (a.energy.as_f64() - b.energy.as_f64()).abs() < 0.001
