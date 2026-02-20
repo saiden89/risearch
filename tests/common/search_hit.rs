@@ -86,13 +86,13 @@ impl SearchHitExt for SearchHit {
 
     fn fmt_coords(&self) -> String {
         format!(
-            "q=[{},{}] t=[{},{}] S={} E={}",
+            "q=[{},{}] t=[{},{}] S={} E={:.2}",
             self.q_start + 1,
             self.q_end + 1,
             self.t_start + 1,
             self.t_end + 1,
             self.strand,
-            self.energy
+            self.energy.as_f64()
         )
     }
 }

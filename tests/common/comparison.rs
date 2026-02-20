@@ -156,9 +156,9 @@ impl ParityResult {
         for matched in &self.rust_better {
             let key = (matched.rust.query_idx, matched.rust.target_idx);
             let label = format!(
-                "RUST-BETTER: {} vs C E={}",
+                "RUST-BETTER: {} vs C E={:.2}",
                 matched.rust.fmt_coords(),
-                matched.c.energy
+                matched.c.energy.as_f64()
             );
             let table = render_table(ParityKind::Mismatch {
                 rust: &matched.rust,
@@ -174,9 +174,9 @@ impl ParityResult {
         for matched in &self.rust_worse {
             let key = (matched.rust.query_idx, matched.rust.target_idx);
             let label = format!(
-                "✗ RUST-WORSE: {} vs C E={}",
+                "✗ RUST-WORSE: {} vs C E={:.2}",
                 matched.rust.fmt_coords(),
-                matched.c.energy
+                matched.c.energy.as_f64()
             );
             let table = render_table(ParityKind::Mismatch {
                 rust: &matched.rust,

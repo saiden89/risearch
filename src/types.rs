@@ -182,33 +182,9 @@ pub const BASE_COUNT: usize = 6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct QueryId(pub u32);
 
-impl From<u32> for QueryId {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<QueryId> for u32 {
-    fn from(value: QueryId) -> Self {
-        value.0
-    }
-}
-
 /// Index into target registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct TargetId(pub u32);
-
-impl From<u32> for TargetId {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<TargetId> for u32 {
-    fn from(value: TargetId) -> Self {
-        value.0
-    }
-}
 
 /// Seed length (always positive by construction).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
