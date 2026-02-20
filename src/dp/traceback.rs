@@ -2,7 +2,7 @@ use log::trace;
 use smallvec::SmallVec;
 
 use super::{DpGrid, DpView, MIN_SCORE};
-use crate::alignment::Pairing;
+use crate::alignment::PairClass;
 use crate::dsm::{DsmModel, DSM_FLAT_SIZE};
 use crate::types::Base;
 
@@ -20,10 +20,10 @@ fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
     pred > MIN_SCORE && val == pred + energy
 }
 
-/// Reconstruct alignment from score-only DP matrices, emitting `Pairing` directly.
+/// Reconstruct alignment from score-only DP matrices, emitting `PairClass` path directly.
 ///
 /// Walks backward from (best_i, best_j) comparing scores to determine transitions.
-/// Uses the `DpView` to access sequence bases and convert to `Pairing` in-place,
+/// Uses the `DpView` to access sequence bases and classify each step in-place,
 /// eliminating the need for a separate alignment reconstruction pass.
 #[cfg_attr(feature = "prof", inline(never))]
 pub(super) fn traceback<M: DsmModel>(
@@ -32,7 +32,7 @@ pub(super) fn traceback<M: DsmModel>(
     dsm_adjusted: &[i32; DSM_FLAT_SIZE],
     best_i: usize,
     best_j: usize,
-    out: &mut SmallVec<[Pairing; 64]>,
+    out: &mut SmallVec<[PairClass; 64]>,
 ) {
     let (mut i, mut j) = (best_i, best_j);
     let mut state = State::Match;
@@ -42,7 +42,7 @@ pub(super) fn traceback<M: DsmModel>(
             State::Match if i > 0 && j > 0 => {
                 let q_base = Base::from_idx(view.q(i));
                 let t_base = Base::from_idx(view.t(j));
-                out.push(Pairing::from_bases(q_base, t_base));
+                out.push(PairClass::from_bases(q_base, t_base));
 
                 let c = grid.get(i, j);
                 let m_val = c.m;
@@ -79,8 +79,7 @@ pub(super) fn traceback<M: DsmModel>(
                 }
             }
             State::GapQ if i > 0 => {
-                let q_base = Base::from_idx(view.q(i));
-                out.push(Pairing::query_bulge(q_base));
+                out.push(PairClass::QueryBulge);
 
                 let c = grid.get(i, j);
                 let bq_val = c.bq;
@@ -113,8 +112,7 @@ pub(super) fn traceback<M: DsmModel>(
                 }
             }
             State::GapT if j > 0 => {
-                let t_base = Base::from_idx(view.t(j));
-                out.push(Pairing::target_bulge(t_base));
+                out.push(PairClass::TargetBulge);
 
                 let c = grid.get(i, j);
                 let bt_val = c.bt;

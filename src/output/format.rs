@@ -1,10 +1,11 @@
 use std::io::Write;
 
-use crate::alignment::{Alignment, Pairing};
+use crate::alignment::{Alignment, PairClass};
 use crate::config::OutputFormat;
 use crate::registry::{QueryRegistry, TargetRegistry};
 use crate::search::SearchHit;
 use crate::seq::utils::push_bases_as_rna;
+use crate::types::Base;
 
 /// Reusable buffers for hit formatting (avoids per-hit allocation).
 pub struct OutputBuffers {
@@ -130,30 +131,87 @@ fn format_spec(format: OutputFormat) -> FormatSpec {
 }
 
 #[inline]
-fn push_alignment_mapped(buf: &mut Vec<u8>, alignment: &Alignment, map: fn(Pairing) -> u8) {
+fn push_alignment_mapped(buf: &mut Vec<u8>, alignment: &Alignment, map: fn(PairClass) -> u8) {
     for &p in alignment.steps() {
         buf.push(map(p));
     }
 }
 
 #[inline]
-fn push_alignment_query_seq(buf: &mut Vec<u8>, alignment: &Alignment) {
-    push_alignment_mapped(buf, alignment, |p| p.query_char() as u8);
+fn push_alignment_query_seq(buf: &mut Vec<u8>, alignment: &Alignment, q_bases: &[Base]) {
+    let mut q_idx = 0usize;
+    for &step in alignment.steps() {
+        if step.consumes_query() {
+            let b = q_bases.get(q_idx).copied().unwrap_or(Base::Gap);
+            buf.push(b.to_byte());
+            q_idx += 1;
+        } else {
+            buf.push(Base::Gap.to_byte());
+        }
+    }
 }
 
 #[inline]
-fn push_alignment_target_seq(buf: &mut Vec<u8>, alignment: &Alignment) {
-    push_alignment_mapped(buf, alignment, |p| p.target_char() as u8);
+fn push_alignment_target_seq(buf: &mut Vec<u8>, alignment: &Alignment, t_bases: &[Base]) {
+    let mut t_idx = 0usize;
+    for &step in alignment.steps() {
+        if step.consumes_target() {
+            let b = t_bases.get(t_idx).copied().unwrap_or(Base::Gap);
+            buf.push(b.to_byte());
+            t_idx += 1;
+        } else {
+            buf.push(Base::Gap.to_byte());
+        }
+    }
 }
 
 #[inline]
 fn push_alignment_line(buf: &mut Vec<u8>, alignment: &Alignment) {
-    push_alignment_mapped(buf, alignment, |p| p.class().alignment_symbol() as u8);
+    push_alignment_mapped(buf, alignment, |p| p.alignment_symbol() as u8);
 }
 
 #[inline]
 fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
-    push_alignment_mapped(buf, alignment, |p| p.class().symbol() as u8);
+    push_alignment_mapped(buf, alignment, |p| p.symbol() as u8);
+}
+
+fn hit_query_bases<'a>(hit: &SearchHit, q_seq: &'a [Base]) -> &'a [Base] {
+    let start = hit.q_start.min(q_seq.len());
+    let end_excl = hit.q_end.saturating_add(1).min(q_seq.len());
+    if end_excl < start {
+        &q_seq[0..0]
+    } else {
+        &q_seq[start..end_excl]
+    }
+}
+
+fn hit_target_bases<'a>(hit: &SearchHit, t_fwd: &'a [Base], t_rc: &'a [Base]) -> &'a [Base] {
+    match hit.strand {
+        crate::types::Strand::Forward => {
+            let start = hit.t_start.min(t_fwd.len());
+            let end_excl = hit.t_end.saturating_add(1).min(t_fwd.len());
+            if end_excl < start {
+                &t_fwd[0..0]
+            } else {
+                &t_fwd[start..end_excl]
+            }
+        }
+        crate::types::Strand::Reverse => {
+            let len = t_fwd.len();
+            if len == 0 {
+                return &t_rc[0..0];
+            }
+            let rc_start = len.saturating_sub(hit.t_end.saturating_add(1));
+            let rc_end_incl = len.saturating_sub(hit.t_start.saturating_add(1));
+            let start = rc_start.min(t_rc.len());
+            let end_excl = rc_end_incl.saturating_add(1).min(t_rc.len());
+            if end_excl < start {
+                &t_rc[0..0]
+            } else {
+                &t_rc[start..end_excl]
+            }
+        }
+    }
 }
 
 fn build_line(
@@ -162,6 +220,9 @@ fn build_line(
     hit: &SearchHit,
     q_id: &str,
     t_id: &str,
+    q_seq: &[Base],
+    t_fwd: &[Base],
+    t_rc: &[Base],
     format: OutputFormat,
 ) {
     let spec = format_spec(format);
@@ -183,11 +244,13 @@ fn build_line(
 
     if matches!(spec.prelude, PreludeKind::DetailedAlignment) {
         if let Some(align) = alignment {
-            push_alignment_query_seq(line_buf, align);
+            let q_bases = hit_query_bases(hit, q_seq);
+            let t_bases = hit_target_bases(hit, t_fwd, t_rc);
+            push_alignment_query_seq(line_buf, align, q_bases);
             line_buf.push(b'\n');
             push_alignment_line(line_buf, align);
             line_buf.push(b'\n');
-            push_alignment_target_seq(line_buf, align);
+            push_alignment_target_seq(line_buf, align, t_bases);
             line_buf.push(b'\n');
         }
     }
@@ -220,7 +283,8 @@ fn build_line(
             }
             FieldKind::TargetSeq => {
                 if let Some(align) = alignment {
-                    push_alignment_target_seq(line_buf, align);
+                    let t_bases = hit_target_bases(hit, t_fwd, t_rc);
+                    push_alignment_target_seq(line_buf, align, t_bases);
                 }
             }
             FieldKind::Flank5 => push_bases_as_rna(
@@ -249,7 +313,13 @@ pub fn write_hit<W: Write + ?Sized>(
 ) -> std::io::Result<()> {
     let q_name = query_registry.get_name(hit.query_idx);
     let t_name = target_registry.get_name(hit.target_idx);
-    write_hit_names(bufs, hit, format, writer, q_name, t_name)
+    let q_seq = query_registry.get(hit.query_idx).sequence();
+    let t_idx = hit.target_idx as usize;
+    let t_fwd = target_registry.get_sequence(t_idx);
+    let t_rc = target_registry.get_sequence_rc(t_idx);
+    write_hit_names(
+        bufs, hit, format, writer, q_name, t_name, q_seq, t_fwd, t_rc,
+    )
 }
 
 /// Write a hit with explicit query/target names.
@@ -260,6 +330,9 @@ pub fn write_hit_names<W: Write + ?Sized>(
     writer: &mut W,
     query_name: &str,
     target_name: &str,
+    q_seq: &[Base],
+    t_fwd: &[Base],
+    t_rc: &[Base],
 ) -> std::io::Result<()> {
     bufs.line.clear();
     build_line(
@@ -268,6 +341,9 @@ pub fn write_hit_names<W: Write + ?Sized>(
         hit,
         query_name,
         target_name,
+        q_seq,
+        t_fwd,
+        t_rc,
         format,
     );
     writer.write_all(&bufs.line)

@@ -87,16 +87,6 @@ impl RustRunner<Indexed> {
         let query_registry =
             risearch::QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let hits = risearch::search::run_search(&query_registry, index, args).expect("search");
-
-        // Normalize to 1-based coordinates to match C output format for comparison
-        let hits = hits
-            .into_iter()
-            .map(|mut h| {
-                h.q_start += 1;
-                h.q_end += 1;
-                h
-            })
-            .collect();
         (hits, query_registry)
     }
 
@@ -147,7 +137,11 @@ impl ParityRunner {
         &self,
         query: &Path,
         args: &[&str],
-    ) -> (Vec<risearch::SearchHit>, Vec<risearch::SearchHit>) {
+    ) -> (
+        Vec<risearch::SearchHit>,
+        Vec<risearch::SearchHit>,
+        risearch::QueryRegistry,
+    ) {
         let search_args = parse_search_args(args);
         let (rust_hits, query_registry) = self.rust.search(query, &search_args);
 
@@ -157,12 +151,12 @@ impl ParityRunner {
         let c_out = self.c.search(query, &c_args_ref);
         let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.index_file);
 
-        (rust_hits, c_hits)
+        (rust_hits, c_hits, query_registry)
     }
 
     /// Run comparison and assert parity passes.
     pub(crate) fn assert_pass(&self, query: &Path, test_name: &str, args: &[&str]) {
-        let (rust_recs, c_recs) = self.compare(query, args);
+        let (rust_recs, c_recs, query_registry) = self.compare(query, args);
 
         let result = ParityComparator::new(&rust_recs, &c_recs).compare();
 
@@ -178,7 +172,11 @@ impl ParityRunner {
         );
 
         // Detailed debug logging (all hit types with tables)
-        result.log_details(test_name);
+        result.log_details_with_context(
+            test_name,
+            Some(&query_registry),
+            Some(&self.rust.state.index_file),
+        );
 
         if !result.is_pass(*TEST_PARITY_MODE) {
             panic!(
