@@ -1,4 +1,4 @@
-use crate::alignment::Pairing;
+use crate::alignment::PairClass;
 use crate::dsm::{build_penalty_adjusted_flat, dsm_flat_idx, DsmModel, DSM_FLAT_SIZE};
 use crate::types::Base;
 use log::trace;
@@ -375,7 +375,7 @@ pub struct ExtendResult<'a, M: DsmModel> {
 impl<M: DsmModel> ExtendResult<'_, M> {
     /// Run traceback to reconstruct alignment as Pairings.
     /// Only call when alignment output is needed (skip for Minimal format).
-    pub fn traceback(&self, view: &DpView<'_, M>) -> SmallVec<[Pairing; 64]> {
+    pub fn traceback(&self, view: &DpView<'_, M>) -> SmallVec<[PairClass; 64]> {
         let mut out = SmallVec::new();
         traceback::<M>(
             view,

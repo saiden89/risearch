@@ -69,15 +69,11 @@ impl SearchHitExt for SearchHit {
     }
 
     fn target_seq(&self) -> Option<String> {
-        self.alignment
-            .as_ref()
-            .map(|a| a.steps().iter().map(|&p| p.target_char()).collect())
+        None
     }
 
     fn query_seq(&self) -> Option<String> {
-        self.alignment
-            .as_ref()
-            .map(|a| a.steps().iter().map(|&p| p.query_char()).collect())
+        None
     }
 
     fn seed_start(&self) -> Option<usize> {
