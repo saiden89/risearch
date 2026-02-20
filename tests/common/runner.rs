@@ -24,6 +24,7 @@ struct Indexed {
     index_path: PathBuf,
     #[allow(dead_code)]
     index_file: risearch::TargetRegistry,
+    target_store: risearch::TargetStore,
 }
 
 // =============================================================================
@@ -65,12 +66,14 @@ impl RustRunner<NoIndex> {
             risearch::TargetRegistry::from_fasta(&self.target_path).expect("build index");
         index_file.save(&index_path).expect("save index");
         let index_file = risearch::TargetRegistry::load(&index_path).expect("load index");
+        let target_store = risearch::TargetStore::open(&index_path).expect("open target store");
 
         RustRunner {
             target_path: self.target_path,
             state: Indexed {
                 index_path,
                 index_file,
+                target_store,
             },
         }
     }
@@ -83,10 +86,52 @@ impl RustRunner<Indexed> {
         query_path: &Path,
         args: &risearch::config::SearchArgs,
     ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
-        let index = &self.state.index_file;
         let query_registry =
             risearch::QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
-        let hits = risearch::search::run_search(&query_registry, index, args).expect("search");
+        let mut search_args = args.clone();
+        search_args.output.format = risearch::config::OutputFormat::Detailed;
+
+        let mut rust_out = Vec::with_capacity(64 * 1024);
+        let mut fmt_bufs = risearch::output::OutputBuffers::new();
+        let format = search_args.output.format;
+        let mut target_cache: Option<(u32, risearch::index::store::TargetView<'_>)> = None;
+        risearch::search::run_search_streaming(
+            &query_registry,
+            &self.state.target_store,
+            &search_args,
+            |hit| -> anyhow::Result<()> {
+                if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
+                    let view = self
+                        .state
+                        .target_store
+                        .target_view(hit.target_idx as usize)?;
+                    target_cache = Some((hit.target_idx, view));
+                }
+                let target = &target_cache
+                    .as_ref()
+                    .expect("target cache must be populated")
+                    .1;
+                let q_name = query_registry.get_name(hit.query_idx);
+                let q_seq = query_registry.get(hit.query_idx).sequence();
+                let t_fwd = &target.combined_seq[..target.seq_len];
+                let t_rc = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
+                risearch::output::write_hit_names(
+                    &mut fmt_bufs,
+                    &hit,
+                    format,
+                    &mut rust_out,
+                    q_name,
+                    target.name,
+                    q_seq,
+                    t_fwd,
+                    t_rc,
+                )?;
+                Ok(())
+            },
+        )
+        .expect("search");
+        let rust_out = String::from_utf8(rust_out).expect("rust output utf8");
+        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.index_file);
         (hits, query_registry)
     }
 

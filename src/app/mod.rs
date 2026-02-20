@@ -63,9 +63,58 @@ fn cmd_search(
 
     // Open output with compression
     let mut writer = output::open_output(Some(output_path), &opts.output)?;
+    let mut out_buf = Vec::with_capacity(64 * 1024);
+    let mut fmt_bufs = output::OutputBuffers::new();
+    let format = opts.output.format;
+    let mut target_cache: Option<(u32, risearch::index::store::TargetView<'_>)> = None;
 
     debug!("Starting search...");
-    let hits = search::run_search_streaming_store(&queries, &targets, &opts, &mut writer)?;
+    let hits = search::run_search_streaming(&queries, &targets, &opts, |hit| -> Result<()> {
+        if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
+            let view = targets
+                .target_view(hit.target_idx as usize)
+                .with_context(|| format!("Failed to load target #{}", hit.target_idx))?;
+            target_cache = Some((hit.target_idx, view));
+        }
+
+        let target = &target_cache
+            .as_ref()
+            .expect("target cache must be populated")
+            .1;
+        let q_name = queries.get_name(hit.query_idx);
+        let q_seq = queries.get(hit.query_idx).sequence();
+        let t_fwd = &target.combined_seq[..target.seq_len];
+        let t_rc = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
+
+        output::write_hit_names(
+            &mut fmt_bufs,
+            &hit,
+            format,
+            &mut out_buf,
+            q_name,
+            target.name,
+            q_seq,
+            t_fwd,
+            t_rc,
+        )
+        .context("Failed to format output hit")?;
+
+        if out_buf.len() >= 64 * 1024 {
+            writer
+                .write_all(&out_buf)
+                .context("Failed to write output chunk")?;
+            out_buf.clear();
+        }
+
+        Ok(())
+    })?;
+
+    if !out_buf.is_empty() {
+        writer
+            .write_all(&out_buf)
+            .context("Failed to write output chunk")?;
+        out_buf.clear();
+    }
     writer.flush().context("Failed to flush output")?;
 
     info!("Done: {} hits", hits);
