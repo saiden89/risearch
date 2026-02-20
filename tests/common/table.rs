@@ -5,8 +5,7 @@
 
 use crate::common::search_hit::SearchHitExt;
 use risearch::seq::bases_to_rna_string;
-use risearch::types::{Base, Strand};
-use risearch::{QueryRegistry, SearchHit, TargetRegistry};
+use risearch::SearchHit;
 use tabled::{builder::Builder, settings::Style, Table, Tabled};
 
 // =============================================================================
@@ -247,14 +246,10 @@ impl ParsedInteraction {
     }
 
     /// Parse target sequence using reference parts for alignment.
-    fn from_hit_target(
-        hit: &SearchHit,
-        ref_parts: &ParsedInteraction,
-        target_registry: Option<&TargetRegistry>,
-    ) -> Self {
-        let chars: Vec<char> = target_registry
-            .and_then(|tr| aligned_target_track(hit, tr))
-            .unwrap_or_default()
+    fn from_hit_target(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
+        let chars: Vec<char> = hit
+            .target_seq()
+            .expect("hit missing alignment for target_seq")
             .chars()
             .collect();
 
@@ -275,14 +270,10 @@ impl ParsedInteraction {
     }
 
     /// Parse query sequence using reference parts for alignment.
-    fn from_hit_query(
-        hit: &SearchHit,
-        ref_parts: &ParsedInteraction,
-        query_registry: Option<&QueryRegistry>,
-    ) -> Self {
-        let chars: Vec<char> = query_registry
-            .and_then(|qr| aligned_query_track(hit, qr))
-            .unwrap_or_default()
+    fn from_hit_query(hit: &SearchHit, ref_parts: &ParsedInteraction) -> Self {
+        let chars: Vec<char> = hit
+            .query_seq()
+            .expect("hit missing alignment for query_seq")
             .chars()
             .collect();
 
@@ -303,95 +294,6 @@ impl ParsedInteraction {
     }
 }
 
-fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'a [Base] {
-    let q_seq = query_registry.get(hit.query_idx).sequence();
-    let seq_len = q_seq.len();
-    let consumed = hit
-        .alignment
-        .as_ref()
-        .map(|a| a.steps().iter().filter(|s| s.consumes_query()).count())
-        .unwrap_or(0);
-    if consumed == 0 || seq_len == 0 {
-        return &q_seq[0..0];
-    }
-    let candidates = [hit.q_start, hit.q_start.saturating_sub(1)];
-    let (start, _) = candidates
-        .iter()
-        .copied()
-        .map(|c| c.min(seq_len))
-        .map(|start| {
-            let expected_end = start.saturating_add(consumed.saturating_sub(1));
-            let score = expected_end.abs_diff(hit.q_end)
-                + expected_end.saturating_add(1).abs_diff(hit.q_end);
-            (start, score)
-        })
-        .min_by_key(|(_, score)| *score)
-        .unwrap_or((0, usize::MAX));
-    let end_excl = start.saturating_add(consumed).min(seq_len);
-    &q_seq[start..end_excl]
-}
-
-fn hit_target_bases<'a>(hit: &SearchHit, target_registry: &'a TargetRegistry) -> &'a [Base] {
-    let t_idx = hit.target_idx as usize;
-    let t_fwd = target_registry.get_sequence(t_idx);
-    let t_rc = target_registry.get_sequence_rc(t_idx);
-    match hit.strand {
-        Strand::Forward => {
-            let start = hit.t_start.min(t_fwd.len());
-            let end_excl = hit.t_end.saturating_add(1).min(t_fwd.len());
-            if end_excl < start {
-                &t_fwd[0..0]
-            } else {
-                &t_fwd[start..end_excl]
-            }
-        }
-        Strand::Reverse => {
-            let len = t_fwd.len();
-            if len == 0 {
-                return &t_rc[0..0];
-            }
-            let rc_start = len.saturating_sub(hit.t_end.saturating_add(1));
-            let rc_end_incl = len.saturating_sub(hit.t_start.saturating_add(1));
-            let start = rc_start.min(t_rc.len());
-            let end_excl = rc_end_incl.saturating_add(1).min(t_rc.len());
-            if end_excl < start {
-                &t_rc[0..0]
-            } else {
-                &t_rc[start..end_excl]
-            }
-        }
-    }
-}
-
-fn build_track<F>(hit: &SearchHit, bases: &[Base], consumes: F) -> Option<String>
-where
-    F: Fn(risearch::PairClass) -> bool,
-{
-    let alignment = hit.alignment.as_ref()?;
-    let mut idx = 0usize;
-    let mut out = String::with_capacity(alignment.steps().len());
-    for &step in alignment.steps() {
-        if consumes(step) {
-            let b = bases.get(idx).copied().unwrap_or(Base::Gap);
-            out.push(b.to_byte() as char);
-            idx += 1;
-        } else {
-            out.push(Base::Gap.to_byte() as char);
-        }
-    }
-    Some(out)
-}
-
-fn aligned_query_track(hit: &SearchHit, query_registry: &QueryRegistry) -> Option<String> {
-    let q_bases = hit_query_bases(hit, query_registry);
-    build_track(hit, q_bases, |s| s.consumes_query())
-}
-
-fn aligned_target_track(hit: &SearchHit, target_registry: &TargetRegistry) -> Option<String> {
-    let t_bases = hit_target_bases(hit, target_registry);
-    build_track(hit, t_bases, |s| s.consumes_target())
-}
-
 // =============================================================================
 // PARITY TABLE
 // =============================================================================
@@ -400,8 +302,6 @@ fn aligned_target_track(hit: &SearchHit, target_registry: &TargetRegistry) -> Op
 pub(crate) struct ParityTable<'a> {
     pub(crate) kind: ParityKind<'a>,
     pub(crate) config: TableConfig,
-    pub(crate) query_registry: Option<&'a QueryRegistry>,
-    pub(crate) target_registry: Option<&'a TargetRegistry>,
 }
 
 impl<'a> std::fmt::Display for ParityTable<'a> {
@@ -450,16 +350,16 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
         match self.kind {
             ParityKind::RustOnly(r) => {
                 let p = ParsedInteraction::from_hit(r);
-                let p_tgt = ParsedInteraction::from_hit_target(r, &p, self.target_registry);
-                let p_qry = ParsedInteraction::from_hit_query(r, &p, self.query_registry);
+                let p_tgt = ParsedInteraction::from_hit_target(r, &p);
+                let p_qry = ParsedInteraction::from_hit_query(r, &p);
                 add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
                 add_row(&mut builder, RowLabel::SingleQuery, &p_qry);
                 add_row(&mut builder, RowLabel::SingleFP, &p);
             }
             ParityKind::COnly(c) => {
                 let p = ParsedInteraction::from_hit(c);
-                let p_tgt = ParsedInteraction::from_hit_target(c, &p, self.target_registry);
-                let p_qry = ParsedInteraction::from_hit_query(c, &p, self.query_registry);
+                let p_tgt = ParsedInteraction::from_hit_target(c, &p);
+                let p_qry = ParsedInteraction::from_hit_query(c, &p);
                 add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
                 add_row(&mut builder, RowLabel::SingleQuery, &p_qry);
                 add_row(&mut builder, RowLabel::SingleFP, &p);
@@ -480,11 +380,11 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
                     ctx_3: "".into(),
                 };
 
-                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c, self.target_registry);
+                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c);
                 // Use Rust query for C since C output lacks query seq but they're same hit
-                let p_c_qry = ParsedInteraction::from_hit_query(r, &p_c, self.query_registry);
-                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r, self.target_registry);
-                let p_r_qry = ParsedInteraction::from_hit_query(r, &p_r, self.query_registry);
+                let p_c_qry = ParsedInteraction::from_hit_query(r, &p_c);
+                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r);
+                let p_r_qry = ParsedInteraction::from_hit_query(r, &p_r);
 
                 add_row(&mut builder, RowLabel::CompCTarget, &p_c_tgt);
                 add_row(&mut builder, RowLabel::CompCQuery, &p_c_qry);
@@ -497,11 +397,11 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
             ParityKind::CoveredBy { c, rust: r } => {
                 // Show C hit (missing), then separator, then overlapping Rust hit
                 let p_c = ParsedInteraction::from_hit(c);
-                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c, self.target_registry);
+                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c);
 
                 let p_r = ParsedInteraction::from_hit(r);
-                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r, self.target_registry);
-                let p_r_qry = ParsedInteraction::from_hit_query(r, &p_r, self.query_registry);
+                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r);
+                let p_r_qry = ParsedInteraction::from_hit_query(r, &p_r);
 
                 // C hit rows
                 add_row(&mut builder, RowLabel::CompCTarget, &p_c_tgt);

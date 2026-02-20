@@ -7,7 +7,7 @@ use log::{info, trace};
 use rayon::prelude::*;
 use smallvec::SmallVec;
 
-use crate::alignment::{Alignment, PairClass};
+use crate::alignment::{Alignment, Pairing};
 use crate::config::{ExtendConfig, Matrix, OutputFormat, SearchArgs};
 use crate::dp::{DpExtender, DpView};
 use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
@@ -235,9 +235,6 @@ fn stream_hits_store<M: DsmModel, W: std::io::Write>(
             let mut out_buf = std::mem::take(&mut state.out_buf);
             let mut fmt_bufs = std::mem::take(&mut state.fmt_bufs);
             let mut write_err: Option<std::io::Error> = None;
-            let q_seq = q.sequence();
-            let t_fwd = &target.combined_seq[..target.seq_len];
-            let t_rc = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
 
             process_query_one_target::<M, _>(
                 q_idx as u32,
@@ -260,9 +257,6 @@ fn stream_hits_store<M: DsmModel, W: std::io::Write>(
                         &mut out_buf,
                         q_name,
                         t_name,
-                        q_seq,
-                        t_fwd,
-                        t_rc,
                     ) {
                         write_err = Some(err);
                         return;
@@ -439,8 +433,8 @@ struct Extension {
     l_t: usize,
     r_q: usize,
     r_t: usize,
-    left_pairs: SmallVec<[PairClass; 64]>,
-    right_pairs: SmallVec<[PairClass; 64]>,
+    left_pairs: SmallVec<[Pairing; 64]>,
+    right_pairs: SmallVec<[Pairing; 64]>,
 }
 
 fn extend_seed<M: DsmModel>(
@@ -572,9 +566,9 @@ impl SearchHit {
 
         let alignment = if include_alignment {
             let t_match_end = seed.target_start + len - 1;
-            let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
+            let mut seed_pairs: SmallVec<[Pairing; 64]> = SmallVec::with_capacity(len);
             for i in 0..len {
-                seed_pairs.push(PairClass::from_bases(
+                seed_pairs.push(Pairing::from_bases(
                     q_seq[q_pos + i],
                     t_seq[t_match_end - i],
                 ));

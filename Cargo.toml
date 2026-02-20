@@ -43,10 +43,6 @@ harness = false
 name = "output"
 harness = false
 
-[[bench]]
-name = "seed_search"
-harness = false
-
 [profile.profiling]
 inherits = "release"
 debug = true

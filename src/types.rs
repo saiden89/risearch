@@ -169,6 +169,18 @@ impl Base {
     pub fn complement(self) -> Self {
         BASE_COMPLEMENT[self as usize]
     }
+
+    /// Get fingerprint character for this pair (P=Paired, W=Wobble, U=Unpaired)
+    #[inline]
+    pub fn pairing_class(self, other: Base) -> char {
+        match (self, other) {
+            (Base::A, Base::U) | (Base::U, Base::A) | (Base::G, Base::C) | (Base::C, Base::G) => {
+                'P'
+            }
+            (Base::G, Base::U) | (Base::U, Base::G) => 'W',
+            _ => 'U',
+        }
+    }
 }
 
 /// Number of nucleotide types (Gap, A, G, C, U, N)

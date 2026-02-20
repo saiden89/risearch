@@ -89,16 +89,6 @@ impl ParityResult {
 
     /// Log detailed comparison results for all hit types.
     pub(crate) fn log_details(&self, test_name: &str) {
-        self.log_details_with_context(test_name, None, None);
-    }
-
-    /// Log details with optional sequence context for richer table rendering.
-    pub(crate) fn log_details_with_context(
-        &self,
-        test_name: &str,
-        query_registry: Option<&risearch::QueryRegistry>,
-        target_registry: Option<&risearch::TargetRegistry>,
-    ) {
         use crate::common::table::{ParityKind, ParityTable, TableConfig};
         use std::collections::BTreeMap;
 
@@ -122,8 +112,6 @@ impl ParityResult {
             let table = ParityTable {
                 kind,
                 config: TableConfig::default(),
-                query_registry,
-                target_registry,
             };
             table.to_string()
         };
@@ -623,7 +611,7 @@ impl<'a> ParityComparator<'a> {
 mod tests {
     use super::*;
     use risearch::types::{Base, Energy, Strand};
-    use risearch::{Alignment, PairClass, Sequence};
+    use risearch::{Alignment, Pairing, Sequence};
 
     fn make_hit(
         q_start: usize,
@@ -642,7 +630,9 @@ mod tests {
 
         // Create a simple alignment with all Match pairings
         let len = q_end.saturating_sub(q_start).max(1);
-        let seed: Vec<PairClass> = (0..len).map(|_| PairClass::Match).collect();
+        let seed: Vec<Pairing> = (0..len)
+            .map(|_| Pairing::from_bases(Base::A, Base::U))
+            .collect();
         let alignment = Alignment::new(&[], &seed, &[]);
 
         SearchHit {

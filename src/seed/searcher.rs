@@ -74,7 +74,7 @@ pub struct SeedMatch {
     pub(crate) seed_len: usize,
 }
 
-/// Invariant context for the search (mirrors C's use of globals).
+/// Invariant context for the recursive search (mirrors C's use of globals).
 /// Passed by reference to avoid recomputing or chasing pointers each call.
 struct SearchCtx<'a> {
     q_sa: &'a [u32],
@@ -87,20 +87,6 @@ struct SearchCtx<'a> {
     min_prefix: usize,
     min_suffix: usize,
     allow_wobble: bool,
-}
-
-/// Compact stack frame for iterative DFS.
-/// 20 bytes vs 304-byte stack frame + 96 bytes of register spill in recursive version.
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct Frame {
-    ql: u32,
-    qr: u32,
-    sl: u32,
-    sr: u32,
-    depth: u8,
-    msm: u8,
-    mc: u8,
 }
 
 /// Parallel Suffix Array searcher
@@ -155,141 +141,113 @@ impl<'a> SeedSearcher<'a> {
             min_suffix: self.seed_config.mismatch.min_suffix_matches,
             allow_wobble: self.seed_config.allows_wobble(),
         };
-        search_iterative(
+        recurse(
             &ctx,
+            0,
             self.query_sa.len(),
+            0,
             self.target_comp_sa.len(),
+            0,
+            0,
+            0,
             results,
         );
     }
 }
 
-/// Iterative parallel SA search using explicit stack.
+/// Recursive parallel SA search (mirrors C's sa_parallel_match_neg).
 ///
-/// Replaces the recursive version to eliminate function-call overhead:
-/// each "call" is a 20-byte Frame push instead of a 304-byte stack frame
-/// with 12 callee-saved register spills.
-fn search_iterative(ctx: &SearchCtx, q_len: usize, t_len: usize, results: &mut Vec<SeedMatch>) {
-    let mut stack = Vec::with_capacity(512);
-    stack.push(Frame {
-        ql: 0,
-        qr: q_len as u32,
-        sl: 0,
-        sr: t_len as u32,
-        depth: 0,
-        msm: 0,
-        mc: 0,
-    });
+/// Parameters are flat integers to avoid struct construction overhead per call.
+/// Config is in `ctx` (passed by reference, like C uses globals).
+fn recurse(
+    ctx: &SearchCtx,
+    ql: usize,
+    qr: usize,
+    sl: usize,
+    sr: usize,
+    depth: usize,
+    msm: usize, // matches_since_mismatch
+    mc: usize,  // mismatch_count
+    results: &mut Vec<SeedMatch>,
+) {
+    // Record match if within length range and valid
+    if depth >= ctx.min_len
+        && depth <= ctx.max_len
+        && (mc == 0 || (mc <= ctx.max_mm && msm >= ctx.min_suffix && msm < depth))
+    {
+        results.push(SeedMatch {
+            query_interval: Interval::new(ql, qr),
+            target_interval: Interval::new(sl, sr),
+            seed_len: depth,
+        });
+    }
 
-    while let Some(f) = stack.pop() {
-        let ql = f.ql as usize;
-        let qr = f.qr as usize;
-        let sl = f.sl as usize;
-        let sr = f.sr as usize;
-        let depth = f.depth as usize;
-        let msm = f.msm as usize;
-        let mc = f.mc as usize;
+    if depth >= ctx.max_len {
+        return;
+    }
 
-        // Record match if within length range and valid
-        if depth >= ctx.min_len
-            && depth <= ctx.max_len
-            && (mc == 0 || (mc <= ctx.max_mm && msm >= ctx.min_suffix && msm < depth))
-        {
-            results.push(SeedMatch {
-                query_interval: Interval::new(ql, qr),
-                target_interval: Interval::new(sl, sr),
-                seed_len: depth,
-            });
+    // Prune: can't accumulate enough suffix matches
+    if mc > 0 && ctx.min_suffix > 0 {
+        let max_possible = msm + (ctx.max_len - depth);
+        if max_possible < ctx.min_suffix {
+            return;
         }
+    }
 
-        if depth >= ctx.max_len {
+    // Prune: no suffix long enough to reach min_len.
+    // Avoids expensive partition work on branches that can never produce seeds.
+    if depth < ctx.min_len
+        && (!has_suffix_len_at_least(ctx.q_sa, ctx.q_seq, ql, qr, ctx.min_len)
+            || !has_suffix_len_at_least(ctx.t_sa, ctx.t_seq, sl, sr, ctx.min_len))
+    {
+        return;
+    }
+
+    // Partition both SA intervals by base at current depth
+    let qb = partition_interval(ctx.q_sa, ctx.q_seq, ql, qr, depth);
+    let sb = partition_interval(ctx.t_sa, ctx.t_seq, sl, sr, depth);
+
+    if !qb.any_non_empty() || !sb.any_non_empty() {
+        return;
+    }
+
+    let d1 = depth + 1;
+
+    let can_mm = ctx.max_mm > 0
+        && mc < ctx.max_mm
+        && d1 > ctx.min_prefix
+        && msm < ctx.max_len
+        && ctx.max_len - d1 >= ctx.min_suffix;
+
+    // Iterate base pairs in [A, C, G, U] × [A, C, G, U] order.
+    // Canonical match: qi == si (same base = complementary pair)
+    // Wobble match: si == qi + 2 (A-G or C-U)
+    for qi in 0..4u32 {
+        let (q_lo, q_hi) = qb.ranges[qi as usize];
+        if q_lo >= q_hi {
             continue;
         }
 
-        // Prune: can't accumulate enough suffix matches
-        if mc > 0 && ctx.min_suffix > 0 {
-            let max_possible = msm + (ctx.max_len - depth);
-            if max_possible < ctx.min_suffix {
+        for si in 0..4u32 {
+            let (s_lo, s_hi) = sb.ranges[si as usize];
+            if s_lo >= s_hi {
                 continue;
             }
-        }
 
-        // Prune: no suffix long enough to reach min_len
-        if depth < ctx.min_len
-            && (!has_suffix_len_at_least(ctx.q_sa, ctx.q_seq, ql, qr, ctx.min_len)
-                || !has_suffix_len_at_least(ctx.t_sa, ctx.t_seq, sl, sr, ctx.min_len))
-        {
-            continue;
-        }
-
-        // Partition both SA intervals by base at current depth
-        let qb = partition_interval(ctx.q_sa, ctx.q_seq, ql, qr, depth);
-        let sb = partition_interval(ctx.t_sa, ctx.t_seq, sl, sr, depth);
-
-        if !qb.any_non_empty() || !sb.any_non_empty() {
-            continue;
-        }
-
-        let d1 = (depth + 1) as u8;
-        let mc_u8 = mc as u8;
-        let msm_p1 = (msm + 1) as u8;
-        let mc_p1 = (mc + 1) as u8;
-
-        let can_mm = ctx.max_mm > 0
-            && mc < ctx.max_mm
-            && (depth + 1) > ctx.min_prefix
-            && msm < ctx.max_len
-            && ctx.max_len - (depth + 1) >= ctx.min_suffix;
-
-        // Push children in reverse order so forward-order is processed first (LIFO)
-        for qi in (0..4usize).rev() {
-            let (q_lo, q_hi) = qb.ranges[qi];
-            if q_lo >= q_hi {
-                continue;
-            }
-            let q_lo = q_lo as u32;
-            let q_hi = q_hi as u32;
-
-            for si in (0..4usize).rev() {
-                let (s_lo, s_hi) = sb.ranges[si];
-                if s_lo >= s_hi {
-                    continue;
-                }
-
-                if qi == si || (ctx.allow_wobble && si == qi + 2) {
-                    stack.push(Frame {
-                        ql: q_lo,
-                        qr: q_hi,
-                        sl: s_lo as u32,
-                        sr: s_hi as u32,
-                        depth: d1,
-                        msm: msm_p1,
-                        mc: mc_u8,
-                    });
-                } else if can_mm {
-                    stack.push(Frame {
-                        ql: q_lo,
-                        qr: q_hi,
-                        sl: s_lo as u32,
-                        sr: s_hi as u32,
-                        depth: d1,
-                        msm: 0,
-                        mc: mc_p1,
-                    });
-                }
+            if qi == si || (ctx.allow_wobble && si == qi + 2) {
+                recurse(ctx, q_lo, q_hi, s_lo, s_hi, d1, msm + 1, mc, results);
+            } else if can_mm {
+                recurse(ctx, q_lo, q_hi, s_lo, s_hi, d1, 0, mc + 1, results);
             }
         }
     }
 }
 
-/// Threshold below which linear scan beats 5 binary searches.
-/// At n=32: linear ≈ 32×104 = 3328 cycles vs binary ≈ 5×5×200 = 5000 cycles.
-const SCAN_THRESHOLD: usize = 32;
-
 /// Partition an SA interval by base at given offset.
 ///
-/// Uses linear scan for small intervals (sequential SA reads + fewer total
-/// memory accesses) and binary search for large intervals.
+/// Returns ranges for [A, C, G, U] in iteration order.
+/// Sentinel Gap bytes appended after each sequence ensure that short suffixes
+/// read Gap(0) < A at depth, naturally excluding them from all ACGU ranges.
 #[inline]
 fn partition_interval(
     sa: &[u32],
@@ -298,61 +256,11 @@ fn partition_interval(
     end: usize,
     offset: usize,
 ) -> BaseIntervals {
-    let n = end - start;
-    if n == 0 {
+    if start >= end {
         return BaseIntervals::default();
     }
 
-    if n <= SCAN_THRESHOLD {
-        return partition_scan(sa, seq, start, end, offset);
-    }
-
     partition_by_base(sa, seq, start, end, offset)
-}
-
-/// Linear scan partition for small SA intervals.
-///
-/// SA entries are sorted by suffix, so bases at `offset` appear in discriminant
-/// order: Gap(0) < A(1) < G(2) < C(3) < U(4) < N(5). We scan once and record
-/// the index where each new base first appears.
-#[inline]
-fn partition_scan(
-    sa: &[u32],
-    seq: &[Base],
-    start: usize,
-    end: usize,
-    offset: usize,
-) -> BaseIntervals {
-    let seq_ptr = seq.as_ptr();
-
-    // boundaries[b] = first index where base discriminant >= b+1
-    // Index 0 = first A, 1 = first G, 2 = first C, 3 = first U, 4 = first N
-    let mut boundaries = [end; 5];
-    let mut last_disc: u8 = 0;
-
-    for i in start..end {
-        // SAFETY: same sentinel guarantee as partition_by_base
-        let disc = unsafe { *seq_ptr.add(sa[i] as usize + offset) } as u8;
-        if disc != last_disc {
-            // Fill all boundary slots from last_disc+1 through disc
-            for b in (last_disc as usize)..disc as usize {
-                if boundaries[b] == end {
-                    boundaries[b] = i;
-                }
-            }
-            last_disc = disc;
-        }
-    }
-
-    let [a_start, g_start, c_start, u_start, n_start] = boundaries;
-    BaseIntervals {
-        ranges: [
-            (a_start, g_start), // A
-            (c_start, u_start), // C
-            (g_start, c_start), // G
-            (u_start, n_start), // U
-        ],
-    }
 }
 
 /// Check if any suffix in the SA interval has at least `min_len` real bases.

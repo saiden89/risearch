@@ -57,7 +57,7 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
     let q_end = interval.end;
     let min_len = query.min_seed_len();
     let seq_len = target.seq_len;
-
+ 
     let mut matches = Vec::with_capacity(1024);
 
     let searcher = SeedSearcher::new(
@@ -84,7 +84,9 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
                 continue;
             }
 
-            for &t_pos_i32 in &target.combined_sa[m.target_interval.start..m.target_interval.end] {
+            for &t_pos_i32 in
+                &target.combined_sa[m.target_interval.start..m.target_interval.end]
+            {
                 let t_pos = t_pos_i32 as usize;
 
                 // Determine strand from position in combined sequence.

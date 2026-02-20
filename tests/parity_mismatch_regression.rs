@@ -8,7 +8,8 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
-fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = workspace_root();
     let c_bin = root.join("legacy_c/RIsearch2/bin/risearch2.x");
     assert!(
