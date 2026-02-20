@@ -339,7 +339,7 @@ fn emit_seed_hit<M: DsmModel, F: FnMut(SearchHit)>(
         ctx.q_seq,
         t_seq,
         seed,
-        ext,
+        &ext,
         ctx.include_alignment,
         original_len,
     ));
@@ -561,28 +561,18 @@ impl SearchHit {
         q_seq: &[Base],
         t_seq: &[Base],
         seed: &SeedHit,
-        ext: Extension,
+        ext: &Extension,
         include_alignment: bool,
         original_len: usize,
     ) -> Self {
-        let Extension {
-            score,
-            l_q,
-            l_t,
-            r_q,
-            r_t,
-            left_pairs,
-            right_pairs,
-        } = ext;
-
         let q_pos = seed.query_pos;
         let t_start = seed.target_start;
         let len = seed.seed_len.get();
 
-        let final_q_start = q_pos.saturating_sub(l_q);
-        let final_q_end = (q_pos + len - 1) + r_q;
-        let final_t_start = t_start.saturating_sub(r_t);
-        let final_t_end = (t_start + len - 1) + l_t;
+        let final_q_start = q_pos.saturating_sub(ext.l_q);
+        let final_q_end = (q_pos + len - 1) + ext.r_q;
+        let final_t_start = t_start.saturating_sub(ext.r_t);
+        let final_t_end = (t_start + len - 1) + ext.l_t;
 
         let (out_t_start, out_t_end, strand) = match seed.strand {
             Strand::Reverse => {
@@ -596,7 +586,11 @@ impl SearchHit {
         let alignment = if include_alignment {
             let t_match_end = seed.target_start + len - 1;
             let seed_pairs = build_seed_pairs(q_seq, t_seq, q_pos, t_match_end, len);
-            Some(Alignment::new(&left_pairs, &seed_pairs, &right_pairs))
+            Some(Alignment::new(
+                &ext.left_pairs,
+                &seed_pairs,
+                &ext.right_pairs,
+            ))
         } else {
             None
         };
@@ -613,7 +607,7 @@ impl SearchHit {
             output_t_start: out_t_start,
             output_t_end: out_t_end,
             strand,
-            energy: score.into(),
+            energy: ext.score.into(),
             alignment,
             flank_5: Sequence::from(Vec::new()),
             flank_3: Sequence::from(Vec::new()),
