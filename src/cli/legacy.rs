@@ -217,18 +217,21 @@ pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -
                 raw
             );
         }
-        let suggestion = raw.parse::<CliSeedSpec>().ok().map(|cli_spec| match cli_spec.0 {
-            SeedSpec::LengthOnly(len) => format!("--seed-length {}", len),
-            SeedSpec::Interval { start, end } => {
-                format!("--seed-start {} --seed-end {}", start, end)
-            }
-            SeedSpec::IntervalWithLength { start, end, length } => {
-                format!(
-                    "--seed-start {} --seed-end {} --seed-length {}",
-                    start, end, length
-                )
-            }
-        });
+        let suggestion = raw
+            .parse::<CliSeedSpec>()
+            .ok()
+            .map(|cli_spec| match cli_spec.0 {
+                SeedSpec::LengthOnly(len) => format!("--seed-length {}", len),
+                SeedSpec::Interval { start, end } => {
+                    format!("--seed-start {} --seed-end {}", start, end)
+                }
+                SeedSpec::IntervalWithLength { start, end, length } => {
+                    format!(
+                        "--seed-start {} --seed-end {} --seed-length {}",
+                        start, end, length
+                    )
+                }
+            });
         if let Some(s) = suggestion {
             warn!("Legacy seed syntax '-s ...' is deprecated; use {}.", s);
         } else {

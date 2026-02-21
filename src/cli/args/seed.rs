@@ -217,7 +217,10 @@ impl From<SeedConfig> for config::SeedConfig {
     fn from(value: SeedConfig) -> Self {
         let legacy_seed: SeedSpec = value.seed_legacy.into();
         let legacy_mismatch: MismatchSpec = value.mismatch_legacy.into();
-        let seed = if value.seed_start.is_some() || value.seed_end.is_some() || value.seed_length.is_some() {
+        let seed = if value.seed_start.is_some()
+            || value.seed_end.is_some()
+            || value.seed_length.is_some()
+        {
             match (value.seed_start, value.seed_end) {
                 (Some(start), Some(end)) => {
                     if let Some(length) = value.seed_length {

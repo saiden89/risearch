@@ -180,13 +180,9 @@ where
             Strand::Reverse => t_reverse,
         };
 
-        let Some(hit) = build_hit_from_seed::<M>(
-            &mut state.extender,
-            state.dp_cfg,
-            &ctx,
-            &seed,
-            target_bases,
-        ) else {
+        let Some(hit) =
+            build_hit_from_seed::<M>(&mut state.extender, state.dp_cfg, &ctx, &seed, target_bases)
+        else {
             return;
         };
 
@@ -386,7 +382,11 @@ impl SearchHit {
                     target_bases[t_match_end - i],
                 ));
             }
-            Some(Alignment::new(&ext.left_pairs, &seed_pairs, &ext.right_pairs))
+            Some(Alignment::new(
+                &ext.left_pairs,
+                &seed_pairs,
+                &ext.right_pairs,
+            ))
         } else {
             None
         };

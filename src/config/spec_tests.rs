@@ -4,7 +4,9 @@ mod tests {
 
     #[test]
     fn test_length_only() {
-        let res = SeedSpec::LengthOnly(10).normalize(100).expect("should normalize");
+        let res = SeedSpec::LengthOnly(10)
+            .normalize(100)
+            .expect("should normalize");
         assert_eq!(res, (1, 100, 10));
     }
 

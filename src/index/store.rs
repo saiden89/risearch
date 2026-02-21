@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use memmap2::Mmap;
 use needletail::parse_fastx_file;
+use rayon::prelude::*;
 use rkyv::rancor::Error as RkyvError;
+use rkyv::util::AlignedVec;
 
 use crate::index::io::{validate_output_path, validate_readable_file};
 use crate::index::sa::SuffixArray;
@@ -54,6 +56,17 @@ pub struct TargetView<'a> {
     pub seq_len: usize,
 }
 
+struct PendingTargetRecord {
+    id: String,
+    seq: Vec<u8>,
+}
+
+struct BuiltTargetRecord {
+    id: String,
+    seq_len: u32,
+    payload: AlignedVec,
+}
+
 impl TargetStore {
     pub fn build_from_fasta(input: &Path, output: &Path) -> Result<()> {
         validate_readable_file(input)?;
@@ -78,6 +91,8 @@ impl TargetStore {
         let mut target_count = 0u32;
         let mut cursor = FILE_HEADER_BYTES;
         let mut seen = HashSet::new();
+        let batch_size = rayon::current_num_threads().max(1) * 4;
+        let mut pending = Vec::with_capacity(batch_size);
 
         let mut reader = parse_fastx_file(input)
             .with_context(|| format!("Failed to open FASTA/FASTQ file: {}", input.display()))?;
@@ -98,107 +113,17 @@ impl TargetStore {
                 bail!("Duplicate FASTA record id '{}' in {}", id, input.display());
             }
 
-            let (sequence, stats) = Sequence::normalize(&id, &rec.seq())
-                .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
-            if sequence.is_empty() {
-                log::warn!(
-                    "Skipping empty sequence after normalization: '{}' (removed_gaps={}, converted_to_n={})",
-                    id,
-                    stats.removed_gaps,
-                    stats.converted_to_n
-                );
-                continue;
+            pending.push(PendingTargetRecord {
+                id,
+                seq: rec.seq().as_ref().to_vec(),
+            });
+
+            if pending.len() >= batch_size {
+                flush_pending_batch(&mut pending, &mut writer, &mut cursor, &mut target_count)?;
             }
-
-            if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
-                log::debug!(
-                    "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
-                    id,
-                    stats.removed_gaps,
-                    stats.converted_to_n
-                );
-            }
-
-            let sequence_rc = sequence.reverse_complement();
-
-            // Build combined sequence: fwd ++ [Gap] ++ rc
-            let seq_len = sequence.len();
-            let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
-            combined_bases.extend_from_slice(&sequence);
-            combined_bases.push(Base::Gap);
-            combined_bases.extend_from_slice(&sequence_rc);
-            let combined_seq = Sequence::from(combined_bases);
-
-            if combined_seq.len() > u32::MAX as usize {
-                bail!(
-                    "Combined sequence '{}' too long for u32 suffix array ({} bases > {} max)",
-                    id,
-                    combined_seq.len(),
-                    u32::MAX
-                );
-            }
-
-            let combined_sa = SuffixArray::try_from(&combined_seq)
-                .with_context(|| format!("Failed to build combined SA for '{}'", id))?;
-
-            // Append sentinel Gap byte after SA construction.
-            // This ensures short suffixes read Gap(0) < A at depth,
-            // eliminating bounds-check validation in the search hot path.
-            let mut combined_seq_vec: Vec<Base> = combined_seq.iter().copied().collect();
-            combined_seq_vec.push(Base::Gap);
-
-            let chunk = TargetChunk {
-                combined_seq: combined_seq_vec,
-                combined_sa: combined_sa.into_inner(),
-                seq_len: seq_len as u32,
-            };
-
-            let payload = rkyv::to_bytes::<RkyvError>(&chunk)
-                .with_context(|| format!("Failed to archive target chunk '{}'", id))?;
-
-            let name_len =
-                u32::try_from(id.len()).context("Target id is too long for index header")?;
-            let seq_len = u32::try_from(sequence.len())
-                .context("Target sequence length is too large for index header")?;
-            let payload_len = u64::try_from(payload.len())
-                .context("Archived payload is too large for index header")?;
-
-            writer
-                .write_all(&name_len.to_le_bytes())
-                .context("Failed to write target name length")?;
-            writer
-                .write_all(&seq_len.to_le_bytes())
-                .context("Failed to write target sequence length")?;
-            writer
-                .write_all(&payload_len.to_le_bytes())
-                .context("Failed to write target payload length")?;
-            writer
-                .write_all(id.as_bytes())
-                .context("Failed to write target name bytes")?;
-
-            cursor = cursor
-                .checked_add(ENTRY_HEADER_BYTES)
-                .and_then(|v| v.checked_add(id.len()))
-                .ok_or_else(|| anyhow!("Index file cursor overflow while writing headers"))?;
-
-            let aligned_payload_offset = align_up(cursor, PAYLOAD_ALIGN);
-            let padding_len = aligned_payload_offset - cursor;
-            if padding_len > 0 {
-                writer
-                    .write_all(&[0u8; PAYLOAD_ALIGN][..padding_len])
-                    .context("Failed to write payload alignment padding")?;
-            }
-            writer
-                .write_all(payload.as_slice())
-                .context("Failed to write target payload bytes")?;
-            cursor = aligned_payload_offset
-                .checked_add(payload.len())
-                .ok_or_else(|| anyhow!("Index file cursor overflow while writing payload"))?;
-
-            target_count = target_count
-                .checked_add(1)
-                .ok_or_else(|| anyhow!("Target count exceeded u32::MAX"))?;
         }
+
+        flush_pending_batch(&mut pending, &mut writer, &mut cursor, &mut target_count)?;
 
         if target_count == 0 {
             bail!(
@@ -342,6 +267,150 @@ impl TargetStore {
     pub fn iter_meta(&self) -> impl Iterator<Item = (u32, &TargetMeta)> {
         self.targets.iter().enumerate().map(|(i, m)| (i as u32, m))
     }
+}
+
+fn flush_pending_batch(
+    pending: &mut Vec<PendingTargetRecord>,
+    writer: &mut BufWriter<File>,
+    cursor: &mut usize,
+    target_count: &mut u32,
+) -> Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let batch = std::mem::replace(pending, Vec::with_capacity(pending.capacity().max(1)));
+    let batch_results: Vec<Result<Option<BuiltTargetRecord>>> =
+        batch.into_par_iter().map(build_target_record).collect();
+
+    for record in batch_results {
+        if let Some(record) = record? {
+            write_target_entry(writer, cursor, record)?;
+            *target_count = target_count
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("Target count exceeded u32::MAX"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn build_target_record(record: PendingTargetRecord) -> Result<Option<BuiltTargetRecord>> {
+    let PendingTargetRecord { id, seq } = record;
+    let (sequence, stats) = Sequence::normalize(&id, &seq)
+        .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
+    if sequence.is_empty() {
+        log::warn!(
+            "Skipping empty sequence after normalization: '{}' (removed_gaps={}, converted_to_n={})",
+            id,
+            stats.removed_gaps,
+            stats.converted_to_n
+        );
+        return Ok(None);
+    }
+
+    if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
+        log::debug!(
+            "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
+            id,
+            stats.removed_gaps,
+            stats.converted_to_n
+        );
+    }
+
+    let sequence_rc = sequence.reverse_complement();
+
+    // Build combined sequence: fwd ++ [Gap] ++ rc
+    let seq_len = sequence.len();
+    let seq_len_u32 =
+        u32::try_from(seq_len).context("Target sequence length is too large for index header")?;
+    let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
+    combined_bases.extend_from_slice(&sequence);
+    combined_bases.push(Base::Gap);
+    combined_bases.extend_from_slice(&sequence_rc);
+    let combined_seq = Sequence::from(combined_bases);
+
+    if combined_seq.len() > u32::MAX as usize {
+        bail!(
+            "Combined sequence '{}' too long for u32 suffix array ({} bases > {} max)",
+            id,
+            combined_seq.len(),
+            u32::MAX
+        );
+    }
+
+    let combined_sa = SuffixArray::try_from(&combined_seq)
+        .with_context(|| format!("Failed to build combined SA for '{}'", id))?;
+
+    // Append sentinel Gap byte after SA construction.
+    // This ensures short suffixes read Gap(0) < A at depth,
+    // eliminating bounds-check validation in the search hot path.
+    let mut combined_seq_vec: Vec<Base> = combined_seq.iter().copied().collect();
+    combined_seq_vec.push(Base::Gap);
+
+    let chunk = TargetChunk {
+        combined_seq: combined_seq_vec,
+        combined_sa: combined_sa.into_inner(),
+        seq_len: seq_len_u32,
+    };
+
+    let payload = rkyv::to_bytes::<RkyvError>(&chunk)
+        .with_context(|| format!("Failed to archive target chunk '{}'", id))?;
+
+    Ok(Some(BuiltTargetRecord {
+        id,
+        seq_len: seq_len_u32,
+        payload,
+    }))
+}
+
+fn write_target_entry(
+    writer: &mut BufWriter<File>,
+    cursor: &mut usize,
+    record: BuiltTargetRecord,
+) -> Result<()> {
+    let BuiltTargetRecord {
+        id,
+        seq_len,
+        payload,
+    } = record;
+    let name_len = u32::try_from(id.len()).context("Target id is too long for index header")?;
+    let payload_len =
+        u64::try_from(payload.len()).context("Archived payload is too large for index header")?;
+
+    writer
+        .write_all(&name_len.to_le_bytes())
+        .context("Failed to write target name length")?;
+    writer
+        .write_all(&seq_len.to_le_bytes())
+        .context("Failed to write target sequence length")?;
+    writer
+        .write_all(&payload_len.to_le_bytes())
+        .context("Failed to write target payload length")?;
+    writer
+        .write_all(id.as_bytes())
+        .context("Failed to write target name bytes")?;
+
+    *cursor = cursor
+        .checked_add(ENTRY_HEADER_BYTES)
+        .and_then(|v| v.checked_add(id.len()))
+        .ok_or_else(|| anyhow!("Index file cursor overflow while writing headers"))?;
+
+    let aligned_payload_offset = align_up(*cursor, PAYLOAD_ALIGN);
+    let padding_len = aligned_payload_offset - *cursor;
+    if padding_len > 0 {
+        writer
+            .write_all(&[0u8; PAYLOAD_ALIGN][..padding_len])
+            .context("Failed to write payload alignment padding")?;
+    }
+    writer
+        .write_all(payload.as_slice())
+        .context("Failed to write target payload bytes")?;
+    *cursor = aligned_payload_offset
+        .checked_add(payload.len())
+        .ok_or_else(|| anyhow!("Index file cursor overflow while writing payload"))?;
+
+    Ok(())
 }
 
 fn parse_index_metadata(bytes: &[u8], path: &Path) -> Result<Vec<TargetMeta>> {
