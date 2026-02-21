@@ -1,5 +1,4 @@
 use clap::ValueEnum;
-use std::str::FromStr;
 
 // =============================================================================
 // SEED SPECIFICATION TYPES (moved from seed::spec)
@@ -48,63 +47,6 @@ impl MismatchSpec {
     }
 }
 
-impl FromStr for MismatchSpec {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-        if s.is_empty() {
-            return Err("empty mismatch spec".into());
-        }
-
-        let parts: Vec<&str> = s.split(':').collect();
-
-        let (max_mismatches, min_start, min_end) = match parts.len() {
-            1 => {
-                // Allow "c" as shorthand for "c:c:c" (matches C behavior)
-                let max = parts[0]
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid max mismatches: {}", e))?;
-                (max, max, max)
-            }
-            2 => {
-                let max = parts[0]
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid max mismatches: {}", e))?;
-                let min = parts[1]
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid min consecutive: {}", e))?;
-                (max, min, min)
-            }
-            3 => {
-                let max = parts[0]
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid max mismatches: {}", e))?;
-                let min_start = parts[1]
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid min start matches: {}", e))?;
-                let min_end = parts[2]
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid min end matches: {}", e))?;
-                (max, min_start, min_end)
-            }
-            _ => {
-                return Err(format!(
-                    "invalid mismatch spec '{}': expected 'c', 'c:p', or 'c:ps:pe' format",
-                    s
-                ));
-            }
-        };
-
-        // CLI format c:p / c:ps:pe maps to: max=c, min_prefix_matches=ps, min_suffix_matches=pe
-        Ok(MismatchSpec {
-            max_mismatches,
-            min_prefix_matches: min_start,
-            min_suffix_matches: min_end,
-        })
-    }
-}
-
 /// Representation of the `-s` flag:
 /// - `-s l`              => SeedSpec::LengthOnly(l)
 /// - `-s m:n`            => SeedSpec::Interval { start: m, end: n }
@@ -121,67 +63,6 @@ pub enum SeedSpec {
         end: i64,
         length: i64, // TODO: enforce strictly positive via newtype
     },
-}
-
-impl FromStr for SeedSpec {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-        if s.is_empty() {
-            return Err("empty seed spec".into());
-        }
-
-        // Parse helper for i64 with context
-        let parse_i64 = |val: &str, field: &str| -> Result<i64, String> {
-            val.parse::<i64>()
-                .map_err(|e| format!("bad {}: {}", field, e))
-        };
-
-        match s.find(':') {
-            None => {
-                // Length-only format: "l"
-                let len = parse_i64(s, "length")?;
-                Ok(SeedSpec::LengthOnly(len))
-            }
-            Some(colon_idx) => {
-                let (start_str, rest) = s.split_at(colon_idx);
-                let rest = &rest[1..]; // Skip the colon
-
-                if rest.is_empty() {
-                    return Err("missing end in interval".into());
-                }
-
-                let start = parse_i64(start_str, "start")?;
-
-                // Check for optional length after '/'
-                match rest.find('/') {
-                    None => {
-                        // Format: "start:end"
-                        let end = parse_i64(rest, "end")?;
-                        Ok(SeedSpec::Interval { start, end })
-                    }
-                    Some(slash_idx) => {
-                        // Format: "start:end/length"
-                        let (end_str, len_part) = rest.split_at(slash_idx);
-                        let len_str = &len_part[1..]; // Skip the slash
-
-                        if end_str.is_empty() {
-                            return Err("missing end in interval".into());
-                        }
-                        if len_str.is_empty() {
-                            return Err("missing length after '/'".into());
-                        }
-
-                        let end = parse_i64(end_str, "end")?;
-                        let length = parse_i64(len_str, "length")?;
-
-                        Ok(SeedSpec::IntervalWithLength { start, end, length })
-                    }
-                }
-            }
-        }
-    }
 }
 
 impl SeedSpec {
@@ -385,20 +266,39 @@ impl SeedConfig {
     }
 }
 
-/// Arguments for seed extension and scoring
+/// Global scoring model shared by seed scoring and DP extension.
+#[derive(Debug, Clone)]
+pub struct ScoreConfig {
+    /// Energy matrix for RNA-RNA duplexes
+    pub matrix: Matrix,
+
+    /// Per-nucleotide penalty (in kcal/mol), applied wherever score is computed
+    pub penalty: f64,
+
+    // Placeholder flags from C implementation - not yet implemented
+    // (see cli/args for detailed documentation)
+    pub matrix2: Option<String>,
+    pub matpath: Option<String>,
+    pub temperature: Option<String>,
+    pub weights: Option<String>,
+}
+
+/// Arguments for extension strategy.
 #[derive(Debug, Clone)]
 pub struct ExtendConfig {
     /// Max extension length on the seed (do DP for max this length up- and downstream of seed)
     pub max_extension: u8,
 
+    // Placeholder flags from C implementation - not yet implemented
+    // (see cli/args for detailed documentation)
+    pub band: Option<u32>,
+}
+
+/// Hit acceptance and pruning policies.
+#[derive(Debug, Clone)]
+pub struct FilterConfig {
     /// Set deltaG energy threshold (in kcal/mol) to filter predictions
     pub delta_g: f64,
-
-    /// Energy matrix for RNA-RNA duplexes
-    pub matrix: Matrix,
-
-    /// Per-nucleotide extension penalty (in kcal/mol)
-    pub penalty: f64,
 
     /// Energy per length threshold that filters seeds
     pub seed_energy: f64,
@@ -409,25 +309,19 @@ pub struct ExtendConfig {
     /// Disable shadow dedup filtering (keep hits contained by better hits)
     /// Default: true (filters contained hits). Set --no-dedup-shadow for C-compatible behavior.
     pub dedup_shadow: bool,
-
-    // Placeholder flags from C implementation - not yet implemented
-    // (see cli_args.rs for detailed documentation)
-    pub band: Option<u32>,
-    pub matrix2: Option<String>,
-    pub matpath: Option<String>,
-    pub temperature: Option<String>,
-    pub weights: Option<String>,
 }
 
 /// Options that apply to the `search` subcommand
 #[derive(Debug, Clone)]
 pub struct SearchArgs {
     pub seed: SeedConfig,
+    pub score: ScoreConfig,
     pub extend: ExtendConfig,
+    pub filter: FilterConfig,
     pub output: OutputConfig,
 
     // Placeholder flags from C implementation - not yet implemented
-    // (see cli_args.rs for detailed documentation)
+    // (see cli/args for detailed documentation)
     pub one_vs_one: bool,
     pub three_prime_match: Option<String>,
     pub five_prime_match: Option<String>,

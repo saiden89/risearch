@@ -11,16 +11,14 @@ use log::{info, trace};
 use smallvec::SmallVec;
 
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{ExtendConfig, Matrix, OutputFormat, SearchArgs};
-use crate::dp::{DpExtender, DpView};
+use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
+use crate::dp::{DpConfig, DpExtender, DpView};
 use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::index::store::{TargetStore, TargetView};
 use crate::registry::{QueryData, QueryRegistry};
 use crate::seed::{for_each_seed_one_target, SeedHit, TargetSeedView};
 use crate::seq::Sequence;
 use crate::types::{Base, Energy, Interval, Strand};
-
-const MAX_DP_EXT: usize = 50;
 
 // =============================================================================
 // PUBLIC API
@@ -60,10 +58,10 @@ where
         store.len(),
         opts.seed.seed,
         opts.extend.max_extension,
-        opts.extend.delta_g
+        opts.filter.delta_g
     );
 
-    let total = match opts.extend.matrix {
+    let total = match opts.score.matrix {
         Matrix::T04 => search_store_with_model::<T04, F>(queries, store, opts, &mut on_hit)?,
         Matrix::T99 => search_store_with_model::<T99, F>(queries, store, opts, &mut on_hit)?,
     };
@@ -79,14 +77,15 @@ where
 /// Reusable per-run state.
 struct SearchState<M: DsmModel> {
     extender: DpExtender<M>,
-    penalty: i32,
+    dp_cfg: DpConfig,
 }
 
 impl<M: DsmModel> SearchState<M> {
-    fn new(penalty: i32) -> Self {
+    fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
+        let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
-            extender: DpExtender::<M>::with_penalty(penalty),
-            penalty,
+            extender: DpExtender::<M>::from_config(dp_cfg),
+            dp_cfg,
         }
     }
 }
@@ -101,8 +100,7 @@ where
     M: DsmModel,
     F: FnMut(SearchHit) -> Result<()>,
 {
-    let penalty = (opts.extend.penalty * 100.0).round() as i32;
-    let mut state = SearchState::<M>::new(penalty);
+    let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
     let mut total_hits = 0usize;
 
     for (target_idx, _) in store.iter_meta() {
@@ -133,8 +131,7 @@ struct QueryTargetCtx<'a> {
     seed_interval: Interval,
     include_alignment: bool,
     pair_matrix: &'static [[u8; 6]; 6],
-    delta_g: f64,
-    extend_cfg: &'a ExtendConfig,
+    filter_cfg: &'a FilterConfig,
     target_len: usize,
 }
 
@@ -163,8 +160,7 @@ where
         seed_interval: query.seed_interval(),
         include_alignment: opts.output.format != OutputFormat::Minimal,
         pair_matrix: pair_mat(opts.seed.allows_wobble()),
-        delta_g: opts.extend.delta_g,
-        extend_cfg: &opts.extend,
+        filter_cfg: &opts.filter,
         target_len: target.seq_len,
     };
 
@@ -186,7 +182,7 @@ where
 
         let Some(hit) = build_hit_from_seed::<M>(
             &mut state.extender,
-            state.penalty,
+            state.dp_cfg,
             &ctx,
             &seed,
             target_bases,
@@ -209,7 +205,7 @@ where
 
 fn build_hit_from_seed<M: DsmModel>(
     extender: &mut DpExtender<M>,
-    penalty: i32,
+    dp_cfg: DpConfig,
     ctx: &QueryTargetCtx<'_>,
     seed: &SeedHit,
     target_bases: &[Base],
@@ -220,21 +216,21 @@ fn build_hit_from_seed<M: DsmModel>(
 
     let extension = compute_seed_extension::<M>(
         extender,
-        penalty,
+        dp_cfg,
         ctx.query_bases,
         target_bases,
         seed,
         ctx.seed_interval,
-        ctx.extend_cfg,
+        ctx.filter_cfg,
         ctx.pair_matrix,
         ctx.include_alignment,
     )?;
 
-    if extension.score > ctx.delta_g {
+    if extension.score > ctx.filter_cfg.delta_g {
         return None;
     }
 
-    Some(SearchHit::materialize(
+    Some(SearchHit::new(
         ctx.query_idx,
         ctx.query_bases,
         target_bases,
@@ -261,15 +257,16 @@ struct SeedExtension {
 
 fn compute_seed_extension<M: DsmModel>(
     extender: &mut DpExtender<M>,
-    penalty: i32,
+    dp_cfg: DpConfig,
     query_bases: &[Base],
     target_bases: &[Base],
     seed: &SeedHit,
     seed_interval: Interval,
-    extend_cfg: &ExtendConfig,
+    filter_cfg: &FilterConfig,
     pair_matrix: &'static [[u8; 6]; 6],
     with_traceback: bool,
 ) -> Option<SeedExtension> {
+    let penalty = dp_cfg.penalty_raw();
     let q_pos = seed.query_pos;
     let t_pos = seed.target_start;
     let len = seed.seed_len.get();
@@ -277,7 +274,7 @@ fn compute_seed_extension<M: DsmModel>(
     // Maximality check: left side.
     if q_pos > seed_interval.start && t_pos + len < target_bases.len() {
         let p_class = pair_matrix[query_bases[q_pos - 1].idx()][target_bases[t_pos + len].idx()];
-        if p_class != 0 && !extend_cfg.no_max_prune {
+        if p_class != 0 && !filter_cfg.no_max_prune {
             trace!("Filtered: non-maximal left");
             return None;
         }
@@ -286,14 +283,14 @@ fn compute_seed_extension<M: DsmModel>(
     // Maximality check: right side.
     if q_pos + len < seed_interval.end && t_pos > 0 {
         let p_class = pair_matrix[query_bases[q_pos + len].idx()][target_bases[t_pos - 1].idx()];
-        if p_class != 0 && !extend_cfg.no_max_prune {
+        if p_class != 0 && !filter_cfg.no_max_prune {
             trace!("Filtered: non-maximal right");
             return None;
         }
     }
 
     let t_match_end = t_pos + len - 1;
-    let max_ext = (extend_cfg.max_extension as usize).min(MAX_DP_EXT);
+    let max_ext = dp_cfg.max_extension();
     let seed_e = seed_energy::<M>(query_bases, target_bases, q_pos, t_match_end, len, penalty);
 
     let can_extend_left = q_pos > 0 && t_pos + len < target_bases.len();
@@ -353,7 +350,7 @@ fn compute_seed_extension<M: DsmModel>(
 // =============================================================================
 
 impl SearchHit {
-    fn materialize(
+    fn new(
         query_idx: u32,
         query_bases: &[Base],
         target_bases: &[Base],

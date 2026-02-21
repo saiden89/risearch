@@ -1,5 +1,8 @@
 pub mod alignment;
-pub mod cli_args;
+pub mod cli {
+    #[path = "args/mod.rs"]
+    pub mod args;
+}
 pub mod config;
 pub mod dp;
 pub mod dsm;

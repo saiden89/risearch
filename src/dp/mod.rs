@@ -1,4 +1,5 @@
 use crate::alignment::PairClass;
+use crate::config::{ExtendConfig, ScoreConfig};
 use crate::dsm::{build_penalty_adjusted_flat, dsm_flat_idx, DsmModel, DSM_FLAT_SIZE};
 use crate::types::Base;
 use log::trace;
@@ -15,6 +16,34 @@ use self::traceback::traceback;
 /// Maximum extension length for precomputed index arrays.
 /// Matches the typical max_ext parameter (100-200 bases).
 const MAX_EXT: usize = 256;
+
+/// DP runtime configuration derived from high-level search configs.
+#[derive(Clone, Copy, Debug)]
+pub struct DpConfig {
+    max_extension: usize,
+    penalty_raw: i32,
+}
+
+impl DpConfig {
+    #[inline(always)]
+    pub const fn max_extension(self) -> usize {
+        self.max_extension
+    }
+
+    #[inline(always)]
+    pub const fn penalty_raw(self) -> i32 {
+        self.penalty_raw
+    }
+}
+
+impl From<(&ScoreConfig, &ExtendConfig)> for DpConfig {
+    fn from((score, extend): (&ScoreConfig, &ExtendConfig)) -> Self {
+        Self {
+            max_extension: usize::from(extend.max_extension).min(MAX_EXT),
+            penalty_raw: (score.penalty * 100.0).round() as i32,
+        }
+    }
+}
 
 /// Extension direction - determines terminal stacking order
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -392,6 +421,10 @@ impl<M: DsmModel> ExtendResult<'_, M> {
 impl<M: DsmModel> DpExtender<M> {
     pub fn new() -> Self {
         Self::with_penalty(0)
+    }
+
+    pub fn from_config(cfg: DpConfig) -> Self {
+        Self::with_penalty(cfg.penalty_raw)
     }
 
     pub fn with_penalty(penalty: i32) -> Self {

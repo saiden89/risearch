@@ -1,9 +1,9 @@
-pub(crate) mod warnings;
+pub(crate) mod legacy;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use risearch::cli_args::SearchArgs;
+use risearch::cli::args::SearchArgs;
 
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]
@@ -71,7 +71,7 @@ pub(crate) struct SearchCommand {
     #[command(flatten)]
     pub(crate) output: OutputArgs,
 
-    /// Search-related options (seed, extension, energy, matrix, penalty, threads, format)
+    /// Search-related options (seed, scoring, extension, filtering, threads, format)
     #[command(flatten)]
     pub(crate) opts: SearchArgs,
 }

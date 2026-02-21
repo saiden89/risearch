@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use log::warn;
 
-use risearch::config::{MismatchSpec, SearchArgs, SeedSpec};
+use risearch::cli::args::{CliMismatchSpec, CliSeedSpec};
+use risearch::config::{SearchArgs, SeedSpec};
 
 fn iter_user_args(args: &[String]) -> impl Iterator<Item = &str> {
     args.iter().skip(1).map(String::as_str)
@@ -190,7 +191,8 @@ pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -
                 raw
             );
         }
-        let suggestion = raw.parse::<MismatchSpec>().ok().map(|spec| {
+        let suggestion = raw.parse::<CliMismatchSpec>().ok().map(|cli_spec| {
+            let spec = cli_spec.0;
             format!(
                 "--mismatch-max {} --mismatch-prefix {} --mismatch-suffix {}",
                 spec.max_mismatches, spec.min_prefix_matches, spec.min_suffix_matches
@@ -215,7 +217,7 @@ pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -
                 raw
             );
         }
-        let suggestion = raw.parse::<SeedSpec>().ok().map(|spec| match spec {
+        let suggestion = raw.parse::<CliSeedSpec>().ok().map(|cli_spec| match cli_spec.0 {
             SeedSpec::LengthOnly(len) => format!("--seed-length {}", len),
             SeedSpec::Interval { start, end } => {
                 format!("--seed-start {} --seed-end {}", start, end)

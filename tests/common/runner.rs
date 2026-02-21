@@ -426,7 +426,7 @@ fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
     #[derive(Parser)]
     struct FakeCmd {
         #[command(flatten)]
-        search: risearch::cli_args::SearchArgs,
+        search: risearch::cli::args::SearchArgs,
     }
 
     let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
