@@ -186,7 +186,7 @@ pub struct QueryId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct TargetId(pub u32);
 
-/// Seed length (always positive by construction).
+/// Seed length (always positive by construction).oh my go 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SeedLen(u16);
 

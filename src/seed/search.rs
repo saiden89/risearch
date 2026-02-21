@@ -1,5 +1,5 @@
 use crate::config::SeedConfig;
-use crate::registry::{QueryData, TargetRegistry};
+use crate::registry::QueryData;
 use crate::types::{Base, SeedLen, Strand, TargetId};
 
 use super::searcher::SeedSearcher;
@@ -21,29 +21,6 @@ fn has_n_in_range(query: &QueryData, start: usize, len: usize) -> bool {
     query.n_prefix()[end] != query.n_prefix()[start]
 }
 
-/// Find all seed matches, reusing provided Vec to avoid allocation.
-///
-/// Clears `candidates` before filling.
-pub(crate) fn find_seeds(
-    query: &QueryData,
-    index: &TargetRegistry,
-    config: &SeedConfig,
-    candidates: &mut Vec<SeedHit>,
-) {
-    candidates.clear();
-
-    for (idx, target) in index.entries().iter().enumerate() {
-        let target_view = TargetSeedView {
-            combined_seq: &target.combined_seq,
-            combined_sa: &target.combined_sa,
-            seq_len: target.seq_len,
-        };
-        for_each_seed_one_target(query, idx as u32, &target_view, config, |seed| {
-            candidates.push(seed);
-        });
-    }
-}
-
 pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
     query: &QueryData,
     target_idx: u32,
@@ -57,7 +34,7 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
     let q_end = interval.end;
     let min_len = query.min_seed_len();
     let seq_len = target.seq_len;
- 
+
     let mut matches = Vec::with_capacity(1024);
 
     let searcher = SeedSearcher::new(
@@ -84,9 +61,7 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
                 continue;
             }
 
-            for &t_pos_i32 in
-                &target.combined_sa[m.target_interval.start..m.target_interval.end]
-            {
+            for &t_pos_i32 in &target.combined_sa[m.target_interval.start..m.target_interval.end] {
                 let t_pos = t_pos_i32 as usize;
 
                 // Determine strand from position in combined sequence.
