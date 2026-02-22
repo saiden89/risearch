@@ -187,6 +187,20 @@ pub enum OutputCompression {
     Zstd,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[clap(rename_all = "lowercase")]
+pub enum SearchAxis {
+    /// Choose strategy automatically from workload shape.
+    #[default]
+    Auto,
+    /// Parallelize across targets (each worker handles one target).
+    Target,
+    /// Parallelize across queries (best when target count is very small).
+    Query,
+    /// Parallelize across target/query chunks for sparse-target workloads.
+    Pair,
+}
+
 // =============================================================================
 // CONFIG TYPES
 // =============================================================================
@@ -319,6 +333,7 @@ pub struct SearchArgs {
     pub extend: ExtendConfig,
     pub filter: FilterConfig,
     pub output: OutputConfig,
+    pub axis: SearchAxis,
 
     // Placeholder flags from C implementation - not yet implemented
     // (see cli/args for detailed documentation)

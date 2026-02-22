@@ -1,4 +1,4 @@
-use crate::config::{self, OutputCompression, OutputFormat};
+use crate::config::{self, OutputCompression, OutputFormat, SearchAxis};
 
 use super::{ExtendArgs, FilterArgs, ScoreArgs, SeedConfig};
 
@@ -45,6 +45,10 @@ pub struct SearchArgs {
     /// Output compression level (codec-specific)
     #[arg(long = "output-level", value_name = "LEVEL")]
     pub output_level: Option<i32>,
+
+    /// Search parallelization axis override.
+    #[arg(long = "search-axis", value_enum, default_value_t = SearchAxis::Auto)]
+    pub search_axis: SearchAxis,
 
     // ========================================================================
     // TODO: Placeholder flags from C implementation - not yet implemented
@@ -105,6 +109,7 @@ impl From<SearchArgs> for config::SearchArgs {
                 compress: value.output_compress,
                 level: value.output_level,
             },
+            axis: value.search_axis,
             one_vs_one: value.one_vs_one,
             three_prime_match: value.three_prime_match,
             five_prime_match: value.five_prime_match,

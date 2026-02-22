@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
+use crate::config::{
+    ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs, SearchAxis,
+};
 use crate::dp::{DpConfig, DpExtender, DpView};
 use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::index::store::{TargetStore, TargetView};
@@ -55,23 +57,38 @@ pub fn run_search<F>(
 where
     F: FnMut(SearchHit) -> Result<()>,
 {
-    info!(
-        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
-        queries.len(),
-        store.len(),
-        opts.seed.seed,
-        opts.extend.max_extension,
-        opts.filter.delta_g
-    );
-
     if store.is_empty() || queries.is_empty() {
         return Ok(0);
     }
 
-    let axis = match store.len() {
-        1 => Axis::ByQuery,
-        _ => Axis::ByTarget,
+    let axis = match opts.axis {
+        SearchAxis::Auto => {
+            if store.len() == 1 {
+                Axis::ByQuery
+            } else {
+                let workers = rayon::current_num_threads().max(1);
+                let target_threshold = workers.div_ceil(2);
+                if store.len() >= target_threshold || queries.len() == 1 {
+                    Axis::ByTarget
+                } else {
+                    Axis::ByPair
+                }
+            }
+        }
+        SearchAxis::Target => Axis::ByTarget,
+        SearchAxis::Query => Axis::ByQuery,
+        SearchAxis::Pair => Axis::ByPair,
     };
+
+    info!(
+        "Starting search: {} queries x {} targets, axis={:?}, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        store.len(),
+        axis,
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.filter.delta_g
+    );
 
     let (tx, rx) = mpsc::sync_channel::<SearchHit>(HIT_CHANNEL_CAPACITY);
     let cancelled = AtomicBool::new(false);
@@ -86,11 +103,17 @@ where
                 (Matrix::T04, Axis::ByQuery) => {
                     produce_by_query::<T04>(queries, store, opts, tx, cancel)
                 }
+                (Matrix::T04, Axis::ByPair) => {
+                    produce_by_pair::<T04>(queries, store, opts, tx, cancel)
+                }
                 (Matrix::T99, Axis::ByTarget) => {
                     produce_by_target::<T99>(queries, store, opts, tx, cancel)
                 }
                 (Matrix::T99, Axis::ByQuery) => {
                     produce_by_query::<T99>(queries, store, opts, tx, cancel)
+                }
+                (Matrix::T99, Axis::ByPair) => {
+                    produce_by_pair::<T99>(queries, store, opts, tx, cancel)
                 }
             }
         });
@@ -137,6 +160,7 @@ const HIT_CHANNEL_CAPACITY: usize = 2048;
 enum Axis {
     ByTarget,
     ByQuery,
+    ByPair,
 }
 
 /// Reusable per-run state.
@@ -250,6 +274,78 @@ fn produce_by_query<M: DsmModel>(
                 state,
                 &mut emit_hit,
             )?;
+
+            Ok(())
+        },
+    )
+}
+
+/// Parallel pair-major producer:
+/// each worker processes one (target, query chunk) task.
+fn produce_by_pair<M: DsmModel>(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchArgs,
+    tx: mpsc::SyncSender<SearchHit>,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let query_entries = queries.entries();
+    let query_count = query_entries.len();
+    let target_ids: Vec<u32> = store.iter_meta().map(|(idx, _)| idx).collect();
+    if query_count == 0 || target_ids.is_empty() {
+        return Ok(());
+    }
+
+    let workers = rayon::current_num_threads().max(1);
+    let chunks_per_target = (workers * 8).div_ceil(target_ids.len()).max(1);
+    let q_chunk = query_count.div_ceil(chunks_per_target).max(1);
+    let chunks_per_target_actual = query_count.div_ceil(q_chunk);
+
+    let mut tasks = Vec::with_capacity(target_ids.len() * chunks_per_target_actual);
+    for target_idx in target_ids {
+        let mut q_start = 0usize;
+        while q_start < query_count {
+            let q_end = (q_start + q_chunk).min(query_count);
+            tasks.push((target_idx, q_start, q_end));
+            q_start = q_end;
+        }
+    }
+
+    tasks.into_par_iter().try_for_each_init(
+        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
+        |(state, tx), (target_idx, q_start, q_end)| -> Result<()> {
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            let target = store
+                .target_view(target_idx as usize)
+                .with_context(|| format!("Failed to load target #{}", target_idx))?;
+
+            for query_idx in q_start..q_end {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let mut emit_hit = |hit: SearchHit| -> Result<()> {
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                    tx.send(hit)
+                        .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
+                    Ok(())
+                };
+
+                search_query_against_target::<M, _>(
+                    query_idx as u32,
+                    &query_entries[query_idx],
+                    &target,
+                    target_idx,
+                    opts,
+                    state,
+                    &mut emit_hit,
+                )?;
+            }
 
             Ok(())
         },

@@ -29,26 +29,27 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
     mut on_seed: F,
 ) {
     let q_len = query.sequence().len();
+    let q_sa = query.reverse_sa();
+    let target_id = TargetId(target_idx);
     let interval = query.seed_interval();
     let q_start = interval.start;
     let q_end = interval.end;
     let min_len = query.min_seed_len();
+    let max_len = q_end.saturating_sub(q_start);
     let seq_len = target.seq_len;
 
-    let mut matches = Vec::with_capacity(1024);
-
     let searcher = SeedSearcher::new(
-        query.reverse_sa(),
+        q_sa,
         query.sequence_rc(),
         target.combined_sa,
         target.combined_seq,
         config,
     );
-    searcher.search_length_range(min_len, q_len, &mut matches);
-
-    for m in matches.iter() {
+    searcher.for_each_length_range(min_len, max_len, |m| {
         let seed_len = m.seed_len;
-        for &q_rc_pos_i32 in &query.reverse_sa()[m.query_interval.start..m.query_interval.end] {
+        let seed_len_typed = SeedLen::new(seed_len)
+            .expect("seed length from search must be positive and fit in u16");
+        for &q_rc_pos_i32 in &q_sa[m.query_interval.start..m.query_interval.end] {
             let q_rc_pos = q_rc_pos_i32 as usize;
             if q_rc_pos + seed_len > q_len {
                 continue;
@@ -83,13 +84,12 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
 
                 on_seed(SeedHit {
                     query_pos: q_pos,
-                    target_id: TargetId(target_idx),
+                    target_id,
                     target_start,
-                    seed_len: SeedLen::new(seed_len)
-                        .expect("seed length from search must be positive and fit in u16"),
+                    seed_len: seed_len_typed,
                     strand,
                 });
             }
         }
-    }
+    });
 }

@@ -122,13 +122,11 @@ impl<'a> SeedSearcher<'a> {
         }
     }
 
-    /// Find seeds for a range of lengths in a single traversal.
-    pub fn search_length_range(
-        &self,
-        min_len: usize,
-        max_len: usize,
-        results: &mut Vec<SeedMatch>,
-    ) {
+    /// Stream seed matches for a range of lengths in a single traversal.
+    pub fn for_each_length_range<F>(&self, min_len: usize, max_len: usize, mut on_match: F)
+    where
+        F: FnMut(SeedMatch),
+    {
         let ctx = SearchCtx {
             q_sa: self.query_sa,
             q_seq: self.query_seq,
@@ -150,8 +148,18 @@ impl<'a> SeedSearcher<'a> {
             0,
             0,
             0,
-            results,
+            &mut on_match,
         );
+    }
+
+    /// Find seeds for a range of lengths in a single traversal.
+    pub fn search_length_range(
+        &self,
+        min_len: usize,
+        max_len: usize,
+        results: &mut Vec<SeedMatch>,
+    ) {
+        self.for_each_length_range(min_len, max_len, |m| results.push(m));
     }
 }
 
@@ -159,7 +167,7 @@ impl<'a> SeedSearcher<'a> {
 ///
 /// Parameters are flat integers to avoid struct construction overhead per call.
 /// Config is in `ctx` (passed by reference, like C uses globals).
-fn recurse(
+fn recurse<F>(
     ctx: &SearchCtx,
     ql: usize,
     qr: usize,
@@ -168,14 +176,17 @@ fn recurse(
     depth: usize,
     msm: usize, // matches_since_mismatch
     mc: usize,  // mismatch_count
-    results: &mut Vec<SeedMatch>,
-) {
+    on_match: &mut F,
+)
+where
+    F: FnMut(SeedMatch),
+{
     // Record match if within length range and valid
     if depth >= ctx.min_len
         && depth <= ctx.max_len
         && (mc == 0 || (mc <= ctx.max_mm && msm >= ctx.min_suffix && msm < depth))
     {
-        results.push(SeedMatch {
+        on_match(SeedMatch {
             query_interval: Interval::new(ql, qr),
             target_interval: Interval::new(sl, sr),
             seed_len: depth,
@@ -235,9 +246,9 @@ fn recurse(
             }
 
             if qi == si || (ctx.allow_wobble && si == qi + 2) {
-                recurse(ctx, q_lo, q_hi, s_lo, s_hi, d1, msm + 1, mc, results);
+                recurse(ctx, q_lo, q_hi, s_lo, s_hi, d1, msm + 1, mc, on_match);
             } else if can_mm {
-                recurse(ctx, q_lo, q_hi, s_lo, s_hi, d1, 0, mc + 1, results);
+                recurse(ctx, q_lo, q_hi, s_lo, s_hi, d1, 0, mc + 1, on_match);
             }
         }
     }
