@@ -95,7 +95,7 @@ impl RustRunner<Indexed> {
         let mut fmt_bufs = risearch::output::OutputBuffers::new();
         let format = search_args.output.format;
         let mut target_cache: Option<(u32, risearch::index::store::TargetView<'_>)> = None;
-        risearch::search::run_search_streaming(
+        risearch::search::run_search(
             &query_registry,
             &self.state.target_store,
             &search_args,

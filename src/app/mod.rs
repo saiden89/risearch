@@ -69,7 +69,7 @@ fn cmd_search(
     let mut target_cache: Option<(u32, risearch::index::store::TargetView<'_>)> = None;
 
     debug!("Starting search...");
-    let hits = search::run_search_streaming(&queries, &targets, &opts, |hit| -> Result<()> {
+    let hits = search::run_search(&queries, &targets, &opts, |hit| -> Result<()> {
         if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
             let view = targets
                 .target_view(hit.target_idx as usize)

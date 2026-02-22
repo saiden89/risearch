@@ -8,7 +8,10 @@
 
 use anyhow::{Context, Result};
 use log::{info, trace};
+use rayon::prelude::*;
 use smallvec::SmallVec;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
@@ -43,7 +46,7 @@ pub struct SearchHit {
 }
 
 /// Run search against mmap-backed target store and emit hits through callback.
-pub fn run_search_streaming<F>(
+pub fn run_search<F>(
     queries: &QueryRegistry,
     store: &TargetStore,
     opts: &SearchArgs,
@@ -61,10 +64,64 @@ where
         opts.filter.delta_g
     );
 
-    let total = match opts.score.matrix {
-        Matrix::T04 => search_store_with_model::<T04, F>(queries, store, opts, &mut on_hit)?,
-        Matrix::T99 => search_store_with_model::<T99, F>(queries, store, opts, &mut on_hit)?,
+    if store.is_empty() || queries.is_empty() {
+        return Ok(0);
+    }
+
+    let axis = match store.len() {
+        1 => Axis::ByQuery,
+        _ => Axis::ByTarget,
     };
+
+    let (tx, rx) = mpsc::sync_channel::<SearchHit>(HIT_CHANNEL_CAPACITY);
+    let cancelled = AtomicBool::new(false);
+
+    let total = std::thread::scope(|scope| -> Result<usize> {
+        let cancel = &cancelled;
+        let producer = scope.spawn(move || -> Result<()> {
+            match (opts.score.matrix, axis) {
+                (Matrix::T04, Axis::ByTarget) => {
+                    produce_by_target::<T04>(queries, store, opts, tx, cancel)
+                }
+                (Matrix::T04, Axis::ByQuery) => {
+                    produce_by_query::<T04>(queries, store, opts, tx, cancel)
+                }
+                (Matrix::T99, Axis::ByTarget) => {
+                    produce_by_target::<T99>(queries, store, opts, tx, cancel)
+                }
+                (Matrix::T99, Axis::ByQuery) => {
+                    produce_by_query::<T99>(queries, store, opts, tx, cancel)
+                }
+            }
+        });
+
+        let mut emitted = 0usize;
+        let mut callback_err: Option<anyhow::Error> = None;
+
+        while let Ok(hit) = rx.recv() {
+            if callback_err.is_some() {
+                continue;
+            }
+            match on_hit(hit) {
+                Ok(()) => emitted += 1,
+                Err(err) => {
+                    callback_err = Some(err);
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+
+        match producer.join() {
+            Ok(result) => result?,
+            Err(_) => return Err(anyhow::anyhow!("Parallel search producer thread panicked")),
+        }
+
+        if let Some(err) = callback_err {
+            return Err(err);
+        }
+
+        Ok(emitted)
+    })?;
 
     info!("Search complete: {} hits", total);
     Ok(total)
@@ -74,6 +131,14 @@ where
 // ORCHESTRATION
 // =============================================================================
 
+const HIT_CHANNEL_CAPACITY: usize = 2048;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Axis {
+    ByTarget,
+    ByQuery,
+}
+
 /// Reusable per-run state.
 struct SearchState<M: DsmModel> {
     extender: DpExtender<M>,
@@ -81,6 +146,7 @@ struct SearchState<M: DsmModel> {
 }
 
 impl<M: DsmModel> SearchState<M> {
+    /// Build per-worker DP state from the run-level score/extension configuration.
     fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
         let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
@@ -90,38 +156,104 @@ impl<M: DsmModel> SearchState<M> {
     }
 }
 
-fn search_store_with_model<M, F>(
+/// Parallel target-major producer:
+/// each worker processes one target across all queries.
+fn produce_by_target<M: DsmModel>(
     queries: &QueryRegistry,
     store: &TargetStore,
     opts: &SearchArgs,
-    on_hit: &mut F,
-) -> Result<usize>
-where
-    M: DsmModel,
-    F: FnMut(SearchHit) -> Result<()>,
-{
-    let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
-    let mut total_hits = 0usize;
+    tx: mpsc::SyncSender<SearchHit>,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let target_ids: Vec<u32> = store.iter_meta().map(|(idx, _)| idx).collect();
+    target_ids.into_par_iter().try_for_each_init(
+        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
+        |(state, tx), target_idx| -> Result<()> {
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(());
+            }
 
-    for (target_idx, _) in store.iter_meta() {
-        let target = store
-            .target_view(target_idx as usize)
-            .with_context(|| format!("Failed to load target #{}", target_idx))?;
+            let target = store
+                .target_view(target_idx as usize)
+                .with_context(|| format!("Failed to load target #{}", target_idx))?;
 
-        for (query_idx, query) in queries.entries().iter().enumerate() {
-            total_hits += search_query_against_target::<M, F>(
+            for (query_idx, query) in queries.entries().iter().enumerate() {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let mut emit_hit = |hit: SearchHit| -> Result<()> {
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                    tx.send(hit)
+                        .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
+                    Ok(())
+                };
+
+                search_query_against_target::<M, _>(
+                    query_idx as u32,
+                    query,
+                    &target,
+                    target_idx,
+                    opts,
+                    state,
+                    &mut emit_hit,
+                )?;
+            }
+
+            Ok(())
+        },
+    )
+}
+
+/// Parallel query-major producer for single-target workloads.
+///
+/// This path avoids underutilization when only one target is present.
+fn produce_by_query<M: DsmModel>(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchArgs,
+    tx: mpsc::SyncSender<SearchHit>,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let (target_idx, _) = store
+        .iter_meta()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Target index is empty"))?;
+    let target = store
+        .target_view(target_idx as usize)
+        .with_context(|| format!("Failed to load target #{}", target_idx))?;
+
+    (0..queries.len()).into_par_iter().try_for_each_init(
+        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
+        |(state, tx), query_idx| {
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            let mut emit_hit = |hit: SearchHit| -> Result<()> {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                tx.send(hit)
+                    .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
+                Ok(())
+            };
+
+            search_query_against_target::<M, _>(
                 query_idx as u32,
-                query,
+                &queries.entries()[query_idx],
                 &target,
                 target_idx,
                 opts,
-                &mut state,
-                on_hit,
+                state,
+                &mut emit_hit,
             )?;
-        }
-    }
 
-    Ok(total_hits)
+            Ok(())
+        },
+    )
 }
 
 /// Query/target-scoped context that does not change across seed candidates.
@@ -135,6 +267,7 @@ struct QueryTargetCtx<'a> {
     target_len: usize,
 }
 
+/// Enumerate seeds for a single query-target pair, optionally extend them, and emit hits.
 fn search_query_against_target<M, F>(
     query_idx: u32,
     query: &QueryData,
@@ -199,6 +332,7 @@ where
     Ok(emitted)
 }
 
+/// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 fn build_hit_from_seed<M: DsmModel>(
     extender: &mut DpExtender<M>,
     dp_cfg: DpConfig,
@@ -251,6 +385,7 @@ struct SeedExtension {
     right_pairs: SmallVec<[PairClass; 64]>,
 }
 
+/// Compute optional left/right DP extension around a seed and return extension metadata.
 fn compute_seed_extension<M: DsmModel>(
     extender: &mut DpExtender<M>,
     dp_cfg: DpConfig,
@@ -346,6 +481,7 @@ fn compute_seed_extension<M: DsmModel>(
 // =============================================================================
 
 impl SearchHit {
+    /// Materialize a public `SearchHit` from canonical internal inputs.
     fn new(
         query_idx: u32,
         query_bases: &[Base],
