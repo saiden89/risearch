@@ -11,7 +11,7 @@ use zstd::stream;
 use crate::config::{OutputCompression, OutputConfig};
 
 pub mod format;
-pub use format::{write_hit, write_hit_names, OutputBuffers};
+pub use format::{append_hit_minimal_names_vec, write_hit, write_hit_names, OutputBuffers};
 
 /// Open output writer from parsed search output config.
 pub fn open_output(path: Option<impl AsRef<Path>>, cfg: &OutputConfig) -> Result<Box<dyn Write>> {

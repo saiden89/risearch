@@ -98,10 +98,8 @@ pub struct QueryData {
     name: String,
     /// Forward sequence
     sequence: Sequence,
-    /// Reverse complement sequence
-    sequence_rc: Sequence,
-    /// Suffix array for reverse complement
-    reverse_sa: SuffixArray,
+    /// Suffix array for forward sequence (bit-packed u64)
+    sa: SuffixArray,
     /// Pre-computed seed interval bounds
     seed_interval: Interval,
     /// Minimum seed length
@@ -110,14 +108,17 @@ pub struct QueryData {
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
     has_n_any: bool,
+    /// Reversed sequence (NOT reverse-complement)
+    sequence_rc: Sequence,
+    /// Suffix array for reversed sequence
+    reverse_sa: SuffixArray,
 }
 
 impl QueryData {
     fn from_parts(
         name: String,
         sequence: Sequence,
-        sequence_rc: Sequence,
-        reverse_sa: SuffixArray,
+        sa: SuffixArray,
         config: &SeedConfig,
     ) -> Result<Self> {
         let q_len = sequence.len();
@@ -141,15 +142,21 @@ impl QueryData {
             .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
         let seed_interval = Interval::new(start1 - 1, end1);
 
+        let reverse_seq_bases: Vec<Base> = sequence.as_ref().iter().rev().copied().collect();
+        let sequence_rc = Sequence::from(reverse_seq_bases);
+        let reverse_sa = SuffixArray::try_from(&sequence_rc)
+            .map_err(|e| anyhow!("Failed to build reverse SA for query '{}': {}", name, e))?;
+
         Ok(Self {
             name,
             sequence,
-            sequence_rc,
-            reverse_sa,
+            sa,
             seed_interval,
             min_seed_len,
             n_prefix,
             has_n_any,
+            sequence_rc,
+            reverse_sa,
         })
     }
 
@@ -158,19 +165,24 @@ impl QueryData {
         &self.name
     }
 
-    #[inline]
-    pub fn sequence(&self) -> &Sequence {
-        &self.sequence
+    #[inline(always)]
+    pub fn sequence(&self) -> &[Base] {
+        self.sequence.as_ref()
     }
 
-    #[inline]
-    pub fn sequence_rc(&self) -> &Sequence {
-        &self.sequence_rc
+    #[inline(always)]
+    pub fn sa(&self) -> &[u64] {
+        self.sa.as_ref()
     }
 
-    #[inline]
-    pub fn reverse_sa(&self) -> &SuffixArray {
-        &self.reverse_sa
+    #[inline(always)]
+    pub fn sequence_rc(&self) -> &[Base] {
+        self.sequence_rc.as_ref()
+    }
+
+    #[inline(always)]
+    pub fn reverse_sa(&self) -> &[u64] {
+        self.reverse_sa.as_ref()
     }
 
     #[inline]
@@ -224,7 +236,7 @@ fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     Ok(sequences)
 }
 
-fn normalize_record(id: String, seq: Vec<u8>) -> Result<Option<(String, Sequence, Sequence)>> {
+fn normalize_record(id: String, seq: Vec<u8>) -> Result<Option<(String, Sequence)>> {
     let (seq_norm, stats) = Sequence::normalize(&id, &seq)
         .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
 
@@ -247,18 +259,7 @@ fn normalize_record(id: String, seq: Vec<u8>) -> Result<Option<(String, Sequence
         );
     }
 
-    if seq_norm.len() > u32::MAX as usize {
-        bail!(
-            "Sequence '{}' too long for u32 suffix array ({} bases > {} max). \
-             Consider chunking the sequence or using a future u64-enabled build.",
-            id,
-            seq_norm.len(),
-            u32::MAX
-        );
-    }
-
-    let seq_rc = seq_norm.reverse_complement();
-    Ok(Some((id, seq_norm, seq_rc)))
+    Ok(Some((id, seq_norm)))
 }
 
 impl QueryRegistry {
@@ -268,24 +269,14 @@ impl QueryRegistry {
         let maybe_entries: Vec<Option<QueryData>> = sequences
             .into_par_iter()
             .map(|(id, seq)| -> Result<Option<QueryData>> {
-                let Some((name, sequence, sequence_rc)) = normalize_record(id, seq)? else {
+                let Some((name, sequence)) = normalize_record(id, seq)? else {
                     return Ok(None);
                 };
 
-                let reverse_sa = SuffixArray::try_from(&sequence_rc)?;
+                // Build SA on forward sequence
+                let sa = SuffixArray::try_from(&sequence)?;
 
-                // Append sentinel Gap byte after SA construction.
-                let mut rc_bases: Vec<Base> = sequence_rc.iter().copied().collect();
-                rc_bases.push(Base::Gap);
-                let sequence_rc = Sequence::from(rc_bases);
-
-                Ok(Some(QueryData::from_parts(
-                    name,
-                    sequence,
-                    sequence_rc,
-                    reverse_sa,
-                    config,
-                )?))
+                Ok(Some(QueryData::from_parts(name, sequence, sa, config)?))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -314,22 +305,19 @@ impl TargetRegistry {
         let maybe_entries: Vec<Option<TargetData>> = sequences
             .into_par_iter()
             .map(|(id, seq)| -> Result<Option<TargetData>> {
-                let Some((name, sequence, sequence_rc)) = normalize_record(id, seq)? else {
+                let Some((name, sequence)) = normalize_record(id, seq)? else {
                     return Ok(None);
                 };
 
                 // Build combined sequence: fwd ++ [Gap] ++ rc
                 let seq_len = sequence.len();
+                let sequence_rc = sequence.reverse_complement();
                 let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
                 combined_bases.extend_from_slice(&sequence);
                 combined_bases.push(Base::Gap);
                 combined_bases.extend_from_slice(&sequence_rc);
                 let combined_seq = Sequence::from(combined_bases.clone());
                 let combined_sa = SuffixArray::try_from(&combined_seq)?;
-
-                // Append sentinel Gap byte after SA construction.
-                combined_bases.push(Base::Gap);
-                let combined_seq = Sequence::from(combined_bases);
 
                 Ok(Some(TargetData {
                     name,

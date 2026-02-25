@@ -14,20 +14,26 @@ use rkyv::util::AlignedVec;
 use crate::index::io::{validate_output_path, validate_readable_file};
 use crate::index::sa::SuffixArray;
 use crate::seq::Sequence;
-use crate::types::{ArchivedBase, Base};
+use crate::types::Base;
 
-const FILE_MAGIC: [u8; 8] = *b"RSIDX2\0\0";
+const FILE_MAGIC: [u8; 8] = *b"RSIDX4\0\0";
 const FILE_HEADER_BYTES: usize = 12; // magic[8] + target_count[4]
 const ENTRY_HEADER_BYTES: usize = 16; // name_len[u32] + seq_len[u32] + payload_len[u64]
 const PAYLOAD_ALIGN: usize = 8;
 const TARGET_COUNT_OFFSET: u64 = 8;
 
+/// Number of zero-valued u64 entries appended after the real SA data.
+/// These act as sentinels so `sa[suffix_pos + offset]` never goes out of
+/// bounds during binary search character lookups, eliminating a branch
+/// in the innermost hot loop.
+pub const SA_CHAR_PADDING: usize = 256;
+
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct TargetChunk {
     /// Forward sequence ++ [Gap] ++ reverse-complement sequence
     combined_seq: Vec<Base>,
-    /// Suffix array built on combined_seq
-    combined_sa: Vec<u32>,
+    /// Suffix array built on combined_seq (bit-packed u64 containing character data)
+    combined_sa: Vec<u64>,
     /// Length of the original (forward) sequence
     seq_len: u32,
 }
@@ -48,10 +54,12 @@ pub struct TargetStore {
 
 pub struct TargetView<'a> {
     pub name: &'a str,
-    /// Forward sequence ++ [Gap] ++ reverse-complement sequence
+    /// Forward sequence ++ [Gap] ++ reverse-complement sequence (+ padding)
     pub combined_seq: &'a [Base],
-    /// Suffix array built on combined_seq
-    pub combined_sa: &'a [u32],
+    /// Suffix array built on combined_seq (packed u64 containing character data, + padding)
+    pub combined_sa: &'a [u64],
+    /// Number of real SA entries (excluding padding sentinels)
+    pub sa_real_len: usize,
     /// Length of the original (forward) sequence
     pub seq_len: usize,
 }
@@ -235,21 +243,21 @@ impl TargetStore {
             .with_context(|| format!("Failed to access target payload '{}'", meta.name))?;
 
         let combined_seq = archived_base_slice_as_native(chunk.combined_seq.as_slice());
-        let combined_sa = archived_u32_slice_as_native(chunk.combined_sa.as_slice());
+        let combined_sa = archived_u64_slice_as_native(chunk.combined_sa.as_slice());
         let seq_len = chunk.seq_len.to_native() as usize;
-        let expected_seq_len = 2 * seq_len + 2; // fwd + Gap + rc + sentinel
-        let expected_sa_len = 2 * seq_len + 1; // SA built before sentinel
+        let min_seq_len = 2 * seq_len + 2; // fwd + Gap + rc + sentinel
+        let min_sa_len = 2 * seq_len + 1; // SA built before sentinel
 
         if seq_len != meta.sequence_len
-            || combined_seq.len() != expected_seq_len
-            || combined_sa.len() != expected_sa_len
+            || combined_seq.len() < min_seq_len
+            || combined_sa.len() < min_sa_len
         {
             bail!(
-                "Corrupt payload for '{}': expected seq_len={}, combined_seq={}, combined_sa={}, got seq_len={}, combined_seq={}, combined_sa={}",
+                "Corrupt payload for '{}': expected seq_len={}, combined_seq>={}, combined_sa>={}, got seq_len={}, combined_seq={}, combined_sa={}",
                 meta.name,
                 meta.sequence_len,
-                expected_seq_len,
-                expected_sa_len,
+                min_seq_len,
+                min_sa_len,
                 seq_len,
                 combined_seq.len(),
                 combined_sa.len()
@@ -260,6 +268,7 @@ impl TargetStore {
             name: &meta.name,
             combined_seq,
             combined_sa,
+            sa_real_len: min_sa_len,
             seq_len,
         })
     }
@@ -320,37 +329,38 @@ fn build_target_record(record: PendingTargetRecord) -> Result<Option<BuiltTarget
 
     let sequence_rc = sequence.reverse_complement();
 
-    // Build combined sequence: fwd ++ [Gap] ++ rc
+    // Complement the sequences before building the combined SA.
+    // This allows direct canonical/wobble matching in the transformed alphabet.
+    let sequence_comp: Vec<Base> = sequence.iter().map(|b| b.complement()).collect();
+    let sequence_rc_comp: Vec<Base> = sequence_rc.iter().map(|b| b.complement()).collect();
+
+    // Build combined sequence: fwd_comp ++ [Gap] ++ rc_comp
     let seq_len = sequence.len();
     let seq_len_u32 =
         u32::try_from(seq_len).context("Target sequence length is too large for index header")?;
     let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
-    combined_bases.extend_from_slice(&sequence);
+    combined_bases.extend_from_slice(&sequence_comp);
     combined_bases.push(Base::Gap);
-    combined_bases.extend_from_slice(&sequence_rc);
+    combined_bases.extend_from_slice(&sequence_rc_comp);
     let combined_seq = Sequence::from(combined_bases);
-
-    if combined_seq.len() > u32::MAX as usize {
-        bail!(
-            "Combined sequence '{}' too long for u32 suffix array ({} bases > {} max)",
-            id,
-            combined_seq.len(),
-            u32::MAX
-        );
-    }
 
     let combined_sa = SuffixArray::try_from(&combined_seq)
         .with_context(|| format!("Failed to build combined SA for '{}'", id))?;
 
-    // Append sentinel Gap byte after SA construction.
-    // This ensures short suffixes read Gap(0) < A at depth,
-    // eliminating bounds-check validation in the search hot path.
+    // Append sentinel Gap byte after SA construction, plus SA_CHAR_PADDING
+    // extra Gap bytes so that `sa[suffix_pos + offset]` never goes out of
+    // bounds during binary search character lookups.
     let mut combined_seq_vec: Vec<Base> = combined_seq.iter().copied().collect();
-    combined_seq_vec.push(Base::Gap);
+    combined_seq_vec.resize(combined_seq_vec.len() + 1 + SA_CHAR_PADDING, Base::Gap);
+
+    // Pad the SA with zero entries (pos=0, char=Gap) so unchecked access is
+    // safe for any offset up to SA_CHAR_PADDING.
+    let mut padded_sa = combined_sa.into_inner();
+    padded_sa.resize(padded_sa.len() + SA_CHAR_PADDING, 0u64);
 
     let chunk = TargetChunk {
         combined_seq: combined_seq_vec,
-        combined_sa: combined_sa.into_inner(),
+        combined_sa: padded_sa,
         seq_len: seq_len_u32,
     };
 
@@ -534,9 +544,9 @@ fn access_archived_chunk(payload: &[u8]) -> Result<&ArchivedTargetChunk> {
 }
 
 #[inline]
-fn archived_base_slice_as_native(slice: &[ArchivedBase]) -> &[Base] {
-    debug_assert_eq!(size_of::<ArchivedBase>(), size_of::<Base>());
-    debug_assert_eq!(align_of::<ArchivedBase>(), align_of::<Base>());
+fn archived_base_slice_as_native(slice: &[crate::types::ArchivedBase]) -> &[Base] {
+    debug_assert_eq!(size_of::<crate::types::ArchivedBase>(), size_of::<Base>());
+    debug_assert_eq!(align_of::<crate::types::ArchivedBase>(), align_of::<Base>());
     // SAFETY: `Base` is `#[repr(u8)]` and `ArchivedBase` is generated by rkyv
     // for this exact enum, with validated payload bytes (`rkyv::access`).
     // The two types are layout-compatible for read-only access.
@@ -544,17 +554,17 @@ fn archived_base_slice_as_native(slice: &[ArchivedBase]) -> &[Base] {
 }
 
 #[inline]
-fn archived_u32_slice_as_native(slice: &[rkyv::primitive::ArchivedU32]) -> &[u32] {
+fn archived_u64_slice_as_native(slice: &[rkyv::primitive::ArchivedU64]) -> &[u64] {
     #[cfg(not(target_endian = "little"))]
-    compile_error!("TargetStore zero-copy u32 view currently requires little-endian targets");
-    debug_assert_eq!(size_of::<rkyv::primitive::ArchivedU32>(), size_of::<u32>());
+    compile_error!("TargetStore zero-copy u64 view currently requires little-endian targets");
+    debug_assert_eq!(size_of::<rkyv::primitive::ArchivedU64>(), size_of::<u64>());
     debug_assert_eq!(
-        align_of::<rkyv::primitive::ArchivedU32>(),
-        align_of::<u32>()
+        align_of::<rkyv::primitive::ArchivedU64>(),
+        align_of::<u64>()
     );
-    // SAFETY: `ArchivedU32` is a transparent little-endian wrapper over `u32`
+    // SAFETY: `ArchivedU64` is a transparent little-endian wrapper over `u64`
     // in the archived payload. This project targets little-endian machines.
-    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u32>(), slice.len()) }
+    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u64>(), slice.len()) }
 }
 
 #[cfg(test)]
@@ -587,8 +597,15 @@ mod tests {
             let exp = expected.get(i as u32);
             assert_eq!(got.name, exp.name.as_str());
             assert_eq!(got.seq_len, exp.seq_len);
-            assert_eq!(got.combined_seq, &exp.combined_seq[..]);
-            assert_eq!(got.combined_sa, &exp.combined_sa[..]);
+            // Suffix Arrays will differ because TargetStore builds on COMPLEMENT
+            // whereas Registry builds on original for backwards-compat in tests.
+            // We just verify the store loaded correctly and real length matches.
+            assert_eq!(got.sa_real_len, exp.combined_sa.len());
+            // TargetStore adds SA_CHAR_PADDING sentinels
+            assert_eq!(
+                got.combined_sa.len(),
+                exp.combined_sa.len() + crate::index::store::SA_CHAR_PADDING
+            );
         }
     }
 

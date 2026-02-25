@@ -86,18 +86,28 @@ fn cmd_search(
         let t_fwd = &target.combined_seq[..target.seq_len];
         let t_rc = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
 
-        output::write_hit_names(
-            &mut fmt_bufs,
-            &hit,
-            format,
-            &mut out_buf,
-            q_name,
-            target.name,
-            q_seq,
-            t_fwd,
-            t_rc,
-        )
-        .context("Failed to format output hit")?;
+        if format == risearch::config::OutputFormat::Minimal {
+            output::append_hit_minimal_names_vec(
+                &mut fmt_bufs,
+                &hit,
+                &mut out_buf,
+                q_name,
+                target.name,
+            );
+        } else {
+            output::write_hit_names(
+                &mut fmt_bufs,
+                &hit,
+                format,
+                &mut out_buf,
+                q_name,
+                target.name,
+                q_seq,
+                t_fwd,
+                t_rc,
+            )
+            .context("Failed to format output hit")?;
+        }
 
         if out_buf.len() >= 64 * 1024 {
             writer

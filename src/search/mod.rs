@@ -7,7 +7,7 @@
 //! 4) Materialize and emit final hits
 
 use anyhow::{Context, Result};
-use log::{info, trace};
+use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +18,9 @@ use crate::config::{
     ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs, SearchAxis,
 };
 use crate::dp::{DpConfig, DpExtender, DpView};
-use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
+use crate::dsm::{
+    pair_mat, seed_energy, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99,
+};
 use crate::index::store::{TargetStore, TargetView};
 use crate::registry::{QueryData, QueryRegistry};
 use crate::seed::{for_each_seed_one_target, SeedHit, TargetSeedView};
@@ -89,6 +91,17 @@ where
         opts.extend.max_extension,
         opts.filter.delta_g
     );
+
+    // Fast path for single-worker runs: avoid producer thread + channel fan-in.
+    // This mirrors C's direct in-thread evaluation when threads=1.
+    if rayon::current_num_threads() == 1 {
+        let total = match opts.score.matrix {
+            Matrix::T04 => run_search_direct::<T04, _>(queries, store, opts, axis, &mut on_hit)?,
+            Matrix::T99 => run_search_direct::<T99, _>(queries, store, opts, axis, &mut on_hit)?,
+        };
+        info!("Search complete: {} hits", total);
+        return Ok(total);
+    }
 
     let (tx, rx) = mpsc::sync_channel::<SearchHit>(HIT_CHANNEL_CAPACITY);
     let cancelled = AtomicBool::new(false);
@@ -180,6 +193,123 @@ impl<M: DsmModel> SearchState<M> {
     }
 }
 
+#[inline(always)]
+fn needs_raw_target(opts: &SearchArgs) -> bool {
+    opts.extend.max_extension > 0 || opts.output.format != OutputFormat::Minimal
+}
+
+/// Single-thread direct execution path (no channel fan-in).
+fn run_search_direct<M, F>(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchArgs,
+    axis: Axis,
+    on_hit: &mut F,
+) -> Result<usize>
+where
+    M: DsmModel,
+    F: FnMut(SearchHit) -> Result<()>,
+{
+    let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
+    let mut emitted = 0usize;
+
+    match axis {
+        Axis::ByQuery => {
+            let (target_idx, _) = store
+                .iter_meta()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Target index is empty"))?;
+            let target = store
+                .target_view(target_idx as usize)
+                .with_context(|| format!("Failed to load target #{}", target_idx))?;
+            let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
+
+            for (query_idx, query) in queries.entries().iter().enumerate() {
+                let mut emit_hit = |hit: SearchHit| -> Result<()> {
+                    on_hit(hit)?;
+                    emitted += 1;
+                    Ok(())
+                };
+                search_query_against_target::<M, _>(
+                    query_idx as u32,
+                    query,
+                    &target,
+                    raw.as_ref(),
+                    target_idx,
+                    opts,
+                    &mut state,
+                    &mut emit_hit,
+                )?;
+            }
+        }
+        Axis::ByTarget | Axis::ByPair => {
+            for (target_idx, _) in store.iter_meta() {
+                let target = store
+                    .target_view(target_idx as usize)
+                    .with_context(|| format!("Failed to load target #{}", target_idx))?;
+                let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
+
+                for (query_idx, query) in queries.entries().iter().enumerate() {
+                    let mut emit_hit = |hit: SearchHit| -> Result<()> {
+                        on_hit(hit)?;
+                        emitted += 1;
+                        Ok(())
+                    };
+                    search_query_against_target::<M, _>(
+                        query_idx as u32,
+                        query,
+                        &target,
+                        raw.as_ref(),
+                        target_idx,
+                        opts,
+                        &mut state,
+                        &mut emit_hit,
+                    )?;
+                }
+            }
+        }
+    }
+
+    Ok(emitted)
+}
+
+/// De-complemented target bases, computed once per target.
+struct TargetRawBases {
+    both: Vec<Base>,
+    split: usize,
+}
+
+impl TargetRawBases {
+    #[inline(always)]
+    fn forward(&self) -> &[Base] {
+        &self.both[..self.split]
+    }
+
+    #[inline(always)]
+    fn reverse(&self) -> &[Base] {
+        &self.both[self.split..]
+    }
+
+    fn from_target(target: &TargetView<'_>) -> Self {
+        let n = target.seq_len;
+        let t_forward_trans = &target.combined_seq[..target.seq_len];
+        let t_reverse_trans = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
+
+        let mut both: Vec<Base> = Vec::with_capacity(2 * n);
+        // SAFETY: every element is initialized before being read.
+        unsafe { both.set_len(2 * n) };
+        for i in 0..n {
+            // SAFETY: indices are in-bounds by construction.
+            unsafe {
+                *both.get_unchecked_mut(i) = (*t_forward_trans.get_unchecked(i)).complement();
+                *both.get_unchecked_mut(n + i) = (*t_reverse_trans.get_unchecked(i)).complement();
+            }
+        }
+
+        Self { both, split: n }
+    }
+}
+
 /// Parallel target-major producer:
 /// each worker processes one target across all queries.
 fn produce_by_target<M: DsmModel>(
@@ -200,6 +330,7 @@ fn produce_by_target<M: DsmModel>(
             let target = store
                 .target_view(target_idx as usize)
                 .with_context(|| format!("Failed to load target #{}", target_idx))?;
+            let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
 
             for (query_idx, query) in queries.entries().iter().enumerate() {
                 if cancelled.load(Ordering::Relaxed) {
@@ -219,6 +350,7 @@ fn produce_by_target<M: DsmModel>(
                     query_idx as u32,
                     query,
                     &target,
+                    raw.as_ref(),
                     target_idx,
                     opts,
                     state,
@@ -248,6 +380,7 @@ fn produce_by_query<M: DsmModel>(
     let target = store
         .target_view(target_idx as usize)
         .with_context(|| format!("Failed to load target #{}", target_idx))?;
+    let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
 
     (0..queries.len()).into_par_iter().try_for_each_init(
         || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
@@ -269,6 +402,7 @@ fn produce_by_query<M: DsmModel>(
                 query_idx as u32,
                 &queries.entries()[query_idx],
                 &target,
+                raw.as_ref(),
                 target_idx,
                 opts,
                 state,
@@ -321,6 +455,7 @@ fn produce_by_pair<M: DsmModel>(
             let target = store
                 .target_view(target_idx as usize)
                 .with_context(|| format!("Failed to load target #{}", target_idx))?;
+            let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
 
             for query_idx in q_start..q_end {
                 if cancelled.load(Ordering::Relaxed) {
@@ -340,6 +475,7 @@ fn produce_by_pair<M: DsmModel>(
                     query_idx as u32,
                     &query_entries[query_idx],
                     &target,
+                    raw.as_ref(),
                     target_idx,
                     opts,
                     state,
@@ -368,6 +504,7 @@ fn search_query_against_target<M, F>(
     query_idx: u32,
     query: &QueryData,
     target: &TargetView<'_>,
+    raw: Option<&TargetRawBases>,
     target_idx: u32,
     opts: &SearchArgs,
     state: &mut SearchState<M>,
@@ -380,6 +517,7 @@ where
     let target_seed_view = TargetSeedView {
         combined_seq: target.combined_seq,
         combined_sa: target.combined_sa,
+        sa_real_len: target.sa_real_len,
         seq_len: target.seq_len,
     };
 
@@ -393,20 +531,107 @@ where
         target_len: target.seq_len,
     };
 
-    let t_forward = &target.combined_seq[..target.seq_len];
-    let t_reverse = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
-
     let mut emitted = 0usize;
     let mut callback_err: Option<anyhow::Error> = None;
+
+    // Fast path: no extension and no alignment output required.
+    // Avoid materializing full de-complemented target arrays.
+    if state.dp_cfg.max_extension() == 0 && !ctx.include_alignment {
+        let t_forward_trans = &target.combined_seq[..target.seq_len];
+        let t_reverse_trans = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
+        let penalty = state.dp_cfg.penalty_raw();
+
+        for_each_seed_one_target(query, target_idx, &target_seed_view, &opts.seed, |seed| {
+            if callback_err.is_some() {
+                return;
+            }
+
+            let mut seed = seed;
+            seed.target_start = ctx
+                .target_len
+                .saturating_sub(seed.target_start + seed.seed_len.get());
+
+            let t_trans = match seed.strand {
+                Strand::Forward => t_forward_trans,
+                Strand::Reverse => t_reverse_trans,
+            };
+
+            let q_pos = seed.query_pos;
+            let t_pos = seed.target_start;
+            let len = seed.seed_len.get();
+            if t_pos + len > t_trans.len() {
+                return;
+            }
+
+            let t_match_end = t_pos + len - 1;
+            let seed_e =
+                seed_energy_transformed::<M>(ctx.query_bases, t_trans, q_pos, t_pos, len, penalty);
+            let term_5p = terminal_5p::<M>(
+                ctx.query_bases[q_pos],
+                t_trans[t_match_end].complement(),
+                penalty,
+            );
+            let term_3p = terminal_3p::<M>(
+                ctx.query_bases[q_pos + len - 1],
+                t_trans[t_pos].complement(),
+                penalty,
+            );
+            let nt_count = (2 * len) as i32;
+            let score = M::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty);
+            if score > ctx.filter_cfg.delta_g {
+                return;
+            }
+
+            let ext = SeedExtension {
+                score,
+                l_q: 0,
+                l_t: 0,
+                r_q: 0,
+                r_t: 0,
+                left_pairs: SmallVec::new(),
+                right_pairs: SmallVec::new(),
+            };
+            let hit = SearchHit::new(
+                ctx.query_idx,
+                ctx.query_bases,
+                &[],
+                &seed,
+                &ext,
+                false,
+                ctx.target_len,
+            );
+
+            match on_hit(hit) {
+                Ok(()) => emitted += 1,
+                Err(err) => callback_err = Some(err),
+            }
+        });
+
+        if let Some(err) = callback_err {
+            return Err(err);
+        }
+        return Ok(emitted);
+    }
+
+    let raw = raw.expect("raw target bases required when extension/alignment is enabled");
 
     for_each_seed_one_target(query, target_idx, &target_seed_view, &opts.seed, |seed| {
         if callback_err.is_some() {
             return;
         }
 
+        let mut seed = seed;
+        // Re-anchor seed start into the sequence space used by extension/scoring.
+        // This mirrors C's use of comp(raw_target) with opposite-orientation access.
+        seed.target_start = ctx
+            .target_len
+            .saturating_sub(seed.target_start + seed.seed_len.get());
+
         let target_bases = match seed.strand {
-            Strand::Forward => t_forward,
-            Strand::Reverse => t_reverse,
+            // Seeds discovered in transformed reverse half map to forward raw.
+            Strand::Forward => raw.forward(),
+            // Seeds discovered in transformed forward half map to reverse-complement raw.
+            Strand::Reverse => raw.reverse(),
         };
 
         let Some(hit) =
@@ -481,6 +706,32 @@ struct SeedExtension {
     right_pairs: SmallVec<[PairClass; 64]>,
 }
 
+#[inline(always)]
+fn seed_energy_transformed<M: DsmModel>(
+    query_bases: &[Base],
+    target_transformed: &[Base],
+    q_pos: usize,
+    t_pos: usize,
+    len: usize,
+    penalty: i32,
+) -> i32 {
+    if len <= 1 {
+        return 0;
+    }
+    let mut score = 0;
+    let t_match_end = t_pos + len - 1;
+    for i in 0..(len - 1) {
+        score += stack_with_penalty::<M>(
+            query_bases[q_pos + i].idx(),
+            query_bases[q_pos + i + 1].idx(),
+            target_transformed[t_match_end - i].complement().idx(),
+            target_transformed[t_match_end - i - 1].complement().idx(),
+            penalty,
+        );
+    }
+    score
+}
+
 /// Compute optional left/right DP extension around a seed and return extension metadata.
 fn compute_seed_extension<M: DsmModel>(
     extender: &mut DpExtender<M>,
@@ -498,20 +749,19 @@ fn compute_seed_extension<M: DsmModel>(
     let t_pos = seed.target_start;
     let len = seed.seed_len.get();
 
-    // Maximality check: left side.
+    // Maximality check in scoring/raw coordinate space.
+    // NOTE: the check in search.rs operates in SA/complement space with
+    // different coordinates — these are NOT equivalent and both are required.
     if q_pos > seed_interval.start && t_pos + len < target_bases.len() {
         let p_class = pair_matrix[query_bases[q_pos - 1].idx()][target_bases[t_pos + len].idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
-            trace!("Filtered: non-maximal left");
             return None;
         }
     }
 
-    // Maximality check: right side.
     if q_pos + len < seed_interval.end && t_pos > 0 {
         let p_class = pair_matrix[query_bases[q_pos + len].idx()][target_bases[t_pos - 1].idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
-            trace!("Filtered: non-maximal right");
             return None;
         }
     }

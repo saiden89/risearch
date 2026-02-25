@@ -62,11 +62,11 @@ impl RustRunner<NoIndex> {
             }
         };
 
-        let index_file =
-            risearch::TargetRegistry::from_fasta(&self.target_path).expect("build index");
-        index_file.save(&index_path).expect("save index");
-        let index_file = risearch::TargetRegistry::load(&index_path).expect("load index");
+        risearch::TargetStore::build_from_fasta(&self.target_path, &index_path)
+            .expect("build store index");
         let target_store = risearch::TargetStore::open(&index_path).expect("open target store");
+        let index_file =
+            risearch::TargetRegistry::from_fasta(&self.target_path).expect("build registry index");
 
         RustRunner {
             target_path: self.target_path,
@@ -89,7 +89,8 @@ impl RustRunner<Indexed> {
         let query_registry =
             risearch::QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let mut search_args = args.clone();
-        search_args.output.format = risearch::config::OutputFormat::Detailed;
+        // Parity parser expects binding-site columns (pairing + target sequence, optional flanks).
+        search_args.output.format = risearch::config::OutputFormat::BindingSite;
 
         let mut rust_out = Vec::with_capacity(64 * 1024);
         let mut fmt_bufs = risearch::output::OutputBuffers::new();

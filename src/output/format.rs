@@ -28,6 +28,38 @@ impl Default for OutputBuffers {
     }
 }
 
+/// Append one minimal-format hit line directly into an output Vec.
+///
+/// This avoids the generic field loop and intermediate line buffer copy used by
+/// `write_hit_names`, and is intended for high-volume minimal output paths.
+#[inline]
+pub fn append_hit_minimal_names_vec(
+    bufs: &mut OutputBuffers,
+    hit: &SearchHit,
+    out: &mut Vec<u8>,
+    query_name: &str,
+    target_name: &str,
+) {
+    // q_id, q_start, q_end, t_id, t_start, t_end, strand, energy (8 fields + 7 tabs + '\n')
+    out.reserve(query_name.len() + target_name.len() + 72);
+    out.extend_from_slice(query_name.as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.q_start + 1).as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.q_end + 1).as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(target_name.as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.t_start + 1).as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.t_end + 1).as_bytes());
+    out.push(b'\t');
+    out.push(char::from(hit.strand) as u8);
+    out.push(b'\t');
+    append_score_2dp(out, &mut bufs.itoa, hit.energy.as_f64());
+    out.push(b'\n');
+}
+
 #[inline]
 fn append_score_2dp(buf: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, score: f64) {
     let scaled = (score * 100.0).round_ties_even() as i64;
