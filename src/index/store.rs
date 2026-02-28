@@ -165,10 +165,7 @@ impl TargetStore {
         }
 
         // Phase 2: Build global combined_seq and track offsets
-        let total_bases: usize = targets
-            .iter()
-            .map(|t| 2 * t.seq_len as usize + 2)
-            .sum();
+        let total_bases: usize = targets.iter().map(|t| 2 * t.seq_len as usize + 2).sum();
         let mut combined_bases: Vec<Base> = Vec::with_capacity(total_bases);
         let mut offsets: Vec<u64> = Vec::with_capacity(targets.len());
         let mut seq_lens: Vec<u32> = Vec::with_capacity(targets.len());
@@ -182,9 +179,9 @@ impl TargetStore {
             combined_bases.push(Base::Gap);
         }
 
-        // Phase 3: Build single global SA
-        let combined_seq = Sequence::from(combined_bases.clone());
-        let combined_sa = SuffixArray::try_from(&combined_seq)
+        // Phase 3: Build single global SA directly from &[Base]
+        // (avoids cloning combined_bases and the extra to_bytes() allocation)
+        let combined_sa = SuffixArray::build_from_bases(&combined_bases)
             .context("Failed to build global suffix array")?;
 
         // Append SA_CHAR_PADDING sentinels to seq
@@ -203,10 +200,10 @@ impl TargetStore {
 
         let file = File::create(&tmp_path)
             .with_context(|| format!("Failed to create temp index file: {}", tmp_path.display()))?;
-        let mut writer = BufWriter::new(file);
+        // Use 8 MiB buffer for bulk sequential writes (default 8 KiB is too small)
+        let mut writer = BufWriter::with_capacity(8 << 20, file);
 
-        let target_count =
-            u32::try_from(targets.len()).context("Target count exceeds u32::MAX")?;
+        let target_count = u32::try_from(targets.len()).context("Target count exceeds u32::MAX")?;
 
         // Header: magic[8] + target_count[4] + reserved[4]
         writer
@@ -245,8 +242,9 @@ impl TargetStore {
         let seq_byte_count = combined_bases.len() as u64;
         writer.write_all(&seq_byte_count.to_le_bytes())?;
         // SAFETY: Base is #[repr(u8)], so &[Base] is layout-compatible with &[u8]
-        let seq_bytes =
-            unsafe { std::slice::from_raw_parts(combined_bases.as_ptr().cast::<u8>(), combined_bases.len()) };
+        let seq_bytes = unsafe {
+            std::slice::from_raw_parts(combined_bases.as_ptr().cast::<u8>(), combined_bases.len())
+        };
         writer.write_all(seq_bytes)?;
 
         // Pad to 8-byte alignment before SA
@@ -299,9 +297,8 @@ impl TargetStore {
             bail!("Invalid index magic in {}", path.display());
         }
 
-        let target_count = u32::from_le_bytes(
-            bytes[8..12].try_into().expect("header slice"),
-        ) as usize;
+        let target_count =
+            u32::from_le_bytes(bytes[8..12].try_into().expect("header slice")) as usize;
 
         // Parse per-target metadata
         let mut cursor = FILE_HEADER_BYTES;
@@ -312,15 +309,14 @@ impl TargetStore {
                 bail!("Truncated metadata entry in {}", path.display());
             }
 
-            let name_len = u32::from_le_bytes(
-                bytes[cursor..cursor + 4].try_into().expect("name_len"),
-            ) as usize;
-            let seq_len = u32::from_le_bytes(
-                bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"),
-            ) as usize;
-            let global_offset = u64::from_le_bytes(
-                bytes[cursor + 8..cursor + 16].try_into().expect("offset"),
-            );
+            let name_len =
+                u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().expect("name_len"))
+                    as usize;
+            let seq_len =
+                u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"))
+                    as usize;
+            let global_offset =
+                u64::from_le_bytes(bytes[cursor + 8..cursor + 16].try_into().expect("offset"));
             cursor += META_ENTRY_FIXED_BYTES;
 
             let name_end = cursor
@@ -348,9 +344,8 @@ impl TargetStore {
         if cursor + 8 > bytes.len() {
             bail!("Truncated seq header in {}", path.display());
         }
-        let seq_byte_count = u64::from_le_bytes(
-            bytes[cursor..cursor + 8].try_into().expect("seq count"),
-        ) as usize;
+        let seq_byte_count =
+            u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().expect("seq count")) as usize;
         let seq_data_offset = cursor + 8;
         let seq_data_end = seq_data_offset
             .checked_add(seq_byte_count)
@@ -626,10 +621,10 @@ mod tests {
 
         // Verify offsets are contiguous: offset[i+1] = offset[i] + 2*seq_len[i] + 2
         for i in 0..store.len() - 1 {
-            let expected_next =
-                global.offsets[i] + 2 * global.seq_lens[i] as u64 + 2;
+            let expected_next = global.offsets[i] + 2 * global.seq_lens[i] as u64 + 2;
             assert_eq!(
-                global.offsets[i + 1], expected_next,
+                global.offsets[i + 1],
+                expected_next,
                 "Offset mismatch at target {}",
                 i
             );
