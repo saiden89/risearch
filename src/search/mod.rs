@@ -1,12 +1,14 @@
 //! Search module - finds miRNA-target interactions.
 //!
 //! Pipeline:
-//! 1) Entry over targets and queries
-//! 2) Seed enumeration for one query/target pair
+//! 1) Parallel iteration over queries (global SA traversal per query)
+//! 2) Seed enumeration across all targets via single SA traversal
 //! 3) Optional extension of each seed
 //! 4) Materialize and emit final hits
 
-use anyhow::{Context, Result};
+use std::collections::HashMap;
+
+use anyhow::Result;
 use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
@@ -14,16 +16,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{
-    ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs, SearchAxis,
-};
+use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::{DpConfig, DpExtender, DpView};
 use crate::dsm::{
     pair_mat, seed_energy, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99,
 };
-use crate::index::store::{TargetStore, TargetView};
+use crate::index::store::{GlobalView, TargetStore};
 use crate::registry::{QueryData, QueryRegistry};
-use crate::seed::{for_each_seed_one_target, SeedHit, TargetSeedView};
+use crate::seed::{for_each_seed, SeedHit};
 use crate::seq::Sequence;
 use crate::types::{Base, Energy, Interval, Strand};
 
@@ -63,41 +63,26 @@ where
         return Ok(0);
     }
 
-    let axis = match opts.axis {
-        SearchAxis::Auto => {
-            if store.len() == 1 {
-                Axis::ByQuery
-            } else {
-                let workers = rayon::current_num_threads().max(1);
-                let target_threshold = workers.div_ceil(2);
-                if store.len() >= target_threshold || queries.len() == 1 {
-                    Axis::ByTarget
-                } else {
-                    Axis::ByPair
-                }
-            }
-        }
-        SearchAxis::Target => Axis::ByTarget,
-        SearchAxis::Query => Axis::ByQuery,
-        SearchAxis::Pair => Axis::ByPair,
-    };
+    let global = store.global_view();
 
     info!(
-        "Starting search: {} queries x {} targets, axis={:?}, seed={:?}, max_ext={}, delta_g={}",
+        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
         queries.len(),
         store.len(),
-        axis,
         opts.seed.seed,
         opts.extend.max_extension,
         opts.filter.delta_g
     );
 
     // Fast path for single-worker runs: avoid producer thread + channel fan-in.
-    // This mirrors C's direct in-thread evaluation when threads=1.
     if rayon::current_num_threads() == 1 {
         let total = match opts.score.matrix {
-            Matrix::T04 => run_search_direct::<T04, _>(queries, store, opts, axis, &mut on_hit)?,
-            Matrix::T99 => run_search_direct::<T99, _>(queries, store, opts, axis, &mut on_hit)?,
+            Matrix::T04 => {
+                run_search_direct::<T04, _>(queries, &global, opts, &mut on_hit)?
+            }
+            Matrix::T99 => {
+                run_search_direct::<T99, _>(queries, &global, opts, &mut on_hit)?
+            }
         };
         info!("Search complete: {} hits", total);
         return Ok(total);
@@ -109,24 +94,12 @@ where
     let total = std::thread::scope(|scope| -> Result<usize> {
         let cancel = &cancelled;
         let producer = scope.spawn(move || -> Result<()> {
-            match (opts.score.matrix, axis) {
-                (Matrix::T04, Axis::ByTarget) => {
-                    produce_by_target::<T04>(queries, store, opts, tx, cancel)
+            match opts.score.matrix {
+                Matrix::T04 => {
+                    produce_by_query::<T04>(queries, &global, opts, tx, cancel)
                 }
-                (Matrix::T04, Axis::ByQuery) => {
-                    produce_by_query::<T04>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T04, Axis::ByPair) => {
-                    produce_by_pair::<T04>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T99, Axis::ByTarget) => {
-                    produce_by_target::<T99>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T99, Axis::ByQuery) => {
-                    produce_by_query::<T99>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T99, Axis::ByPair) => {
-                    produce_by_pair::<T99>(queries, store, opts, tx, cancel)
+                Matrix::T99 => {
+                    produce_by_query::<T99>(queries, &global, opts, tx, cancel)
                 }
             }
         });
@@ -169,26 +142,21 @@ where
 
 const HIT_CHANNEL_CAPACITY: usize = 2048;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Axis {
-    ByTarget,
-    ByQuery,
-    ByPair,
-}
-
-/// Reusable per-run state.
+/// Reusable per-worker state.
 struct SearchState<M: DsmModel> {
     extender: DpExtender<M>,
     dp_cfg: DpConfig,
+    /// Cache of de-complemented target bases, keyed by target index.
+    raw_cache: HashMap<u32, TargetRawBases>,
 }
 
 impl<M: DsmModel> SearchState<M> {
-    /// Build per-worker DP state from the run-level score/extension configuration.
     fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
         let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
             extender: DpExtender::<M>::from_config(dp_cfg),
             dp_cfg,
+            raw_cache: HashMap::new(),
         }
     }
 }
@@ -201,9 +169,8 @@ fn needs_raw_target(opts: &SearchArgs) -> bool {
 /// Single-thread direct execution path (no channel fan-in).
 fn run_search_direct<M, F>(
     queries: &QueryRegistry,
-    store: &TargetStore,
+    global: &GlobalView<'_>,
     opts: &SearchArgs,
-    axis: Axis,
     on_hit: &mut F,
 ) -> Result<usize>
 where
@@ -213,61 +180,20 @@ where
     let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
     let mut emitted = 0usize;
 
-    match axis {
-        Axis::ByQuery => {
-            let (target_idx, _) = store
-                .iter_meta()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("Target index is empty"))?;
-            let target = store
-                .target_view(target_idx as usize)
-                .with_context(|| format!("Failed to load target #{}", target_idx))?;
-            let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
-
-            for (query_idx, query) in queries.entries().iter().enumerate() {
-                let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                    on_hit(hit)?;
-                    emitted += 1;
-                    Ok(())
-                };
-                search_query_against_target::<M, _>(
-                    query_idx as u32,
-                    query,
-                    &target,
-                    raw.as_ref(),
-                    target_idx,
-                    opts,
-                    &mut state,
-                    &mut emit_hit,
-                )?;
-            }
-        }
-        Axis::ByTarget | Axis::ByPair => {
-            for (target_idx, _) in store.iter_meta() {
-                let target = store
-                    .target_view(target_idx as usize)
-                    .with_context(|| format!("Failed to load target #{}", target_idx))?;
-                let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
-
-                for (query_idx, query) in queries.entries().iter().enumerate() {
-                    let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                        on_hit(hit)?;
-                        emitted += 1;
-                        Ok(())
-                    };
-                    search_query_against_target::<M, _>(
-                        query_idx as u32,
-                        query,
-                        &target,
-                        raw.as_ref(),
-                        target_idx,
-                        opts,
-                        &mut state,
-                        &mut emit_hit,
-                    )?;
-                }
-            }
-        }
+    for (query_idx, query) in queries.entries().iter().enumerate() {
+        let mut emit_hit = |hit: SearchHit| -> Result<()> {
+            on_hit(hit)?;
+            emitted += 1;
+            Ok(())
+        };
+        search_query::<M, _>(
+            query_idx as u32,
+            query,
+            global,
+            opts,
+            &mut state,
+            &mut emit_hit,
+        )?;
     }
 
     Ok(emitted)
@@ -290,98 +216,29 @@ impl TargetRawBases {
         &self.both[self.split..]
     }
 
-    fn from_target(target: &TargetView<'_>) -> Self {
-        let n = target.seq_len;
-        let t_forward_trans = &target.combined_seq[..target.seq_len];
-        let t_reverse_trans = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
-
+    fn from_transformed(fwd_trans: &[Base], rc_trans: &[Base]) -> Self {
+        let n = fwd_trans.len();
         let mut both: Vec<Base> = Vec::with_capacity(2 * n);
         // SAFETY: every element is initialized before being read.
         unsafe { both.set_len(2 * n) };
         for i in 0..n {
-            // SAFETY: indices are in-bounds by construction.
             unsafe {
-                *both.get_unchecked_mut(i) = (*t_forward_trans.get_unchecked(i)).complement();
-                *both.get_unchecked_mut(n + i) = (*t_reverse_trans.get_unchecked(i)).complement();
+                *both.get_unchecked_mut(i) = (*fwd_trans.get_unchecked(i)).complement();
+                *both.get_unchecked_mut(n + i) = (*rc_trans.get_unchecked(i)).complement();
             }
         }
-
         Self { both, split: n }
     }
 }
 
-/// Parallel target-major producer:
-/// each worker processes one target across all queries.
-fn produce_by_target<M: DsmModel>(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    opts: &SearchArgs,
-    tx: mpsc::SyncSender<SearchHit>,
-    cancelled: &AtomicBool,
-) -> Result<()> {
-    let target_ids: Vec<u32> = store.iter_meta().map(|(idx, _)| idx).collect();
-    target_ids.into_par_iter().try_for_each_init(
-        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
-        |(state, tx), target_idx| -> Result<()> {
-            if cancelled.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-
-            let target = store
-                .target_view(target_idx as usize)
-                .with_context(|| format!("Failed to load target #{}", target_idx))?;
-            let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
-
-            for (query_idx, query) in queries.entries().iter().enumerate() {
-                if cancelled.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-                    tx.send(hit)
-                        .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
-                    Ok(())
-                };
-
-                search_query_against_target::<M, _>(
-                    query_idx as u32,
-                    query,
-                    &target,
-                    raw.as_ref(),
-                    target_idx,
-                    opts,
-                    state,
-                    &mut emit_hit,
-                )?;
-            }
-
-            Ok(())
-        },
-    )
-}
-
-/// Parallel query-major producer for single-target workloads.
-///
-/// This path avoids underutilization when only one target is present.
+/// Parallel query-major producer: each worker processes one query against the global SA.
 fn produce_by_query<M: DsmModel>(
     queries: &QueryRegistry,
-    store: &TargetStore,
+    global: &GlobalView<'_>,
     opts: &SearchArgs,
     tx: mpsc::SyncSender<SearchHit>,
     cancelled: &AtomicBool,
 ) -> Result<()> {
-    let (target_idx, _) = store
-        .iter_meta()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Target index is empty"))?;
-    let target = store
-        .target_view(target_idx as usize)
-        .with_context(|| format!("Failed to load target #{}", target_idx))?;
-    let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
-
     (0..queries.len()).into_par_iter().try_for_each_init(
         || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
         |(state, tx), query_idx| {
@@ -398,90 +255,14 @@ fn produce_by_query<M: DsmModel>(
                 Ok(())
             };
 
-            search_query_against_target::<M, _>(
+            search_query::<M, _>(
                 query_idx as u32,
                 &queries.entries()[query_idx],
-                &target,
-                raw.as_ref(),
-                target_idx,
+                global,
                 opts,
                 state,
                 &mut emit_hit,
             )?;
-
-            Ok(())
-        },
-    )
-}
-
-/// Parallel pair-major producer:
-/// each worker processes one (target, query chunk) task.
-fn produce_by_pair<M: DsmModel>(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    opts: &SearchArgs,
-    tx: mpsc::SyncSender<SearchHit>,
-    cancelled: &AtomicBool,
-) -> Result<()> {
-    let query_entries = queries.entries();
-    let query_count = query_entries.len();
-    let target_ids: Vec<u32> = store.iter_meta().map(|(idx, _)| idx).collect();
-    if query_count == 0 || target_ids.is_empty() {
-        return Ok(());
-    }
-
-    let workers = rayon::current_num_threads().max(1);
-    let chunks_per_target = (workers * 8).div_ceil(target_ids.len()).max(1);
-    let q_chunk = query_count.div_ceil(chunks_per_target).max(1);
-    let chunks_per_target_actual = query_count.div_ceil(q_chunk);
-
-    let mut tasks = Vec::with_capacity(target_ids.len() * chunks_per_target_actual);
-    for target_idx in target_ids {
-        let mut q_start = 0usize;
-        while q_start < query_count {
-            let q_end = (q_start + q_chunk).min(query_count);
-            tasks.push((target_idx, q_start, q_end));
-            q_start = q_end;
-        }
-    }
-
-    tasks.into_par_iter().try_for_each_init(
-        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
-        |(state, tx), (target_idx, q_start, q_end)| -> Result<()> {
-            if cancelled.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-
-            let target = store
-                .target_view(target_idx as usize)
-                .with_context(|| format!("Failed to load target #{}", target_idx))?;
-            let raw = needs_raw_target(opts).then(|| TargetRawBases::from_target(&target));
-
-            for query_idx in q_start..q_end {
-                if cancelled.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-                    tx.send(hit)
-                        .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
-                    Ok(())
-                };
-
-                search_query_against_target::<M, _>(
-                    query_idx as u32,
-                    &query_entries[query_idx],
-                    &target,
-                    raw.as_ref(),
-                    target_idx,
-                    opts,
-                    state,
-                    &mut emit_hit,
-                )?;
-            }
 
             Ok(())
         },
@@ -499,13 +280,12 @@ struct QueryTargetCtx<'a> {
     target_len: usize,
 }
 
-/// Enumerate seeds for a single query-target pair, optionally extend them, and emit hits.
-fn search_query_against_target<M, F>(
+/// Enumerate seeds for a single query across all targets via the global SA,
+/// optionally extend them, and emit hits.
+fn search_query<M, F>(
     query_idx: u32,
     query: &QueryData,
-    target: &TargetView<'_>,
-    raw: Option<&TargetRawBases>,
-    target_idx: u32,
+    global: &GlobalView<'_>,
     opts: &SearchArgs,
     state: &mut SearchState<M>,
     on_hit: &mut F,
@@ -514,41 +294,37 @@ where
     M: DsmModel,
     F: FnMut(SearchHit) -> Result<()>,
 {
-    let target_seed_view = TargetSeedView {
-        combined_seq: target.combined_seq,
-        combined_sa: target.combined_sa,
-        sa_real_len: target.sa_real_len,
-        seq_len: target.seq_len,
-    };
-
-    let ctx = QueryTargetCtx {
-        query_idx,
-        query_bases: query.sequence(),
-        seed_interval: query.seed_interval(),
-        include_alignment: opts.output.format != OutputFormat::Minimal,
-        pair_matrix: pair_mat(opts.seed.allows_wobble()),
-        filter_cfg: &opts.filter,
-        target_len: target.seq_len,
-    };
+    let query_bases = query.sequence();
+    let seed_interval = query.seed_interval();
+    let include_alignment = opts.output.format != OutputFormat::Minimal;
+    let pair_matrix = pair_mat(opts.seed.allows_wobble());
+    let filter_cfg = &opts.filter;
 
     let mut emitted = 0usize;
     let mut callback_err: Option<anyhow::Error> = None;
 
     // Fast path: no extension and no alignment output required.
-    // Avoid materializing full de-complemented target arrays.
-    if state.dp_cfg.max_extension() == 0 && !ctx.include_alignment {
-        let t_forward_trans = &target.combined_seq[..target.seq_len];
-        let t_reverse_trans = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
+    // Avoid materializing de-complemented target arrays entirely.
+    if state.dp_cfg.max_extension() == 0 && !include_alignment {
         let penalty = state.dp_cfg.penalty_raw();
 
-        for_each_seed_one_target(query, target_idx, &target_seed_view, &opts.seed, |seed| {
+        for_each_seed(query, global, &opts.seed, |seed| {
             if callback_err.is_some() {
                 return;
             }
 
+            let target_idx = seed.target_id.0 as usize;
+            let target_len = global.seq_lens[target_idx] as usize;
+            let target_offset = global.offsets[target_idx] as usize;
+
+            // Get transformed target slices from the global combined_seq
+            let t_forward_trans =
+                &global.combined_seq[target_offset..target_offset + target_len];
+            let t_reverse_trans =
+                &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+
             let mut seed = seed;
-            seed.target_start = ctx
-                .target_len
+            seed.target_start = target_len
                 .saturating_sub(seed.target_start + seed.seed_len.get());
 
             let t_trans = match seed.strand {
@@ -565,20 +341,20 @@ where
 
             let t_match_end = t_pos + len - 1;
             let seed_e =
-                seed_energy_transformed::<M>(ctx.query_bases, t_trans, q_pos, t_pos, len, penalty);
+                seed_energy_transformed::<M>(query_bases, t_trans, q_pos, t_pos, len, penalty);
             let term_5p = terminal_5p::<M>(
-                ctx.query_bases[q_pos],
+                query_bases[q_pos],
                 t_trans[t_match_end].complement(),
                 penalty,
             );
             let term_3p = terminal_3p::<M>(
-                ctx.query_bases[q_pos + len - 1],
+                query_bases[q_pos + len - 1],
                 t_trans[t_pos].complement(),
                 penalty,
             );
             let nt_count = (2 * len) as i32;
             let score = M::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty);
-            if score > ctx.filter_cfg.delta_g {
+            if score > filter_cfg.delta_g {
                 return;
             }
 
@@ -592,13 +368,13 @@ where
                 right_pairs: SmallVec::new(),
             };
             let hit = SearchHit::new(
-                ctx.query_idx,
-                ctx.query_bases,
+                query_idx,
+                query_bases,
                 &[],
                 &seed,
                 &ext,
                 false,
-                ctx.target_len,
+                target_len,
             );
 
             match on_hit(hit) {
@@ -613,25 +389,49 @@ where
         return Ok(emitted);
     }
 
-    let raw = raw.expect("raw target bases required when extension/alignment is enabled");
+    // Full path: extension and/or alignment required.
+    // Cache de-complemented target bases per target_id.
+    let need_raw = needs_raw_target(opts);
 
-    for_each_seed_one_target(query, target_idx, &target_seed_view, &opts.seed, |seed| {
+    for_each_seed(query, global, &opts.seed, |seed| {
         if callback_err.is_some() {
             return;
         }
 
+        let target_idx_u32 = seed.target_id.0;
+        let target_idx = target_idx_u32 as usize;
+        let target_len = global.seq_lens[target_idx] as usize;
+
         let mut seed = seed;
-        // Re-anchor seed start into the sequence space used by extension/scoring.
-        // This mirrors C's use of comp(raw_target) with opposite-orientation access.
-        seed.target_start = ctx
-            .target_len
+        seed.target_start = target_len
             .saturating_sub(seed.target_start + seed.seed_len.get());
 
+        // Get or create cached raw bases for this target
+        if need_raw && !state.raw_cache.contains_key(&target_idx_u32) {
+            let target_offset = global.offsets[target_idx] as usize;
+            let fwd_trans =
+                &global.combined_seq[target_offset..target_offset + target_len];
+            let rc_trans =
+                &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+            state
+                .raw_cache
+                .insert(target_idx_u32, TargetRawBases::from_transformed(fwd_trans, rc_trans));
+        }
+
+        let raw = state.raw_cache.get(&target_idx_u32).unwrap();
         let target_bases = match seed.strand {
-            // Seeds discovered in transformed reverse half map to forward raw.
             Strand::Forward => raw.forward(),
-            // Seeds discovered in transformed forward half map to reverse-complement raw.
             Strand::Reverse => raw.reverse(),
+        };
+
+        let ctx = QueryTargetCtx {
+            query_idx,
+            query_bases,
+            seed_interval,
+            include_alignment,
+            pair_matrix,
+            filter_cfg,
+            target_len,
         };
 
         let Some(hit) =
@@ -750,8 +550,6 @@ fn compute_seed_extension<M: DsmModel>(
     let len = seed.seed_len.get();
 
     // Maximality check in scoring/raw coordinate space.
-    // NOTE: the check in search.rs operates in SA/complement space with
-    // different coordinates — these are NOT equivalent and both are required.
     if q_pos > seed_interval.start && t_pos + len < target_bases.len() {
         let p_class = pair_matrix[query_bases[q_pos - 1].idx()][target_bases[t_pos + len].idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {

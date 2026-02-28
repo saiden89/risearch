@@ -66,15 +66,15 @@ fn cmd_search(
     let mut out_buf = Vec::with_capacity(64 * 1024);
     let mut fmt_bufs = output::OutputBuffers::new();
     let format = opts.output.format;
-    let mut target_cache: Option<(u32, risearch::index::store::TargetView<'_>)> = None;
+    let mut target_cache: Option<(u32, risearch::index::store::TargetSeqs<'_>)> = None;
 
     debug!("Starting search...");
     let hits = search::run_search(&queries, &targets, &opts, |hit| -> Result<()> {
         if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
-            let view = targets
-                .target_view(hit.target_idx as usize)
+            let seqs = targets
+                .target_seqs(hit.target_idx as usize)
                 .with_context(|| format!("Failed to load target #{}", hit.target_idx))?;
-            target_cache = Some((hit.target_idx, view));
+            target_cache = Some((hit.target_idx, seqs));
         }
 
         let target = &target_cache
@@ -83,8 +83,8 @@ fn cmd_search(
             .1;
         let q_name = queries.get_name(hit.query_idx);
         let q_seq = queries.get(hit.query_idx).sequence();
-        let t_fwd = &target.combined_seq[..target.seq_len];
-        let t_rc = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
+        let t_fwd = target.fwd_transformed;
+        let t_rc = target.rc_transformed;
 
         if format == risearch::config::OutputFormat::Minimal {
             output::append_hit_minimal_names_vec(

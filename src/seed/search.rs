@@ -1,17 +1,10 @@
 use crate::config::SeedConfig;
-use crate::index::store::SA_CHAR_PADDING;
+use crate::index::store::{GlobalView, SA_CHAR_PADDING};
 use crate::registry::QueryData;
 use crate::types::{Base, PackedSaEntry, SeedLen, Strand, TargetId};
 
 use super::searcher::SeedSearcher;
 use super::SeedHit;
-
-pub(crate) struct TargetSeedView<'a> {
-    pub combined_seq: &'a [Base],
-    pub combined_sa: &'a [u64],
-    pub sa_real_len: usize,
-    pub seq_len: usize,
-}
 
 /// Check if any position in range [start, start+len) contains 'N'
 #[inline]
@@ -63,26 +56,26 @@ fn build_partial_query_sa(
     out
 }
 
-pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
+/// Enumerate seeds for a single query against the global index.
+///
+/// The global combined_seq contains all targets concatenated with Gap separators.
+/// After the SeedSearcher finds matches in the global SA, we remap each target
+/// position back to a specific target using binary search on the offset table.
+pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
     query: &QueryData,
-    target_idx: u32,
-    target: &TargetSeedView<'_>,
+    global: &GlobalView<'_>,
     config: &SeedConfig,
     mut on_seed: F,
 ) {
     let q_len = query.sequence().len();
     let q_sa = query.sa();
-    let target_id = TargetId(target_idx);
     let interval = query.seed_interval();
     let q_start = interval.start;
     let q_end = interval.end;
     let min_len = query.min_seed_len();
     let max_len = q_end.saturating_sub(q_start);
-    let seq_len = target.seq_len;
 
     // Build C-style pre-pruned query SA, then pad for unchecked lookup.
-    // Query SAs are small, so this per-query setup is cheap and removes large
-    // portions of the recursion tree in mismatch-heavy searches.
     let partial_q_sa = build_partial_query_sa(query.sequence(), q_sa, q_start, q_end, min_len);
     let q_sa_real_len = partial_q_sa.len();
     let q_sa_start = partial_q_sa
@@ -104,18 +97,23 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
         &padded_q_seq,
         q_sa_start,
         q_sa_real_len,
-        target.combined_sa,
-        target.combined_seq,
-        target.sa_real_len,
+        global.combined_sa,
+        global.combined_seq,
+        global.sa_real_len,
         config,
     );
+
+    let offsets = global.offsets;
+    let seq_lens = global.seq_lens;
     let mut group_id: u32 = 0;
+
     searcher.for_each_length_range(min_len, max_len, |m| {
         group_id = group_id.wrapping_add(1);
         let this_group = group_id;
         let seed_len = m.seed_len;
         let seed_len_typed = SeedLen::new(seed_len)
             .expect("seed length from search must be positive and fit in u16");
+
         for &q_packed in &padded_q_sa[m.query_interval.start..m.query_interval.end] {
             let q_pos = PackedSaEntry::from(q_packed).pos();
             if q_pos + seed_len > q_len {
@@ -128,30 +126,26 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
                 continue;
             }
 
-            for &t_packed in &target.combined_sa[m.target_interval.start..m.target_interval.end] {
+            for &t_packed in &global.combined_sa[m.target_interval.start..m.target_interval.end] {
                 let t_pos = PackedSaEntry::from(t_packed).pos();
 
-                // Check maximality before doing anything else
-                // if !is_maximal(
-                //     query.sequence(),
-                //     target.combined_seq,
-                //     q_pos,
-                //     t_pos,
-                //     seed_len,
-                //     pair_table,
-                // ) {
-                //     continue;
-                // }
+                // Remap global position to target index via binary search on offsets
+                let target_idx = match offsets.partition_point(|&o| o <= t_pos as u64) {
+                    0 => continue, // before first target
+                    i => i - 1,
+                };
+                let local_pos = t_pos - offsets[target_idx] as usize;
+                let seq_len = seq_lens[target_idx] as usize;
 
-                // Determine strand from position in combined sequence.
-                // t_pos == seq_len is the Gap separator — skip it.
-                let (strand, target_start) = if t_pos < seq_len {
-                    if t_pos + seed_len > seq_len {
+                // Determine strand from local position within target block.
+                // Block layout: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
+                let (strand, target_start) = if local_pos < seq_len {
+                    if local_pos + seed_len > seq_len {
                         continue;
                     }
-                    (Strand::Reverse, t_pos)
-                } else if t_pos > seq_len {
-                    let rc_pos = t_pos - seq_len - 1;
+                    (Strand::Reverse, local_pos)
+                } else if local_pos > seq_len && local_pos < 2 * seq_len + 1 {
+                    let rc_pos = local_pos - seq_len - 1;
                     if rc_pos + seed_len > seq_len {
                         continue;
                     }
@@ -163,7 +157,7 @@ pub(crate) fn for_each_seed_one_target<F: FnMut(SeedHit)>(
                 on_seed(SeedHit {
                     group_id: this_group,
                     query_pos: q_pos,
-                    target_id,
+                    target_id: TargetId(target_idx as u32),
                     target_start,
                     seed_len: seed_len_typed,
                     strand,

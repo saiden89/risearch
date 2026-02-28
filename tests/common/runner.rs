@@ -95,18 +95,18 @@ impl RustRunner<Indexed> {
         let mut rust_out = Vec::with_capacity(64 * 1024);
         let mut fmt_bufs = risearch::output::OutputBuffers::new();
         let format = search_args.output.format;
-        let mut target_cache: Option<(u32, risearch::index::store::TargetView<'_>)> = None;
+        let mut target_cache: Option<(u32, risearch::index::store::TargetSeqs<'_>)> = None;
         risearch::search::run_search(
             &query_registry,
             &self.state.target_store,
             &search_args,
             |hit| -> anyhow::Result<()> {
                 if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
-                    let view = self
+                    let seqs = self
                         .state
                         .target_store
-                        .target_view(hit.target_idx as usize)?;
-                    target_cache = Some((hit.target_idx, view));
+                        .target_seqs(hit.target_idx as usize)?;
+                    target_cache = Some((hit.target_idx, seqs));
                 }
                 let target = &target_cache
                     .as_ref()
@@ -114,8 +114,8 @@ impl RustRunner<Indexed> {
                     .1;
                 let q_name = query_registry.get_name(hit.query_idx);
                 let q_seq = query_registry.get(hit.query_idx).sequence();
-                let t_fwd = &target.combined_seq[..target.seq_len];
-                let t_rc = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
+                let t_fwd = target.fwd_transformed;
+                let t_rc = target.rc_transformed;
                 risearch::output::write_hit_names(
                     &mut fmt_bufs,
                     &hit,

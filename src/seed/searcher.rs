@@ -6,7 +6,7 @@
 //! - `recurse`: recursive parallel SA traversal with inline match/mismatch
 
 use crate::config::SeedConfig;
-use crate::types::{Base, Interval};
+use crate::types::{Base, Interval, PackedSaEntry};
 
 mod partition;
 mod singleton;
@@ -14,8 +14,50 @@ mod singleton;
 use partition::partition_interval_into;
 use singleton::{recurse_q_singleton, recurse_s_singleton, recurse_singleton};
 
-const USE_SINGLETON_FASTPATH: bool = true;
-const LINEAR_PARTITION_CUTOFF: usize = 1024;
+// Raw Base discriminant values (from #[repr(u8)] Base enum), as returned by sa_char().
+const BASE_A: u8 = Base::A as u8;
+const BASE_G: u8 = Base::G as u8;
+const BASE_C: u8 = Base::C as u8;
+const BASE_U: u8 = Base::U as u8;
+
+// Rank-ordered values for SA partitioning.
+// Rank order: Gap(0) < A(1) < C(2) < G(3) < N(4) < U(5).
+// Mirrors C's XSTRM + "acgnu" character class ordering.
+const RANK_A: u8 = 1;
+const RANK_C: u8 = 2;
+const RANK_G: u8 = 3;
+const RANK_N: u8 = 4;
+const RANK_U: u8 = 5;
+
+/// Map raw Base discriminant to sorted rank for SA partitioning.
+#[inline(always)]
+fn sa_char_rank(sa: &[u64], seq: &[Base], sa_idx: usize, offset: usize) -> u8 {
+    match sa_char(sa, seq, sa_idx, offset) {
+        BASE_A => RANK_A,
+        BASE_C => RANK_C,
+        BASE_G => RANK_G,
+        BASE_U => RANK_U,
+        5 => RANK_N, // Base::N — rarely hit, not worth a const
+        _ => 0,      // Gap/sentinel
+    }
+}
+
+/// Read the base discriminant at `sa[sa_idx].pos + offset` from the sequence.
+///
+/// # Safety
+/// SA_CHAR_PADDING sentinel entries guarantee `suffix_pos + offset` is within
+/// bounds for any valid SA index and depth up to max_len.
+#[inline(always)]
+fn sa_char(sa: &[u64], seq: &[Base], sa_idx: usize, offset: usize) -> u8 {
+    let suffix_pos = sa_suffix_pos(sa, sa_idx);
+    unsafe { *seq.get_unchecked(suffix_pos + offset) as u8 }
+}
+
+/// Extract the suffix position from a packed SA entry.
+#[inline(always)]
+fn sa_suffix_pos(sa: &[u64], sa_idx: usize) -> usize {
+    (unsafe { *sa.get_unchecked(sa_idx) } & PackedSaEntry::POS_MASK) as usize
+}
 
 // =============================================================================
 // SEED MATCH
@@ -92,27 +134,9 @@ impl<'a> SeedSearcher<'a> {
         };
 
         if self.cfg.allows_wobble() {
-            recurse::<_, true>(
-                &mut ctx,
-                self.q_sa_start,
-                self.q_sa_len,
-                0,
-                self.t_sa_len,
-                0, // depth
-                0, // match streak for suffix
-                0, // mismatch count
-            );
+            recurse::<_, true>(&mut ctx, self.q_sa_start, self.q_sa_len, 0, self.t_sa_len, 0, 0, 0);
         } else {
-            recurse::<_, false>(
-                &mut ctx,
-                self.q_sa_start,
-                self.q_sa_len,
-                0,
-                self.t_sa_len,
-                0, // depth
-                0, // match streak for suffix
-                0, // mismatch count
-            );
+            recurse::<_, false>(&mut ctx, self.q_sa_start, self.q_sa_len, 0, self.t_sa_len, 0, 0, 0);
         }
     }
 
@@ -157,13 +181,16 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     sl: usize,
     sr: usize,
     depth: usize,
-    msm: usize, // consecutive match streak (suffix matches)
-    mc: usize,  // mismatch count
+    match_streak: usize, // consecutive matches at tail (for suffix constraint)
+    mm_count: usize,      // mismatches accumulated so far
 ) {
-    // Emit match if within valid length range
+    // Emit match if within valid length range.
+    // When mm_count > 0, also require: enough trailing matches (suffix constraint)
+    // and match_streak < depth (ensures at least one mismatch actually occurred,
+    // preventing pure-match seeds from being re-emitted on the mismatch path).
     if depth >= ctx.min_len
         && depth <= ctx.max_len
-        && (mc == 0 || (msm >= ctx.min_suffix && msm < depth))
+        && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < depth))
     {
         (ctx.on_match)(SeedMatch {
             query_interval: Interval::new(ql, qr),
@@ -176,32 +203,34 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         return;
     }
 
-    // Prune: can't accumulate enough suffix matches
-    if mc > 0 && ctx.min_suffix > 0 {
-        let max_possible = msm + (ctx.max_len - depth);
+    // Prune: can't accumulate enough suffix matches in remaining depth
+    if mm_count > 0 && ctx.min_suffix > 0 {
+        let max_possible = match_streak + (ctx.max_len - depth);
         if max_possible < ctx.min_suffix {
             return;
         }
     }
 
-    if USE_SINGLETON_FASTPATH {
-        if qr - ql == 1 && sr - sl == 1 {
-            recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, msm, mc);
-            return;
-        }
-        if qr - ql == 1 {
-            recurse_q_singleton::<F, WOBBLE>(ctx, ql, sl, sr, depth, msm, mc);
-            return;
-        }
-        if sr - sl == 1 {
-            recurse_s_singleton::<F, WOBBLE>(ctx, ql, qr, sl, depth, msm, mc);
-            return;
-        }
+    // Singleton fast paths: when one or both SA intervals have a single entry,
+    // skip partition overhead and compare characters directly.
+    if qr - ql == 1 && sr - sl == 1 {
+        recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, match_streak, mm_count);
+        return;
+    }
+    if qr - ql == 1 {
+        recurse_q_singleton::<F, WOBBLE>(ctx, ql, sl, sr, depth, match_streak, mm_count);
+        return;
+    }
+    if sr - sl == 1 {
+        recurse_s_singleton::<F, WOBBLE>(ctx, ql, qr, sl, depth, match_streak, mm_count);
+        return;
     }
 
     // Partition both SA intervals by base at current depth.
     // C-style layout from `sa_search_interval("acgnu")`:
     // [A_start, C_start, G_start, N_start, U_start, end]
+    // N (rank 4) boundaries are computed but never matched — N can't form
+    // any valid base pair, so its partition slots serve only as G's upper bound.
     let mut qint = [0usize; 6];
     let mut sint = [0usize; 6];
     partition_interval_into(ctx.q_sa, ctx.q_seq, ql, qr, depth, &mut qint);
@@ -216,7 +245,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
     // Can we introduce a mismatch at this position?
     let can_mm = ctx.max_mm > 0
-        && mc < ctx.max_mm
+        && mm_count < ctx.max_mm
         && d1 > ctx.min_prefix
         && ctx.max_len - d1 >= ctx.min_suffix;
 
@@ -231,26 +260,28 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (su_lo, su_hi) = (sint[4], sint[5]);
 
     macro_rules! rec {
-        ($q_lo:expr, $q_hi:expr, $s_lo:expr, $s_hi:expr, $next_msm:expr, $next_mc:expr) => {
+        ($q_lo:expr, $q_hi:expr, $s_lo:expr, $s_hi:expr, $next_ms:expr, $next_mc:expr) => {
             if $q_lo < $q_hi && $s_lo < $s_hi {
-                recurse::<F, WOBBLE>(ctx, $q_lo, $q_hi, $s_lo, $s_hi, d1, $next_msm, $next_mc);
+                recurse::<F, WOBBLE>(
+                    ctx, $q_lo, $q_hi, $s_lo, $s_hi, d1, $next_ms, $next_mc,
+                );
             }
         };
     }
 
     // Match branches in C query-class order: A, C, G, U.
-    rec!(qa_lo, qa_hi, su_lo, su_hi, msm + 1, mc); // A-U
-    rec!(qc_lo, qc_hi, sg_lo, sg_hi, msm + 1, mc); // C-G
+    rec!(qa_lo, qa_hi, su_lo, su_hi, match_streak + 1, mm_count); // A-U
+    rec!(qc_lo, qc_hi, sg_lo, sg_hi, match_streak + 1, mm_count); // C-G
     if qg_lo < qg_hi {
-        rec!(qg_lo, qg_hi, sc_lo, sc_hi, msm + 1, mc); // G-C
+        rec!(qg_lo, qg_hi, sc_lo, sc_hi, match_streak + 1, mm_count); // G-C
         if WOBBLE {
-            rec!(qg_lo, qg_hi, su_lo, su_hi, msm + 1, mc); // G-U wobble
+            rec!(qg_lo, qg_hi, su_lo, su_hi, match_streak + 1, mm_count); // G-U wobble
         }
     }
     if qu_lo < qu_hi {
-        rec!(qu_lo, qu_hi, sa_lo, sa_hi, msm + 1, mc); // U-A
+        rec!(qu_lo, qu_hi, sa_lo, sa_hi, match_streak + 1, mm_count); // U-A
         if WOBBLE {
-            rec!(qu_lo, qu_hi, sg_lo, sg_hi, msm + 1, mc); // U-G wobble
+            rec!(qu_lo, qu_hi, sg_lo, sg_hi, match_streak + 1, mm_count); // U-G wobble
         }
     }
 
@@ -261,39 +292,38 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
     // q = A (matches only U)
     if qa_lo < qa_hi {
-        rec!(qa_lo, qa_hi, sa_lo, sa_hi, 0, mc + 1);
-        rec!(qa_lo, qa_hi, sc_lo, sc_hi, 0, mc + 1);
-        rec!(qa_lo, qa_hi, sg_lo, sg_hi, 0, mc + 1);
+        rec!(qa_lo, qa_hi, sa_lo, sa_hi, 0, mm_count + 1);
+        rec!(qa_lo, qa_hi, sc_lo, sc_hi, 0, mm_count + 1);
+        rec!(qa_lo, qa_hi, sg_lo, sg_hi, 0, mm_count + 1);
     }
 
     // q = C (matches G)
     if qc_lo < qc_hi {
-        rec!(qc_lo, qc_hi, sa_lo, sa_hi, 0, mc + 1);
-        rec!(qc_lo, qc_hi, sc_lo, sc_hi, 0, mc + 1);
-        rec!(qc_lo, qc_hi, su_lo, su_hi, 0, mc + 1);
+        rec!(qc_lo, qc_hi, sa_lo, sa_hi, 0, mm_count + 1);
+        rec!(qc_lo, qc_hi, sc_lo, sc_hi, 0, mm_count + 1);
+        rec!(qc_lo, qc_hi, su_lo, su_hi, 0, mm_count + 1);
     }
 
     // q = G (matches C and wobble U)
     if qg_lo < qg_hi {
-        rec!(qg_lo, qg_hi, sa_lo, sa_hi, 0, mc + 1);
-        rec!(qg_lo, qg_hi, sg_lo, sg_hi, 0, mc + 1);
+        rec!(qg_lo, qg_hi, sa_lo, sa_hi, 0, mm_count + 1);
+        rec!(qg_lo, qg_hi, sg_lo, sg_hi, 0, mm_count + 1);
         if !WOBBLE {
-            rec!(qg_lo, qg_hi, su_lo, su_hi, 0, mc + 1);
+            rec!(qg_lo, qg_hi, su_lo, su_hi, 0, mm_count + 1);
         }
     }
 
     // q = U (matches A and wobble G)
     if qu_lo < qu_hi {
         if !WOBBLE {
-            rec!(qu_lo, qu_hi, sg_lo, sg_hi, 0, mc + 1);
+            rec!(qu_lo, qu_hi, sg_lo, sg_hi, 0, mm_count + 1);
         }
-        rec!(qu_lo, qu_hi, sc_lo, sc_hi, 0, mc + 1);
-        rec!(qu_lo, qu_hi, su_lo, su_hi, 0, mc + 1);
+        rec!(qu_lo, qu_hi, sc_lo, sc_hi, 0, mm_count + 1);
+        rec!(qu_lo, qu_hi, su_lo, su_hi, 0, mm_count + 1);
     }
 }
 
 #[cfg(test)]
-#[inline(always)]
 fn partition_interval(
     sa: &[u64],
     seq: &[Base],

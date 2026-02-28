@@ -1,14 +1,18 @@
-use crate::types::{Interval, PackedSaEntry};
+use crate::types::Interval;
 
-use super::{partition_interval_into, recurse, RecurseCtx, SeedMatch};
+use super::{
+    partition_interval_into, recurse, sa_char, sa_suffix_pos, RecurseCtx, SeedMatch,
+    BASE_A, BASE_C, BASE_G, BASE_U,
+};
 
+/// Check if a query base pairs with a target base (in complement-transformed space).
 #[inline(always)]
 fn is_match_pair<const WOBBLE: bool>(q_char: u8, s_char: u8) -> bool {
     match q_char {
-        1 => s_char == 4,                            // A ↔ U
-        2 => s_char == 3 || (WOBBLE && s_char == 4), // G ↔ C or wobble U
-        3 => s_char == 2,                            // C ↔ G
-        4 => s_char == 1 || (WOBBLE && s_char == 2), // U ↔ A or wobble G
+        BASE_A => s_char == BASE_U,
+        BASE_G => s_char == BASE_C || (WOBBLE && s_char == BASE_U),
+        BASE_C => s_char == BASE_G,
+        BASE_U => s_char == BASE_A || (WOBBLE && s_char == BASE_G),
         _ => false,
     }
 }
@@ -20,13 +24,11 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     sl: usize,
     sr: usize,
     depth: usize,
-    msm: usize,
-    mc: usize,
+    match_streak: usize,
+    mm_count: usize,
 ) {
-    let q_suffix_pos =
-        (unsafe { *ctx.q_sa.get_unchecked(q_idx) } & PackedSaEntry::POS_MASK) as usize;
-    let q_char = unsafe { *ctx.q_seq.get_unchecked(q_suffix_pos + depth) } as u8;
-    if !(1..=4).contains(&q_char) {
+    let q_char = sa_char(ctx.q_sa, ctx.q_seq, q_idx, depth);
+    if !(BASE_A..=BASE_U).contains(&q_char) {
         return;
     }
 
@@ -35,7 +37,7 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
     let d1 = depth + 1;
     let can_mm = ctx.max_mm > 0
-        && mc < ctx.max_mm
+        && mm_count < ctx.max_mm
         && d1 > ctx.min_prefix
         && ctx.max_len - d1 >= ctx.min_suffix;
 
@@ -45,26 +47,35 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (su_lo, su_hi) = (sint[4], sint[5]);
 
     macro_rules! rec_s {
-        ($s_lo:expr, $s_hi:expr, $next_msm:expr, $next_mc:expr) => {
+        ($s_lo:expr, $s_hi:expr, $next_ms:expr, $next_mc:expr) => {
             if $s_lo < $s_hi {
-                recurse::<F, WOBBLE>(ctx, q_idx, q_idx + 1, $s_lo, $s_hi, d1, $next_msm, $next_mc);
+                recurse::<F, WOBBLE>(
+                    ctx,
+                    q_idx,
+                    q_idx + 1,
+                    $s_lo,
+                    $s_hi,
+                    d1,
+                    $next_ms,
+                    $next_mc,
+                );
             }
         };
     }
 
     match q_char {
-        1 => rec_s!(su_lo, su_hi, msm + 1, mc), // A-U
-        2 => {
-            rec_s!(sc_lo, sc_hi, msm + 1, mc); // G-C
+        BASE_A => rec_s!(su_lo, su_hi, match_streak + 1, mm_count),
+        BASE_G => {
+            rec_s!(sc_lo, sc_hi, match_streak + 1, mm_count);
             if WOBBLE {
-                rec_s!(su_lo, su_hi, msm + 1, mc); // G-U wobble
+                rec_s!(su_lo, su_hi, match_streak + 1, mm_count);
             }
         }
-        3 => rec_s!(sg_lo, sg_hi, msm + 1, mc), // C-G
-        4 => {
-            rec_s!(sa_lo, sa_hi, msm + 1, mc); // U-A
+        BASE_C => rec_s!(sg_lo, sg_hi, match_streak + 1, mm_count),
+        BASE_U => {
+            rec_s!(sa_lo, sa_hi, match_streak + 1, mm_count);
             if WOBBLE {
-                rec_s!(sg_lo, sg_hi, msm + 1, mc); // U-G wobble
+                rec_s!(sg_lo, sg_hi, match_streak + 1, mm_count);
             }
         }
         _ => {}
@@ -75,34 +86,39 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     }
 
     match q_char {
-        1 => {
-            rec_s!(sa_lo, sa_hi, 0, mc + 1);
-            rec_s!(sc_lo, sc_hi, 0, mc + 1);
-            rec_s!(sg_lo, sg_hi, 0, mc + 1);
+        BASE_A => {
+            rec_s!(sa_lo, sa_hi, 0, mm_count + 1);
+            rec_s!(sc_lo, sc_hi, 0, mm_count + 1);
+            rec_s!(sg_lo, sg_hi, 0, mm_count + 1);
         }
-        2 => {
-            rec_s!(sa_lo, sa_hi, 0, mc + 1);
-            rec_s!(sg_lo, sg_hi, 0, mc + 1);
+        BASE_G => {
+            rec_s!(sa_lo, sa_hi, 0, mm_count + 1);
+            rec_s!(sg_lo, sg_hi, 0, mm_count + 1);
             if !WOBBLE {
-                rec_s!(su_lo, su_hi, 0, mc + 1);
+                rec_s!(su_lo, su_hi, 0, mm_count + 1);
             }
         }
-        3 => {
-            rec_s!(sa_lo, sa_hi, 0, mc + 1);
-            rec_s!(sc_lo, sc_hi, 0, mc + 1);
-            rec_s!(su_lo, su_hi, 0, mc + 1);
+        BASE_C => {
+            rec_s!(sa_lo, sa_hi, 0, mm_count + 1);
+            rec_s!(sc_lo, sc_hi, 0, mm_count + 1);
+            rec_s!(su_lo, su_hi, 0, mm_count + 1);
         }
-        4 => {
+        BASE_U => {
             if !WOBBLE {
-                rec_s!(sg_lo, sg_hi, 0, mc + 1);
+                rec_s!(sg_lo, sg_hi, 0, mm_count + 1);
             }
-            rec_s!(sc_lo, sc_hi, 0, mc + 1);
-            rec_s!(su_lo, su_hi, 0, mc + 1);
+            rec_s!(sc_lo, sc_hi, 0, mm_count + 1);
+            rec_s!(su_lo, su_hi, 0, mm_count + 1);
         }
         _ => {}
     }
 }
 
+/// S-singleton: one target SA entry, multiple query SA entries (partitioned).
+///
+/// Uses `is_match_pair` predicate rather than `match s_char` dispatch (as in
+/// `recurse_q_singleton`) because iterating query base classes against a known
+/// target base is the natural direction when the partition is on the query side.
 #[inline(always)]
 pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut RecurseCtx<'_, F>,
@@ -110,13 +126,11 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     qr: usize,
     s_idx: usize,
     depth: usize,
-    msm: usize,
-    mc: usize,
+    match_streak: usize,
+    mm_count: usize,
 ) {
-    let s_suffix_pos =
-        (unsafe { *ctx.t_sa.get_unchecked(s_idx) } & PackedSaEntry::POS_MASK) as usize;
-    let s_char = unsafe { *ctx.t_seq.get_unchecked(s_suffix_pos + depth) } as u8;
-    if !(1..=4).contains(&s_char) {
+    let s_char = sa_char(ctx.t_sa, ctx.t_seq, s_idx, depth);
+    if !(BASE_A..=BASE_U).contains(&s_char) {
         return;
     }
 
@@ -125,7 +139,7 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
     let d1 = depth + 1;
     let can_mm = ctx.max_mm > 0
-        && mc < ctx.max_mm
+        && mm_count < ctx.max_mm
         && d1 > ctx.min_prefix
         && ctx.max_len - d1 >= ctx.min_suffix;
 
@@ -135,41 +149,50 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (qu_lo, qu_hi) = (qint[4], qint[5]);
 
     macro_rules! rec_q {
-        ($q_lo:expr, $q_hi:expr, $next_msm:expr, $next_mc:expr) => {
+        ($q_lo:expr, $q_hi:expr, $next_ms:expr, $next_mc:expr) => {
             if $q_lo < $q_hi {
-                recurse::<F, WOBBLE>(ctx, $q_lo, $q_hi, s_idx, s_idx + 1, d1, $next_msm, $next_mc);
+                recurse::<F, WOBBLE>(
+                    ctx,
+                    $q_lo,
+                    $q_hi,
+                    s_idx,
+                    s_idx + 1,
+                    d1,
+                    $next_ms,
+                    $next_mc,
+                );
             }
         };
     }
 
-    if qa_lo < qa_hi && is_match_pair::<WOBBLE>(1, s_char) {
-        rec_q!(qa_lo, qa_hi, msm + 1, mc);
+    if qa_lo < qa_hi && is_match_pair::<WOBBLE>(BASE_A, s_char) {
+        rec_q!(qa_lo, qa_hi, match_streak + 1, mm_count);
     }
-    if qc_lo < qc_hi && is_match_pair::<WOBBLE>(3, s_char) {
-        rec_q!(qc_lo, qc_hi, msm + 1, mc);
+    if qc_lo < qc_hi && is_match_pair::<WOBBLE>(BASE_C, s_char) {
+        rec_q!(qc_lo, qc_hi, match_streak + 1, mm_count);
     }
-    if qg_lo < qg_hi && is_match_pair::<WOBBLE>(2, s_char) {
-        rec_q!(qg_lo, qg_hi, msm + 1, mc);
+    if qg_lo < qg_hi && is_match_pair::<WOBBLE>(BASE_G, s_char) {
+        rec_q!(qg_lo, qg_hi, match_streak + 1, mm_count);
     }
-    if qu_lo < qu_hi && is_match_pair::<WOBBLE>(4, s_char) {
-        rec_q!(qu_lo, qu_hi, msm + 1, mc);
+    if qu_lo < qu_hi && is_match_pair::<WOBBLE>(BASE_U, s_char) {
+        rec_q!(qu_lo, qu_hi, match_streak + 1, mm_count);
     }
 
     if !can_mm {
         return;
     }
 
-    if qa_lo < qa_hi && !is_match_pair::<WOBBLE>(1, s_char) {
-        rec_q!(qa_lo, qa_hi, 0, mc + 1);
+    if qa_lo < qa_hi && !is_match_pair::<WOBBLE>(BASE_A, s_char) {
+        rec_q!(qa_lo, qa_hi, 0, mm_count + 1);
     }
-    if qc_lo < qc_hi && !is_match_pair::<WOBBLE>(3, s_char) {
-        rec_q!(qc_lo, qc_hi, 0, mc + 1);
+    if qc_lo < qc_hi && !is_match_pair::<WOBBLE>(BASE_C, s_char) {
+        rec_q!(qc_lo, qc_hi, 0, mm_count + 1);
     }
-    if qg_lo < qg_hi && !is_match_pair::<WOBBLE>(2, s_char) {
-        rec_q!(qg_lo, qg_hi, 0, mc + 1);
+    if qg_lo < qg_hi && !is_match_pair::<WOBBLE>(BASE_G, s_char) {
+        rec_q!(qg_lo, qg_hi, 0, mm_count + 1);
     }
-    if qu_lo < qu_hi && !is_match_pair::<WOBBLE>(4, s_char) {
-        rec_q!(qu_lo, qu_hi, 0, mc + 1);
+    if qu_lo < qu_hi && !is_match_pair::<WOBBLE>(BASE_U, s_char) {
+        rec_q!(qu_lo, qu_hi, 0, mm_count + 1);
     }
 }
 
@@ -179,18 +202,16 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     q_idx: usize,
     s_idx: usize,
     mut depth: usize,
-    mut msm: usize,
-    mut mc: usize,
+    mut match_streak: usize,
+    mut mm_count: usize,
 ) {
-    let q_suffix_pos =
-        (unsafe { *ctx.q_sa.get_unchecked(q_idx) } & PackedSaEntry::POS_MASK) as usize;
-    let s_suffix_pos =
-        (unsafe { *ctx.t_sa.get_unchecked(s_idx) } & PackedSaEntry::POS_MASK) as usize;
+    let q_suffix_pos = sa_suffix_pos(ctx.q_sa, q_idx);
+    let s_suffix_pos = sa_suffix_pos(ctx.t_sa, s_idx);
 
     loop {
         if depth >= ctx.min_len
             && depth <= ctx.max_len
-            && (mc == 0 || (msm >= ctx.min_suffix && msm < depth))
+            && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < depth))
         {
             (ctx.on_match)(SeedMatch {
                 query_interval: Interval::new(q_idx, q_idx + 1),
@@ -203,8 +224,8 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
             return;
         }
 
-        if mc > 0 && ctx.min_suffix > 0 {
-            let max_possible = msm + (ctx.max_len - depth);
+        if mm_count > 0 && ctx.min_suffix > 0 {
+            let max_possible = match_streak + (ctx.max_len - depth);
             if max_possible < ctx.min_suffix {
                 return;
             }
@@ -212,25 +233,26 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
         let d1 = depth + 1;
         let can_mm = ctx.max_mm > 0
-            && mc < ctx.max_mm
+            && mm_count < ctx.max_mm
             && d1 > ctx.min_prefix
             && ctx.max_len - d1 >= ctx.min_suffix;
 
-        let q_char = unsafe { *ctx.q_seq.get_unchecked(q_suffix_pos + depth) } as u8;
-        let s_char = unsafe { *ctx.t_seq.get_unchecked(s_suffix_pos + depth) } as u8;
-        if !(1..=4).contains(&q_char) || !(1..=4).contains(&s_char) {
+        // SAFETY: SA_CHAR_PADDING sentinels guarantee in-bounds access
+        let q_char = unsafe { *ctx.q_seq.get_unchecked(q_suffix_pos + depth) as u8 };
+        let s_char = unsafe { *ctx.t_seq.get_unchecked(s_suffix_pos + depth) as u8 };
+        if !(BASE_A..=BASE_U).contains(&q_char) || !(BASE_A..=BASE_U).contains(&s_char) {
             return;
         }
 
         if is_match_pair::<WOBBLE>(q_char, s_char) {
             depth = d1;
-            msm += 1;
+            match_streak += 1;
             continue;
         }
         if can_mm {
             depth = d1;
-            mc += 1;
-            msm = 0;
+            mm_count += 1;
+            match_streak = 0;
             continue;
         }
         return;

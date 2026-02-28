@@ -2,6 +2,8 @@ use crate::config::{self, MismatchSpec, SeedSpec};
 use crate::types::SeedPairingMode;
 use std::str::FromStr;
 
+const DEFAULT_SEED_LEN: i64 = 6;
+
 /// Legacy CLI parser boundary for `-m/--mismatch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CliMismatchSpec(pub MismatchSpec);
@@ -16,7 +18,7 @@ impl FromStr for CliMismatchSpec {
         }
 
         let parts: Vec<&str> = s.split(':').collect();
-        let (max_mismatches, min_start, min_end) = match parts.len() {
+        let (max_mismatches, min_prefix, min_suffix) = match parts.len() {
             1 => {
                 let max = parts[0]
                     .parse::<usize>()
@@ -36,13 +38,13 @@ impl FromStr for CliMismatchSpec {
                 let max = parts[0]
                     .parse::<usize>()
                     .map_err(|e| format!("invalid max mismatches: {}", e))?;
-                let min_start = parts[1]
+                let min_prefix = parts[1]
                     .parse::<usize>()
-                    .map_err(|e| format!("invalid min start matches: {}", e))?;
-                let min_end = parts[2]
+                    .map_err(|e| format!("invalid min prefix matches: {}", e))?;
+                let min_suffix = parts[2]
                     .parse::<usize>()
-                    .map_err(|e| format!("invalid min end matches: {}", e))?;
-                (max, min_start, min_end)
+                    .map_err(|e| format!("invalid min suffix matches: {}", e))?;
+                (max, min_prefix, min_suffix)
             }
             _ => {
                 return Err(format!(
@@ -54,8 +56,8 @@ impl FromStr for CliMismatchSpec {
 
         Ok(Self(MismatchSpec {
             max_mismatches,
-            min_prefix_matches: min_start,
-            min_suffix_matches: min_end,
+            min_prefix_matches: min_prefix,
+            min_suffix_matches: min_suffix,
         }))
     }
 }
@@ -211,6 +213,7 @@ pub struct SeedConfig {
     /// Min consecutive matches at seed end (suffix / 3')
     #[arg(long = "mismatch-suffix", value_name = "PE")]
     pub mismatch_suffix: Option<usize>,
+
 }
 
 impl From<SeedConfig> for config::SeedConfig {
@@ -229,7 +232,7 @@ impl From<SeedConfig> for config::SeedConfig {
                         SeedSpec::Interval { start, end }
                     }
                 }
-                (None, None) => SeedSpec::LengthOnly(value.seed_length.unwrap_or(6)),
+                (None, None) => SeedSpec::LengthOnly(value.seed_length.unwrap_or(DEFAULT_SEED_LEN)),
                 _ => legacy_seed,
             }
         } else {

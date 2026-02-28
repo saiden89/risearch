@@ -1,26 +1,30 @@
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::mem::{align_of, size_of};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use memmap2::Mmap;
 use needletail::parse_fastx_file;
-use rayon::prelude::*;
-use rkyv::rancor::Error as RkyvError;
-use rkyv::util::AlignedVec;
 
 use crate::index::io::{validate_output_path, validate_readable_file};
 use crate::index::sa::SuffixArray;
 use crate::seq::Sequence;
 use crate::types::Base;
 
-const FILE_MAGIC: [u8; 8] = *b"RSIDX4\0\0";
-const FILE_HEADER_BYTES: usize = 12; // magic[8] + target_count[4]
-const ENTRY_HEADER_BYTES: usize = 16; // name_len[u32] + seq_len[u32] + payload_len[u64]
-const PAYLOAD_ALIGN: usize = 8;
-const TARGET_COUNT_OFFSET: u64 = 8;
+// =============================================================================
+// FORMAT CONSTANTS
+// =============================================================================
+
+const FILE_MAGIC: [u8; 8] = *b"RSIDX5\0\0";
+
+/// Fixed file header: magic[8] + target_count[4] + reserved[4]
+const FILE_HEADER_BYTES: usize = 16;
+
+/// Per-target metadata entry: name_len[4] + seq_len[4] + offset[8]
+const META_ENTRY_FIXED_BYTES: usize = 16;
+
+const DATA_ALIGN: usize = 8;
 
 /// Number of zero-valued u64 entries appended after the real SA data.
 /// These act as sentinels so `sa[suffix_pos + offset]` never goes out of
@@ -28,79 +32,91 @@ const TARGET_COUNT_OFFSET: u64 = 8;
 /// in the innermost hot loop.
 pub const SA_CHAR_PADDING: usize = 256;
 
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-struct TargetChunk {
-    /// Forward sequence ++ [Gap] ++ reverse-complement sequence
-    combined_seq: Vec<Base>,
-    /// Suffix array built on combined_seq (bit-packed u64 containing character data)
-    combined_sa: Vec<u64>,
-    /// Length of the original (forward) sequence
-    seq_len: u32,
-}
+// =============================================================================
+// PUBLIC TYPES
+// =============================================================================
 
 #[derive(Clone, Debug)]
 pub struct TargetMeta {
     pub name: String,
     pub sequence_len: usize,
-    payload_offset: usize,
-    payload_len: usize,
+    /// Start offset of this target's block within the global combined_seq.
+    /// Each block is: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
+    pub global_offset: u64,
 }
 
 pub struct TargetStore {
     path: PathBuf,
     mmap: Mmap,
     targets: Vec<TargetMeta>,
+    /// Precomputed per-target offsets into global combined_seq
+    offsets: Vec<u64>,
+    /// Precomputed per-target forward sequence lengths
+    seq_lens: Vec<u32>,
+    /// Byte offset into mmap where the global combined_seq begins
+    seq_data_offset: usize,
+    /// Total number of Base entries in global combined_seq (including padding)
+    seq_byte_count: usize,
+    /// Byte offset into mmap where the global combined_sa begins
+    sa_data_offset: usize,
+    /// Total number of u64 entries in global combined_sa (including padding)
+    sa_entry_count: usize,
+    /// Number of real SA entries (excluding SA_CHAR_PADDING sentinels)
+    sa_real_len: usize,
 }
 
-pub struct TargetView<'a> {
-    pub name: &'a str,
-    /// Forward sequence ++ [Gap] ++ reverse-complement sequence (+ padding)
+/// Global suffix array view for seed search — zero-copy from mmap.
+pub struct GlobalView<'a> {
     pub combined_seq: &'a [Base],
-    /// Suffix array built on combined_seq (packed u64 containing character data, + padding)
     pub combined_sa: &'a [u64],
-    /// Number of real SA entries (excluding padding sentinels)
     pub sa_real_len: usize,
-    /// Length of the original (forward) sequence
+    /// Start offset of each target block in the global combined_seq.
+    /// Length = target_count.
+    pub offsets: &'a [u64],
+    /// Original forward sequence length of each target.
+    /// Length = target_count.
+    pub seq_lens: &'a [u32],
+}
+
+/// Per-target sequence slices for output and extension.
+pub struct TargetSeqs<'a> {
+    pub name: &'a str,
+    pub fwd_transformed: &'a [Base],
+    pub rc_transformed: &'a [Base],
     pub seq_len: usize,
 }
+
+// =============================================================================
+// BUILD PIPELINE
+// =============================================================================
 
 struct PendingTargetRecord {
     id: String,
     seq: Vec<u8>,
 }
 
-struct BuiltTargetRecord {
+struct NormalizedTarget {
     id: String,
     seq_len: u32,
-    payload: AlignedVec,
+    fwd_comp: Vec<Base>,
+    rc_comp: Vec<Base>,
 }
 
 impl TargetStore {
+    /// Build a new RSIDX5 index from a FASTA file.
+    ///
+    /// Pipeline:
+    /// 1. Parse all FASTA records, normalize, complement
+    /// 2. Concatenate into global combined_seq with Gap separators
+    /// 3. Build single global SA
+    /// 4. Write flat binary: header → metadata → seq → SA
     pub fn build_from_fasta(input: &Path, output: &Path) -> Result<()> {
         validate_readable_file(input)?;
         validate_output_path(output)?;
 
-        let output_name = output
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "target.idx".to_string());
-        let tmp_path = output.with_file_name(format!("{output_name}.tmp"));
-
-        let file = File::create(&tmp_path)
-            .with_context(|| format!("Failed to create temp index file: {}", tmp_path.display()))?;
-        let mut writer = BufWriter::new(file);
-        writer
-            .write_all(&FILE_MAGIC)
-            .context("Failed to write index magic")?;
-        writer
-            .write_all(&0u32.to_le_bytes())
-            .context("Failed to write target count placeholder")?;
-
-        let mut target_count = 0u32;
-        let mut cursor = FILE_HEADER_BYTES;
+        // Phase 1: Parse and normalize all records
         let mut seen = HashSet::new();
-        let batch_size = rayon::current_num_threads().max(1) * 4;
-        let mut pending = Vec::with_capacity(batch_size);
+        let mut pending = Vec::new();
 
         let mut reader = parse_fastx_file(input)
             .with_context(|| format!("Failed to open FASTA/FASTQ file: {}", input.display()))?;
@@ -125,41 +141,132 @@ impl TargetStore {
                 id,
                 seq: rec.seq().as_ref().to_vec(),
             });
+        }
 
-            if pending.len() >= batch_size {
-                flush_pending_batch(&mut pending, &mut writer, &mut cursor, &mut target_count)?;
+        // Normalize all records (parallel)
+        use rayon::prelude::*;
+        let normalized: Vec<Result<Option<NormalizedTarget>>> = pending
+            .into_par_iter()
+            .map(normalize_target_record)
+            .collect();
+
+        let mut targets: Vec<NormalizedTarget> = Vec::new();
+        for result in normalized {
+            if let Some(t) = result? {
+                targets.push(t);
             }
         }
 
-        flush_pending_batch(&mut pending, &mut writer, &mut cursor, &mut target_count)?;
-
-        if target_count == 0 {
+        if targets.is_empty() {
             bail!(
                 "All sequences were empty after normalization in {}",
                 input.display()
             );
         }
 
+        // Phase 2: Build global combined_seq and track offsets
+        let total_bases: usize = targets
+            .iter()
+            .map(|t| 2 * t.seq_len as usize + 2)
+            .sum();
+        let mut combined_bases: Vec<Base> = Vec::with_capacity(total_bases);
+        let mut offsets: Vec<u64> = Vec::with_capacity(targets.len());
+        let mut seq_lens: Vec<u32> = Vec::with_capacity(targets.len());
+
+        for t in &targets {
+            offsets.push(combined_bases.len() as u64);
+            seq_lens.push(t.seq_len);
+            combined_bases.extend_from_slice(&t.fwd_comp);
+            combined_bases.push(Base::Gap);
+            combined_bases.extend_from_slice(&t.rc_comp);
+            combined_bases.push(Base::Gap);
+        }
+
+        // Phase 3: Build single global SA
+        let combined_seq = Sequence::from(combined_bases.clone());
+        let combined_sa = SuffixArray::try_from(&combined_seq)
+            .context("Failed to build global suffix array")?;
+
+        // Append SA_CHAR_PADDING sentinels to seq
+        combined_bases.resize(combined_bases.len() + SA_CHAR_PADDING, Base::Gap);
+
+        // Pad the SA with zero entries
+        let mut padded_sa = combined_sa.into_inner();
+        padded_sa.resize(padded_sa.len() + SA_CHAR_PADDING, 0u64);
+
+        // Phase 4: Write flat binary
+        let output_name = output
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "target.idx".to_string());
+        let tmp_path = output.with_file_name(format!("{output_name}.tmp"));
+
+        let file = File::create(&tmp_path)
+            .with_context(|| format!("Failed to create temp index file: {}", tmp_path.display()))?;
+        let mut writer = BufWriter::new(file);
+
+        let target_count =
+            u32::try_from(targets.len()).context("Target count exceeds u32::MAX")?;
+
+        // Header: magic[8] + target_count[4] + reserved[4]
+        writer
+            .write_all(&FILE_MAGIC)
+            .context("Failed to write magic")?;
+        writer
+            .write_all(&target_count.to_le_bytes())
+            .context("Failed to write target count")?;
+        writer
+            .write_all(&0u32.to_le_bytes())
+            .context("Failed to write reserved field")?;
+
+        // Per-target metadata
+        for (i, t) in targets.iter().enumerate() {
+            let name_bytes = t.id.as_bytes();
+            let name_len =
+                u32::try_from(name_bytes.len()).context("Target name length exceeds u32::MAX")?;
+            writer.write_all(&name_len.to_le_bytes())?;
+            writer.write_all(&t.seq_len.to_le_bytes())?;
+            writer.write_all(&offsets[i].to_le_bytes())?;
+            writer.write_all(name_bytes)?;
+        }
+
+        // Pad to 8-byte alignment
+        let mut cursor = FILE_HEADER_BYTES;
+        for t in &targets {
+            cursor += META_ENTRY_FIXED_BYTES + t.id.len();
+        }
+        let aligned_cursor = align_up(cursor, DATA_ALIGN);
+        let pad_len = aligned_cursor - cursor;
+        if pad_len > 0 {
+            writer.write_all(&vec![0u8; pad_len])?;
+        }
+
+        // Global combined_seq: count[8] + data
+        let seq_byte_count = combined_bases.len() as u64;
+        writer.write_all(&seq_byte_count.to_le_bytes())?;
+        // SAFETY: Base is #[repr(u8)], so &[Base] is layout-compatible with &[u8]
+        let seq_bytes =
+            unsafe { std::slice::from_raw_parts(combined_bases.as_ptr().cast::<u8>(), combined_bases.len()) };
+        writer.write_all(seq_bytes)?;
+
+        // Pad to 8-byte alignment before SA
+        let after_seq = aligned_cursor + 8 + combined_bases.len();
+        let sa_start = align_up(after_seq, DATA_ALIGN);
+        let sa_pad = sa_start - after_seq;
+        if sa_pad > 0 {
+            writer.write_all(&vec![0u8; sa_pad])?;
+        }
+
+        // Global combined_sa: count[8] + data
+        let sa_entry_count = padded_sa.len() as u64;
+        writer.write_all(&sa_entry_count.to_le_bytes())?;
+        let sa_bytes = unsafe {
+            std::slice::from_raw_parts(padded_sa.as_ptr().cast::<u8>(), padded_sa.len() * 8)
+        };
+        writer.write_all(sa_bytes)?;
+
         writer.flush().context("Failed to flush index file")?;
         drop(writer);
-
-        {
-            let mut patch_file = OpenOptions::new()
-                .write(true)
-                .open(&tmp_path)
-                .with_context(|| {
-                    format!("Failed to reopen temp index file: {}", tmp_path.display())
-                })?;
-            patch_file
-                .seek(SeekFrom::Start(TARGET_COUNT_OFFSET))
-                .context("Failed to seek to target count field")?;
-            patch_file
-                .write_all(&target_count.to_le_bytes())
-                .context("Failed to patch target count field")?;
-            patch_file
-                .flush()
-                .context("Failed to flush patched header")?;
-        }
 
         std::fs::rename(&tmp_path, output).with_context(|| {
             format!(
@@ -176,17 +283,118 @@ impl TargetStore {
         validate_readable_file(path)?;
         let file = File::open(path)
             .with_context(|| format!("Failed to open index file: {}", path.display()))?;
-        // SAFETY: The file descriptor stays alive for the mmap creation call and
-        // the resulting read-only mapping is stored immutably in TargetStore.
-        // We do not mutate the mapped file through this process.
         let mmap = unsafe { Mmap::map(&file) }
             .with_context(|| format!("Failed to memory-map index file: {}", path.display()))?;
 
-        let targets = parse_index_metadata(mmap.as_ref(), path)?;
+        let bytes = mmap.as_ref();
+        if bytes.len() < FILE_HEADER_BYTES {
+            bail!(
+                "Index file too small ({} bytes): {}",
+                bytes.len(),
+                path.display()
+            );
+        }
+
+        if bytes[..FILE_MAGIC.len()] != FILE_MAGIC {
+            bail!("Invalid index magic in {}", path.display());
+        }
+
+        let target_count = u32::from_le_bytes(
+            bytes[8..12].try_into().expect("header slice"),
+        ) as usize;
+
+        // Parse per-target metadata
+        let mut cursor = FILE_HEADER_BYTES;
+        let mut targets = Vec::with_capacity(target_count);
+
+        for _ in 0..target_count {
+            if cursor + META_ENTRY_FIXED_BYTES > bytes.len() {
+                bail!("Truncated metadata entry in {}", path.display());
+            }
+
+            let name_len = u32::from_le_bytes(
+                bytes[cursor..cursor + 4].try_into().expect("name_len"),
+            ) as usize;
+            let seq_len = u32::from_le_bytes(
+                bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"),
+            ) as usize;
+            let global_offset = u64::from_le_bytes(
+                bytes[cursor + 8..cursor + 16].try_into().expect("offset"),
+            );
+            cursor += META_ENTRY_FIXED_BYTES;
+
+            let name_end = cursor
+                .checked_add(name_len)
+                .ok_or_else(|| anyhow!("Name overflow in {}", path.display()))?;
+            if name_end > bytes.len() {
+                bail!("Truncated target name in {}", path.display());
+            }
+            let name = std::str::from_utf8(&bytes[cursor..name_end])
+                .context("Invalid UTF-8 in target name")?
+                .to_owned();
+            cursor = name_end;
+
+            targets.push(TargetMeta {
+                name,
+                sequence_len: seq_len,
+                global_offset,
+            });
+        }
+
+        // Align to data section
+        cursor = align_up(cursor, DATA_ALIGN);
+
+        // Read seq_byte_count
+        if cursor + 8 > bytes.len() {
+            bail!("Truncated seq header in {}", path.display());
+        }
+        let seq_byte_count = u64::from_le_bytes(
+            bytes[cursor..cursor + 8].try_into().expect("seq count"),
+        ) as usize;
+        let seq_data_offset = cursor + 8;
+        let seq_data_end = seq_data_offset
+            .checked_add(seq_byte_count)
+            .ok_or_else(|| anyhow!("Seq data overflow in {}", path.display()))?;
+        if seq_data_end > bytes.len() {
+            bail!("Truncated seq data in {}", path.display());
+        }
+
+        // Align to SA section
+        let sa_section_start = align_up(seq_data_end, DATA_ALIGN);
+        if sa_section_start + 8 > bytes.len() {
+            bail!("Truncated SA header in {}", path.display());
+        }
+        let sa_entry_count = u64::from_le_bytes(
+            bytes[sa_section_start..sa_section_start + 8]
+                .try_into()
+                .expect("sa count"),
+        ) as usize;
+        let sa_data_offset = sa_section_start + 8;
+        let sa_data_end = sa_data_offset
+            .checked_add(sa_entry_count * 8)
+            .ok_or_else(|| anyhow!("SA data overflow in {}", path.display()))?;
+        if sa_data_end > bytes.len() {
+            bail!("Truncated SA data in {}", path.display());
+        }
+
+        // Compute real SA length: total entries - padding
+        let sa_real_len = sa_entry_count.saturating_sub(SA_CHAR_PADDING);
+
+        // Precompute offset/seq_len arrays for global_view
+        let offsets: Vec<u64> = targets.iter().map(|t| t.global_offset).collect();
+        let seq_lens: Vec<u32> = targets.iter().map(|t| t.sequence_len as u32).collect();
+
         Ok(Self {
             path: path.to_path_buf(),
             mmap,
             targets,
+            offsets,
+            seq_lens,
+            seq_data_offset,
+            seq_byte_count,
+            sa_data_offset,
+            sa_entry_count,
+            sa_real_len,
         })
     }
 
@@ -221,7 +429,41 @@ impl TargetStore {
         &self.path
     }
 
-    pub fn target_view(&self, idx: usize) -> Result<TargetView<'_>> {
+    pub fn iter_meta(&self) -> impl Iterator<Item = (u32, &TargetMeta)> {
+        self.targets.iter().enumerate().map(|(i, m)| (i as u32, m))
+    }
+
+    /// Get a global view of the combined SA and sequence for seed search.
+    pub fn global_view(&self) -> GlobalView<'_> {
+        let bytes = self.mmap.as_ref();
+
+        // SAFETY: Base is #[repr(u8)], byte slice from mmap is valid
+        let combined_seq = unsafe {
+            std::slice::from_raw_parts(
+                bytes[self.seq_data_offset..].as_ptr().cast::<Base>(),
+                self.seq_byte_count,
+            )
+        };
+
+        // SAFETY: u64 alignment guaranteed by DATA_ALIGN=8 padding in writer
+        let combined_sa = unsafe {
+            std::slice::from_raw_parts(
+                bytes[self.sa_data_offset..].as_ptr().cast::<u64>(),
+                self.sa_entry_count,
+            )
+        };
+
+        GlobalView {
+            combined_seq,
+            combined_sa,
+            sa_real_len: self.sa_real_len,
+            offsets: &self.offsets,
+            seq_lens: &self.seq_lens,
+        }
+    }
+
+    /// Get per-target sequence slices for output/extension — zero-copy from mmap.
+    pub fn target_seqs(&self, idx: usize) -> Result<TargetSeqs<'_>> {
         let meta = self.targets.get(idx).ok_or_else(|| {
             anyhow!(
                 "Target index out of bounds: {} >= {}",
@@ -230,81 +472,42 @@ impl TargetStore {
             )
         })?;
 
-        let payload_end = meta
-            .payload_offset
-            .checked_add(meta.payload_len)
-            .ok_or_else(|| anyhow!("Payload span overflow for '{}'", meta.name))?;
-        let payload = self
-            .mmap
-            .get(meta.payload_offset..payload_end)
-            .ok_or_else(|| anyhow!("Payload out of bounds for '{}'", meta.name))?;
+        let bytes = self.mmap.as_ref();
+        let combined_seq = unsafe {
+            std::slice::from_raw_parts(
+                bytes[self.seq_data_offset..].as_ptr().cast::<Base>(),
+                self.seq_byte_count,
+            )
+        };
 
-        let chunk = access_archived_chunk(payload)
-            .with_context(|| format!("Failed to access target payload '{}'", meta.name))?;
+        let offset = meta.global_offset as usize;
+        let seq_len = meta.sequence_len;
 
-        let combined_seq = archived_base_slice_as_native(chunk.combined_seq.as_slice());
-        let combined_sa = archived_u64_slice_as_native(chunk.combined_sa.as_slice());
-        let seq_len = chunk.seq_len.to_native() as usize;
-        let min_seq_len = 2 * seq_len + 2; // fwd + Gap + rc + sentinel
-        let min_sa_len = 2 * seq_len + 1; // SA built before sentinel
+        // Layout within global: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
+        let fwd_end = offset + seq_len;
+        let rc_start = offset + seq_len + 1;
+        let rc_end = rc_start + seq_len;
 
-        if seq_len != meta.sequence_len
-            || combined_seq.len() < min_seq_len
-            || combined_sa.len() < min_sa_len
-        {
+        if rc_end > combined_seq.len() {
             bail!(
-                "Corrupt payload for '{}': expected seq_len={}, combined_seq>={}, combined_sa>={}, got seq_len={}, combined_seq={}, combined_sa={}",
+                "Target '{}' sequence data out of bounds (offset={}, seq_len={}, total={})",
                 meta.name,
-                meta.sequence_len,
-                min_seq_len,
-                min_sa_len,
+                offset,
                 seq_len,
-                combined_seq.len(),
-                combined_sa.len()
+                combined_seq.len()
             );
         }
 
-        Ok(TargetView {
+        Ok(TargetSeqs {
             name: &meta.name,
-            combined_seq,
-            combined_sa,
-            sa_real_len: min_sa_len,
+            fwd_transformed: &combined_seq[offset..fwd_end],
+            rc_transformed: &combined_seq[rc_start..rc_end],
             seq_len,
         })
     }
-
-    pub fn iter_meta(&self) -> impl Iterator<Item = (u32, &TargetMeta)> {
-        self.targets.iter().enumerate().map(|(i, m)| (i as u32, m))
-    }
 }
 
-fn flush_pending_batch(
-    pending: &mut Vec<PendingTargetRecord>,
-    writer: &mut BufWriter<File>,
-    cursor: &mut usize,
-    target_count: &mut u32,
-) -> Result<()> {
-    if pending.is_empty() {
-        return Ok(());
-    }
-
-    let batch = std::mem::replace(pending, Vec::with_capacity(pending.capacity().max(1)));
-    let batch_results: Vec<Result<Option<BuiltTargetRecord>>> =
-        batch.into_par_iter().map(build_target_record).collect();
-
-    for record in batch_results {
-        if let Some(record) = record? {
-            write_target_entry(writer, cursor, record)?;
-            *target_count = target_count
-                .checked_add(1)
-                .ok_or_else(|| anyhow!("Target count exceeded u32::MAX"))?;
-        }
-    }
-
-    Ok(())
-}
-
-fn build_target_record(record: PendingTargetRecord) -> Result<Option<BuiltTargetRecord>> {
+fn normalize_target_record(record: PendingTargetRecord) -> Result<Option<NormalizedTarget>> {
     let PendingTargetRecord { id, seq } = record;
     let (sequence, stats) = Sequence::normalize(&id, &seq)
         .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
@@ -329,242 +532,25 @@ fn build_target_record(record: PendingTargetRecord) -> Result<Option<BuiltTarget
 
     let sequence_rc = sequence.reverse_complement();
 
-    // Complement the sequences before building the combined SA.
-    // This allows direct canonical/wobble matching in the transformed alphabet.
-    let sequence_comp: Vec<Base> = sequence.iter().map(|b| b.complement()).collect();
-    let sequence_rc_comp: Vec<Base> = sequence_rc.iter().map(|b| b.complement()).collect();
+    // Complement sequences for canonical/wobble matching in SA
+    let fwd_comp: Vec<Base> = sequence.iter().map(|b| b.complement()).collect();
+    let rc_comp: Vec<Base> = sequence_rc.iter().map(|b| b.complement()).collect();
 
-    // Build combined sequence: fwd_comp ++ [Gap] ++ rc_comp
-    let seq_len = sequence.len();
-    let seq_len_u32 =
-        u32::try_from(seq_len).context("Target sequence length is too large for index header")?;
-    let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
-    combined_bases.extend_from_slice(&sequence_comp);
-    combined_bases.push(Base::Gap);
-    combined_bases.extend_from_slice(&sequence_rc_comp);
-    let combined_seq = Sequence::from(combined_bases);
+    let seq_len =
+        u32::try_from(sequence.len()).context("Target sequence length too large for u32")?;
 
-    let combined_sa = SuffixArray::try_from(&combined_seq)
-        .with_context(|| format!("Failed to build combined SA for '{}'", id))?;
-
-    // Append sentinel Gap byte after SA construction, plus SA_CHAR_PADDING
-    // extra Gap bytes so that `sa[suffix_pos + offset]` never goes out of
-    // bounds during binary search character lookups.
-    let mut combined_seq_vec: Vec<Base> = combined_seq.iter().copied().collect();
-    combined_seq_vec.resize(combined_seq_vec.len() + 1 + SA_CHAR_PADDING, Base::Gap);
-
-    // Pad the SA with zero entries (pos=0, char=Gap) so unchecked access is
-    // safe for any offset up to SA_CHAR_PADDING.
-    let mut padded_sa = combined_sa.into_inner();
-    padded_sa.resize(padded_sa.len() + SA_CHAR_PADDING, 0u64);
-
-    let chunk = TargetChunk {
-        combined_seq: combined_seq_vec,
-        combined_sa: padded_sa,
-        seq_len: seq_len_u32,
-    };
-
-    let payload = rkyv::to_bytes::<RkyvError>(&chunk)
-        .with_context(|| format!("Failed to archive target chunk '{}'", id))?;
-
-    Ok(Some(BuiltTargetRecord {
-        id,
-        seq_len: seq_len_u32,
-        payload,
-    }))
-}
-
-fn write_target_entry(
-    writer: &mut BufWriter<File>,
-    cursor: &mut usize,
-    record: BuiltTargetRecord,
-) -> Result<()> {
-    let BuiltTargetRecord {
+    Ok(Some(NormalizedTarget {
         id,
         seq_len,
-        payload,
-    } = record;
-    let name_len = u32::try_from(id.len()).context("Target id is too long for index header")?;
-    let payload_len =
-        u64::try_from(payload.len()).context("Archived payload is too large for index header")?;
-
-    writer
-        .write_all(&name_len.to_le_bytes())
-        .context("Failed to write target name length")?;
-    writer
-        .write_all(&seq_len.to_le_bytes())
-        .context("Failed to write target sequence length")?;
-    writer
-        .write_all(&payload_len.to_le_bytes())
-        .context("Failed to write target payload length")?;
-    writer
-        .write_all(id.as_bytes())
-        .context("Failed to write target name bytes")?;
-
-    *cursor = cursor
-        .checked_add(ENTRY_HEADER_BYTES)
-        .and_then(|v| v.checked_add(id.len()))
-        .ok_or_else(|| anyhow!("Index file cursor overflow while writing headers"))?;
-
-    let aligned_payload_offset = align_up(*cursor, PAYLOAD_ALIGN);
-    let padding_len = aligned_payload_offset - *cursor;
-    if padding_len > 0 {
-        writer
-            .write_all(&[0u8; PAYLOAD_ALIGN][..padding_len])
-            .context("Failed to write payload alignment padding")?;
-    }
-    writer
-        .write_all(payload.as_slice())
-        .context("Failed to write target payload bytes")?;
-    *cursor = aligned_payload_offset
-        .checked_add(payload.len())
-        .ok_or_else(|| anyhow!("Index file cursor overflow while writing payload"))?;
-
-    Ok(())
-}
-
-fn parse_index_metadata(bytes: &[u8], path: &Path) -> Result<Vec<TargetMeta>> {
-    if bytes.len() < FILE_HEADER_BYTES {
-        bail!(
-            "Index file too small ({} bytes): {}",
-            bytes.len(),
-            path.display()
-        );
-    }
-
-    if bytes[..FILE_MAGIC.len()] != FILE_MAGIC {
-        bail!("Invalid index magic in {}", path.display());
-    }
-
-    let target_count = u32::from_le_bytes(
-        bytes[FILE_MAGIC.len()..FILE_HEADER_BYTES]
-            .try_into()
-            .expect("header slice has fixed width"),
-    ) as usize;
-    let max_possible_entries = (bytes.len() - FILE_HEADER_BYTES) / ENTRY_HEADER_BYTES;
-    if target_count > max_possible_entries {
-        bail!(
-            "Corrupt index header in {}: target count {} exceeds possible entries {}",
-            path.display(),
-            target_count,
-            max_possible_entries
-        );
-    }
-
-    let mut cursor = FILE_HEADER_BYTES;
-    let mut targets = Vec::with_capacity(target_count);
-
-    for _ in 0..target_count {
-        if cursor + ENTRY_HEADER_BYTES > bytes.len() {
-            bail!("Truncated entry header in {}", path.display());
-        }
-
-        let name_len = u32::from_le_bytes(
-            bytes[cursor..cursor + 4]
-                .try_into()
-                .expect("name_len slice has fixed width"),
-        ) as usize;
-        let seq_len = u32::from_le_bytes(
-            bytes[cursor + 4..cursor + 8]
-                .try_into()
-                .expect("seq_len slice has fixed width"),
-        ) as usize;
-        let payload_len = u64::from_le_bytes(
-            bytes[cursor + 8..cursor + 16]
-                .try_into()
-                .expect("payload_len slice has fixed width"),
-        ) as usize;
-        cursor += ENTRY_HEADER_BYTES;
-
-        let name_end = cursor
-            .checked_add(name_len)
-            .ok_or_else(|| anyhow!("Entry name overflow while parsing {}", path.display()))?;
-        if name_end > bytes.len() {
-            bail!("Truncated target name in {}", path.display());
-        }
-        let name = std::str::from_utf8(&bytes[cursor..name_end])
-            .context("Invalid UTF-8 in target name")?
-            .to_owned();
-        cursor = name_end;
-
-        let payload_offset = align_up(cursor, PAYLOAD_ALIGN);
-        if payload_offset > bytes.len() {
-            bail!("Truncated payload alignment padding in {}", path.display());
-        }
-        let payload_end = cursor
-            .checked_add(payload_offset - cursor)
-            .and_then(|v| v.checked_add(payload_len))
-            .ok_or_else(|| anyhow!("Entry payload overflow while parsing {}", path.display()))?;
-        if payload_end > bytes.len() {
-            bail!("Truncated target payload in {}", path.display());
-        }
-
-        targets.push(TargetMeta {
-            name,
-            sequence_len: seq_len,
-            payload_offset,
-            payload_len,
-        });
-        cursor = payload_end;
-    }
-
-    if cursor != bytes.len() {
-        bail!(
-            "Unexpected trailing bytes in index file {} (parsed {} of {} bytes)",
-            path.display(),
-            cursor,
-            bytes.len()
-        );
-    }
-
-    Ok(targets)
+        fwd_comp,
+        rc_comp,
+    }))
 }
 
 #[inline]
 fn align_up(value: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two());
     (value + (align - 1)) & !(align - 1)
-}
-
-#[inline]
-fn access_archived_chunk(payload: &[u8]) -> Result<&ArchivedTargetChunk> {
-    #[cfg(debug_assertions)]
-    {
-        rkyv::access::<ArchivedTargetChunk, RkyvError>(payload).context("rkyv validation failed")
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        // SAFETY: Payload comes from a bounded chunk span parsed from this
-        // index format. Index files are produced by `build_from_fasta` in this
-        // crate, and release builds prioritize load throughput over byte-level
-        // validation on every open.
-        Ok(unsafe { rkyv::access_unchecked::<ArchivedTargetChunk>(payload) })
-    }
-}
-
-#[inline]
-fn archived_base_slice_as_native(slice: &[crate::types::ArchivedBase]) -> &[Base] {
-    debug_assert_eq!(size_of::<crate::types::ArchivedBase>(), size_of::<Base>());
-    debug_assert_eq!(align_of::<crate::types::ArchivedBase>(), align_of::<Base>());
-    // SAFETY: `Base` is `#[repr(u8)]` and `ArchivedBase` is generated by rkyv
-    // for this exact enum, with validated payload bytes (`rkyv::access`).
-    // The two types are layout-compatible for read-only access.
-    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<Base>(), slice.len()) }
-}
-
-#[inline]
-fn archived_u64_slice_as_native(slice: &[rkyv::primitive::ArchivedU64]) -> &[u64] {
-    #[cfg(not(target_endian = "little"))]
-    compile_error!("TargetStore zero-copy u64 view currently requires little-endian targets");
-    debug_assert_eq!(size_of::<rkyv::primitive::ArchivedU64>(), size_of::<u64>());
-    debug_assert_eq!(
-        align_of::<rkyv::primitive::ArchivedU64>(),
-        align_of::<u64>()
-    );
-    // SAFETY: `ArchivedU64` is a transparent little-endian wrapper over `u64`
-    // in the archived payload. This project targets little-endian machines.
-    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u64>(), slice.len()) }
 }
 
 #[cfg(test)]
@@ -577,7 +563,7 @@ mod tests {
     use crate::registry::TargetRegistry;
 
     #[test]
-    fn roundtrip_build_open_load_matches_registry() {
+    fn roundtrip_build_open_global_view() {
         let dir = tempdir().unwrap();
         let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
@@ -592,20 +578,21 @@ mod tests {
         let expected = TargetRegistry::from_fasta(&fasta_path).unwrap();
 
         assert_eq!(store.len(), expected.len());
-        for i in 0..expected.len() {
-            let got = store.target_view(i).unwrap();
+
+        // Verify global view is accessible
+        let global = store.global_view();
+        assert_eq!(global.offsets.len(), store.len());
+        assert_eq!(global.seq_lens.len(), store.len());
+        assert!(global.sa_real_len > 0);
+
+        // Verify target_seqs for each target
+        for i in 0..store.len() {
+            let seqs = store.target_seqs(i).unwrap();
             let exp = expected.get(i as u32);
-            assert_eq!(got.name, exp.name.as_str());
-            assert_eq!(got.seq_len, exp.seq_len);
-            // Suffix Arrays will differ because TargetStore builds on COMPLEMENT
-            // whereas Registry builds on original for backwards-compat in tests.
-            // We just verify the store loaded correctly and real length matches.
-            assert_eq!(got.sa_real_len, exp.combined_sa.len());
-            // TargetStore adds SA_CHAR_PADDING sentinels
-            assert_eq!(
-                got.combined_sa.len(),
-                exp.combined_sa.len() + crate::index::store::SA_CHAR_PADDING
-            );
+            assert_eq!(seqs.name, exp.name.as_str());
+            assert_eq!(seqs.seq_len, exp.seq_len);
+            assert_eq!(seqs.fwd_transformed.len(), exp.seq_len);
+            assert_eq!(seqs.rc_transformed.len(), exp.seq_len);
         }
     }
 
@@ -613,10 +600,39 @@ mod tests {
     fn open_rejects_invalid_magic() {
         let dir = tempdir().unwrap();
         let bad_path = dir.path().join("bad.idx");
-        std::fs::write(&bad_path, b"not-an-index").unwrap();
+        // Must be at least FILE_HEADER_BYTES (16) to reach magic check
+        std::fs::write(&bad_path, b"not-a-valid-idx!").unwrap();
         match TargetStore::open(&bad_path) {
             Ok(_) => panic!("Expected invalid magic error"),
             Err(err) => assert!(err.to_string().contains("Invalid index magic")),
+        }
+    }
+
+    #[test]
+    fn global_offsets_are_contiguous() {
+        let dir = tempdir().unwrap();
+        let fasta_path = dir.path().join("targets.fa");
+        let index_path = dir.path().join("targets.idx");
+
+        let mut fasta = std::fs::File::create(&fasta_path).unwrap();
+        writeln!(fasta, ">t1\nACGU").unwrap();
+        writeln!(fasta, ">t2\nGGCC").unwrap();
+        writeln!(fasta, ">t3\nAA").unwrap();
+        drop(fasta);
+
+        TargetStore::build_from_fasta(&fasta_path, &index_path).unwrap();
+        let store = TargetStore::open(&index_path).unwrap();
+        let global = store.global_view();
+
+        // Verify offsets are contiguous: offset[i+1] = offset[i] + 2*seq_len[i] + 2
+        for i in 0..store.len() - 1 {
+            let expected_next =
+                global.offsets[i] + 2 * global.seq_lens[i] as u64 + 2;
+            assert_eq!(
+                global.offsets[i + 1], expected_next,
+                "Offset mismatch at target {}",
+                i
+            );
         }
     }
 }
