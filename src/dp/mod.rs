@@ -82,7 +82,7 @@ impl std::fmt::Display for ExtendDir {
 /// and internally reorders for left extension.
 pub struct DpView<'a, M: DsmModel> {
     query: &'a [Base],
-    target: &'a [Base],
+    target_transformed: &'a [Base],
     q_anchor: usize,
     t_anchor: usize,
     pub dir: ExtendDir,
@@ -123,19 +123,19 @@ impl<'a, M: DsmModel> DpView<'a, M> {
     /// Create a left extension view (query toward 5', target toward 3')
     pub fn left(
         query: &'a [Base],
-        target: &'a [Base],
+        target_transformed: &'a [Base],
         q_start: usize,
         t_start: usize,
         max_ext: usize,
     ) -> Self {
         Self {
             query,
-            target,
+            target_transformed,
             q_anchor: q_start,
             t_anchor: t_start,
             dir: ExtendDir::Left,
             q_len: (q_start + 1).min(max_ext),
-            t_len: (target.len() - t_start).min(max_ext),
+            t_len: (target_transformed.len() - t_start).min(max_ext),
             _model: std::marker::PhantomData,
         }
     }
@@ -143,14 +143,14 @@ impl<'a, M: DsmModel> DpView<'a, M> {
     /// Create a right extension view (query toward 3', target toward 5')
     pub fn right(
         query: &'a [Base],
-        target: &'a [Base],
+        target_transformed: &'a [Base],
         q_end: usize,
         t_end: usize,
         max_ext: usize,
     ) -> Self {
         Self {
             query,
-            target,
+            target_transformed,
             q_anchor: q_end,
             t_anchor: t_end,
             dir: ExtendDir::Right,
@@ -169,12 +169,17 @@ impl<'a, M: DsmModel> DpView<'a, M> {
         }
     }
 
-    /// Get target base index at DP position j (0 = anchor)
+    /// Get target base index at DP position j (0 = anchor).
+    /// Bases are complemented on-the-fly from the transformed index.
     #[inline(always)]
     pub fn t(&self, j: usize) -> usize {
         match self.dir {
-            ExtendDir::Left => Self::right_base(self.target, self.t_anchor, j).idx(),
-            ExtendDir::Right => Self::left_base(self.target, self.t_anchor, j).idx(),
+            ExtendDir::Left => Self::right_base(self.target_transformed, self.t_anchor, j)
+                .complement()
+                .idx(),
+            ExtendDir::Right => Self::left_base(self.target_transformed, self.t_anchor, j)
+                .complement()
+                .idx(),
         }
     }
 

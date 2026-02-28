@@ -6,8 +6,6 @@
 //! 3) Optional extension of each seed
 //! 4) Materialize and emit final hits
 
-use std::collections::HashMap;
-
 use anyhow::Result;
 use log::info;
 use rayon::prelude::*;
@@ -19,7 +17,7 @@ use crate::alignment::{Alignment, PairClass};
 use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::{DpConfig, DpExtender, DpView};
 use crate::dsm::{
-    pair_mat, seed_energy, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99,
+    pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99,
 };
 use crate::index::store::{GlobalView, TargetStore};
 use crate::registry::{QueryData, QueryRegistry};
@@ -146,8 +144,6 @@ const HIT_CHANNEL_CAPACITY: usize = 2048;
 struct SearchState<M: DsmModel> {
     extender: DpExtender<M>,
     dp_cfg: DpConfig,
-    /// Cache of de-complemented target bases, keyed by target index.
-    raw_cache: HashMap<u32, TargetRawBases>,
 }
 
 impl<M: DsmModel> SearchState<M> {
@@ -156,14 +152,8 @@ impl<M: DsmModel> SearchState<M> {
         Self {
             extender: DpExtender::<M>::from_config(dp_cfg),
             dp_cfg,
-            raw_cache: HashMap::new(),
         }
     }
-}
-
-#[inline(always)]
-fn needs_raw_target(opts: &SearchArgs) -> bool {
-    opts.extend.max_extension > 0 || opts.output.format != OutputFormat::Minimal
 }
 
 /// Single-thread direct execution path (no channel fan-in).
@@ -197,38 +187,6 @@ where
     }
 
     Ok(emitted)
-}
-
-/// De-complemented target bases, computed once per target.
-struct TargetRawBases {
-    both: Vec<Base>,
-    split: usize,
-}
-
-impl TargetRawBases {
-    #[inline(always)]
-    fn forward(&self) -> &[Base] {
-        &self.both[..self.split]
-    }
-
-    #[inline(always)]
-    fn reverse(&self) -> &[Base] {
-        &self.both[self.split..]
-    }
-
-    fn from_transformed(fwd_trans: &[Base], rc_trans: &[Base]) -> Self {
-        let n = fwd_trans.len();
-        let mut both: Vec<Base> = Vec::with_capacity(2 * n);
-        // SAFETY: every element is initialized before being read.
-        unsafe { both.set_len(2 * n) };
-        for i in 0..n {
-            unsafe {
-                *both.get_unchecked_mut(i) = (*fwd_trans.get_unchecked(i)).complement();
-                *both.get_unchecked_mut(n + i) = (*rc_trans.get_unchecked(i)).complement();
-            }
-        }
-        Self { both, split: n }
-    }
 }
 
 /// Parallel query-major producer: each worker processes one query against the global SA.
@@ -303,9 +261,9 @@ where
     let mut emitted = 0usize;
     let mut callback_err: Option<anyhow::Error> = None;
 
-    // Fast path: no extension and no alignment output required.
-    // Avoid materializing de-complemented target arrays entirely.
-    if state.dp_cfg.max_extension() == 0 && !include_alignment {
+    // Fast path: no extension needed. Avoids materializing de-complemented
+    // target arrays entirely — works for all output formats when max_extension == 0.
+    if state.dp_cfg.max_extension() == 0 {
         let penalty = state.dp_cfg.penalty_raw();
 
         for_each_seed(query, global, &opts.seed, |seed| {
@@ -339,6 +297,23 @@ where
                 return;
             }
 
+            // Maximality check: prune if seed can extend left (in query coords)
+            // or right — using de-complemented transformed bases inline.
+            if q_pos > seed_interval.start && t_pos + len < t_trans.len() {
+                let p_class = pair_matrix[query_bases[q_pos - 1].idx()]
+                    [t_trans[t_pos + len].complement().idx()];
+                if p_class != 0 && !filter_cfg.no_max_prune {
+                    return;
+                }
+            }
+            if q_pos + len < seed_interval.end && t_pos > 0 {
+                let p_class = pair_matrix[query_bases[q_pos + len].idx()]
+                    [t_trans[t_pos - 1].complement().idx()];
+                if p_class != 0 && !filter_cfg.no_max_prune {
+                    return;
+                }
+            }
+
             let t_match_end = t_pos + len - 1;
             let seed_e =
                 seed_energy_transformed::<M>(query_bases, t_trans, q_pos, t_pos, len, penalty);
@@ -358,24 +333,56 @@ where
                 return;
             }
 
-            let ext = SeedExtension {
-                score,
-                l_q: 0,
-                l_t: 0,
-                r_q: 0,
-                r_t: 0,
-                left_pairs: SmallVec::new(),
-                right_pairs: SmallVec::new(),
+            // Build alignment pairs inline from transformed bases when needed.
+            let alignment = if include_alignment {
+                let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
+                for i in 0..len {
+                    seed_pairs.push(PairClass::from_bases(
+                        query_bases[q_pos + i],
+                        t_trans[t_match_end - i].complement(),
+                    ));
+                }
+                Some(Alignment::new(&[], &seed_pairs, &[]))
+            } else {
+                None
             };
-            let hit = SearchHit::new(
+
+            let (seed_start, seed_end) = if include_alignment {
+                (Some(0usize), Some(len))
+            } else {
+                (None, None)
+            };
+
+            // Strand-dependent coordinate transformation (mirrors SearchHit::new).
+            // With max_extension == 0: l_q = l_t = r_q = r_t = 0.
+            let final_q_start = q_pos;
+            let final_q_end = q_pos + len - 1;
+            let final_t_start_raw = t_pos;
+            let final_t_end_raw = t_pos + len - 1;
+            let (t_start_out, t_end_out, strand) = match seed.strand {
+                Strand::Forward => (final_t_start_raw, final_t_end_raw, Strand::Forward),
+                Strand::Reverse => {
+                    let fwd_start = target_len - 1 - final_t_end_raw;
+                    let fwd_end = target_len - 1 - final_t_start_raw;
+                    (fwd_start, fwd_end, Strand::Reverse)
+                }
+            };
+
+            let hit = SearchHit {
                 query_idx,
-                query_bases,
-                &[],
-                &seed,
-                &ext,
-                false,
-                target_len,
-            );
+                target_idx: seed.target_id.0,
+                q_start: final_q_start,
+                q_end: final_q_end,
+                t_start: t_start_out,
+                t_end: t_end_out,
+                strand,
+                energy: score.into(),
+                seed_start,
+                seed_end,
+                alignment,
+                flank_5: Sequence::from(Vec::new()),
+                flank_3: Sequence::from(Vec::new()),
+            };
 
             match on_hit(hit) {
                 Ok(()) => emitted += 1,
@@ -390,9 +397,6 @@ where
     }
 
     // Full path: extension and/or alignment required.
-    // Cache de-complemented target bases per target_id.
-    let need_raw = needs_raw_target(opts);
-
     for_each_seed(query, global, &opts.seed, |seed| {
         if callback_err.is_some() {
             return;
@@ -406,22 +410,15 @@ where
         seed.target_start = target_len
             .saturating_sub(seed.target_start + seed.seed_len.get());
 
-        // Get or create cached raw bases for this target
-        if need_raw && !state.raw_cache.contains_key(&target_idx_u32) {
-            let target_offset = global.offsets[target_idx] as usize;
-            let fwd_trans =
-                &global.combined_seq[target_offset..target_offset + target_len];
-            let rc_trans =
-                &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-            state
-                .raw_cache
-                .insert(target_idx_u32, TargetRawBases::from_transformed(fwd_trans, rc_trans));
-        }
+        let target_offset = global.offsets[target_idx] as usize;
+        let t_forward_trans =
+            &global.combined_seq[target_offset..target_offset + target_len];
+        let t_reverse_trans =
+            &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
 
-        let raw = state.raw_cache.get(&target_idx_u32).unwrap();
-        let target_bases = match seed.strand {
-            Strand::Forward => raw.forward(),
-            Strand::Reverse => raw.reverse(),
+        let target_trans = match seed.strand {
+            Strand::Forward => t_forward_trans,
+            Strand::Reverse => t_reverse_trans,
         };
 
         let ctx = QueryTargetCtx {
@@ -435,7 +432,7 @@ where
         };
 
         let Some(hit) =
-            build_hit_from_seed::<M>(&mut state.extender, state.dp_cfg, &ctx, &seed, target_bases)
+            build_hit_from_seed::<M>(&mut state.extender, state.dp_cfg, &ctx, &seed, target_trans)
         else {
             return;
         };
@@ -459,9 +456,9 @@ fn build_hit_from_seed<M: DsmModel>(
     dp_cfg: DpConfig,
     ctx: &QueryTargetCtx<'_>,
     seed: &SeedHit,
-    target_bases: &[Base],
+    target_trans: &[Base],
 ) -> Option<SearchHit> {
-    if seed.target_start + seed.seed_len.get() > target_bases.len() {
+    if seed.target_start + seed.seed_len.get() > target_trans.len() {
         return None;
     }
 
@@ -469,7 +466,7 @@ fn build_hit_from_seed<M: DsmModel>(
         extender,
         dp_cfg,
         ctx.query_bases,
-        target_bases,
+        target_trans,
         seed,
         ctx.seed_interval,
         ctx.filter_cfg,
@@ -484,7 +481,7 @@ fn build_hit_from_seed<M: DsmModel>(
     Some(SearchHit::new(
         ctx.query_idx,
         ctx.query_bases,
-        target_bases,
+        target_trans,
         seed,
         &extension,
         ctx.include_alignment,
@@ -537,7 +534,7 @@ fn compute_seed_extension<M: DsmModel>(
     extender: &mut DpExtender<M>,
     dp_cfg: DpConfig,
     query_bases: &[Base],
-    target_bases: &[Base],
+    target_trans: &[Base],
     seed: &SeedHit,
     seed_interval: Interval,
     filter_cfg: &FilterConfig,
@@ -550,15 +547,17 @@ fn compute_seed_extension<M: DsmModel>(
     let len = seed.seed_len.get();
 
     // Maximality check in scoring/raw coordinate space.
-    if q_pos > seed_interval.start && t_pos + len < target_bases.len() {
-        let p_class = pair_matrix[query_bases[q_pos - 1].idx()][target_bases[t_pos + len].idx()];
+    if q_pos > seed_interval.start && t_pos + len < target_trans.len() {
+        let p_class = pair_matrix[query_bases[q_pos - 1].idx()]
+            [target_trans[t_pos + len].complement().idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
             return None;
         }
     }
 
     if q_pos + len < seed_interval.end && t_pos > 0 {
-        let p_class = pair_matrix[query_bases[q_pos + len].idx()][target_bases[t_pos - 1].idx()];
+        let p_class = pair_matrix[query_bases[q_pos + len].idx()]
+            [target_trans[t_pos - 1].complement().idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
             return None;
         }
@@ -566,14 +565,22 @@ fn compute_seed_extension<M: DsmModel>(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e = seed_energy::<M>(query_bases, target_bases, q_pos, t_match_end, len, penalty);
+    let seed_e = seed_energy_transformed::<M>(query_bases, target_trans, q_pos, t_pos, len, penalty);
 
-    let can_extend_left = q_pos > 0 && t_pos + len < target_bases.len();
+    let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-        let term_5p = terminal_5p::<M>(query_bases[q_pos], target_bases[t_match_end], penalty);
-        let term_3p = terminal_3p::<M>(query_bases[q_pos + len - 1], target_bases[t_pos], penalty);
+        let term_5p = terminal_5p::<M>(
+            query_bases[q_pos],
+            target_trans[t_match_end].complement(),
+            penalty,
+        );
+        let term_3p = terminal_3p::<M>(
+            query_bases[q_pos + len - 1],
+            target_trans[t_pos].complement(),
+            penalty,
+        );
         let nt_count = (2 * len) as i32;
         return Some(SeedExtension {
             score: M::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
@@ -587,7 +594,7 @@ fn compute_seed_extension<M: DsmModel>(
     }
 
     let (l_score, l_q, l_t, left_pairs) = {
-        let view = DpView::<M>::left(query_bases, target_bases, q_pos, t_match_end, max_ext);
+        let view = DpView::<M>::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -598,7 +605,7 @@ fn compute_seed_extension<M: DsmModel>(
     };
 
     let (r_score, r_q, r_t, right_pairs) = {
-        let view = DpView::<M>::right(query_bases, target_bases, q_pos + len - 1, t_pos, max_ext);
+        let view = DpView::<M>::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -629,7 +636,7 @@ impl SearchHit {
     fn new(
         query_idx: u32,
         query_bases: &[Base],
-        target_bases: &[Base],
+        target_trans: &[Base],
         seed: &SeedHit,
         ext: &SeedExtension,
         include_alignment: bool,
@@ -659,7 +666,7 @@ impl SearchHit {
             for i in 0..len {
                 seed_pairs.push(PairClass::from_bases(
                     query_bases[q_pos + i],
-                    target_bases[t_match_end - i],
+                    target_trans[t_match_end - i].complement(),
                 ));
             }
             Some(Alignment::new(
