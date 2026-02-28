@@ -46,7 +46,7 @@ pub fn append_hit_names_vec(
         append_hit_minimal_names_vec(bufs, hit, out, query_name, target_name);
     } else {
         build_line(
-            out,
+            &mut bufs.line,
             &mut bufs.itoa,
             hit,
             query_name,
@@ -56,6 +56,7 @@ pub fn append_hit_names_vec(
             t_rc,
             format,
         );
+        out.extend_from_slice(&bufs.line);
     }
 }
 
