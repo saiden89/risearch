@@ -71,3 +71,13 @@ fn infer_compression(path: &Path) -> OutputCompression {
         None => OutputCompression::None,
     }
 }
+
+/// Return a suitable file extension (including leading dot) for the given output
+/// configuration, e.g. `".tsv"`, `".tsv.gz"`, `".tsv.zst"`.
+pub fn output_extension(cfg: &OutputConfig) -> &'static str {
+    match cfg.compress.unwrap_or(OutputCompression::None) {
+        OutputCompression::None => ".tsv",
+        OutputCompression::Gzip => ".tsv.gz",
+        OutputCompression::Zstd => ".tsv.zst",
+    }
+}

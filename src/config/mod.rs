@@ -340,6 +340,9 @@ pub struct OutputConfig {
 
     /// Output compression level (codec-specific)
     pub level: Option<i32>,
+
+    /// Write one output file per query (directory mode)
+    pub multifile: bool,
 }
 
 #[cfg(test)]

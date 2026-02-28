@@ -46,6 +46,10 @@ pub struct SearchArgs {
     #[arg(long = "output-level", value_name = "LEVEL")]
     pub output_level: Option<i32>,
 
+    /// Write one output file per query into the directory given by -o
+    #[arg(long = "output-multifile", action = clap::ArgAction::SetTrue)]
+    pub output_multifile: bool,
+
     // ========================================================================
     // TODO: Placeholder flags from C implementation - not yet implemented
     // ========================================================================
@@ -104,6 +108,7 @@ impl From<SearchArgs> for config::SearchArgs {
                 format,
                 compress: value.output_compress,
                 level: value.output_level,
+                multifile: value.output_multifile,
             },
             one_vs_one: value.one_vs_one,
             three_prime_match: value.three_prime_match,

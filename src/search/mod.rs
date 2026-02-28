@@ -146,6 +146,8 @@ const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
 pub struct OutputChunk {
     pub data: Vec<u8>,
     pub hits: usize,
+    /// When multi-file output is active, identifies which query produced this chunk.
+    pub query_idx: Option<u32>,
 }
 
 /// Reusable per-worker state.
@@ -179,7 +181,7 @@ impl FormatState {
         }
     }
 
-    fn flush<F>(&mut self, on_chunk: &mut F) -> Result<()>
+    fn flush<F>(&mut self, query_idx: Option<u32>, on_chunk: &mut F) -> Result<()>
     where
         F: FnMut(OutputChunk) -> Result<()>,
     {
@@ -189,7 +191,7 @@ impl FormatState {
                 Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
             );
             let hits = std::mem::replace(&mut self.chunk_hits, 0);
-            on_chunk(OutputChunk { data, hits })?;
+            on_chunk(OutputChunk { data, hits, query_idx })?;
         }
         Ok(())
     }
@@ -210,11 +212,13 @@ where
     let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
     let mut format = FormatState::new();
     let mut total_hits = 0usize;
+    let multifile = opts.output.multifile;
 
     for (query_idx, query) in queries.entries().iter().enumerate() {
         let query_idx = query_idx as u32;
         let query_name = queries.get_name(query_idx);
         let query_seq = queries.get(query_idx).sequence();
+        let chunk_qi = if multifile { Some(query_idx) } else { None };
 
         search_query::<M, _>(
             query_idx,
@@ -246,14 +250,19 @@ where
                 total_hits += 1;
 
                 if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
-                    format.flush(on_chunk)?;
+                    format.flush(chunk_qi, on_chunk)?;
                 }
                 Ok(())
             },
         )?;
+
+        // In multifile mode, flush at query boundary so chunks never mix queries.
+        if multifile {
+            format.flush(chunk_qi, on_chunk)?;
+        }
     }
 
-    format.flush(on_chunk)?;
+    format.flush(None, on_chunk)?;
     Ok(total_hits)
 }
 
@@ -282,6 +291,7 @@ fn produce_by_query<M: DsmModel>(
             let query_idx = query_idx as u32;
             let query_name = queries.get_name(query_idx);
             let query_seq = queries.get(query_idx).sequence();
+            let chunk_qi = if opts.output.multifile { Some(query_idx) } else { None };
 
             let mut flush_to_tx = |chunk: OutputChunk| -> Result<()> {
                 tx.send(chunk)
@@ -321,13 +331,13 @@ fn produce_by_query<M: DsmModel>(
                     format.chunk_hits += 1;
 
                     if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
-                        format.flush(&mut flush_to_tx)?;
+                        format.flush(chunk_qi, &mut flush_to_tx)?;
                     }
                     Ok(())
                 },
             )?;
 
-            format.flush(&mut flush_to_tx)?;
+            format.flush(chunk_qi, &mut flush_to_tx)?;
 
             Ok(())
         },

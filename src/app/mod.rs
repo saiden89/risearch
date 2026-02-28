@@ -1,7 +1,8 @@
 //! Application entry point - handles CLI dispatch and orchestration.
 
+use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::CommandFactory;
@@ -61,21 +62,73 @@ fn cmd_search(
     let targets = TargetStore::open(target_path).context("Failed to load index")?;
     trace!("Index loaded: {} targets", targets.len());
 
-    // Open output with compression
-    let mut writer = output::open_output(Some(output_path), &opts.output)?;
-
     debug!("Starting search...");
-    let hits = search::run_search(&queries, &targets, &opts, |chunk| -> Result<()> {
-        writer
-            .write_all(&chunk.data)
-            .context("Failed to write output chunk")?;
-        Ok(())
-    })?;
 
-    writer.flush().context("Failed to flush output")?;
+    let hits = if opts.output.multifile {
+        // -- Multi-file mode: one output file per query ----------------------
+        std::fs::create_dir_all(output_path).with_context(|| {
+            format!(
+                "Failed to create output directory {:?} for --output-multifile",
+                output_path
+            )
+        })?;
+
+        let ext = output::output_extension(&opts.output);
+        let mut writers: HashMap<u32, Box<dyn Write>> = HashMap::new();
+
+        let hits = search::run_search(&queries, &targets, &opts, |chunk| -> Result<()> {
+            let qi = chunk
+                .query_idx
+                .expect("BUG: multifile mode active but OutputChunk has no query_idx");
+            let writer = match writers.get_mut(&qi) {
+                Some(w) => w,
+                None => {
+                    let qname = sanitize_filename(queries.get_name(qi));
+                    let file_path: PathBuf = [output_path, Path::new(&format!("{qname}{ext}"))]
+                        .iter()
+                        .collect();
+                    let w = output::open_output(Some(&file_path), &opts.output)?;
+                    writers.entry(qi).or_insert(w)
+                }
+            };
+            writer
+                .write_all(&chunk.data)
+                .context("Failed to write output chunk")?;
+            Ok(())
+        })?;
+
+        for (_, mut w) in writers.drain() {
+            w.flush().context("Failed to flush per-query output")?;
+        }
+
+        hits
+    } else {
+        // -- Single-file mode (default) --------------------------------------
+        let mut writer = output::open_output(Some(output_path), &opts.output)?;
+
+        let hits = search::run_search(&queries, &targets, &opts, |chunk| -> Result<()> {
+            writer
+                .write_all(&chunk.data)
+                .context("Failed to write output chunk")?;
+            Ok(())
+        })?;
+
+        writer.flush().context("Failed to flush output")?;
+        hits
+    };
 
     info!("Done: {} hits", hits);
     Ok(())
+}
+
+/// Replace characters that are unsafe in filenames.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
 }
 
 // =============================================================================
