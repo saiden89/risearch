@@ -63,68 +63,15 @@ fn cmd_search(
 
     // Open output with compression
     let mut writer = output::open_output(Some(output_path), &opts.output)?;
-    let mut out_buf = Vec::with_capacity(64 * 1024);
-    let mut fmt_bufs = output::OutputBuffers::new();
-    let format = opts.output.format;
-    let mut target_cache: Option<(u32, risearch::index::store::TargetSeqs<'_>)> = None;
 
     debug!("Starting search...");
-    let hits = search::run_search(&queries, &targets, &opts, |hit| -> Result<()> {
-        if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
-            let seqs = targets
-                .target_seqs(hit.target_idx as usize)
-                .with_context(|| format!("Failed to load target #{}", hit.target_idx))?;
-            target_cache = Some((hit.target_idx, seqs));
-        }
-
-        let target = &target_cache
-            .as_ref()
-            .expect("target cache must be populated")
-            .1;
-        let q_name = queries.get_name(hit.query_idx);
-        let q_seq = queries.get(hit.query_idx).sequence();
-        let t_fwd = target.fwd_transformed;
-        let t_rc = target.rc_transformed;
-
-        if format == risearch::config::OutputFormat::Minimal {
-            output::append_hit_minimal_names_vec(
-                &mut fmt_bufs,
-                &hit,
-                &mut out_buf,
-                q_name,
-                target.name,
-            );
-        } else {
-            output::write_hit_names(
-                &mut fmt_bufs,
-                &hit,
-                format,
-                &mut out_buf,
-                q_name,
-                target.name,
-                q_seq,
-                t_fwd,
-                t_rc,
-            )
-            .context("Failed to format output hit")?;
-        }
-
-        if out_buf.len() >= 64 * 1024 {
-            writer
-                .write_all(&out_buf)
-                .context("Failed to write output chunk")?;
-            out_buf.clear();
-        }
-
+    let hits = search::run_search(&queries, &targets, &opts, |chunk| -> Result<()> {
+        writer
+            .write_all(&chunk.data)
+            .context("Failed to write output chunk")?;
         Ok(())
     })?;
 
-    if !out_buf.is_empty() {
-        writer
-            .write_all(&out_buf)
-            .context("Failed to write output chunk")?;
-        out_buf.clear();
-    }
     writer.flush().context("Failed to flush output")?;
 
     info!("Done: {} hits", hits);

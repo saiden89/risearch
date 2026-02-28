@@ -93,40 +93,12 @@ impl RustRunner<Indexed> {
         search_args.output.format = risearch::config::OutputFormat::BindingSite;
 
         let mut rust_out = Vec::with_capacity(64 * 1024);
-        let mut fmt_bufs = risearch::output::OutputBuffers::new();
-        let format = search_args.output.format;
-        let mut target_cache: Option<(u32, risearch::index::store::TargetSeqs<'_>)> = None;
         risearch::search::run_search(
             &query_registry,
             &self.state.target_store,
             &search_args,
-            |hit| -> anyhow::Result<()> {
-                if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
-                    let seqs = self
-                        .state
-                        .target_store
-                        .target_seqs(hit.target_idx as usize)?;
-                    target_cache = Some((hit.target_idx, seqs));
-                }
-                let target = &target_cache
-                    .as_ref()
-                    .expect("target cache must be populated")
-                    .1;
-                let q_name = query_registry.get_name(hit.query_idx);
-                let q_seq = query_registry.get(hit.query_idx).sequence();
-                let t_fwd = target.fwd_transformed;
-                let t_rc = target.rc_transformed;
-                risearch::output::write_hit_names(
-                    &mut fmt_bufs,
-                    &hit,
-                    format,
-                    &mut rust_out,
-                    q_name,
-                    target.name,
-                    q_seq,
-                    t_fwd,
-                    t_rc,
-                )?;
+            |chunk| -> anyhow::Result<()> {
+                rust_out.extend_from_slice(&chunk.data);
                 Ok(())
             },
         )

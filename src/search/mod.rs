@@ -52,10 +52,10 @@ pub fn run_search<F>(
     queries: &QueryRegistry,
     store: &TargetStore,
     opts: &SearchArgs,
-    mut on_hit: F,
+    mut on_chunk: F,
 ) -> Result<usize>
 where
-    F: FnMut(SearchHit) -> Result<()>,
+    F: FnMut(OutputChunk) -> Result<()>,
 {
     if store.is_empty() || queries.is_empty() {
         return Ok(0);
@@ -76,17 +76,17 @@ where
     if rayon::current_num_threads() == 1 {
         let total = match opts.score.matrix {
             Matrix::T04 => {
-                run_search_direct::<T04, _>(queries, &global, opts, &mut on_hit)?
+                run_search_direct::<T04, _>(queries, store, &global, opts, &mut on_chunk)?
             }
             Matrix::T99 => {
-                run_search_direct::<T99, _>(queries, &global, opts, &mut on_hit)?
+                run_search_direct::<T99, _>(queries, store, &global, opts, &mut on_chunk)?
             }
         };
         info!("Search complete: {} hits", total);
         return Ok(total);
     }
 
-    let (tx, rx) = mpsc::sync_channel::<SearchHit>(HIT_CHANNEL_CAPACITY);
+    let (tx, rx) = mpsc::sync_channel::<OutputChunk>(CHUNK_CHANNEL_CAPACITY);
     let cancelled = AtomicBool::new(false);
 
     let total = std::thread::scope(|scope| -> Result<usize> {
@@ -94,10 +94,10 @@ where
         let producer = scope.spawn(move || -> Result<()> {
             match opts.score.matrix {
                 Matrix::T04 => {
-                    produce_by_query::<T04>(queries, &global, opts, tx, cancel)
+                    produce_by_query::<T04>(queries, store, &global, opts, tx, cancel)
                 }
                 Matrix::T99 => {
-                    produce_by_query::<T99>(queries, &global, opts, tx, cancel)
+                    produce_by_query::<T99>(queries, store, &global, opts, tx, cancel)
                 }
             }
         });
@@ -105,12 +105,13 @@ where
         let mut emitted = 0usize;
         let mut callback_err: Option<anyhow::Error> = None;
 
-        while let Ok(hit) = rx.recv() {
+        while let Ok(chunk) = rx.recv() {
             if callback_err.is_some() {
                 continue;
             }
-            match on_hit(hit) {
-                Ok(()) => emitted += 1,
+            let count = chunk.hits;
+            match on_chunk(chunk) {
+                Ok(()) => emitted += count,
                 Err(err) => {
                     callback_err = Some(err);
                     cancelled.store(true, Ordering::Relaxed);
@@ -138,7 +139,14 @@ where
 // ORCHESTRATION
 // =============================================================================
 
-const HIT_CHANNEL_CAPACITY: usize = 2048;
+const CHUNK_CHANNEL_CAPACITY: usize = 128;
+const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
+
+/// A batch of pre-formatted hit lines ready for writing.
+pub struct OutputChunk {
+    pub data: Vec<u8>,
+    pub hits: usize,
+}
 
 /// Reusable per-worker state.
 struct SearchState<M: DsmModel> {
@@ -156,71 +164,170 @@ impl<M: DsmModel> SearchState<M> {
     }
 }
 
+struct FormatState {
+    fmt_bufs: crate::output::format::OutputBuffers,
+    chunk_data: Vec<u8>,
+    chunk_hits: usize,
+}
+
+impl FormatState {
+    fn new() -> Self {
+        Self {
+            fmt_bufs: crate::output::format::OutputBuffers::new(),
+            chunk_data: Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
+            chunk_hits: 0,
+        }
+    }
+
+    fn flush<F>(&mut self, on_chunk: &mut F) -> Result<()>
+    where
+        F: FnMut(OutputChunk) -> Result<()>,
+    {
+        if self.chunk_hits > 0 {
+            let data = std::mem::replace(
+                &mut self.chunk_data,
+                Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
+            );
+            let hits = std::mem::replace(&mut self.chunk_hits, 0);
+            on_chunk(OutputChunk { data, hits })?;
+        }
+        Ok(())
+    }
+}
+
 /// Single-thread direct execution path (no channel fan-in).
 fn run_search_direct<M, F>(
     queries: &QueryRegistry,
+    store: &TargetStore,
     global: &GlobalView<'_>,
     opts: &SearchArgs,
-    on_hit: &mut F,
+    on_chunk: &mut F,
 ) -> Result<usize>
 where
     M: DsmModel,
-    F: FnMut(SearchHit) -> Result<()>,
+    F: FnMut(OutputChunk) -> Result<()>,
 {
     let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
-    let mut emitted = 0usize;
+    let mut format = FormatState::new();
+    let mut total_hits = 0usize;
 
     for (query_idx, query) in queries.entries().iter().enumerate() {
-        let mut emit_hit = |hit: SearchHit| -> Result<()> {
-            on_hit(hit)?;
-            emitted += 1;
-            Ok(())
-        };
+        let query_idx = query_idx as u32;
+        let query_name = queries.get_name(query_idx);
+        let query_seq = queries.get(query_idx).sequence();
+
         search_query::<M, _>(
-            query_idx as u32,
+            query_idx,
             query,
             global,
             opts,
             &mut state,
-            &mut emit_hit,
+            &mut |hit: SearchHit| -> Result<()> {
+                let target_name = store.get_name(hit.target_idx);
+                let target_idx = hit.target_idx as usize;
+                let target_offset = global.offsets[target_idx] as usize;
+                let target_len = global.seq_lens[target_idx] as usize;
+                let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
+                let t_rc = &global.combined_seq
+                    [target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+
+                crate::output::format::append_hit_names_vec(
+                    &mut format.fmt_bufs,
+                    &hit,
+                    opts.output.format,
+                    &mut format.chunk_data,
+                    query_name,
+                    target_name,
+                    query_seq,
+                    t_fwd,
+                    t_rc,
+                );
+                format.chunk_hits += 1;
+                total_hits += 1;
+
+                if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
+                    format.flush(on_chunk)?;
+                }
+                Ok(())
+            },
         )?;
     }
 
-    Ok(emitted)
+    format.flush(on_chunk)?;
+    Ok(total_hits)
 }
 
 /// Parallel query-major producer: each worker processes one query against the global SA.
 fn produce_by_query<M: DsmModel>(
     queries: &QueryRegistry,
+    store: &TargetStore,
     global: &GlobalView<'_>,
     opts: &SearchArgs,
-    tx: mpsc::SyncSender<SearchHit>,
+    tx: mpsc::SyncSender<OutputChunk>,
     cancelled: &AtomicBool,
 ) -> Result<()> {
     (0..queries.len()).into_par_iter().try_for_each_init(
-        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
-        |(state, tx), query_idx| {
+        || {
+            (
+                SearchState::<M>::new(&opts.score, &opts.extend),
+                FormatState::new(),
+                tx.clone(),
+            )
+        },
+        |(state, format, tx), query_idx| {
             if cancelled.load(Ordering::Relaxed) {
                 return Ok(());
             }
 
-            let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-                tx.send(hit)
-                    .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
-                Ok(())
+            let query_idx = query_idx as u32;
+            let query_name = queries.get_name(query_idx);
+            let query_seq = queries.get(query_idx).sequence();
+
+            let mut flush_to_tx = |chunk: OutputChunk| -> Result<()> {
+                tx.send(chunk)
+                    .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))
             };
 
             search_query::<M, _>(
-                query_idx as u32,
-                &queries.entries()[query_idx],
+                query_idx,
+                &queries.entries()[query_idx as usize],
                 global,
                 opts,
                 state,
-                &mut emit_hit,
+                &mut |hit: SearchHit| -> Result<()> {
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+
+                    let target_name = store.get_name(hit.target_idx);
+                    let target_idx = hit.target_idx as usize;
+                    let target_offset = global.offsets[target_idx] as usize;
+                    let target_len = global.seq_lens[target_idx] as usize;
+                    let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
+                    let t_rc = &global.combined_seq
+                        [target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+
+                    crate::output::format::append_hit_names_vec(
+                        &mut format.fmt_bufs,
+                        &hit,
+                        opts.output.format,
+                        &mut format.chunk_data,
+                        query_name,
+                        target_name,
+                        query_seq,
+                        t_fwd,
+                        t_rc,
+                    );
+                    format.chunk_hits += 1;
+
+                    if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
+                        format.flush(&mut flush_to_tx)?;
+                    }
+                    Ok(())
+                },
             )?;
+
+            format.flush(&mut flush_to_tx)?;
 
             Ok(())
         },

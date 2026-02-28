@@ -28,6 +28,37 @@ impl Default for OutputBuffers {
     }
 }
 
+/// Append a formatted hit line to an output Vec, choosing between minimal and full formats.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn append_hit_names_vec(
+    bufs: &mut OutputBuffers,
+    hit: &SearchHit,
+    format: OutputFormat,
+    out: &mut Vec<u8>,
+    query_name: &str,
+    target_name: &str,
+    q_seq: &[Base],
+    t_fwd: &[Base],
+    t_rc: &[Base],
+) {
+    if format == OutputFormat::Minimal {
+        append_hit_minimal_names_vec(bufs, hit, out, query_name, target_name);
+    } else {
+        build_line(
+            out,
+            &mut bufs.itoa,
+            hit,
+            query_name,
+            target_name,
+            q_seq,
+            t_fwd,
+            t_rc,
+            format,
+        );
+    }
+}
+
 /// Append one minimal-format hit line directly into an output Vec.
 ///
 /// This avoids the generic field loop and intermediate line buffer copy used by
