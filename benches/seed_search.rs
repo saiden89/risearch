@@ -94,34 +94,31 @@ fn build_search_pair(
 
 fn bench_seed_exact(c: &mut Criterion) {
     let mut group = c.benchmark_group("seed_exact");
-    let seed_config = SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::exact(), false);
+    let seed_config =
+        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::exact(), false);
 
     for t_len in [1_000, 10_000, 100_000] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(t_len),
-            &t_len,
-            |b, &t_len| {
-                let (q_sa, q_seq, q_sa_start, q_sa_len, t_sa, t_seq, t_sa_len) =
-                    build_search_pair(22, t_len, 42);
-                let mut results: Vec<SeedMatch> = Vec::with_capacity(4096);
+        group.bench_with_input(BenchmarkId::from_parameter(t_len), &t_len, |b, &t_len| {
+            let (q_sa, q_seq, q_sa_start, q_sa_len, t_sa, t_seq, t_sa_len) =
+                build_search_pair(22, t_len, 42);
+            let mut results: Vec<SeedMatch> = Vec::with_capacity(4096);
 
-                b.iter(|| {
-                    results.clear();
-                    let searcher = SeedSearcher::new(
-                        black_box(q_sa.as_slice()),
-                        black_box(q_seq.as_slice()),
-                        black_box(q_sa_start),
-                        black_box(q_sa_len),
-                        black_box(t_sa.as_slice()),
-                        black_box(t_seq.as_slice()),
-                        black_box(t_sa_len),
-                        black_box(&seed_config),
-                    );
-                    searcher.search_length_range(7, 22, &mut results);
-                    black_box(results.len());
-                });
-            },
-        );
+            b.iter(|| {
+                results.clear();
+                let searcher = SeedSearcher::new(
+                    black_box(q_sa.as_slice()),
+                    black_box(q_seq.as_slice()),
+                    black_box(q_sa_start),
+                    black_box(q_sa_len),
+                    black_box(t_sa.as_slice()),
+                    black_box(t_seq.as_slice()),
+                    black_box(t_sa_len),
+                    black_box(&seed_config),
+                );
+                searcher.search_length_range(7, 22, &mut results);
+                black_box(results.len());
+            });
+        });
     }
 
     group.finish();
@@ -137,31 +134,27 @@ fn bench_seed_mismatch(c: &mut Criterion) {
             false,
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("max_mm", max_mm),
-            &max_mm,
-            |b, _| {
-                let (q_sa, q_seq, q_sa_start, q_sa_len, t_sa, t_seq, t_sa_len) =
-                    build_search_pair(22, 10_000, 42);
-                let mut results: Vec<SeedMatch> = Vec::with_capacity(4096);
+        group.bench_with_input(BenchmarkId::new("max_mm", max_mm), &max_mm, |b, _| {
+            let (q_sa, q_seq, q_sa_start, q_sa_len, t_sa, t_seq, t_sa_len) =
+                build_search_pair(22, 10_000, 42);
+            let mut results: Vec<SeedMatch> = Vec::with_capacity(4096);
 
-                b.iter(|| {
-                    results.clear();
-                    let searcher = SeedSearcher::new(
-                        black_box(q_sa.as_slice()),
-                        black_box(q_seq.as_slice()),
-                        black_box(q_sa_start),
-                        black_box(q_sa_len),
-                        black_box(t_sa.as_slice()),
-                        black_box(t_seq.as_slice()),
-                        black_box(t_sa_len),
-                        black_box(&seed_config),
-                    );
-                    searcher.search_length_range(7, 22, &mut results);
-                    black_box(results.len());
-                });
-            },
-        );
+            b.iter(|| {
+                results.clear();
+                let searcher = SeedSearcher::new(
+                    black_box(q_sa.as_slice()),
+                    black_box(q_seq.as_slice()),
+                    black_box(q_sa_start),
+                    black_box(q_sa_len),
+                    black_box(t_sa.as_slice()),
+                    black_box(t_seq.as_slice()),
+                    black_box(t_sa_len),
+                    black_box(&seed_config),
+                );
+                searcher.search_length_range(7, 22, &mut results);
+                black_box(results.len());
+            });
+        });
     }
 
     group.finish();

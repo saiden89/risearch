@@ -1,7 +1,7 @@
 use crate::types::Interval;
 
 use super::{
-    partition_interval_into, recurse, sa_char, sa_suffix_pos, RecurseCtx, SeedMatch,
+    partition_interval_into, recurse_if_nonempty, sa_char, sa_suffix_pos, RecurseCtx, SeedMatch,
     BASE_A, BASE_C, BASE_G, BASE_U,
 };
 
@@ -46,36 +46,73 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (sg_lo, sg_hi) = (sint[2], sint[3]);
     let (su_lo, su_hi) = (sint[4], sint[5]);
 
-    macro_rules! rec_s {
-        ($s_lo:expr, $s_hi:expr, $next_ms:expr, $next_mc:expr) => {
-            if $s_lo < $s_hi {
-                recurse::<F, WOBBLE>(
+    match q_char {
+        BASE_A => recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            q_idx,
+            q_idx + 1,
+            su_lo,
+            su_hi,
+            d1,
+            match_streak + 1,
+            mm_count,
+        ),
+        BASE_G => {
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sc_lo,
+                sc_hi,
+                d1,
+                match_streak + 1,
+                mm_count,
+            );
+            if WOBBLE {
+                recurse_if_nonempty::<F, WOBBLE>(
                     ctx,
                     q_idx,
                     q_idx + 1,
-                    $s_lo,
-                    $s_hi,
+                    su_lo,
+                    su_hi,
                     d1,
-                    $next_ms,
-                    $next_mc,
+                    match_streak + 1,
+                    mm_count,
                 );
             }
-        };
-    }
-
-    match q_char {
-        BASE_A => rec_s!(su_lo, su_hi, match_streak + 1, mm_count),
-        BASE_G => {
-            rec_s!(sc_lo, sc_hi, match_streak + 1, mm_count);
-            if WOBBLE {
-                rec_s!(su_lo, su_hi, match_streak + 1, mm_count);
-            }
         }
-        BASE_C => rec_s!(sg_lo, sg_hi, match_streak + 1, mm_count),
+        BASE_C => recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            q_idx,
+            q_idx + 1,
+            sg_lo,
+            sg_hi,
+            d1,
+            match_streak + 1,
+            mm_count,
+        ),
         BASE_U => {
-            rec_s!(sa_lo, sa_hi, match_streak + 1, mm_count);
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sa_lo,
+                sa_hi,
+                d1,
+                match_streak + 1,
+                mm_count,
+            );
             if WOBBLE {
-                rec_s!(sg_lo, sg_hi, match_streak + 1, mm_count);
+                recurse_if_nonempty::<F, WOBBLE>(
+                    ctx,
+                    q_idx,
+                    q_idx + 1,
+                    sg_lo,
+                    sg_hi,
+                    d1,
+                    match_streak + 1,
+                    mm_count,
+                );
             }
         }
         _ => {}
@@ -87,28 +124,136 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
     match q_char {
         BASE_A => {
-            rec_s!(sa_lo, sa_hi, 0, mm_count + 1);
-            rec_s!(sc_lo, sc_hi, 0, mm_count + 1);
-            rec_s!(sg_lo, sg_hi, 0, mm_count + 1);
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sa_lo,
+                sa_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sc_lo,
+                sc_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sg_lo,
+                sg_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
         }
         BASE_G => {
-            rec_s!(sa_lo, sa_hi, 0, mm_count + 1);
-            rec_s!(sg_lo, sg_hi, 0, mm_count + 1);
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sa_lo,
+                sa_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sg_lo,
+                sg_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
             if !WOBBLE {
-                rec_s!(su_lo, su_hi, 0, mm_count + 1);
+                recurse_if_nonempty::<F, WOBBLE>(
+                    ctx,
+                    q_idx,
+                    q_idx + 1,
+                    su_lo,
+                    su_hi,
+                    d1,
+                    0,
+                    mm_count + 1,
+                );
             }
         }
         BASE_C => {
-            rec_s!(sa_lo, sa_hi, 0, mm_count + 1);
-            rec_s!(sc_lo, sc_hi, 0, mm_count + 1);
-            rec_s!(su_lo, su_hi, 0, mm_count + 1);
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sa_lo,
+                sa_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sc_lo,
+                sc_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                su_lo,
+                su_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
         }
         BASE_U => {
             if !WOBBLE {
-                rec_s!(sg_lo, sg_hi, 0, mm_count + 1);
+                recurse_if_nonempty::<F, WOBBLE>(
+                    ctx,
+                    q_idx,
+                    q_idx + 1,
+                    sg_lo,
+                    sg_hi,
+                    d1,
+                    0,
+                    mm_count + 1,
+                );
             }
-            rec_s!(sc_lo, sc_hi, 0, mm_count + 1);
-            rec_s!(su_lo, su_hi, 0, mm_count + 1);
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                sc_lo,
+                sc_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                q_idx,
+                q_idx + 1,
+                su_lo,
+                su_hi,
+                d1,
+                0,
+                mm_count + 1,
+            );
         }
         _ => {}
     }
@@ -148,34 +293,53 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (qg_lo, qg_hi) = (qint[2], qint[3]);
     let (qu_lo, qu_hi) = (qint[4], qint[5]);
 
-    macro_rules! rec_q {
-        ($q_lo:expr, $q_hi:expr, $next_ms:expr, $next_mc:expr) => {
-            if $q_lo < $q_hi {
-                recurse::<F, WOBBLE>(
-                    ctx,
-                    $q_lo,
-                    $q_hi,
-                    s_idx,
-                    s_idx + 1,
-                    d1,
-                    $next_ms,
-                    $next_mc,
-                );
-            }
-        };
-    }
-
     if qa_lo < qa_hi && is_match_pair::<WOBBLE>(BASE_A, s_char) {
-        rec_q!(qa_lo, qa_hi, match_streak + 1, mm_count);
+        recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            qa_lo,
+            qa_hi,
+            s_idx,
+            s_idx + 1,
+            d1,
+            match_streak + 1,
+            mm_count,
+        );
     }
     if qc_lo < qc_hi && is_match_pair::<WOBBLE>(BASE_C, s_char) {
-        rec_q!(qc_lo, qc_hi, match_streak + 1, mm_count);
+        recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            qc_lo,
+            qc_hi,
+            s_idx,
+            s_idx + 1,
+            d1,
+            match_streak + 1,
+            mm_count,
+        );
     }
     if qg_lo < qg_hi && is_match_pair::<WOBBLE>(BASE_G, s_char) {
-        rec_q!(qg_lo, qg_hi, match_streak + 1, mm_count);
+        recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            qg_lo,
+            qg_hi,
+            s_idx,
+            s_idx + 1,
+            d1,
+            match_streak + 1,
+            mm_count,
+        );
     }
     if qu_lo < qu_hi && is_match_pair::<WOBBLE>(BASE_U, s_char) {
-        rec_q!(qu_lo, qu_hi, match_streak + 1, mm_count);
+        recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            qu_lo,
+            qu_hi,
+            s_idx,
+            s_idx + 1,
+            d1,
+            match_streak + 1,
+            mm_count,
+        );
     }
 
     if !can_mm {
@@ -183,16 +347,16 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     }
 
     if qa_lo < qa_hi && !is_match_pair::<WOBBLE>(BASE_A, s_char) {
-        rec_q!(qa_lo, qa_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qa_lo, qa_hi, s_idx, s_idx + 1, d1, 0, mm_count + 1);
     }
     if qc_lo < qc_hi && !is_match_pair::<WOBBLE>(BASE_C, s_char) {
-        rec_q!(qc_lo, qc_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qc_lo, qc_hi, s_idx, s_idx + 1, d1, 0, mm_count + 1);
     }
     if qg_lo < qg_hi && !is_match_pair::<WOBBLE>(BASE_G, s_char) {
-        rec_q!(qg_lo, qg_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qg_lo, qg_hi, s_idx, s_idx + 1, d1, 0, mm_count + 1);
     }
     if qu_lo < qu_hi && !is_match_pair::<WOBBLE>(BASE_U, s_char) {
-        rec_q!(qu_lo, qu_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qu_lo, qu_hi, s_idx, s_idx + 1, d1, 0, mm_count + 1);
     }
 }
 

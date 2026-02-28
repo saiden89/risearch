@@ -16,9 +16,7 @@ use std::sync::mpsc;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::{DpConfig, DpExtender, DpView};
-use crate::dsm::{
-    pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99,
-};
+use crate::dsm::{pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::index::store::{GlobalView, TargetStore};
 use crate::registry::{QueryData, QueryRegistry};
 use crate::seed::{for_each_seed, SeedHit};
@@ -93,12 +91,8 @@ where
         let cancel = &cancelled;
         let producer = scope.spawn(move || -> Result<()> {
             match opts.score.matrix {
-                Matrix::T04 => {
-                    produce_by_query::<T04>(queries, store, &global, opts, tx, cancel)
-                }
-                Matrix::T99 => {
-                    produce_by_query::<T99>(queries, store, &global, opts, tx, cancel)
-                }
+                Matrix::T04 => produce_by_query::<T04>(queries, store, &global, opts, tx, cancel),
+                Matrix::T99 => produce_by_query::<T99>(queries, store, &global, opts, tx, cancel),
             }
         });
 
@@ -191,10 +185,59 @@ impl FormatState {
                 Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
             );
             let hits = std::mem::replace(&mut self.chunk_hits, 0);
-            on_chunk(OutputChunk { data, hits, query_idx })?;
+            on_chunk(OutputChunk {
+                data,
+                hits,
+                query_idx,
+            })?;
         }
         Ok(())
     }
+}
+
+#[inline]
+fn target_transformed_slices<'a>(
+    global: &'a GlobalView<'_>,
+    target_idx: usize,
+) -> (&'a [Base], &'a [Base], usize) {
+    let target_len = global.seq_lens[target_idx] as usize;
+    let target_offset = global.offsets[target_idx] as usize;
+    let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
+    let t_rc =
+        &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+    (t_fwd, t_rc, target_len)
+}
+
+#[inline]
+fn normalize_seed_target_start(seed: &mut SeedHit, target_len: usize) {
+    seed.target_start = target_len.saturating_sub(seed.target_start + seed.seed_len.get());
+}
+
+#[inline]
+fn append_formatted_hit(
+    format: &mut FormatState,
+    hit: &SearchHit,
+    output_format: OutputFormat,
+    store: &TargetStore,
+    global: &GlobalView<'_>,
+    query_name: &str,
+    query_seq: &[Base],
+) {
+    let target_name = store.get_name(hit.target_idx);
+    let target_idx = hit.target_idx as usize;
+    let (t_fwd, t_rc, _) = target_transformed_slices(global, target_idx);
+    crate::output::format::append_hit_names_vec(
+        &mut format.fmt_bufs,
+        hit,
+        output_format,
+        &mut format.chunk_data,
+        query_name,
+        target_name,
+        query_seq,
+        t_fwd,
+        t_rc,
+    );
+    format.chunk_hits += 1;
 }
 
 /// Single-thread direct execution path (no channel fan-in).
@@ -227,26 +270,15 @@ where
             opts,
             &mut state,
             &mut |hit: SearchHit| -> Result<()> {
-                let target_name = store.get_name(hit.target_idx);
-                let target_idx = hit.target_idx as usize;
-                let target_offset = global.offsets[target_idx] as usize;
-                let target_len = global.seq_lens[target_idx] as usize;
-                let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
-                let t_rc = &global.combined_seq
-                    [target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-
-                crate::output::format::append_hit_names_vec(
-                    &mut format.fmt_bufs,
+                append_formatted_hit(
+                    &mut format,
                     &hit,
                     opts.output.format,
-                    &mut format.chunk_data,
+                    store,
+                    global,
                     query_name,
-                    target_name,
                     query_seq,
-                    t_fwd,
-                    t_rc,
                 );
-                format.chunk_hits += 1;
                 total_hits += 1;
 
                 if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
@@ -291,7 +323,11 @@ fn produce_by_query<M: DsmModel>(
             let query_idx = query_idx as u32;
             let query_name = queries.get_name(query_idx);
             let query_seq = queries.get(query_idx).sequence();
-            let chunk_qi = if opts.output.multifile { Some(query_idx) } else { None };
+            let chunk_qi = if opts.output.multifile {
+                Some(query_idx)
+            } else {
+                None
+            };
 
             let mut flush_to_tx = |chunk: OutputChunk| -> Result<()> {
                 tx.send(chunk)
@@ -309,26 +345,15 @@ fn produce_by_query<M: DsmModel>(
                         return Ok(());
                     }
 
-                    let target_name = store.get_name(hit.target_idx);
-                    let target_idx = hit.target_idx as usize;
-                    let target_offset = global.offsets[target_idx] as usize;
-                    let target_len = global.seq_lens[target_idx] as usize;
-                    let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
-                    let t_rc = &global.combined_seq
-                        [target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-
-                    crate::output::format::append_hit_names_vec(
-                        &mut format.fmt_bufs,
+                    append_formatted_hit(
+                        format,
                         &hit,
                         opts.output.format,
-                        &mut format.chunk_data,
+                        store,
+                        global,
                         query_name,
-                        target_name,
                         query_seq,
-                        t_fwd,
-                        t_rc,
                     );
-                    format.chunk_hits += 1;
 
                     if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
                         format.flush(chunk_qi, &mut flush_to_tx)?;
@@ -378,142 +403,8 @@ where
     let mut emitted = 0usize;
     let mut callback_err: Option<anyhow::Error> = None;
 
-    // Fast path: no extension needed. Avoids materializing de-complemented
-    // target arrays entirely — works for all output formats when max_extension == 0.
-    if state.dp_cfg.max_extension() == 0 {
-        let penalty = state.dp_cfg.penalty_raw();
-
-        for_each_seed(query, global, &opts.seed, |seed| {
-            if callback_err.is_some() {
-                return;
-            }
-
-            let target_idx = seed.target_id.0 as usize;
-            let target_len = global.seq_lens[target_idx] as usize;
-            let target_offset = global.offsets[target_idx] as usize;
-
-            // Get transformed target slices from the global combined_seq
-            let t_forward_trans =
-                &global.combined_seq[target_offset..target_offset + target_len];
-            let t_reverse_trans =
-                &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-
-            let mut seed = seed;
-            seed.target_start = target_len
-                .saturating_sub(seed.target_start + seed.seed_len.get());
-
-            let t_trans = match seed.strand {
-                Strand::Forward => t_forward_trans,
-                Strand::Reverse => t_reverse_trans,
-            };
-
-            let q_pos = seed.query_pos;
-            let t_pos = seed.target_start;
-            let len = seed.seed_len.get();
-            if t_pos + len > t_trans.len() {
-                return;
-            }
-
-            // Maximality check: prune if seed can extend left (in query coords)
-            // or right — using de-complemented transformed bases inline.
-            if q_pos > seed_interval.start && t_pos + len < t_trans.len() {
-                let p_class = pair_matrix[query_bases[q_pos - 1].idx()]
-                    [t_trans[t_pos + len].complement().idx()];
-                if p_class != 0 && !filter_cfg.no_max_prune {
-                    return;
-                }
-            }
-            if q_pos + len < seed_interval.end && t_pos > 0 {
-                let p_class = pair_matrix[query_bases[q_pos + len].idx()]
-                    [t_trans[t_pos - 1].complement().idx()];
-                if p_class != 0 && !filter_cfg.no_max_prune {
-                    return;
-                }
-            }
-
-            let t_match_end = t_pos + len - 1;
-            let seed_e =
-                seed_energy_transformed::<M>(query_bases, t_trans, q_pos, t_pos, len, penalty);
-            let term_5p = terminal_5p::<M>(
-                query_bases[q_pos],
-                t_trans[t_match_end].complement(),
-                penalty,
-            );
-            let term_3p = terminal_3p::<M>(
-                query_bases[q_pos + len - 1],
-                t_trans[t_pos].complement(),
-                penalty,
-            );
-            let nt_count = (2 * len) as i32;
-            let score = M::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty);
-            if score > filter_cfg.delta_g {
-                return;
-            }
-
-            // Build alignment pairs inline from transformed bases when needed.
-            let alignment = if include_alignment {
-                let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
-                for i in 0..len {
-                    seed_pairs.push(PairClass::from_bases(
-                        query_bases[q_pos + i],
-                        t_trans[t_match_end - i].complement(),
-                    ));
-                }
-                Some(Alignment::new(&[], &seed_pairs, &[]))
-            } else {
-                None
-            };
-
-            let (seed_start, seed_end) = if include_alignment {
-                (Some(0usize), Some(len))
-            } else {
-                (None, None)
-            };
-
-            // Strand-dependent coordinate transformation (mirrors SearchHit::new).
-            // With max_extension == 0: l_q = l_t = r_q = r_t = 0.
-            let final_q_start = q_pos;
-            let final_q_end = q_pos + len - 1;
-            let final_t_start_raw = t_pos;
-            let final_t_end_raw = t_pos + len - 1;
-            let (t_start_out, t_end_out, strand) = match seed.strand {
-                Strand::Forward => (final_t_start_raw, final_t_end_raw, Strand::Forward),
-                Strand::Reverse => {
-                    let fwd_start = target_len - 1 - final_t_end_raw;
-                    let fwd_end = target_len - 1 - final_t_start_raw;
-                    (fwd_start, fwd_end, Strand::Reverse)
-                }
-            };
-
-            let hit = SearchHit {
-                query_idx,
-                target_idx: seed.target_id.0,
-                q_start: final_q_start,
-                q_end: final_q_end,
-                t_start: t_start_out,
-                t_end: t_end_out,
-                strand,
-                energy: score.into(),
-                seed_start,
-                seed_end,
-                alignment,
-                flank_5: Sequence::from(Vec::new()),
-                flank_3: Sequence::from(Vec::new()),
-            };
-
-            match on_hit(hit) {
-                Ok(()) => emitted += 1,
-                Err(err) => callback_err = Some(err),
-            }
-        });
-
-        if let Some(err) = callback_err {
-            return Err(err);
-        }
-        return Ok(emitted);
-    }
-
-    // Full path: extension and/or alignment required.
+    // Unified path: `compute_seed_extension` handles both extension and
+    // max_extension==0 no-extension cases.
     for_each_seed(query, global, &opts.seed, |seed| {
         if callback_err.is_some() {
             return;
@@ -521,17 +412,11 @@ where
 
         let target_idx_u32 = seed.target_id.0;
         let target_idx = target_idx_u32 as usize;
-        let target_len = global.seq_lens[target_idx] as usize;
+        let (t_forward_trans, t_reverse_trans, target_len) =
+            target_transformed_slices(global, target_idx);
 
         let mut seed = seed;
-        seed.target_start = target_len
-            .saturating_sub(seed.target_start + seed.seed_len.get());
-
-        let target_offset = global.offsets[target_idx] as usize;
-        let t_forward_trans =
-            &global.combined_seq[target_offset..target_offset + target_len];
-        let t_reverse_trans =
-            &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+        normalize_seed_target_start(&mut seed, target_len);
 
         let target_trans = match seed.strand {
             Strand::Forward => t_forward_trans,
@@ -665,16 +550,16 @@ fn compute_seed_extension<M: DsmModel>(
 
     // Maximality check in scoring/raw coordinate space.
     if q_pos > seed_interval.start && t_pos + len < target_trans.len() {
-        let p_class = pair_matrix[query_bases[q_pos - 1].idx()]
-            [target_trans[t_pos + len].complement().idx()];
+        let p_class =
+            pair_matrix[query_bases[q_pos - 1].idx()][target_trans[t_pos + len].complement().idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
             return None;
         }
     }
 
     if q_pos + len < seed_interval.end && t_pos > 0 {
-        let p_class = pair_matrix[query_bases[q_pos + len].idx()]
-            [target_trans[t_pos - 1].complement().idx()];
+        let p_class =
+            pair_matrix[query_bases[q_pos + len].idx()][target_trans[t_pos - 1].complement().idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
             return None;
         }
@@ -682,7 +567,8 @@ fn compute_seed_extension<M: DsmModel>(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e = seed_energy_transformed::<M>(query_bases, target_trans, q_pos, t_pos, len, penalty);
+    let seed_e =
+        seed_energy_transformed::<M>(query_bases, target_trans, q_pos, t_pos, len, penalty);
 
     let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;

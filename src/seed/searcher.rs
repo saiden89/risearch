@@ -134,9 +134,27 @@ impl<'a> SeedSearcher<'a> {
         };
 
         if self.cfg.allows_wobble() {
-            recurse::<_, true>(&mut ctx, self.q_sa_start, self.q_sa_len, 0, self.t_sa_len, 0, 0, 0);
+            recurse::<_, true>(
+                &mut ctx,
+                self.q_sa_start,
+                self.q_sa_len,
+                0,
+                self.t_sa_len,
+                0,
+                0,
+                0,
+            );
         } else {
-            recurse::<_, false>(&mut ctx, self.q_sa_start, self.q_sa_len, 0, self.t_sa_len, 0, 0, 0);
+            recurse::<_, false>(
+                &mut ctx,
+                self.q_sa_start,
+                self.q_sa_len,
+                0,
+                self.t_sa_len,
+                0,
+                0,
+                0,
+            );
         }
     }
 
@@ -182,7 +200,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     sr: usize,
     depth: usize,
     match_streak: usize, // consecutive matches at tail (for suffix constraint)
-    mm_count: usize,      // mismatches accumulated so far
+    mm_count: usize,     // mismatches accumulated so far
 ) {
     // Emit match if within valid length range.
     // When mm_count > 0, also require: enough trailing matches (suffix constraint)
@@ -259,29 +277,73 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (sg_lo, sg_hi) = (sint[2], sint[3]);
     let (su_lo, su_hi) = (sint[4], sint[5]);
 
-    macro_rules! rec {
-        ($q_lo:expr, $q_hi:expr, $s_lo:expr, $s_hi:expr, $next_ms:expr, $next_mc:expr) => {
-            if $q_lo < $q_hi && $s_lo < $s_hi {
-                recurse::<F, WOBBLE>(
-                    ctx, $q_lo, $q_hi, $s_lo, $s_hi, d1, $next_ms, $next_mc,
-                );
-            }
-        };
-    }
-
     // Match branches in C query-class order: A, C, G, U.
-    rec!(qa_lo, qa_hi, su_lo, su_hi, match_streak + 1, mm_count); // A-U
-    rec!(qc_lo, qc_hi, sg_lo, sg_hi, match_streak + 1, mm_count); // C-G
+    recurse_if_nonempty::<F, WOBBLE>(
+        ctx,
+        qa_lo,
+        qa_hi,
+        su_lo,
+        su_hi,
+        d1,
+        match_streak + 1,
+        mm_count,
+    ); // A-U
+    recurse_if_nonempty::<F, WOBBLE>(
+        ctx,
+        qc_lo,
+        qc_hi,
+        sg_lo,
+        sg_hi,
+        d1,
+        match_streak + 1,
+        mm_count,
+    ); // C-G
     if qg_lo < qg_hi {
-        rec!(qg_lo, qg_hi, sc_lo, sc_hi, match_streak + 1, mm_count); // G-C
+        recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            qg_lo,
+            qg_hi,
+            sc_lo,
+            sc_hi,
+            d1,
+            match_streak + 1,
+            mm_count,
+        ); // G-C
         if WOBBLE {
-            rec!(qg_lo, qg_hi, su_lo, su_hi, match_streak + 1, mm_count); // G-U wobble
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                qg_lo,
+                qg_hi,
+                su_lo,
+                su_hi,
+                d1,
+                match_streak + 1,
+                mm_count,
+            ); // G-U wobble
         }
     }
     if qu_lo < qu_hi {
-        rec!(qu_lo, qu_hi, sa_lo, sa_hi, match_streak + 1, mm_count); // U-A
+        recurse_if_nonempty::<F, WOBBLE>(
+            ctx,
+            qu_lo,
+            qu_hi,
+            sa_lo,
+            sa_hi,
+            d1,
+            match_streak + 1,
+            mm_count,
+        ); // U-A
         if WOBBLE {
-            rec!(qu_lo, qu_hi, sg_lo, sg_hi, match_streak + 1, mm_count); // U-G wobble
+            recurse_if_nonempty::<F, WOBBLE>(
+                ctx,
+                qu_lo,
+                qu_hi,
+                sg_lo,
+                sg_hi,
+                d1,
+                match_streak + 1,
+                mm_count,
+            ); // U-G wobble
         }
     }
 
@@ -292,34 +354,50 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
     // q = A (matches only U)
     if qa_lo < qa_hi {
-        rec!(qa_lo, qa_hi, sa_lo, sa_hi, 0, mm_count + 1);
-        rec!(qa_lo, qa_hi, sc_lo, sc_hi, 0, mm_count + 1);
-        rec!(qa_lo, qa_hi, sg_lo, sg_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qa_lo, qa_hi, sa_lo, sa_hi, d1, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qa_lo, qa_hi, sc_lo, sc_hi, d1, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qa_lo, qa_hi, sg_lo, sg_hi, d1, 0, mm_count + 1);
     }
 
     // q = C (matches G)
     if qc_lo < qc_hi {
-        rec!(qc_lo, qc_hi, sa_lo, sa_hi, 0, mm_count + 1);
-        rec!(qc_lo, qc_hi, sc_lo, sc_hi, 0, mm_count + 1);
-        rec!(qc_lo, qc_hi, su_lo, su_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qc_lo, qc_hi, sa_lo, sa_hi, d1, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qc_lo, qc_hi, sc_lo, sc_hi, d1, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qc_lo, qc_hi, su_lo, su_hi, d1, 0, mm_count + 1);
     }
 
     // q = G (matches C and wobble U)
     if qg_lo < qg_hi {
-        rec!(qg_lo, qg_hi, sa_lo, sa_hi, 0, mm_count + 1);
-        rec!(qg_lo, qg_hi, sg_lo, sg_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qg_lo, qg_hi, sa_lo, sa_hi, d1, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qg_lo, qg_hi, sg_lo, sg_hi, d1, 0, mm_count + 1);
         if !WOBBLE {
-            rec!(qg_lo, qg_hi, su_lo, su_hi, 0, mm_count + 1);
+            recurse_if_nonempty::<F, WOBBLE>(ctx, qg_lo, qg_hi, su_lo, su_hi, d1, 0, mm_count + 1);
         }
     }
 
     // q = U (matches A and wobble G)
     if qu_lo < qu_hi {
         if !WOBBLE {
-            rec!(qu_lo, qu_hi, sg_lo, sg_hi, 0, mm_count + 1);
+            recurse_if_nonempty::<F, WOBBLE>(ctx, qu_lo, qu_hi, sg_lo, sg_hi, d1, 0, mm_count + 1);
         }
-        rec!(qu_lo, qu_hi, sc_lo, sc_hi, 0, mm_count + 1);
-        rec!(qu_lo, qu_hi, su_lo, su_hi, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qu_lo, qu_hi, sc_lo, sc_hi, d1, 0, mm_count + 1);
+        recurse_if_nonempty::<F, WOBBLE>(ctx, qu_lo, qu_hi, su_lo, su_hi, d1, 0, mm_count + 1);
+    }
+}
+
+#[inline(always)]
+fn recurse_if_nonempty<F: FnMut(SeedMatch), const WOBBLE: bool>(
+    ctx: &mut RecurseCtx<'_, F>,
+    ql: usize,
+    qr: usize,
+    sl: usize,
+    sr: usize,
+    depth: usize,
+    match_streak: usize,
+    mm_count: usize,
+) {
+    if ql < qr && sl < sr {
+        recurse::<F, WOBBLE>(ctx, ql, qr, sl, sr, depth, match_streak, mm_count);
     }
 }
 

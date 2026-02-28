@@ -213,7 +213,6 @@ pub struct SeedConfig {
     /// Min consecutive matches at seed end (suffix / 3')
     #[arg(long = "mismatch-suffix", value_name = "PE")]
     pub mismatch_suffix: Option<usize>,
-
 }
 
 impl From<SeedConfig> for config::SeedConfig {
