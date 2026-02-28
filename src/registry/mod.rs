@@ -108,10 +108,6 @@ pub struct QueryData {
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
     has_n_any: bool,
-    /// Reversed sequence (NOT reverse-complement)
-    sequence_rc: Sequence,
-    /// Suffix array for reversed sequence
-    reverse_sa: SuffixArray,
 }
 
 impl QueryData {
@@ -142,11 +138,6 @@ impl QueryData {
             .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
         let seed_interval = Interval::new(start1 - 1, end1);
 
-        let reverse_seq_bases: Vec<Base> = sequence.as_ref().iter().rev().copied().collect();
-        let sequence_rc = Sequence::from(reverse_seq_bases);
-        let reverse_sa = SuffixArray::try_from(&sequence_rc)
-            .map_err(|e| anyhow!("Failed to build reverse SA for query '{}': {}", name, e))?;
-
         Ok(Self {
             name,
             sequence,
@@ -155,8 +146,6 @@ impl QueryData {
             min_seed_len,
             n_prefix,
             has_n_any,
-            sequence_rc,
-            reverse_sa,
         })
     }
 
@@ -173,16 +162,6 @@ impl QueryData {
     #[inline(always)]
     pub fn sa(&self) -> &[u64] {
         self.sa.as_ref()
-    }
-
-    #[inline(always)]
-    pub fn sequence_rc(&self) -> &[Base] {
-        self.sequence_rc.as_ref()
-    }
-
-    #[inline(always)]
-    pub fn reverse_sa(&self) -> &[u64] {
-        self.reverse_sa.as_ref()
     }
 
     #[inline]

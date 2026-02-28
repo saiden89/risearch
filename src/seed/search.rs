@@ -111,8 +111,9 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
         group_id = group_id.wrapping_add(1);
         let this_group = group_id;
         let seed_len = m.seed_len;
-        let seed_len_typed = SeedLen::new(seed_len)
-            .expect("seed length from search must be positive and fit in u16");
+        let Some(seed_len_typed) = SeedLen::new(seed_len) else {
+            return;
+        };
 
         for &q_packed in &padded_q_sa[m.query_interval.start..m.query_interval.end] {
             let q_pos = PackedSaEntry::from(q_packed).pos();

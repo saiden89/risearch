@@ -278,6 +278,57 @@ fn hit_target_bases<'a>(hit: &SearchHit, t_fwd: &'a [Base], t_rc: &'a [Base]) ->
     }
 }
 
+const BINDING_SITE_FLANK_LEN: usize = 20;
+
+#[inline]
+fn hit_target_flanks<'a>(
+    hit: &SearchHit,
+    t_fwd: &'a [Base],
+    t_rc: &'a [Base],
+) -> (&'a [Base], bool, &'a [Base], bool) {
+    let len = t_fwd.len();
+    if len == 0 {
+        return (&t_fwd[0..0], false, &t_fwd[0..0], false);
+    }
+
+    let (oriented, start, end) = match hit.strand {
+        crate::types::Strand::Forward => {
+            let start = hit.t_start.min(len);
+            let end = hit.t_end.min(len.saturating_sub(1));
+            (t_fwd, start, end)
+        }
+        crate::types::Strand::Reverse => {
+            if t_rc.is_empty() {
+                return (&t_fwd[0..0], false, &t_fwd[0..0], false);
+            }
+            let start = len
+                .saturating_sub(hit.t_end.saturating_add(1))
+                .min(t_rc.len());
+            let end = len
+                .saturating_sub(hit.t_start.saturating_add(1))
+                .min(t_rc.len().saturating_sub(1));
+            (t_rc, start, end)
+        }
+    };
+
+    if start >= oriented.len() || end >= oriented.len() || start > end {
+        return (&oriented[0..0], false, &oriented[0..0], false);
+    }
+
+    // In binding-site output, flank_5 is emitted "outward" from the interaction
+    // end, and flank_3 from the interaction start.
+    let right_start = end.saturating_add(1).min(oriented.len());
+    let right_end = right_start
+        .saturating_add(BINDING_SITE_FLANK_LEN)
+        .min(oriented.len());
+    let left_end = start;
+    let left_start = left_end.saturating_sub(BINDING_SITE_FLANK_LEN);
+
+    let flank_5 = &oriented[right_start..right_end];
+    let flank_3 = &oriented[left_start..left_end];
+    (flank_5, false, flank_3, true)
+}
+
 fn build_line(
     line_buf: &mut Vec<u8>,
     itoa_buf: &mut itoa::Buffer,
@@ -292,15 +343,9 @@ fn build_line(
     let spec = format_spec(format);
     let alignment = hit.alignment.as_ref();
     let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
-    let flank_5 = (&hit.flank_5, 0..hit.flank_5.len(), false);
-    let flank_3 = (&hit.flank_3, 0..hit.flank_3.len(), false);
+    let (flank_5, flank_5_rev, flank_3, flank_3_rev) = hit_target_flanks(hit, t_fwd, t_rc);
 
-    let approx = q_id.len()
-        + t_id.len()
-        + (steps_len * 2)
-        + flank_5.1.end.saturating_sub(flank_5.1.start)
-        + flank_3.1.end.saturating_sub(flank_3.1.start)
-        + 96;
+    let approx = q_id.len() + t_id.len() + (steps_len * 2) + flank_5.len() + flank_3.len() + 96;
     line_buf.clear();
     if line_buf.capacity() < approx {
         line_buf.reserve(approx - line_buf.capacity());
@@ -351,16 +396,8 @@ fn build_line(
                     push_alignment_target_seq(line_buf, align, t_bases);
                 }
             }
-            FieldKind::Flank5 => push_bases_as_rna(
-                line_buf,
-                &flank_5.0[flank_5.1.start..flank_5.1.end],
-                flank_5.2,
-            ),
-            FieldKind::Flank3 => push_bases_as_rna(
-                line_buf,
-                &flank_3.0[flank_3.1.start..flank_3.1.end],
-                flank_3.2,
-            ),
+            FieldKind::Flank5 => push_bases_as_rna(line_buf, flank_5, flank_5_rev),
+            FieldKind::Flank3 => push_bases_as_rna(line_buf, flank_3, flank_3_rev),
         }
     }
     line_buf.push(b'\n');

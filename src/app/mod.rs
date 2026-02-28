@@ -1,6 +1,6 @@
 //! Application entry point - handles CLI dispatch and orchestration.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -74,6 +74,7 @@ fn cmd_search(
         })?;
 
         let ext = output::output_extension(&opts.output);
+        let query_output_paths = build_multifile_paths(&queries, output_path, ext);
         let mut writers: HashMap<u32, Box<dyn Write>> = HashMap::new();
 
         let hits = search::run_search(&queries, &targets, &opts, |chunk| -> Result<()> {
@@ -83,10 +84,7 @@ fn cmd_search(
             let writer = match writers.get_mut(&qi) {
                 Some(w) => w,
                 None => {
-                    let qname = sanitize_filename(queries.get_name(qi));
-                    let file_path: PathBuf = [output_path, Path::new(&format!("{qname}{ext}"))]
-                        .iter()
-                        .collect();
+                    let file_path = &query_output_paths[qi as usize];
                     let w = output::open_output(Some(&file_path), &opts.output)?;
                     writers.entry(qi).or_insert(w)
                 }
@@ -129,6 +127,40 @@ fn sanitize_filename(name: &str) -> String {
             _ => c,
         })
         .collect()
+}
+
+fn unique_filename_stem(stem: &str, used: &mut HashSet<String>) -> String {
+    if used.insert(stem.to_string()) {
+        return stem.to_string();
+    }
+
+    let mut suffix = 1usize;
+    loop {
+        let candidate = format!("{stem}_{suffix}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn build_multifile_paths(queries: &QueryRegistry, output_dir: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut used_stems: HashSet<String> = HashSet::with_capacity(queries.len());
+    let mut out: Vec<PathBuf> = Vec::with_capacity(queries.len());
+
+    for query_idx in 0..queries.len() {
+        let name = queries.get_name(query_idx as u32);
+        let stem_raw = sanitize_filename(name);
+        let stem_base = if stem_raw.is_empty() {
+            "query"
+        } else {
+            stem_raw.as_str()
+        };
+        let stem = unique_filename_stem(stem_base, &mut used_stems);
+        out.push(output_dir.join(format!("{stem}{ext}")));
+    }
+
+    out
 }
 
 // =============================================================================
@@ -174,4 +206,23 @@ pub(crate) fn init_logging(verbosity: u8) {
             )
         })
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_filename, unique_filename_stem};
+    use std::collections::HashSet;
+
+    #[test]
+    fn sanitize_replaces_unsafe_chars() {
+        assert_eq!(sanitize_filename("a/b:c*?"), "a_b_c__");
+    }
+
+    #[test]
+    fn unique_stem_avoids_collisions() {
+        let mut used = HashSet::new();
+        assert_eq!(unique_filename_stem("a_b", &mut used), "a_b");
+        assert_eq!(unique_filename_stem("a_b", &mut used), "a_b_1");
+        assert_eq!(unique_filename_stem("a_b", &mut used), "a_b_2");
+    }
 }

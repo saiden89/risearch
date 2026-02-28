@@ -123,7 +123,7 @@ impl SeedSpec {
                 };
 
                 let final_len = match length_opt {
-                    Some(length) if length < 0 => {
+                    Some(length) if length <= 0 => {
                         return Err("Invalid seed length".into());
                     }
                     Some(length) if (length as usize) > interval_len => {
