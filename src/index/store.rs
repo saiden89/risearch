@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use memmap2::Mmap;
 use needletail::parse_fastx_file;
 
-use crate::index::io::{validate_output_path, validate_readable_file};
+use crate::index::io::validate_output_path;
 use crate::index::sa::SuffixArray;
 use crate::seq::Sequence;
 use crate::types::Base;
@@ -25,6 +25,7 @@ const FILE_HEADER_BYTES: usize = 16;
 const META_ENTRY_FIXED_BYTES: usize = 16;
 
 const DATA_ALIGN: usize = 8;
+const ZERO_PAD: [u8; DATA_ALIGN] = [0u8; DATA_ALIGN];
 
 /// Number of zero-valued u64 entries appended after the real SA data.
 /// These act as sentinels so `sa[suffix_pos + offset]` never goes out of
@@ -68,9 +69,6 @@ pub struct GlobalView<'a> {
     pub seq_lens: &'a [u32],
 }
 
-// (name, seq_len, fwd_comp, rc_comp)
-type BuildTarget = (String, u32, Vec<Base>, Vec<Base>);
-
 impl TargetStore {
     /// Build a new RSIDX6 index from a FASTA file.
     ///
@@ -80,18 +78,78 @@ impl TargetStore {
     /// 3. Build single global SA
     /// 4. Write flat binary: header -> metadata -> seq -> SA
     pub fn build_from_fasta(input: &Path, output: &Path) -> Result<()> {
-        validate_readable_file(input)?;
         validate_output_path(output)?;
 
-        let targets = parse_and_normalize_targets(input)?;
+        let mut seen = HashSet::new();
+        let mut targets: Vec<(String, u32, u64)> = Vec::new(); // (id, seq_len, global_offset)
+        let mut combined_bases: Vec<Base> = Vec::new();
+        let mut metadata_bytes = FILE_HEADER_BYTES;
+
+        let mut reader = parse_fastx_file(input)
+            .with_context(|| format!("Failed to open FASTA/FASTQ file: {}", input.display()))?;
+
+        while let Some(record) = reader.next() {
+            let rec = record.with_context(|| {
+                format!(
+                    "Failed to parse FASTA/FASTQ record from {}",
+                    input.display()
+                )
+            })?;
+
+            let id = String::from_utf8_lossy(rec.id()).into_owned();
+            if id.trim().is_empty() {
+                bail!("Encountered empty FASTA record id in {}", input.display());
+            }
+            if !seen.insert(id.clone()) {
+                bail!("Duplicate FASTA record id '{}' in {}", id, input.display());
+            }
+
+            let (sequence, stats) = Sequence::normalize(&id, rec.seq().as_ref())
+                .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
+
+            if sequence.is_empty() {
+                log::warn!(
+                    "Skipping empty sequence after normalization: '{}' (removed_gaps={}, converted_to_n={})",
+                    id,
+                    stats.removed_gaps,
+                    stats.converted_to_n
+                );
+                continue;
+            }
+
+            if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
+                log::debug!(
+                    "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
+                    id,
+                    stats.removed_gaps,
+                    stats.converted_to_n
+                );
+            }
+
+            let seq_len = u32::try_from(sequence.len())
+                .context("Target sequence length too large for u32")?;
+            let offset = combined_bases.len() as u64;
+            metadata_bytes = metadata_bytes
+                .checked_add(META_ENTRY_FIXED_BYTES + id.len())
+                .ok_or_else(|| anyhow!("Metadata size overflow while building index"))?;
+            targets.push((id, seq_len, offset));
+
+            // Store transformed sequence layout:
+            // fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
+            // where *_comp is complemented for canonical/wobble seed matching.
+            combined_bases.reserve(2 * seq_len as usize + 2);
+            combined_bases.extend(sequence.iter().copied().map(Base::complement));
+            combined_bases.push(Base::Gap);
+            combined_bases.extend(sequence[..].iter().rev().copied());
+            combined_bases.push(Base::Gap);
+        }
+
         if targets.is_empty() {
             bail!(
                 "All sequences were empty after normalization in {}",
                 input.display()
             );
         }
-
-        let (mut combined_bases, offsets) = build_combined_seq_and_offsets(&targets);
 
         // Build single global SA directly from &[Base]
         // (avoids cloning combined_bases and extra conversion allocations)
@@ -103,11 +161,16 @@ impl TargetStore {
         let mut padded_sa = combined_sa.into_inner();
         padded_sa.resize(padded_sa.len() + SA_CHAR_PADDING, 0u64);
 
-        write_index_file(output, &targets, &offsets, &combined_bases, &padded_sa)
+        write_index_file(
+            output,
+            &targets,
+            metadata_bytes,
+            &combined_bases,
+            &padded_sa,
+        )
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        validate_readable_file(path)?;
         let file = File::open(path)
             .with_context(|| format!("Failed to open index file: {}", path.display()))?;
         let mmap = unsafe { Mmap::map(&file) }
@@ -129,7 +192,42 @@ impl TargetStore {
         let target_count =
             u32::from_le_bytes(bytes[8..12].try_into().expect("header slice")) as usize;
 
-        let (names, seq_lens, offsets, mut cursor) = parse_metadata(bytes, path, target_count)?;
+        // Parse per-target metadata
+        let mut cursor = FILE_HEADER_BYTES;
+        let mut names = Vec::with_capacity(target_count);
+        let mut seq_lens = Vec::with_capacity(target_count);
+        let mut offsets = Vec::with_capacity(target_count);
+
+        for _ in 0..target_count {
+            if cursor + META_ENTRY_FIXED_BYTES > bytes.len() {
+                bail!("Truncated metadata entry in {}", path.display());
+            }
+
+            let name_len =
+                u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().expect("name_len"))
+                    as usize;
+            let seq_len =
+                u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"));
+            let global_offset =
+                u64::from_le_bytes(bytes[cursor + 8..cursor + 16].try_into().expect("offset"));
+            cursor += META_ENTRY_FIXED_BYTES;
+
+            let name_end = cursor
+                .checked_add(name_len)
+                .ok_or_else(|| anyhow!("Name overflow in {}", path.display()))?;
+            if name_end > bytes.len() {
+                bail!("Truncated target name in {}", path.display());
+            }
+
+            let name = std::str::from_utf8(&bytes[cursor..name_end])
+                .context("Invalid UTF-8 in target name")?
+                .to_owned();
+            cursor = name_end;
+
+            names.push(name);
+            seq_lens.push(seq_len);
+            offsets.push(global_offset);
+        }
 
         // Align to data section
         cursor = align_up(cursor, DATA_ALIGN);
@@ -159,8 +257,11 @@ impl TargetStore {
                 .expect("sa count"),
         ) as usize;
         let sa_data_offset = sa_section_start + 8;
+        let sa_byte_count = sa_entry_count
+            .checked_mul(8)
+            .ok_or_else(|| anyhow!("SA data overflow in {}", path.display()))?;
         let sa_data_end = sa_data_offset
-            .checked_add(sa_entry_count * 8)
+            .checked_add(sa_byte_count)
             .ok_or_else(|| anyhow!("SA data overflow in {}", path.display()))?;
         if sa_data_end > bytes.len() {
             bail!("Truncated SA data in {}", path.display());
@@ -217,12 +318,9 @@ impl TargetStore {
     /// Returns `(name, fwd_transformed, rc_transformed, seq_len)` where each
     /// transformed slice is from the mmap-backed combined sequence.
     pub fn target_seqs(&self, idx: usize) -> Result<(&str, &[Base], &[Base], usize)> {
-        if idx >= self.names.len() {
-            bail!(
-                "Target index out of bounds: {} >= {}",
-                idx,
-                self.names.len()
-            );
+        let target_count = self.names.len();
+        if idx >= target_count {
+            bail!("Target index out of bounds: {} >= {}", idx, target_count);
         }
 
         let name = self.names[idx].as_str();
@@ -278,77 +376,10 @@ impl TargetStore {
     }
 }
 
-fn parse_and_normalize_targets(input: &Path) -> Result<Vec<BuildTarget>> {
-    let records = parse_target_records(input)?;
-
-    use rayon::prelude::*;
-    let normalized: Vec<Result<Option<BuildTarget>>> = records
-        .into_par_iter()
-        .map(normalize_target_record)
-        .collect();
-
-    let mut targets = Vec::new();
-    for result in normalized {
-        if let Some(target) = result? {
-            targets.push(target);
-        }
-    }
-
-    Ok(targets)
-}
-
-fn parse_target_records(input: &Path) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut seen = HashSet::new();
-    let mut pending: Vec<(String, Vec<u8>)> = Vec::new();
-
-    let mut reader = parse_fastx_file(input)
-        .with_context(|| format!("Failed to open FASTA/FASTQ file: {}", input.display()))?;
-
-    while let Some(record) = reader.next() {
-        let rec = record.with_context(|| {
-            format!(
-                "Failed to parse FASTA/FASTQ record from {}",
-                input.display()
-            )
-        })?;
-
-        let id = String::from_utf8_lossy(rec.id()).into_owned();
-        if id.trim().is_empty() {
-            bail!("Encountered empty FASTA record id in {}", input.display());
-        }
-        if !seen.insert(id.clone()) {
-            bail!("Duplicate FASTA record id '{}' in {}", id, input.display());
-        }
-
-        pending.push((id, rec.seq().as_ref().to_vec()));
-    }
-
-    Ok(pending)
-}
-
-fn build_combined_seq_and_offsets(targets: &[BuildTarget]) -> (Vec<Base>, Vec<u64>) {
-    let total_bases: usize = targets
-        .iter()
-        .map(|(_, seq_len, _, _)| 2 * *seq_len as usize + 2)
-        .sum();
-    let mut combined_bases = Vec::with_capacity(total_bases);
-    let mut offsets: Vec<u64> = Vec::with_capacity(targets.len());
-
-    for (_, _, fwd_comp, rc_comp) in targets {
-        offsets.push(combined_bases.len() as u64);
-        combined_bases.extend_from_slice(fwd_comp);
-        combined_bases.push(Base::Gap);
-        combined_bases.extend_from_slice(rc_comp);
-        combined_bases.push(Base::Gap);
-    }
-
-    (combined_bases, offsets)
-}
-
 fn write_index_file(
     output: &Path,
-    targets: &[BuildTarget],
-    offsets: &[u64],
+    targets: &[(String, u32, u64)],
+    metadata_bytes: usize,
     combined_bases: &[Base],
     padded_sa: &[u64],
 ) -> Result<()> {
@@ -377,25 +408,21 @@ fn write_index_file(
         .context("Failed to write reserved field")?;
 
     // Per-target metadata
-    for (i, (id, seq_len, _, _)) in targets.iter().enumerate() {
+    for (id, seq_len, offset) in targets.iter() {
         let name_bytes = id.as_bytes();
         let name_len =
             u32::try_from(name_bytes.len()).context("Target name length exceeds u32::MAX")?;
         writer.write_all(&name_len.to_le_bytes())?;
         writer.write_all(&seq_len.to_le_bytes())?;
-        writer.write_all(&offsets[i].to_le_bytes())?;
+        writer.write_all(&offset.to_le_bytes())?;
         writer.write_all(name_bytes)?;
     }
 
     // Pad to 8-byte alignment
-    let mut cursor = FILE_HEADER_BYTES;
-    for (id, _, _, _) in targets {
-        cursor += META_ENTRY_FIXED_BYTES + id.len();
-    }
-    let aligned_cursor = align_up(cursor, DATA_ALIGN);
-    let pad_len = aligned_cursor - cursor;
+    let aligned_cursor = align_up(metadata_bytes, DATA_ALIGN);
+    let pad_len = aligned_cursor - metadata_bytes;
     if pad_len > 0 {
-        writer.write_all(&vec![0u8; pad_len])?;
+        writer.write_all(&ZERO_PAD[..pad_len])?;
     }
 
     // Global combined_seq: count[8] + data
@@ -412,7 +439,7 @@ fn write_index_file(
     let sa_start = align_up(after_seq, DATA_ALIGN);
     let sa_pad = sa_start - after_seq;
     if sa_pad > 0 {
-        writer.write_all(&vec![0u8; sa_pad])?;
+        writer.write_all(&ZERO_PAD[..sa_pad])?;
     }
 
     // Global combined_sa: count[8] + data
@@ -434,84 +461,6 @@ fn write_index_file(
     })?;
 
     Ok(())
-}
-
-fn parse_metadata(
-    bytes: &[u8],
-    path: &Path,
-    target_count: usize,
-) -> Result<(Vec<String>, Vec<u32>, Vec<u64>, usize)> {
-    let mut cursor = FILE_HEADER_BYTES;
-    let mut names = Vec::with_capacity(target_count);
-    let mut seq_lens = Vec::with_capacity(target_count);
-    let mut offsets = Vec::with_capacity(target_count);
-
-    for _ in 0..target_count {
-        if cursor + META_ENTRY_FIXED_BYTES > bytes.len() {
-            bail!("Truncated metadata entry in {}", path.display());
-        }
-
-        let name_len =
-            u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().expect("name_len")) as usize;
-        let seq_len =
-            u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"));
-        let global_offset =
-            u64::from_le_bytes(bytes[cursor + 8..cursor + 16].try_into().expect("offset"));
-        cursor += META_ENTRY_FIXED_BYTES;
-
-        let name_end = cursor
-            .checked_add(name_len)
-            .ok_or_else(|| anyhow!("Name overflow in {}", path.display()))?;
-        if name_end > bytes.len() {
-            bail!("Truncated target name in {}", path.display());
-        }
-
-        let name = std::str::from_utf8(&bytes[cursor..name_end])
-            .context("Invalid UTF-8 in target name")?
-            .to_owned();
-        cursor = name_end;
-
-        names.push(name);
-        seq_lens.push(seq_len);
-        offsets.push(global_offset);
-    }
-
-    Ok((names, seq_lens, offsets, cursor))
-}
-
-fn normalize_target_record(record: (String, Vec<u8>)) -> Result<Option<BuildTarget>> {
-    let (id, seq) = record;
-    let (sequence, stats) = Sequence::normalize(&id, &seq)
-        .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
-    if sequence.is_empty() {
-        log::warn!(
-            "Skipping empty sequence after normalization: '{}' (removed_gaps={}, converted_to_n={})",
-            id,
-            stats.removed_gaps,
-            stats.converted_to_n
-        );
-        return Ok(None);
-    }
-
-    if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
-        log::debug!(
-            "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
-            id,
-            stats.removed_gaps,
-            stats.converted_to_n
-        );
-    }
-
-    let sequence_rc = sequence.reverse_complement();
-
-    // Complement sequences for canonical/wobble matching in SA.
-    let fwd_comp: Vec<Base> = sequence.iter().map(|b| b.complement()).collect();
-    let rc_comp: Vec<Base> = sequence_rc.iter().map(|b| b.complement()).collect();
-
-    let seq_len =
-        u32::try_from(sequence.len()).context("Target sequence length too large for u32")?;
-
-    Ok(Some((id, seq_len, fwd_comp, rc_comp)))
 }
 
 #[inline]
