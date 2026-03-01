@@ -18,9 +18,10 @@ use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfi
 use crate::dp::{DpConfig, DpExtender, DpView};
 use crate::dsm::{pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::index::store::{GlobalView, TargetStore};
+use crate::output::writer::{HitFormatter, OutputChunk};
 use crate::registry::{QueryData, QueryRegistry};
 use crate::seed::{for_each_seed, SeedHit};
-use crate::seq::{SeqView, Sequence};
+use crate::seq::Sequence;
 use crate::types::{Base, Energy, Interval, Strand};
 
 // =============================================================================
@@ -134,15 +135,6 @@ where
 // =============================================================================
 
 const CHUNK_CHANNEL_CAPACITY: usize = 128;
-const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
-
-/// A batch of pre-formatted hit lines ready for writing.
-pub struct OutputChunk {
-    pub data: Vec<u8>,
-    pub hits: usize,
-    /// When multi-file output is active, identifies which query produced this chunk.
-    pub query_idx: Option<u32>,
-}
 
 /// Reusable per-worker state.
 struct SearchState<M: DsmModel> {
@@ -160,41 +152,6 @@ impl<M: DsmModel> SearchState<M> {
     }
 }
 
-struct FormatState {
-    fmt_bufs: crate::output::format::OutputBuffers,
-    chunk_data: Vec<u8>,
-    chunk_hits: usize,
-}
-
-impl FormatState {
-    fn new() -> Self {
-        Self {
-            fmt_bufs: crate::output::format::OutputBuffers::new(),
-            chunk_data: Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
-            chunk_hits: 0,
-        }
-    }
-
-    fn flush<F>(&mut self, query_idx: Option<u32>, on_chunk: &mut F) -> Result<()>
-    where
-        F: FnMut(OutputChunk) -> Result<()>,
-    {
-        if self.chunk_hits > 0 {
-            let data = std::mem::replace(
-                &mut self.chunk_data,
-                Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
-            );
-            let hits = std::mem::replace(&mut self.chunk_hits, 0);
-            on_chunk(OutputChunk {
-                data,
-                hits,
-                query_idx,
-            })?;
-        }
-        Ok(())
-    }
-}
-
 #[inline]
 fn target_transformed_slices<'a>(
     global: &'a GlobalView<'_>,
@@ -208,33 +165,6 @@ fn target_transformed_slices<'a>(
     (t_fwd, t_rc, target_len)
 }
 
-#[inline]
-fn append_formatted_hit(
-    format: &mut FormatState,
-    hit: &SearchHit,
-    output_format: OutputFormat,
-    store: &TargetStore,
-    global: &GlobalView<'_>,
-    query_name: &str,
-    query_seq: &[Base],
-) {
-    let target_name = store.get_name(hit.target_idx);
-    let target_idx = hit.target_idx as usize;
-    let (t_fwd, t_rc, _) = target_transformed_slices(global, target_idx);
-    crate::output::format::append_hit_names_vec(
-        &mut format.fmt_bufs,
-        hit,
-        output_format,
-        &mut format.chunk_data,
-        query_name,
-        target_name,
-        SeqView::from(query_seq),
-        SeqView::from(t_fwd),
-        SeqView::from(t_rc),
-    );
-    format.chunk_hits += 1;
-}
-
 /// Process one query end-to-end and stream formatted chunks via `on_chunk`.
 fn process_query<M, FC, FO>(
     query_idx: u32,
@@ -244,7 +174,7 @@ fn process_query<M, FC, FO>(
     global: &GlobalView<'_>,
     opts: &SearchArgs,
     state: &mut SearchState<M>,
-    format: &mut FormatState,
+    format: &mut HitFormatter,
     flush_after_query: bool,
     is_cancelled: FC,
     on_chunk: &mut FO,
@@ -266,6 +196,8 @@ where
         None
     };
     let mut local_hits = 0usize;
+    let mut last_target_idx = None;
+    let mut cached_target = None;
 
     search_query::<M, _>(
         query_idx,
@@ -278,26 +210,35 @@ where
                 return Ok(());
             }
 
-            append_formatted_hit(
-                format,
-                &hit,
-                opts.output.format,
-                store,
-                global,
-                query_name,
-                query_seq,
-            );
-            local_hits += 1;
-
-            if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
-                format.flush(chunk_qi, on_chunk)?;
+            let target_idx = hit.target_idx as usize;
+            if last_target_idx != Some(target_idx) {
+                let (t_fwd, t_rc, _) = target_transformed_slices(global, target_idx);
+                let target_name = store.get_name(hit.target_idx);
+                cached_target = Some((target_name, t_fwd, t_rc));
+                last_target_idx = Some(target_idx);
             }
+            let (target_name, t_fwd, t_rc) = cached_target.as_ref().unwrap();
+
+            if let Some(chunk) = format.add_hit(
+                &hit,
+                query_name,
+                target_name,
+                query_seq,
+                t_fwd,
+                t_rc,
+                chunk_qi,
+            ) {
+                on_chunk(chunk)?;
+            }
+            local_hits += 1;
             Ok(())
         },
     )?;
 
     if flush_after_query {
-        format.flush(chunk_qi, on_chunk)?;
+        if let Some(chunk) = format.flush(chunk_qi) {
+            on_chunk(chunk)?;
+        }
     }
 
     Ok(local_hits)
@@ -316,7 +257,7 @@ where
     F: FnMut(OutputChunk) -> Result<()>,
 {
     let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
-    let mut format = FormatState::new();
+    let mut format = HitFormatter::new(opts.output.format);
     let mut total_hits = 0usize;
     let multifile = opts.output.multifile;
 
@@ -336,7 +277,9 @@ where
         )?;
     }
 
-    format.flush(None, on_chunk)?;
+    if let Some(chunk) = format.flush(None) {
+        on_chunk(chunk)?;
+    }
     Ok(total_hits)
 }
 
@@ -353,7 +296,7 @@ fn produce_by_query<M: DsmModel>(
         || {
             (
                 SearchState::<M>::new(&opts.score, &opts.extend),
-                FormatState::new(),
+                HitFormatter::new(opts.output.format),
                 tx.clone(),
             )
         },
