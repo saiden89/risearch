@@ -76,7 +76,7 @@ fn test_multifile_output_avoids_sanitized_name_collisions() -> Result<(), Box<dy
         .arg(index_file.path())
         .arg("-o")
         .arg(out_dir.path())
-        .arg("--output-multifile")
+        .arg("--multifile")
         .arg("--seed-length")
         .arg("1")
         .arg("-l")

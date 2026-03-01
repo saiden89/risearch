@@ -19,9 +19,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 
     match &cli.command {
         Some(Commands::Index(cmd)) => cmd_index(&cmd.input, &cmd.output),
-        Some(Commands::Search(cmd)) => {
-            cmd_search(&cmd.query, &cmd.target, &cmd.output.path, &cmd.opts)
-        }
+        Some(Commands::Search(cmd)) => cmd_search(&cmd.query, &cmd.target, &cmd.opts),
         None => {
             Cli::command().print_help()?;
             println!();
@@ -44,9 +42,9 @@ fn cmd_index(input: &Path, output: &Path) -> Result<()> {
 fn cmd_search(
     query_path: &Path,
     target_path: &Path,
-    output_path: &Path,
     cli_opts: &risearch::cli::args::SearchArgs,
 ) -> Result<()> {
+    let output_path = &cli_opts.output.path;
     let raw_args: Vec<String> = std::env::args().collect();
 
     // Convert CLI args to config (handles deprecated flag translation)
@@ -68,7 +66,7 @@ fn cmd_search(
         // -- Multi-file mode: one output file per query ----------------------
         std::fs::create_dir_all(output_path).with_context(|| {
             format!(
-                "Failed to create output directory {:?} for --output-multifile",
+                "Failed to create output directory {:?} for --multifile",
                 output_path
             )
         })?;

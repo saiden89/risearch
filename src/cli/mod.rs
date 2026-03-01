@@ -35,13 +35,6 @@ pub(crate) struct Cli {
 }
 
 #[derive(clap::Args, Debug)]
-pub(crate) struct OutputArgs {
-    /// Output file for search results (use '-' for stdout)
-    #[arg(short = 'o', long = "output", value_name = "FILE")]
-    pub(crate) path: PathBuf,
-}
-
-#[derive(clap::Args, Debug)]
 pub(crate) struct IndexCommand {
     /// Input file in FASTA format.
     #[arg(value_name = "INPUT")]
@@ -68,10 +61,7 @@ pub(crate) struct SearchCommand {
     )]
     pub(crate) target: PathBuf,
 
-    #[command(flatten)]
-    pub(crate) output: OutputArgs,
-
-    /// Search-related options (seed, scoring, extension, filtering, threads, format)
+    /// Search-related options (seed, scoring, extension, filtering, output)
     #[command(flatten)]
     pub(crate) opts: SearchArgs,
 }

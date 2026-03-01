@@ -33,7 +33,7 @@ pub fn open_output(path: Option<impl AsRef<Path>>, cfg: &OutputConfig) -> Result
     match compression {
         OutputCompression::None => {
             if cfg.level.is_some() {
-                bail!("--output-level requires compressed output");
+                bail!("--compress-level requires compressed output");
             }
             Ok(Box::new(BufWriter::with_capacity(256 * 1024, inner)))
         }

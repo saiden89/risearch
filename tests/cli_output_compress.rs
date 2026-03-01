@@ -88,7 +88,7 @@ fn test_search_gzip_output_by_flag() -> Result<(), Box<dyn std::error::Error>> {
         query_file.path(),
         index_file.path(),
         out_file.path(),
-        &["--output-compress", "gzip"],
+        &["--compress", "gzip"],
     );
 
     assert_gzip_file(out_file.path())?;
