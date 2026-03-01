@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 prof = []
+openmp = ["libsais/openmp"]
 
 [dependencies]
 anyhow = "1.0"
