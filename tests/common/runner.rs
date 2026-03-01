@@ -22,8 +22,6 @@ struct NoIndex;
 /// Marker for an indexed Rust runner.
 struct Indexed {
     index_path: PathBuf,
-    #[allow(dead_code)]
-    index_file: risearch::TargetRegistry,
     target_store: risearch::TargetStore,
 }
 
@@ -62,17 +60,14 @@ impl RustRunner<NoIndex> {
             }
         };
 
-        let index_file =
-            risearch::TargetRegistry::from_fasta(&self.target_path).expect("build index");
-        index_file.save(&index_path).expect("save index");
-        let index_file = risearch::TargetRegistry::load(&index_path).expect("load index");
+        risearch::TargetStore::build_from_fasta(&self.target_path, &index_path)
+            .expect("build store index");
         let target_store = risearch::TargetStore::open(&index_path).expect("open target store");
 
         RustRunner {
             target_path: self.target_path,
             state: Indexed {
                 index_path,
-                index_file,
                 target_store,
             },
         }
@@ -89,49 +84,22 @@ impl RustRunner<Indexed> {
         let query_registry =
             risearch::QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let mut search_args = args.clone();
-        search_args.output.format = risearch::config::OutputFormat::Detailed;
+        // Parity parser expects binding-site columns (pairing + target sequence, optional flanks).
+        search_args.output.format = risearch::config::OutputFormat::BindingSite;
 
         let mut rust_out = Vec::with_capacity(64 * 1024);
-        let mut fmt_bufs = risearch::output::OutputBuffers::new();
-        let format = search_args.output.format;
-        let mut target_cache: Option<(u32, risearch::index::store::TargetView<'_>)> = None;
         risearch::search::run_search(
             &query_registry,
             &self.state.target_store,
             &search_args,
-            |hit| -> anyhow::Result<()> {
-                if target_cache.as_ref().map(|(idx, _)| *idx) != Some(hit.target_idx) {
-                    let view = self
-                        .state
-                        .target_store
-                        .target_view(hit.target_idx as usize)?;
-                    target_cache = Some((hit.target_idx, view));
-                }
-                let target = &target_cache
-                    .as_ref()
-                    .expect("target cache must be populated")
-                    .1;
-                let q_name = query_registry.get_name(hit.query_idx);
-                let q_seq = query_registry.get(hit.query_idx).sequence();
-                let t_fwd = &target.combined_seq[..target.seq_len];
-                let t_rc = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
-                risearch::output::write_hit_names(
-                    &mut fmt_bufs,
-                    &hit,
-                    format,
-                    &mut rust_out,
-                    q_name,
-                    target.name,
-                    q_seq,
-                    t_fwd,
-                    t_rc,
-                )?;
+            |chunk| -> anyhow::Result<()> {
+                rust_out.extend_from_slice(&chunk.data);
                 Ok(())
             },
         )
         .expect("search");
         let rust_out = String::from_utf8(rust_out).expect("rust output utf8");
-        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.index_file);
+        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_store);
         (hits, query_registry)
     }
 
@@ -194,7 +162,7 @@ impl ParityRunner {
         let c_args = translate_args_for_c(args);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
-        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.index_file);
+        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_store);
 
         (rust_hits, c_hits, query_registry)
     }
@@ -220,7 +188,7 @@ impl ParityRunner {
         result.log_details_with_context(
             test_name,
             Some(&query_registry),
-            Some(&self.rust.state.index_file),
+            Some(&self.rust.state.target_store),
         );
 
         if !result.is_pass(*TEST_PARITY_MODE) {

@@ -97,7 +97,7 @@ impl ParityResult {
         &self,
         test_name: &str,
         query_registry: Option<&risearch::QueryRegistry>,
-        target_registry: Option<&risearch::TargetRegistry>,
+        target_store: Option<&risearch::TargetStore>,
     ) {
         use crate::common::table::{ParityKind, ParityTable, TableConfig};
         use std::collections::BTreeMap;
@@ -123,7 +123,7 @@ impl ParityResult {
                 kind,
                 config: TableConfig::default(),
                 query_registry,
-                target_registry,
+                target_store,
             };
             table.to_string()
         };
@@ -622,7 +622,7 @@ impl<'a> ParityComparator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use risearch::types::{Base, Energy, Strand};
+    use risearch::types::{Energy, Strand};
     use risearch::{Alignment, PairClass, Sequence};
 
     fn make_hit(

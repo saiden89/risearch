@@ -7,9 +7,11 @@
 pub mod normalize;
 pub mod sequence;
 pub mod utils;
+pub mod view;
 
 pub use sequence::Sequence;
 pub use utils::{bases_to_rna_string, bytes_to_rna_string, push_bases_as_rna, push_bytes_as_rna};
+pub use view::SeqView;
 
 // ALIGNED SEQ - Sentinel-padded buffer for safe pointer arithmetic
 // =============================================================================

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::{Deref, Index, Range, RangeFrom, RangeFull, RangeTo};
 
 use super::normalize::{normalize_rna_sequence, NormalizationStats};
+use super::view::SeqView;
 
 /// A normalized RNA sequence stored as Vec<Base>.
 ///
@@ -48,6 +49,12 @@ impl Sequence {
         self.0.is_empty()
     }
 
+    /// Borrow as `SeqView` for typed API boundaries.
+    #[inline]
+    pub fn as_view(&self) -> SeqView<'_> {
+        SeqView::from(self)
+    }
+
     /// Compute reverse complement of this sequence.
     ///
     /// Uses Base::complement() for each base, then reverses.
@@ -59,13 +66,26 @@ impl Sequence {
 
     /// Convert to bytes for suffix array construction.
     ///
-    /// This returns discriminant values (0-5), NOT ASCII bytes.
-    /// This is done once at index build time for libsais.
+    /// This returns C-aligned lowercase symbols used for lexicographic sorting:
+    /// `0, a, c, g, n, u`. We keep `u` for RNA order compatibility with
+    /// RIsearch2's `sa_search_interval("acgnu")`.
     ///
     /// # Performance
     /// O(n) operation, should only be called once per sequence during index building.
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.0.iter().map(|&b| b as u8).collect()
+        #[inline(always)]
+        fn sa_sort_byte(b: Base) -> u8 {
+            match b {
+                Base::Gap => 0,
+                Base::A => b'a',
+                Base::C => b'c',
+                Base::G => b'g',
+                Base::N => b'n',
+                Base::U => b'u',
+            }
+        }
+
+        self.0.iter().map(|&b| sa_sort_byte(b)).collect()
     }
 
     /// Convert to ASCII bytes for backward compatibility.
@@ -210,8 +230,7 @@ mod tests {
         let (seq, _) = Sequence::normalize("test", b"ACGU").unwrap();
         let bytes = seq.to_bytes();
 
-        // Should be discriminant values, not ASCII
-        assert_eq!(bytes, vec![1, 3, 2, 4]); // A=1, C=3, G=2, U=4
+        assert_eq!(bytes, vec![b'a', b'c', b'g', b'u']);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use zstd::stream;
 use crate::config::{OutputCompression, OutputConfig};
 
 pub mod format;
-pub use format::{write_hit, write_hit_names, OutputBuffers};
+pub use format::{append_hit_minimal_names_vec, write_hit, write_hit_names, OutputBuffers};
 
 /// Open output writer from parsed search output config.
 pub fn open_output(path: Option<impl AsRef<Path>>, cfg: &OutputConfig) -> Result<Box<dyn Write>> {
@@ -69,5 +69,15 @@ fn infer_compression(path: &Path) -> OutputCompression {
             _ => OutputCompression::None,
         },
         None => OutputCompression::None,
+    }
+}
+
+/// Return a suitable file extension (including leading dot) for the given output
+/// configuration, e.g. `".tsv"`, `".tsv.gz"`, `".tsv.zst"`.
+pub fn output_extension(cfg: &OutputConfig) -> &'static str {
+    match cfg.compress.unwrap_or(OutputCompression::None) {
+        OutputCompression::None => ".tsv",
+        OutputCompression::Gzip => ".tsv.gz",
+        OutputCompression::Zstd => ".tsv.zst",
     }
 }

@@ -1,4 +1,4 @@
-use crate::config::{self, OutputCompression, OutputFormat, SearchAxis};
+use crate::config::{self, OutputCompression, OutputFormat};
 
 use super::{ExtendArgs, FilterArgs, ScoreArgs, SeedConfig};
 
@@ -46,9 +46,9 @@ pub struct SearchArgs {
     #[arg(long = "output-level", value_name = "LEVEL")]
     pub output_level: Option<i32>,
 
-    /// Search parallelization axis override.
-    #[arg(long = "search-axis", value_enum, default_value_t = SearchAxis::Auto)]
-    pub search_axis: SearchAxis,
+    /// Write one output file per query into the directory given by -o
+    #[arg(long = "output-multifile", action = clap::ArgAction::SetTrue)]
+    pub output_multifile: bool,
 
     // ========================================================================
     // TODO: Placeholder flags from C implementation - not yet implemented
@@ -108,8 +108,8 @@ impl From<SearchArgs> for config::SearchArgs {
                 format,
                 compress: value.output_compress,
                 level: value.output_level,
+                multifile: value.output_multifile,
             },
-            axis: value.search_axis,
             one_vs_one: value.one_vs_one,
             three_prime_match: value.three_prime_match,
             five_prime_match: value.five_prime_match,

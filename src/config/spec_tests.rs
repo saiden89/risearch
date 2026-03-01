@@ -32,6 +32,18 @@ mod tests {
     }
 
     #[test]
+    fn test_interval_with_length_zero_invalid() {
+        let err = SeedSpec::IntervalWithLength {
+            start: 10,
+            end: 20,
+            length: 0,
+        }
+        .normalize(100)
+        .unwrap_err();
+        assert!(err.contains("Invalid seed length"));
+    }
+
+    #[test]
     fn test_negative_interval() {
         let res = SeedSpec::Interval { start: -5, end: -1 }
             .normalize(100)

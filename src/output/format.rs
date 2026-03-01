@@ -2,9 +2,10 @@ use std::io::Write;
 
 use crate::alignment::{Alignment, PairClass};
 use crate::config::OutputFormat;
-use crate::registry::{QueryRegistry, TargetRegistry};
+use crate::index::store::TargetStore;
+use crate::registry::QueryRegistry;
 use crate::search::SearchHit;
-use crate::seq::utils::push_bases_as_rna;
+use crate::seq::{utils::push_bases_as_rna, SeqView};
 use crate::types::Base;
 
 /// Reusable buffers for hit formatting (avoids per-hit allocation).
@@ -26,6 +27,70 @@ impl Default for OutputBuffers {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Append a formatted hit line to an output Vec, choosing between minimal and full formats.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub fn append_hit_names_vec(
+    bufs: &mut OutputBuffers,
+    hit: &SearchHit,
+    format: OutputFormat,
+    out: &mut Vec<u8>,
+    query_name: &str,
+    target_name: &str,
+    q_seq: SeqView<'_>,
+    t_fwd: SeqView<'_>,
+    t_rc: SeqView<'_>,
+) {
+    if format == OutputFormat::Minimal {
+        append_hit_minimal_names_vec(bufs, hit, out, query_name, target_name);
+    } else {
+        build_line(
+            &mut bufs.line,
+            &mut bufs.itoa,
+            hit,
+            query_name,
+            target_name,
+            q_seq,
+            t_fwd,
+            t_rc,
+            format,
+        );
+        out.extend_from_slice(&bufs.line);
+    }
+}
+
+/// Append one minimal-format hit line directly into an output Vec.
+///
+/// This avoids the generic field loop and intermediate line buffer copy used by
+/// `write_hit_names`, and is intended for high-volume minimal output paths.
+#[inline]
+pub fn append_hit_minimal_names_vec(
+    bufs: &mut OutputBuffers,
+    hit: &SearchHit,
+    out: &mut Vec<u8>,
+    query_name: &str,
+    target_name: &str,
+) {
+    // q_id, q_start, q_end, t_id, t_start, t_end, strand, energy (8 fields + 7 tabs + '\n')
+    out.reserve(query_name.len() + target_name.len() + 72);
+    out.extend_from_slice(query_name.as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.q_start + 1).as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.q_end + 1).as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(target_name.as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.t_start + 1).as_bytes());
+    out.push(b'\t');
+    out.extend_from_slice(bufs.itoa.format(hit.t_end + 1).as_bytes());
+    out.push(b'\t');
+    out.push(char::from(hit.strand) as u8);
+    out.push(b'\t');
+    append_score_2dp(out, &mut bufs.itoa, hit.energy.as_f64());
+    out.push(b'\n');
 }
 
 #[inline]
@@ -214,29 +279,77 @@ fn hit_target_bases<'a>(hit: &SearchHit, t_fwd: &'a [Base], t_rc: &'a [Base]) ->
     }
 }
 
+const BINDING_SITE_FLANK_LEN: usize = 20;
+
+#[inline]
+fn hit_target_flanks<'a>(
+    hit: &SearchHit,
+    t_fwd: &'a [Base],
+    t_rc: &'a [Base],
+) -> (&'a [Base], bool, &'a [Base], bool) {
+    let len = t_fwd.len();
+    if len == 0 {
+        return (&t_fwd[0..0], false, &t_fwd[0..0], false);
+    }
+
+    let (oriented, start, end) = match hit.strand {
+        crate::types::Strand::Forward => {
+            let start = hit.t_start.min(len);
+            let end = hit.t_end.min(len.saturating_sub(1));
+            (t_fwd, start, end)
+        }
+        crate::types::Strand::Reverse => {
+            if t_rc.is_empty() {
+                return (&t_fwd[0..0], false, &t_fwd[0..0], false);
+            }
+            let start = len
+                .saturating_sub(hit.t_end.saturating_add(1))
+                .min(t_rc.len());
+            let end = len
+                .saturating_sub(hit.t_start.saturating_add(1))
+                .min(t_rc.len().saturating_sub(1));
+            (t_rc, start, end)
+        }
+    };
+
+    if start >= oriented.len() || end >= oriented.len() || start > end {
+        return (&oriented[0..0], false, &oriented[0..0], false);
+    }
+
+    // In binding-site output, flank_5 is emitted "outward" from the interaction
+    // end, and flank_3 from the interaction start.
+    let right_start = end.saturating_add(1).min(oriented.len());
+    let right_end = right_start
+        .saturating_add(BINDING_SITE_FLANK_LEN)
+        .min(oriented.len());
+    let left_end = start;
+    let left_start = left_end.saturating_sub(BINDING_SITE_FLANK_LEN);
+
+    let flank_5 = &oriented[right_start..right_end];
+    let flank_3 = &oriented[left_start..left_end];
+    (flank_5, false, flank_3, true)
+}
+
 fn build_line(
     line_buf: &mut Vec<u8>,
     itoa_buf: &mut itoa::Buffer,
     hit: &SearchHit,
     q_id: &str,
     t_id: &str,
-    q_seq: &[Base],
-    t_fwd: &[Base],
-    t_rc: &[Base],
+    q_seq: SeqView<'_>,
+    t_fwd: SeqView<'_>,
+    t_rc: SeqView<'_>,
     format: OutputFormat,
 ) {
+    let q_seq = q_seq.as_slice();
+    let t_fwd = t_fwd.as_slice();
+    let t_rc = t_rc.as_slice();
     let spec = format_spec(format);
     let alignment = hit.alignment.as_ref();
     let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
-    let flank_5 = (&hit.flank_5, 0..hit.flank_5.len(), false);
-    let flank_3 = (&hit.flank_3, 0..hit.flank_3.len(), false);
+    let (flank_5, flank_5_rev, flank_3, flank_3_rev) = hit_target_flanks(hit, t_fwd, t_rc);
 
-    let approx = q_id.len()
-        + t_id.len()
-        + (steps_len * 2)
-        + flank_5.1.end.saturating_sub(flank_5.1.start)
-        + flank_3.1.end.saturating_sub(flank_3.1.start)
-        + 96;
+    let approx = q_id.len() + t_id.len() + (steps_len * 2) + flank_5.len() + flank_3.len() + 96;
     line_buf.clear();
     if line_buf.capacity() < approx {
         line_buf.reserve(approx - line_buf.capacity());
@@ -287,16 +400,8 @@ fn build_line(
                     push_alignment_target_seq(line_buf, align, t_bases);
                 }
             }
-            FieldKind::Flank5 => push_bases_as_rna(
-                line_buf,
-                &flank_5.0[flank_5.1.start..flank_5.1.end],
-                flank_5.2,
-            ),
-            FieldKind::Flank3 => push_bases_as_rna(
-                line_buf,
-                &flank_3.0[flank_3.1.start..flank_3.1.end],
-                flank_3.2,
-            ),
+            FieldKind::Flank5 => push_bases_as_rna(line_buf, SeqView::from(flank_5), flank_5_rev),
+            FieldKind::Flank3 => push_bases_as_rna(line_buf, SeqView::from(flank_3), flank_3_rev),
         }
     }
     line_buf.push(b'\n');
@@ -309,16 +414,25 @@ pub fn write_hit<W: Write + ?Sized>(
     format: OutputFormat,
     writer: &mut W,
     query_registry: &QueryRegistry,
-    target_registry: &TargetRegistry,
+    target_store: &TargetStore,
 ) -> std::io::Result<()> {
     let q_name = query_registry.get_name(hit.query_idx);
-    let t_name = target_registry.get_name(hit.target_idx);
+    let t_name = target_store.get_name(hit.target_idx);
     let q_seq = query_registry.get(hit.query_idx).sequence();
     let t_idx = hit.target_idx as usize;
-    let t_fwd = target_registry.get_sequence(t_idx);
-    let t_rc = target_registry.get_sequence_rc(t_idx);
+    let (_, t_fwd, t_rc, _) = target_store
+        .target_seqs(t_idx)
+        .map_err(std::io::Error::other)?;
     write_hit_names(
-        bufs, hit, format, writer, q_name, t_name, q_seq, t_fwd, t_rc,
+        bufs,
+        hit,
+        format,
+        writer,
+        q_name,
+        t_name,
+        q_seq,
+        SeqView::from(t_fwd),
+        SeqView::from(t_rc),
     )
 }
 
@@ -330,9 +444,9 @@ pub fn write_hit_names<W: Write + ?Sized>(
     writer: &mut W,
     query_name: &str,
     target_name: &str,
-    q_seq: &[Base],
-    t_fwd: &[Base],
-    t_rc: &[Base],
+    q_seq: SeqView<'_>,
+    t_fwd: SeqView<'_>,
+    t_rc: SeqView<'_>,
 ) -> std::io::Result<()> {
     bufs.line.clear();
     build_line(
@@ -355,9 +469,9 @@ impl SearchHit {
         w: &mut dyn Write,
         format: OutputFormat,
         query_registry: &QueryRegistry,
-        target_registry: &TargetRegistry,
+        target_store: &TargetStore,
     ) -> std::io::Result<()> {
         let mut bufs = OutputBuffers::new();
-        write_hit(&mut bufs, self, format, w, query_registry, target_registry)
+        write_hit(&mut bufs, self, format, w, query_registry, target_store)
     }
 }

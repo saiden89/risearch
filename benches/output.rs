@@ -98,7 +98,7 @@ fn bench_simulated_output(c: &mut Criterion) {
 
     for num_hits in [100, 1000, 10000] {
         let query_registry = setup_registry(100);
-        let target_registry = setup_registry(100);
+        let target_name_registry = setup_registry(100);
 
         // Simulate hit indices
         let hit_indices: Vec<(u32, u32)> = (0..num_hits)
@@ -111,7 +111,7 @@ fn bench_simulated_output(c: &mut Criterion) {
                 let mut output = Vec::with_capacity(num_hits * 64);
                 for (q_idx, t_idx) in &hit_indices {
                     let q_name = query_registry.get_name(*q_idx);
-                    let t_name = target_registry.get_name(*t_idx);
+                    let t_name = target_name_registry.get_name(*t_idx);
                     // Simulate formatting (concatenate names)
                     output.extend_from_slice(q_name.as_bytes());
                     output.push(b'\t');

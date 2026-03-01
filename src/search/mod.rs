@@ -1,28 +1,26 @@
 //! Search module - finds miRNA-target interactions.
 //!
 //! Pipeline:
-//! 1) Entry over targets and queries
-//! 2) Seed enumeration for one query/target pair
+//! 1) Parallel iteration over queries (global SA traversal per query)
+//! 2) Seed enumeration across all targets via single SA traversal
 //! 3) Optional extension of each seed
 //! 4) Materialize and emit final hits
 
-use anyhow::{Context, Result};
-use log::{info, trace};
+use anyhow::Result;
+use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{
-    ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs, SearchAxis,
-};
+use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::{DpConfig, DpExtender, DpView};
-use crate::dsm::{pair_mat, seed_energy, terminal_3p, terminal_5p, DsmModel, T04, T99};
-use crate::index::store::{TargetStore, TargetView};
+use crate::dsm::{pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99};
+use crate::index::store::{GlobalView, TargetStore};
 use crate::registry::{QueryData, QueryRegistry};
-use crate::seed::{for_each_seed_one_target, SeedHit, TargetSeedView};
-use crate::seq::Sequence;
+use crate::seed::{for_each_seed, SeedHit};
+use crate::seq::{SeqView, Sequence};
 use crate::types::{Base, Energy, Interval, Strand};
 
 // =============================================================================
@@ -52,81 +50,62 @@ pub fn run_search<F>(
     queries: &QueryRegistry,
     store: &TargetStore,
     opts: &SearchArgs,
-    mut on_hit: F,
+    mut on_chunk: F,
 ) -> Result<usize>
 where
-    F: FnMut(SearchHit) -> Result<()>,
+    F: FnMut(OutputChunk) -> Result<()>,
 {
     if store.is_empty() || queries.is_empty() {
         return Ok(0);
     }
 
-    let axis = match opts.axis {
-        SearchAxis::Auto => {
-            if store.len() == 1 {
-                Axis::ByQuery
-            } else {
-                let workers = rayon::current_num_threads().max(1);
-                let target_threshold = workers.div_ceil(2);
-                if store.len() >= target_threshold || queries.len() == 1 {
-                    Axis::ByTarget
-                } else {
-                    Axis::ByPair
-                }
-            }
-        }
-        SearchAxis::Target => Axis::ByTarget,
-        SearchAxis::Query => Axis::ByQuery,
-        SearchAxis::Pair => Axis::ByPair,
-    };
+    let global = store.global_view();
 
     info!(
-        "Starting search: {} queries x {} targets, axis={:?}, seed={:?}, max_ext={}, delta_g={}",
+        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
         queries.len(),
         store.len(),
-        axis,
         opts.seed.seed,
         opts.extend.max_extension,
         opts.filter.delta_g
     );
 
-    let (tx, rx) = mpsc::sync_channel::<SearchHit>(HIT_CHANNEL_CAPACITY);
+    // Fast path for single-worker runs: avoid producer thread + channel fan-in.
+    if rayon::current_num_threads() == 1 {
+        let total = match opts.score.matrix {
+            Matrix::T04 => {
+                run_search_single_thread::<T04, _>(queries, store, &global, opts, &mut on_chunk)?
+            }
+            Matrix::T99 => {
+                run_search_single_thread::<T99, _>(queries, store, &global, opts, &mut on_chunk)?
+            }
+        };
+        info!("Search complete: {} hits", total);
+        return Ok(total);
+    }
+
+    let (tx, rx) = mpsc::sync_channel::<OutputChunk>(CHUNK_CHANNEL_CAPACITY);
     let cancelled = AtomicBool::new(false);
 
     let total = std::thread::scope(|scope| -> Result<usize> {
         let cancel = &cancelled;
         let producer = scope.spawn(move || -> Result<()> {
-            match (opts.score.matrix, axis) {
-                (Matrix::T04, Axis::ByTarget) => {
-                    produce_by_target::<T04>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T04, Axis::ByQuery) => {
-                    produce_by_query::<T04>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T04, Axis::ByPair) => {
-                    produce_by_pair::<T04>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T99, Axis::ByTarget) => {
-                    produce_by_target::<T99>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T99, Axis::ByQuery) => {
-                    produce_by_query::<T99>(queries, store, opts, tx, cancel)
-                }
-                (Matrix::T99, Axis::ByPair) => {
-                    produce_by_pair::<T99>(queries, store, opts, tx, cancel)
-                }
+            match opts.score.matrix {
+                Matrix::T04 => produce_by_query::<T04>(queries, store, &global, opts, tx, cancel),
+                Matrix::T99 => produce_by_query::<T99>(queries, store, &global, opts, tx, cancel),
             }
         });
 
         let mut emitted = 0usize;
         let mut callback_err: Option<anyhow::Error> = None;
 
-        while let Ok(hit) = rx.recv() {
+        while let Ok(chunk) = rx.recv() {
             if callback_err.is_some() {
                 continue;
             }
-            match on_hit(hit) {
-                Ok(()) => emitted += 1,
+            let count = chunk.hits;
+            match on_chunk(chunk) {
+                Ok(()) => emitted += count,
                 Err(err) => {
                     callback_err = Some(err);
                     cancelled.store(true, Ordering::Relaxed);
@@ -154,23 +133,24 @@ where
 // ORCHESTRATION
 // =============================================================================
 
-const HIT_CHANNEL_CAPACITY: usize = 2048;
+const CHUNK_CHANNEL_CAPACITY: usize = 128;
+const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Axis {
-    ByTarget,
-    ByQuery,
-    ByPair,
+/// A batch of pre-formatted hit lines ready for writing.
+pub struct OutputChunk {
+    pub data: Vec<u8>,
+    pub hits: usize,
+    /// When multi-file output is active, identifies which query produced this chunk.
+    pub query_idx: Option<u32>,
 }
 
-/// Reusable per-run state.
+/// Reusable per-worker state.
 struct SearchState<M: DsmModel> {
     extender: DpExtender<M>,
     dp_cfg: DpConfig,
 }
 
 impl<M: DsmModel> SearchState<M> {
-    /// Build per-worker DP state from the run-level score/extension configuration.
     fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
         let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
@@ -180,99 +160,225 @@ impl<M: DsmModel> SearchState<M> {
     }
 }
 
-/// Parallel target-major producer:
-/// each worker processes one target across all queries.
-fn produce_by_target<M: DsmModel>(
+struct FormatState {
+    fmt_bufs: crate::output::format::OutputBuffers,
+    chunk_data: Vec<u8>,
+    chunk_hits: usize,
+}
+
+impl FormatState {
+    fn new() -> Self {
+        Self {
+            fmt_bufs: crate::output::format::OutputBuffers::new(),
+            chunk_data: Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
+            chunk_hits: 0,
+        }
+    }
+
+    fn flush<F>(&mut self, query_idx: Option<u32>, on_chunk: &mut F) -> Result<()>
+    where
+        F: FnMut(OutputChunk) -> Result<()>,
+    {
+        if self.chunk_hits > 0 {
+            let data = std::mem::replace(
+                &mut self.chunk_data,
+                Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
+            );
+            let hits = std::mem::replace(&mut self.chunk_hits, 0);
+            on_chunk(OutputChunk {
+                data,
+                hits,
+                query_idx,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+#[inline]
+fn target_transformed_slices<'a>(
+    global: &'a GlobalView<'_>,
+    target_idx: usize,
+) -> (&'a [Base], &'a [Base], usize) {
+    let target_len = global.seq_lens[target_idx] as usize;
+    let target_offset = global.offsets[target_idx] as usize;
+    let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
+    let t_rc =
+        &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+    (t_fwd, t_rc, target_len)
+}
+
+#[inline]
+fn append_formatted_hit(
+    format: &mut FormatState,
+    hit: &SearchHit,
+    output_format: OutputFormat,
+    store: &TargetStore,
+    global: &GlobalView<'_>,
+    query_name: &str,
+    query_seq: &[Base],
+) {
+    let target_name = store.get_name(hit.target_idx);
+    let target_idx = hit.target_idx as usize;
+    let (t_fwd, t_rc, _) = target_transformed_slices(global, target_idx);
+    crate::output::format::append_hit_names_vec(
+        &mut format.fmt_bufs,
+        hit,
+        output_format,
+        &mut format.chunk_data,
+        query_name,
+        target_name,
+        SeqView::from(query_seq),
+        SeqView::from(t_fwd),
+        SeqView::from(t_rc),
+    );
+    format.chunk_hits += 1;
+}
+
+/// Process one query end-to-end and stream formatted chunks via `on_chunk`.
+fn process_query<M, FC, FO>(
+    query_idx: u32,
+    query: &QueryData,
     queries: &QueryRegistry,
     store: &TargetStore,
+    global: &GlobalView<'_>,
     opts: &SearchArgs,
-    tx: mpsc::SyncSender<SearchHit>,
-    cancelled: &AtomicBool,
-) -> Result<()> {
-    let target_ids: Vec<u32> = store.iter_meta().map(|(idx, _)| idx).collect();
-    target_ids.into_par_iter().try_for_each_init(
-        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
-        |(state, tx), target_idx| -> Result<()> {
-            if cancelled.load(Ordering::Relaxed) {
+    state: &mut SearchState<M>,
+    format: &mut FormatState,
+    flush_after_query: bool,
+    is_cancelled: FC,
+    on_chunk: &mut FO,
+) -> Result<usize>
+where
+    M: DsmModel,
+    FC: Fn() -> bool,
+    FO: FnMut(OutputChunk) -> Result<()>,
+{
+    if is_cancelled() {
+        return Ok(0);
+    }
+
+    let query_name = queries.get_name(query_idx);
+    let query_seq = query.sequence().as_slice();
+    let chunk_qi = if opts.output.multifile {
+        Some(query_idx)
+    } else {
+        None
+    };
+    let mut local_hits = 0usize;
+
+    search_query::<M, _>(
+        query_idx,
+        query,
+        global,
+        opts,
+        state,
+        &mut |hit: SearchHit| -> Result<()> {
+            if is_cancelled() {
                 return Ok(());
             }
 
-            let target = store
-                .target_view(target_idx as usize)
-                .with_context(|| format!("Failed to load target #{}", target_idx))?;
+            append_formatted_hit(
+                format,
+                &hit,
+                opts.output.format,
+                store,
+                global,
+                query_name,
+                query_seq,
+            );
+            local_hits += 1;
 
-            for (query_idx, query) in queries.entries().iter().enumerate() {
-                if cancelled.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-                    tx.send(hit)
-                        .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
-                    Ok(())
-                };
-
-                search_query_against_target::<M, _>(
-                    query_idx as u32,
-                    query,
-                    &target,
-                    target_idx,
-                    opts,
-                    state,
-                    &mut emit_hit,
-                )?;
+            if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
+                format.flush(chunk_qi, on_chunk)?;
             }
-
             Ok(())
         },
-    )
+    )?;
+
+    if flush_after_query {
+        format.flush(chunk_qi, on_chunk)?;
+    }
+
+    Ok(local_hits)
 }
 
-/// Parallel query-major producer for single-target workloads.
-///
-/// This path avoids underutilization when only one target is present.
+/// Single-thread execution path (no channel fan-in).
+fn run_search_single_thread<M, F>(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    global: &GlobalView<'_>,
+    opts: &SearchArgs,
+    on_chunk: &mut F,
+) -> Result<usize>
+where
+    M: DsmModel,
+    F: FnMut(OutputChunk) -> Result<()>,
+{
+    let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
+    let mut format = FormatState::new();
+    let mut total_hits = 0usize;
+    let multifile = opts.output.multifile;
+
+    for (query_idx, query) in queries.entries().iter().enumerate() {
+        total_hits += process_query::<M, _, _>(
+            query_idx as u32,
+            query,
+            queries,
+            store,
+            global,
+            opts,
+            &mut state,
+            &mut format,
+            multifile,
+            || false,
+            on_chunk,
+        )?;
+    }
+
+    format.flush(None, on_chunk)?;
+    Ok(total_hits)
+}
+
+/// Parallel query-major producer: each worker processes one query against the global SA.
 fn produce_by_query<M: DsmModel>(
     queries: &QueryRegistry,
     store: &TargetStore,
+    global: &GlobalView<'_>,
     opts: &SearchArgs,
-    tx: mpsc::SyncSender<SearchHit>,
+    tx: mpsc::SyncSender<OutputChunk>,
     cancelled: &AtomicBool,
 ) -> Result<()> {
-    let (target_idx, _) = store
-        .iter_meta()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Target index is empty"))?;
-    let target = store
-        .target_view(target_idx as usize)
-        .with_context(|| format!("Failed to load target #{}", target_idx))?;
-
     (0..queries.len()).into_par_iter().try_for_each_init(
-        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
-        |(state, tx), query_idx| {
+        || {
+            (
+                SearchState::<M>::new(&opts.score, &opts.extend),
+                FormatState::new(),
+                tx.clone(),
+            )
+        },
+        |(state, format, tx), query_idx| {
             if cancelled.load(Ordering::Relaxed) {
                 return Ok(());
             }
 
-            let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-                tx.send(hit)
-                    .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
-                Ok(())
+            let mut flush_to_tx = |chunk: OutputChunk| -> Result<()> {
+                tx.send(chunk)
+                    .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))
             };
 
-            search_query_against_target::<M, _>(
+            process_query::<M, _, _>(
                 query_idx as u32,
-                &queries.entries()[query_idx],
-                &target,
-                target_idx,
+                &queries.entries()[query_idx as usize],
+                queries,
+                store,
+                global,
                 opts,
                 state,
-                &mut emit_hit,
+                format,
+                true,
+                || cancelled.load(Ordering::Relaxed),
+                &mut flush_to_tx,
             )?;
 
             Ok(())
@@ -280,144 +386,66 @@ fn produce_by_query<M: DsmModel>(
     )
 }
 
-/// Parallel pair-major producer:
-/// each worker processes one (target, query chunk) task.
-fn produce_by_pair<M: DsmModel>(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    opts: &SearchArgs,
-    tx: mpsc::SyncSender<SearchHit>,
-    cancelled: &AtomicBool,
-) -> Result<()> {
-    let query_entries = queries.entries();
-    let query_count = query_entries.len();
-    let target_ids: Vec<u32> = store.iter_meta().map(|(idx, _)| idx).collect();
-    if query_count == 0 || target_ids.is_empty() {
-        return Ok(());
-    }
-
-    let workers = rayon::current_num_threads().max(1);
-    let chunks_per_target = (workers * 8).div_ceil(target_ids.len()).max(1);
-    let q_chunk = query_count.div_ceil(chunks_per_target).max(1);
-    let chunks_per_target_actual = query_count.div_ceil(q_chunk);
-
-    let mut tasks = Vec::with_capacity(target_ids.len() * chunks_per_target_actual);
-    for target_idx in target_ids {
-        let mut q_start = 0usize;
-        while q_start < query_count {
-            let q_end = (q_start + q_chunk).min(query_count);
-            tasks.push((target_idx, q_start, q_end));
-            q_start = q_end;
-        }
-    }
-
-    tasks.into_par_iter().try_for_each_init(
-        || (SearchState::<M>::new(&opts.score, &opts.extend), tx.clone()),
-        |(state, tx), (target_idx, q_start, q_end)| -> Result<()> {
-            if cancelled.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-
-            let target = store
-                .target_view(target_idx as usize)
-                .with_context(|| format!("Failed to load target #{}", target_idx))?;
-
-            for query_idx in q_start..q_end {
-                if cancelled.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                let mut emit_hit = |hit: SearchHit| -> Result<()> {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-                    tx.send(hit)
-                        .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))?;
-                    Ok(())
-                };
-
-                search_query_against_target::<M, _>(
-                    query_idx as u32,
-                    &query_entries[query_idx],
-                    &target,
-                    target_idx,
-                    opts,
-                    state,
-                    &mut emit_hit,
-                )?;
-            }
-
-            Ok(())
-        },
-    )
-}
-
-/// Query/target-scoped context that does not change across seed candidates.
-struct QueryTargetCtx<'a> {
-    query_idx: u32,
-    query_bases: &'a [Base],
-    seed_interval: Interval,
-    include_alignment: bool,
-    pair_matrix: &'static [[u8; 6]; 6],
-    filter_cfg: &'a FilterConfig,
-    target_len: usize,
-}
-
-/// Enumerate seeds for a single query-target pair, optionally extend them, and emit hits.
-fn search_query_against_target<M, F>(
+/// Enumerate seeds for a single query across all targets via the global SA,
+/// optionally extend them, and emit hits.
+fn search_query<M, F>(
     query_idx: u32,
     query: &QueryData,
-    target: &TargetView<'_>,
-    target_idx: u32,
+    global: &GlobalView<'_>,
     opts: &SearchArgs,
     state: &mut SearchState<M>,
     on_hit: &mut F,
-) -> Result<usize>
+) -> Result<()>
 where
     M: DsmModel,
     F: FnMut(SearchHit) -> Result<()>,
 {
-    let target_seed_view = TargetSeedView {
-        combined_seq: target.combined_seq,
-        combined_sa: target.combined_sa,
-        seq_len: target.seq_len,
-    };
+    let query_bases = query.sequence().as_slice();
+    let seed_interval = query.seed_interval();
+    let include_alignment = opts.output.format != OutputFormat::Minimal;
+    let pair_matrix = pair_mat(opts.seed.allows_wobble());
+    let filter_cfg = &opts.filter;
 
-    let ctx = QueryTargetCtx {
-        query_idx,
-        query_bases: query.sequence(),
-        seed_interval: query.seed_interval(),
-        include_alignment: opts.output.format != OutputFormat::Minimal,
-        pair_matrix: pair_mat(opts.seed.allows_wobble()),
-        filter_cfg: &opts.filter,
-        target_len: target.seq_len,
-    };
-
-    let t_forward = &target.combined_seq[..target.seq_len];
-    let t_reverse = &target.combined_seq[target.seq_len + 1..2 * target.seq_len + 1];
-
-    let mut emitted = 0usize;
     let mut callback_err: Option<anyhow::Error> = None;
 
-    for_each_seed_one_target(query, target_idx, &target_seed_view, &opts.seed, |seed| {
+    // Unified path: `compute_seed_extension` handles both extension and
+    // max_extension==0 no-extension cases.
+    for_each_seed(query, global, &opts.seed, |seed| {
         if callback_err.is_some() {
             return;
         }
 
-        let target_bases = match seed.strand {
-            Strand::Forward => t_forward,
-            Strand::Reverse => t_reverse,
+        let target_idx_u32 = seed.target_id.0;
+        let target_idx = target_idx_u32 as usize;
+        let (t_forward_trans, t_reverse_trans, target_len) =
+            target_transformed_slices(global, target_idx);
+
+        let mut seed = seed;
+        seed.target_start = target_len.saturating_sub(seed.target_start + seed.seed_len.get());
+
+        let target_trans = match seed.strand {
+            Strand::Forward => t_forward_trans,
+            Strand::Reverse => t_reverse_trans,
         };
 
-        let Some(hit) =
-            build_hit_from_seed::<M>(&mut state.extender, state.dp_cfg, &ctx, &seed, target_bases)
-        else {
+        let Some(hit) = build_hit_from_seed::<M>(
+            &mut state.extender,
+            state.dp_cfg,
+            query_idx,
+            query_bases,
+            seed_interval,
+            include_alignment,
+            pair_matrix,
+            filter_cfg,
+            target_len,
+            &seed,
+            target_trans,
+        ) else {
             return;
         };
 
-        match on_hit(hit) {
-            Ok(()) => emitted += 1,
-            Err(err) => callback_err = Some(err),
+        if let Err(err) = on_hit(hit) {
+            callback_err = Some(err);
         }
     });
 
@@ -425,45 +453,51 @@ where
         return Err(err);
     }
 
-    Ok(emitted)
+    Ok(())
 }
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 fn build_hit_from_seed<M: DsmModel>(
     extender: &mut DpExtender<M>,
     dp_cfg: DpConfig,
-    ctx: &QueryTargetCtx<'_>,
+    query_idx: u32,
+    query_bases: &[Base],
+    seed_interval: Interval,
+    include_alignment: bool,
+    pair_matrix: &'static [[u8; 6]; 6],
+    filter_cfg: &FilterConfig,
+    target_len: usize,
     seed: &SeedHit,
-    target_bases: &[Base],
+    target_trans: &[Base],
 ) -> Option<SearchHit> {
-    if seed.target_start + seed.seed_len.get() > target_bases.len() {
+    if seed.target_start + seed.seed_len.get() > target_trans.len() {
         return None;
     }
 
     let extension = compute_seed_extension::<M>(
         extender,
         dp_cfg,
-        ctx.query_bases,
-        target_bases,
+        query_bases,
+        target_trans,
         seed,
-        ctx.seed_interval,
-        ctx.filter_cfg,
-        ctx.pair_matrix,
-        ctx.include_alignment,
+        seed_interval,
+        filter_cfg,
+        pair_matrix,
+        include_alignment,
     )?;
 
-    if extension.score > ctx.filter_cfg.delta_g {
+    if extension.score > filter_cfg.delta_g {
         return None;
     }
 
     Some(SearchHit::new(
-        ctx.query_idx,
-        ctx.query_bases,
-        target_bases,
+        query_idx,
+        query_bases,
+        target_trans,
         seed,
         &extension,
-        ctx.include_alignment,
-        ctx.target_len,
+        include_alignment,
+        target_len,
     ))
 }
 
@@ -481,12 +515,38 @@ struct SeedExtension {
     right_pairs: SmallVec<[PairClass; 64]>,
 }
 
+#[inline(always)]
+fn seed_energy_transformed<M: DsmModel>(
+    query_bases: &[Base],
+    target_transformed: &[Base],
+    q_pos: usize,
+    t_pos: usize,
+    len: usize,
+    penalty: i32,
+) -> i32 {
+    if len <= 1 {
+        return 0;
+    }
+    let mut score = 0;
+    let t_match_end = t_pos + len - 1;
+    for i in 0..(len - 1) {
+        score += stack_with_penalty::<M>(
+            query_bases[q_pos + i].idx(),
+            query_bases[q_pos + i + 1].idx(),
+            target_transformed[t_match_end - i].complement().idx(),
+            target_transformed[t_match_end - i - 1].complement().idx(),
+            penalty,
+        );
+    }
+    score
+}
+
 /// Compute optional left/right DP extension around a seed and return extension metadata.
 fn compute_seed_extension<M: DsmModel>(
     extender: &mut DpExtender<M>,
     dp_cfg: DpConfig,
     query_bases: &[Base],
-    target_bases: &[Base],
+    target_trans: &[Base],
     seed: &SeedHit,
     seed_interval: Interval,
     filter_cfg: &FilterConfig,
@@ -498,34 +558,41 @@ fn compute_seed_extension<M: DsmModel>(
     let t_pos = seed.target_start;
     let len = seed.seed_len.get();
 
-    // Maximality check: left side.
-    if q_pos > seed_interval.start && t_pos + len < target_bases.len() {
-        let p_class = pair_matrix[query_bases[q_pos - 1].idx()][target_bases[t_pos + len].idx()];
+    // Maximality check in scoring/raw coordinate space.
+    if q_pos > seed_interval.start && t_pos + len < target_trans.len() {
+        let p_class =
+            pair_matrix[query_bases[q_pos - 1].idx()][target_trans[t_pos + len].complement().idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
-            trace!("Filtered: non-maximal left");
             return None;
         }
     }
 
-    // Maximality check: right side.
     if q_pos + len < seed_interval.end && t_pos > 0 {
-        let p_class = pair_matrix[query_bases[q_pos + len].idx()][target_bases[t_pos - 1].idx()];
+        let p_class =
+            pair_matrix[query_bases[q_pos + len].idx()][target_trans[t_pos - 1].complement().idx()];
         if p_class != 0 && !filter_cfg.no_max_prune {
-            trace!("Filtered: non-maximal right");
             return None;
         }
     }
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e = seed_energy::<M>(query_bases, target_bases, q_pos, t_match_end, len, penalty);
+    let seed_e = seed_energy_transformed::<M>(query_bases, target_trans, q_pos, t_pos, len, penalty);
 
-    let can_extend_left = q_pos > 0 && t_pos + len < target_bases.len();
+    let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-        let term_5p = terminal_5p::<M>(query_bases[q_pos], target_bases[t_match_end], penalty);
-        let term_3p = terminal_3p::<M>(query_bases[q_pos + len - 1], target_bases[t_pos], penalty);
+        let term_5p = terminal_5p::<M>(
+            query_bases[q_pos],
+            target_trans[t_match_end].complement(),
+            penalty,
+        );
+        let term_3p = terminal_3p::<M>(
+            query_bases[q_pos + len - 1],
+            target_trans[t_pos].complement(),
+            penalty,
+        );
         let nt_count = (2 * len) as i32;
         return Some(SeedExtension {
             score: M::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
@@ -539,7 +606,7 @@ fn compute_seed_extension<M: DsmModel>(
     }
 
     let (l_score, l_q, l_t, left_pairs) = {
-        let view = DpView::<M>::left(query_bases, target_bases, q_pos, t_match_end, max_ext);
+        let view = DpView::<M>::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -550,7 +617,7 @@ fn compute_seed_extension<M: DsmModel>(
     };
 
     let (r_score, r_q, r_t, right_pairs) = {
-        let view = DpView::<M>::right(query_bases, target_bases, q_pos + len - 1, t_pos, max_ext);
+        let view = DpView::<M>::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -581,7 +648,7 @@ impl SearchHit {
     fn new(
         query_idx: u32,
         query_bases: &[Base],
-        target_bases: &[Base],
+        target_trans: &[Base],
         seed: &SeedHit,
         ext: &SeedExtension,
         include_alignment: bool,
@@ -611,7 +678,7 @@ impl SearchHit {
             for i in 0..len {
                 seed_pairs.push(PairClass::from_bases(
                     query_bases[q_pos + i],
-                    target_bases[t_match_end - i],
+                    target_trans[t_match_end - i].complement(),
                 ));
             }
             Some(Alignment::new(

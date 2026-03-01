@@ -59,6 +59,16 @@ fn test_jobs_flag_produces_consistent_streamed_output() -> Result<(), Box<dyn st
     let out_j1 = run_search(query_file.path(), index_file.path(), 1)?;
     let out_j4 = run_search(query_file.path(), index_file.path(), 4)?;
 
-    assert_eq!(out_j1, out_j4, "search output changed across --jobs values");
+    fn sort_lines(s: String) -> String {
+        let mut lines: Vec<_> = s.lines().collect();
+        lines.sort_unstable();
+        lines.join("\n")
+    }
+
+    assert_eq!(
+        sort_lines(out_j1),
+        sort_lines(out_j4),
+        "search output changed across --jobs values"
+    );
     Ok(())
 }

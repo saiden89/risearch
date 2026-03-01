@@ -169,6 +169,15 @@ impl Base {
     pub fn complement(self) -> Self {
         BASE_COMPLEMENT[self as usize]
     }
+
+    /// Convert from raw u8 discriminant without bounds check.
+    ///
+    /// # Safety
+    /// Caller must ensure i < 6.
+    #[inline(always)]
+    pub unsafe fn from_u8_unchecked(i: u8) -> Self {
+        std::mem::transmute(i)
+    }
 }
 
 /// Number of nucleotide types (Gap, A, G, C, U, N)
@@ -186,7 +195,7 @@ pub struct QueryId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct TargetId(pub u32);
 
-/// Seed length (always positive by construction).oh my go
+/// Seed length (always positive by construction).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SeedLen(u16);
 
