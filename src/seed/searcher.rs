@@ -6,7 +6,7 @@
 //! - `recurse`: recursive parallel SA traversal with inline match/mismatch
 
 use crate::config::SeedConfig;
-use crate::types::{Base, Interval, PackedSaEntry};
+use crate::types::{Base, Interval};
 
 mod partition;
 mod singleton;
@@ -53,10 +53,10 @@ fn sa_char(sa: &[u64], seq: &[Base], sa_idx: usize, offset: usize) -> u8 {
     unsafe { *seq.get_unchecked(suffix_pos + offset) as u8 }
 }
 
-/// Extract the suffix position from a packed SA entry.
+/// Extract the suffix position from a position-only SA entry.
 #[inline(always)]
 fn sa_suffix_pos(sa: &[u64], sa_idx: usize) -> usize {
-    (unsafe { *sa.get_unchecked(sa_idx) } & PackedSaEntry::POS_MASK) as usize
+    unsafe { *sa.get_unchecked(sa_idx) as usize }
 }
 
 // =============================================================================

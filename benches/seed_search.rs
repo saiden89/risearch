@@ -41,7 +41,7 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
 
 fn build_padded_query(q_len: usize, rng_seed: u64) -> (Vec<u64>, Vec<Base>, usize, usize) {
     let query = generate_sequence(q_len, rng_seed);
-    let query_sa = SuffixArray::try_from(&query).expect("query SA");
+    let query_sa = SuffixArray::try_from(&query[..]).expect("query SA");
 
     let q_sa_len = query_sa.len();
     let mut padded_sa = query_sa.into_inner();
@@ -62,8 +62,7 @@ fn build_padded_target(t_len: usize, rng_seed: u64) -> (Vec<u64>, Vec<Base>, usi
     combined_bases.push(Base::Gap);
     combined_bases.extend_from_slice(target_rc.as_ref());
 
-    let combined_for_sa = Sequence::from(combined_bases.clone());
-    let combined_sa = SuffixArray::try_from(&combined_for_sa).expect("target SA");
+    let combined_sa = SuffixArray::try_from(combined_bases.as_slice()).expect("target SA");
 
     let t_sa_len = combined_sa.len();
     let mut padded_sa = combined_sa.into_inner();

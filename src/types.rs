@@ -180,66 +180,6 @@ impl Base {
     }
 }
 
-/// A bit-packed Suffix Array entry.
-///
-/// Encapsulates a 64-bit word containing:
-/// - Bits 0-33: Position of the suffix in the sequence
-/// - Bits 34-37: Base value at this text position
-/// - Bits 38-63: Reserved
-#[repr(transparent)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Default,
-    Serialize,
-    Deserialize,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-)]
-pub struct PackedSaEntry(u64);
-
-impl PackedSaEntry {
-    pub const POS_MASK: u64 = 0x00000003_FFFFFFFF;
-    pub const BASE_SHIFT: u32 = 34;
-    pub const BASE_MASK: u64 = 0x7;
-
-    #[inline(always)]
-    pub const fn new(pos: usize, base: Base) -> Self {
-        let p = (pos as u64) & Self::POS_MASK;
-        let b = (base as u64) << Self::BASE_SHIFT;
-        Self(p | b)
-    }
-
-    #[inline(always)]
-    pub const fn pos(self) -> usize {
-        (self.0 & Self::POS_MASK) as usize
-    }
-
-    #[inline(always)]
-    pub fn base(self) -> Base {
-        let b = (self.0 >> Self::BASE_SHIFT) & Self::BASE_MASK;
-        // SAFETY: Packing logic in SuffixArray::try_from ensures base is 0..6
-        unsafe { Base::from_u8_unchecked(b as u8) }
-    }
-
-    #[inline(always)]
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-}
-
-impl From<u64> for PackedSaEntry {
-    fn from(v: u64) -> Self {
-        Self(v)
-    }
-}
-
 /// Number of nucleotide types (Gap, A, G, C, U, N)
 pub const BASE_COUNT: usize = 6;
 

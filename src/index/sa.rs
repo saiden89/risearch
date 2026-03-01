@@ -7,11 +7,12 @@ use libsais::SuffixArrayConstruction;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Base, PackedSaEntry};
-use crate::Sequence;
+use crate::types::Base;
 
 /// Map Base → SA sort byte for lexicographic ordering.
 /// Matches the order used by RIsearch2: `0, a, c, g, n, u`.
+// TODO: Unify Base discriminant order with SA lexicographic order so this
+// conversion layer is unnecessary and ordering bugs can't drift between modules.
 #[inline(always)]
 fn sa_sort_byte(b: Base) -> u8 {
     match b {
@@ -24,7 +25,7 @@ fn sa_sort_byte(b: Base) -> u8 {
     }
 }
 
-/// A suffix array stored as bit-packed Vec<u64>.
+/// A suffix array stored as `u64` suffix positions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SuffixArray(Vec<u64>);
@@ -34,19 +35,19 @@ impl SuffixArray {
     pub fn into_inner(self) -> Vec<u64> {
         self.0
     }
+}
 
-    /// Access as slice of packed entries.
-    pub fn as_packed(&self) -> &[PackedSaEntry] {
-        // SAFETY: PackedSaEntry is #[repr(transparent)] around u64
-        unsafe { std::slice::from_raw_parts(self.0.as_ptr() as *const PackedSaEntry, self.0.len()) }
+impl Deref for SuffixArray {
+    type Target = [u64];
+    fn deref(&self) -> &[u64] {
+        &self.0
     }
+}
 
-    /// Build a suffix array directly from a `&[Base]` slice.
-    ///
-    /// This avoids extra allocations: the sort-byte conversion is done
-    /// in-place into a single temporary buffer, and packing is parallelized
-    /// via rayon.
-    pub fn build_from_bases(bases: &[Base]) -> Result<Self, Error> {
+impl TryFrom<&[Base]> for SuffixArray {
+    type Error = Error;
+
+    fn try_from(bases: &[Base]) -> Result<Self, Self::Error> {
         // Convert Base → sort-byte in a single allocation
         let mut sort_bytes: Vec<u8> = Vec::with_capacity(bases.len());
         // SAFETY: we immediately write all `len` bytes via ptr::write
@@ -72,37 +73,14 @@ impl SuffixArray {
         // Extract the SA vec first (releases borrow on sort_bytes), then free
         let sa_vec: Vec<i64> = sa_raw.into_vec();
         drop(sort_bytes);
-        let packed: Vec<u64> = sa_vec
+        let positions: Vec<u64> = sa_vec
             .into_par_iter()
-            .enumerate()
-            .map(|(i, pos_i64)| {
-                let pos = pos_i64 as usize;
-                let char_at_i = bases.get(i).copied().unwrap_or(Base::Gap);
-                PackedSaEntry::new(pos, char_at_i).raw()
+            .map(|pos_i64| {
+                debug_assert!(pos_i64 >= 0, "libsais returned negative suffix position");
+                pos_i64 as u64
             })
             .collect();
 
-        Ok(Self(packed))
-    }
-}
-
-impl Deref for SuffixArray {
-    type Target = [u64];
-    fn deref(&self) -> &[u64] {
-        &self.0
-    }
-}
-
-impl From<Vec<u64>> for SuffixArray {
-    fn from(sa: Vec<u64>) -> Self {
-        Self(sa)
-    }
-}
-
-impl TryFrom<&Sequence> for SuffixArray {
-    type Error = Error;
-
-    fn try_from(seq: &Sequence) -> Result<Self, Self::Error> {
-        Self::build_from_bases(seq)
+        Ok(Self(positions))
     }
 }

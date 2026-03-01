@@ -8,7 +8,7 @@ use crate::config::SeedConfig;
 use crate::fastx::read_fasta_sequences;
 use crate::index::io::validate_readable_file;
 use crate::index::sa::SuffixArray;
-use crate::seq::Sequence;
+use crate::seq::{SeqView, Sequence};
 use crate::types::{Base, Interval};
 
 pub trait RegistryEntry {
@@ -98,7 +98,7 @@ pub struct QueryData {
     name: String,
     /// Forward sequence
     sequence: Sequence,
-    /// Suffix array for forward sequence (bit-packed u64)
+    /// Suffix array for forward sequence (`u64` suffix positions)
     sa: SuffixArray,
     /// Pre-computed seed interval bounds
     seed_interval: Interval,
@@ -155,8 +155,8 @@ impl QueryData {
     }
 
     #[inline(always)]
-    pub fn sequence(&self) -> &[Base] {
-        self.sequence.as_ref()
+    pub fn sequence(&self) -> SeqView<'_> {
+        self.sequence.as_view()
     }
 
     #[inline(always)]
@@ -253,7 +253,7 @@ impl QueryRegistry {
                 };
 
                 // Build SA on forward sequence
-                let sa = SuffixArray::try_from(&sequence)?;
+                let sa = SuffixArray::try_from(&sequence[..])?;
 
                 Ok(Some(QueryData::from_parts(name, sequence, sa, config)?))
             })
@@ -296,7 +296,7 @@ impl TargetRegistry {
                 combined_bases.push(Base::Gap);
                 combined_bases.extend_from_slice(&sequence_rc);
                 let combined_seq = Sequence::from(combined_bases.clone());
-                let combined_sa = SuffixArray::try_from(&combined_seq)?;
+                let combined_sa = SuffixArray::try_from(&combined_seq[..])?;
 
                 Ok(Some(TargetData {
                     name,
@@ -326,14 +326,14 @@ impl TargetRegistry {
         crate::index::io::write_index_file(self, path)
     }
 
-    pub fn get_sequence(&self, seq_idx: usize) -> &[Base] {
+    pub fn get_sequence(&self, seq_idx: usize) -> SeqView<'_> {
         let t = &self.entries[seq_idx];
-        &t.combined_seq[..t.seq_len]
+        SeqView::from(&t.combined_seq[..t.seq_len])
     }
 
-    pub fn get_sequence_rc(&self, seq_idx: usize) -> &[Base] {
+    pub fn get_sequence_rc(&self, seq_idx: usize) -> SeqView<'_> {
         let t = &self.entries[seq_idx];
-        &t.combined_seq[t.seq_len + 1..2 * t.seq_len + 1]
+        SeqView::from(&t.combined_seq[t.seq_len + 1..2 * t.seq_len + 1])
     }
 
     pub fn get_sequence_len(&self, seq_idx: usize) -> usize {

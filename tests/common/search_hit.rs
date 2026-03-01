@@ -27,12 +27,6 @@ pub(crate) trait SearchHitExt {
     /// Fingerprint string for comparison. None if no alignment data.
     fn fingerprint(&self) -> Option<String>;
 
-    /// Target sequence for comparison. None if no alignment data.
-    fn target_seq(&self) -> Option<String>;
-
-    /// Query sequence for comparison (may have N placeholders if from C output).
-    fn query_seq(&self) -> Option<String>;
-
     /// Seed start position within interaction.
     fn seed_start(&self) -> Option<usize>;
 
@@ -66,14 +60,6 @@ impl SearchHitExt for SearchHit {
 
     fn fingerprint(&self) -> Option<String> {
         self.alignment.as_ref().map(|a| a.fingerprint())
-    }
-
-    fn target_seq(&self) -> Option<String> {
-        None
-    }
-
-    fn query_seq(&self) -> Option<String> {
-        None
     }
 
     fn seed_start(&self) -> Option<usize> {

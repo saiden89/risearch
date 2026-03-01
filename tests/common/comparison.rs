@@ -622,7 +622,7 @@ impl<'a> ParityComparator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use risearch::types::{Base, Energy, Strand};
+    use risearch::types::{Energy, Strand};
     use risearch::{Alignment, PairClass, Sequence};
 
     fn make_hit(

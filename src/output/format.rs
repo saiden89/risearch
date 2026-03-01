@@ -4,7 +4,7 @@ use crate::alignment::{Alignment, PairClass};
 use crate::config::OutputFormat;
 use crate::registry::{QueryRegistry, TargetRegistry};
 use crate::search::SearchHit;
-use crate::seq::utils::push_bases_as_rna;
+use crate::seq::{utils::push_bases_as_rna, SeqView};
 use crate::types::Base;
 
 /// Reusable buffers for hit formatting (avoids per-hit allocation).
@@ -38,9 +38,9 @@ pub fn append_hit_names_vec(
     out: &mut Vec<u8>,
     query_name: &str,
     target_name: &str,
-    q_seq: &[Base],
-    t_fwd: &[Base],
-    t_rc: &[Base],
+    q_seq: SeqView<'_>,
+    t_fwd: SeqView<'_>,
+    t_rc: SeqView<'_>,
 ) {
     if format == OutputFormat::Minimal {
         append_hit_minimal_names_vec(bufs, hit, out, query_name, target_name);
@@ -335,11 +335,14 @@ fn build_line(
     hit: &SearchHit,
     q_id: &str,
     t_id: &str,
-    q_seq: &[Base],
-    t_fwd: &[Base],
-    t_rc: &[Base],
+    q_seq: SeqView<'_>,
+    t_fwd: SeqView<'_>,
+    t_rc: SeqView<'_>,
     format: OutputFormat,
 ) {
+    let q_seq = q_seq.as_slice();
+    let t_fwd = t_fwd.as_slice();
+    let t_rc = t_rc.as_slice();
     let spec = format_spec(format);
     let alignment = hit.alignment.as_ref();
     let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
@@ -396,8 +399,8 @@ fn build_line(
                     push_alignment_target_seq(line_buf, align, t_bases);
                 }
             }
-            FieldKind::Flank5 => push_bases_as_rna(line_buf, flank_5, flank_5_rev),
-            FieldKind::Flank3 => push_bases_as_rna(line_buf, flank_3, flank_3_rev),
+            FieldKind::Flank5 => push_bases_as_rna(line_buf, SeqView::from(flank_5), flank_5_rev),
+            FieldKind::Flank3 => push_bases_as_rna(line_buf, SeqView::from(flank_3), flank_3_rev),
         }
     }
     line_buf.push(b'\n');
@@ -431,9 +434,9 @@ pub fn write_hit_names<W: Write + ?Sized>(
     writer: &mut W,
     query_name: &str,
     target_name: &str,
-    q_seq: &[Base],
-    t_fwd: &[Base],
-    t_rc: &[Base],
+    q_seq: SeqView<'_>,
+    t_fwd: SeqView<'_>,
+    t_rc: SeqView<'_>,
 ) -> std::io::Result<()> {
     bufs.line.clear();
     build_line(

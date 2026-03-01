@@ -238,11 +238,11 @@ impl ParsedInteraction {
         };
 
         Self {
-            ctx_5: bases_to_rna_string(&hit.flank_5, false),
+            ctx_5: bases_to_rna_string(hit.flank_5.as_view(), false),
             ext_5: left,
             seed,
             ext_3: right,
-            ctx_3: bases_to_rna_string(&hit.flank_3, false),
+            ctx_3: bases_to_rna_string(hit.flank_3.as_view(), false),
         }
     }
 
@@ -304,7 +304,7 @@ impl ParsedInteraction {
 }
 
 fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'a [Base] {
-    let q_seq = query_registry.get(hit.query_idx).sequence();
+    let q_seq = query_registry.get(hit.query_idx).sequence().as_slice();
     let seq_len = q_seq.len();
     let consumed = hit
         .alignment
@@ -333,8 +333,8 @@ fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'
 
 fn hit_target_bases<'a>(hit: &SearchHit, target_registry: &'a TargetRegistry) -> &'a [Base] {
     let t_idx = hit.target_idx as usize;
-    let t_fwd = target_registry.get_sequence(t_idx);
-    let t_rc = target_registry.get_sequence_rc(t_idx);
+    let t_fwd = target_registry.get_sequence(t_idx).as_slice();
+    let t_rc = target_registry.get_sequence_rc(t_idx).as_slice();
     match hit.strand {
         Strand::Forward => {
             let start = hit.t_start.min(t_fwd.len());

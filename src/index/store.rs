@@ -16,7 +16,7 @@ use crate::types::Base;
 // FORMAT CONSTANTS
 // =============================================================================
 
-const FILE_MAGIC: [u8; 8] = *b"RSIDX5\0\0";
+const FILE_MAGIC: [u8; 8] = *b"RSIDX6\0\0";
 
 /// Fixed file header: magic[8] + target_count[4] + reserved[4]
 const FILE_HEADER_BYTES: usize = 16;
@@ -103,7 +103,7 @@ struct NormalizedTarget {
 }
 
 impl TargetStore {
-    /// Build a new RSIDX5 index from a FASTA file.
+    /// Build a new RSIDX6 index from a FASTA file.
     ///
     /// Pipeline:
     /// 1. Parse all FASTA records, normalize, complement
@@ -181,7 +181,7 @@ impl TargetStore {
 
         // Phase 3: Build single global SA directly from &[Base]
         // (avoids cloning combined_bases and the extra to_bytes() allocation)
-        let combined_sa = SuffixArray::build_from_bases(&combined_bases)
+        let combined_sa = SuffixArray::try_from(combined_bases.as_slice())
             .context("Failed to build global suffix array")?;
 
         // Append SA_CHAR_PADDING sentinels to seq

@@ -1,7 +1,7 @@
 use crate::config::SeedConfig;
 use crate::index::store::{GlobalView, SA_CHAR_PADDING};
 use crate::registry::QueryData;
-use crate::types::{Base, PackedSaEntry, SeedLen, Strand, TargetId};
+use crate::types::{Base, SeedLen, Strand, TargetId};
 
 use super::searcher::SeedSearcher;
 use super::SeedHit;
@@ -23,24 +23,20 @@ fn has_n_in_range(query: &QueryData, start: usize, len: usize) -> bool {
 /// stable-sort by original SA rank marker (`idx`) so invalid suffixes are
 /// grouped first, mirroring C's `sa_create_partial_reverse` pre-pruning.
 ///
-/// The packed base nibble is rewritten after sorting so `sa[pos+offset]`
-/// character lookups remain valid for binary partitioning.
 fn build_partial_query_sa(
-    query_seq: &[Base],
     query_sa: &[u64],
     seed_start: usize,
     seed_end: usize,
     min_len: usize,
 ) -> Vec<u64> {
-    let q_len = query_seq.len();
-    debug_assert_eq!(query_sa.len(), q_len);
+    let q_len = query_sa.len();
 
     let max_valid_start = seed_end.saturating_sub(min_len);
     let invalid_pos = q_len;
 
     let mut keyed: Vec<(usize, usize)> = Vec::with_capacity(q_len);
-    for (i, &packed) in query_sa.iter().enumerate() {
-        let pos = PackedSaEntry::from(packed).pos();
+    for (i, &sa_pos) in query_sa.iter().enumerate() {
+        let pos = sa_pos as usize;
         let valid = pos >= seed_start && pos <= max_valid_start;
         let idx_key = if valid { i + 1 } else { 0 };
         let out_pos = if valid { pos } else { invalid_pos };
@@ -50,8 +46,8 @@ fn build_partial_query_sa(
     keyed.sort_unstable_by_key(|(idx_key, _)| *idx_key);
 
     let mut out = Vec::with_capacity(q_len);
-    for (i, (_, pos)) in keyed.into_iter().enumerate() {
-        out.push(PackedSaEntry::new(pos, query_seq[i]).raw());
+    for (_, pos) in keyed {
+        out.push(pos as u64);
     }
     out
 }
@@ -76,11 +72,11 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
     let max_len = q_end.saturating_sub(q_start);
 
     // Build C-style pre-pruned query SA, then pad for unchecked lookup.
-    let partial_q_sa = build_partial_query_sa(query.sequence(), q_sa, q_start, q_end, min_len);
+    let partial_q_sa = build_partial_query_sa(q_sa, q_start, q_end, min_len);
     let q_sa_real_len = partial_q_sa.len();
     let q_sa_start = partial_q_sa
         .iter()
-        .position(|&packed| PackedSaEntry::from(packed).pos() != q_len)
+        .position(|&sa_pos| sa_pos as usize != q_len)
         .unwrap_or(q_sa_real_len);
     if q_sa_start == q_sa_real_len {
         return;
@@ -89,7 +85,7 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
     padded_q_sa.extend_from_slice(&partial_q_sa);
     padded_q_sa.resize(q_sa_real_len + SA_CHAR_PADDING, 0u64);
     let mut padded_q_seq = Vec::with_capacity(q_len + SA_CHAR_PADDING);
-    padded_q_seq.extend_from_slice(query.sequence());
+    padded_q_seq.extend_from_slice(query.sequence().as_slice());
     padded_q_seq.resize(q_len + SA_CHAR_PADDING, Base::Gap);
 
     let searcher = SeedSearcher::new(
@@ -115,8 +111,8 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
             return;
         };
 
-        for &q_packed in &padded_q_sa[m.query_interval.start..m.query_interval.end] {
-            let q_pos = PackedSaEntry::from(q_packed).pos();
+        for &q_sa_pos in &padded_q_sa[m.query_interval.start..m.query_interval.end] {
+            let q_pos = q_sa_pos as usize;
             if q_pos + seed_len > q_len {
                 continue;
             }
@@ -127,8 +123,8 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
                 continue;
             }
 
-            for &t_packed in &global.combined_sa[m.target_interval.start..m.target_interval.end] {
-                let t_pos = PackedSaEntry::from(t_packed).pos();
+            for &t_sa_pos in &global.combined_sa[m.target_interval.start..m.target_interval.end] {
+                let t_pos = t_sa_pos as usize;
 
                 // Remap global position to target index via binary search on offsets
                 let target_idx = match offsets.partition_point(|&o| o <= t_pos as u64) {

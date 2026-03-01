@@ -4,7 +4,7 @@ use crate::seq::Sequence;
 use crate::types::Base;
 
 fn build_padded_sa(seq: &Sequence) -> (Vec<u64>, Vec<Base>, usize) {
-    let sa = SuffixArray::try_from(seq).expect("SA construction failed");
+    let sa = SuffixArray::try_from(&seq[..]).expect("SA construction failed");
     let real_len = sa.len();
     let mut padded: Vec<u64> = sa.into_inner();
     padded.resize(padded.len() + crate::index::store::SA_CHAR_PADDING, 0u64);

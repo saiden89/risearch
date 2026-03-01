@@ -20,7 +20,7 @@ use crate::dsm::{pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmMode
 use crate::index::store::{GlobalView, TargetStore};
 use crate::registry::{QueryData, QueryRegistry};
 use crate::seed::{for_each_seed, SeedHit};
-use crate::seq::Sequence;
+use crate::seq::{SeqView, Sequence};
 use crate::types::{Base, Energy, Interval, Strand};
 
 // =============================================================================
@@ -199,13 +199,13 @@ impl FormatState {
 fn target_transformed_slices<'a>(
     global: &'a GlobalView<'_>,
     target_idx: usize,
-) -> (&'a [Base], &'a [Base], usize) {
+) -> (SeqView<'a>, SeqView<'a>, usize) {
     let target_len = global.seq_lens[target_idx] as usize;
     let target_offset = global.offsets[target_idx] as usize;
     let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
     let t_rc =
         &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-    (t_fwd, t_rc, target_len)
+    (SeqView::from(t_fwd), SeqView::from(t_rc), target_len)
 }
 
 #[inline]
@@ -221,7 +221,7 @@ fn append_formatted_hit(
     store: &TargetStore,
     global: &GlobalView<'_>,
     query_name: &str,
-    query_seq: &[Base],
+    query_seq: SeqView<'_>,
 ) {
     let target_name = store.get_name(hit.target_idx);
     let target_idx = hit.target_idx as usize;
@@ -394,7 +394,7 @@ where
     M: DsmModel,
     F: FnMut(SearchHit) -> Result<()>,
 {
-    let query_bases = query.sequence();
+    let query_bases = query.sequence().as_slice();
     let seed_interval = query.seed_interval();
     let include_alignment = opts.output.format != OutputFormat::Minimal;
     let pair_matrix = pair_mat(opts.seed.allows_wobble());
@@ -419,8 +419,8 @@ where
         normalize_seed_target_start(&mut seed, target_len);
 
         let target_trans = match seed.strand {
-            Strand::Forward => t_forward_trans,
-            Strand::Reverse => t_reverse_trans,
+            Strand::Forward => t_forward_trans.as_slice(),
+            Strand::Reverse => t_reverse_trans.as_slice(),
         };
 
         let ctx = QueryTargetCtx {
