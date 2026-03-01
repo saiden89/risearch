@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(clap::Args, Debug, Clone)]
 pub struct OutputArgs {
     /// Output file for search results (use '-' for stdout)
-    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    #[arg(short = 'o', long = "output", value_name = "FILE", default_value = "-")]
     pub path: PathBuf,
 
     /// Output format
