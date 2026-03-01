@@ -74,10 +74,10 @@ where
     if rayon::current_num_threads() == 1 {
         let total = match opts.score.matrix {
             Matrix::T04 => {
-                run_search_direct::<T04, _>(queries, store, &global, opts, &mut on_chunk)?
+                run_search_single_thread::<T04, _>(queries, store, &global, opts, &mut on_chunk)?
             }
             Matrix::T99 => {
-                run_search_direct::<T99, _>(queries, store, &global, opts, &mut on_chunk)?
+                run_search_single_thread::<T99, _>(queries, store, &global, opts, &mut on_chunk)?
             }
         };
         info!("Search complete: {} hits", total);
@@ -199,18 +199,13 @@ impl FormatState {
 fn target_transformed_slices<'a>(
     global: &'a GlobalView<'_>,
     target_idx: usize,
-) -> (SeqView<'a>, SeqView<'a>, usize) {
+) -> (&'a [Base], &'a [Base], usize) {
     let target_len = global.seq_lens[target_idx] as usize;
     let target_offset = global.offsets[target_idx] as usize;
     let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
     let t_rc =
         &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-    (SeqView::from(t_fwd), SeqView::from(t_rc), target_len)
-}
-
-#[inline]
-fn normalize_seed_target_start(seed: &mut SeedHit, target_len: usize) {
-    seed.target_start = target_len.saturating_sub(seed.target_start + seed.seed_len.get());
+    (t_fwd, t_rc, target_len)
 }
 
 #[inline]
@@ -221,7 +216,7 @@ fn append_formatted_hit(
     store: &TargetStore,
     global: &GlobalView<'_>,
     query_name: &str,
-    query_seq: SeqView<'_>,
+    query_seq: &[Base],
 ) {
     let target_name = store.get_name(hit.target_idx);
     let target_idx = hit.target_idx as usize;
@@ -233,15 +228,83 @@ fn append_formatted_hit(
         &mut format.chunk_data,
         query_name,
         target_name,
-        query_seq,
-        t_fwd,
-        t_rc,
+        SeqView::from(query_seq),
+        SeqView::from(t_fwd),
+        SeqView::from(t_rc),
     );
     format.chunk_hits += 1;
 }
 
-/// Single-thread direct execution path (no channel fan-in).
-fn run_search_direct<M, F>(
+/// Process one query end-to-end and stream formatted chunks via `on_chunk`.
+fn process_query<M, FC, FO>(
+    query_idx: u32,
+    query: &QueryData,
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    global: &GlobalView<'_>,
+    opts: &SearchArgs,
+    state: &mut SearchState<M>,
+    format: &mut FormatState,
+    flush_after_query: bool,
+    is_cancelled: FC,
+    on_chunk: &mut FO,
+) -> Result<usize>
+where
+    M: DsmModel,
+    FC: Fn() -> bool,
+    FO: FnMut(OutputChunk) -> Result<()>,
+{
+    if is_cancelled() {
+        return Ok(0);
+    }
+
+    let query_name = queries.get_name(query_idx);
+    let query_seq = query.sequence().as_slice();
+    let chunk_qi = if opts.output.multifile {
+        Some(query_idx)
+    } else {
+        None
+    };
+    let mut local_hits = 0usize;
+
+    search_query::<M, _>(
+        query_idx,
+        query,
+        global,
+        opts,
+        state,
+        &mut |hit: SearchHit| -> Result<()> {
+            if is_cancelled() {
+                return Ok(());
+            }
+
+            append_formatted_hit(
+                format,
+                &hit,
+                opts.output.format,
+                store,
+                global,
+                query_name,
+                query_seq,
+            );
+            local_hits += 1;
+
+            if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
+                format.flush(chunk_qi, on_chunk)?;
+            }
+            Ok(())
+        },
+    )?;
+
+    if flush_after_query {
+        format.flush(chunk_qi, on_chunk)?;
+    }
+
+    Ok(local_hits)
+}
+
+/// Single-thread execution path (no channel fan-in).
+fn run_search_single_thread<M, F>(
     queries: &QueryRegistry,
     store: &TargetStore,
     global: &GlobalView<'_>,
@@ -258,40 +321,19 @@ where
     let multifile = opts.output.multifile;
 
     for (query_idx, query) in queries.entries().iter().enumerate() {
-        let query_idx = query_idx as u32;
-        let query_name = queries.get_name(query_idx);
-        let query_seq = queries.get(query_idx).sequence();
-        let chunk_qi = if multifile { Some(query_idx) } else { None };
-
-        search_query::<M, _>(
-            query_idx,
+        total_hits += process_query::<M, _, _>(
+            query_idx as u32,
             query,
+            queries,
+            store,
             global,
             opts,
             &mut state,
-            &mut |hit: SearchHit| -> Result<()> {
-                append_formatted_hit(
-                    &mut format,
-                    &hit,
-                    opts.output.format,
-                    store,
-                    global,
-                    query_name,
-                    query_seq,
-                );
-                total_hits += 1;
-
-                if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
-                    format.flush(chunk_qi, on_chunk)?;
-                }
-                Ok(())
-            },
+            &mut format,
+            multifile,
+            || false,
+            on_chunk,
         )?;
-
-        // In multifile mode, flush at query boundary so chunks never mix queries.
-        if multifile {
-            format.flush(chunk_qi, on_chunk)?;
-        }
     }
 
     format.flush(None, on_chunk)?;
@@ -320,64 +362,28 @@ fn produce_by_query<M: DsmModel>(
                 return Ok(());
             }
 
-            let query_idx = query_idx as u32;
-            let query_name = queries.get_name(query_idx);
-            let query_seq = queries.get(query_idx).sequence();
-            let chunk_qi = if opts.output.multifile {
-                Some(query_idx)
-            } else {
-                None
-            };
-
             let mut flush_to_tx = |chunk: OutputChunk| -> Result<()> {
                 tx.send(chunk)
                     .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))
             };
 
-            search_query::<M, _>(
-                query_idx,
+            process_query::<M, _, _>(
+                query_idx as u32,
                 &queries.entries()[query_idx as usize],
+                queries,
+                store,
                 global,
                 opts,
                 state,
-                &mut |hit: SearchHit| -> Result<()> {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return Ok(());
-                    }
-
-                    append_formatted_hit(
-                        format,
-                        &hit,
-                        opts.output.format,
-                        store,
-                        global,
-                        query_name,
-                        query_seq,
-                    );
-
-                    if format.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
-                        format.flush(chunk_qi, &mut flush_to_tx)?;
-                    }
-                    Ok(())
-                },
+                format,
+                true,
+                || cancelled.load(Ordering::Relaxed),
+                &mut flush_to_tx,
             )?;
-
-            format.flush(chunk_qi, &mut flush_to_tx)?;
 
             Ok(())
         },
     )
-}
-
-/// Query/target-scoped context that does not change across seed candidates.
-struct QueryTargetCtx<'a> {
-    query_idx: u32,
-    query_bases: &'a [Base],
-    seed_interval: Interval,
-    include_alignment: bool,
-    pair_matrix: &'static [[u8; 6]; 6],
-    filter_cfg: &'a FilterConfig,
-    target_len: usize,
 }
 
 /// Enumerate seeds for a single query across all targets via the global SA,
@@ -389,7 +395,7 @@ fn search_query<M, F>(
     opts: &SearchArgs,
     state: &mut SearchState<M>,
     on_hit: &mut F,
-) -> Result<usize>
+) -> Result<()>
 where
     M: DsmModel,
     F: FnMut(SearchHit) -> Result<()>,
@@ -400,7 +406,6 @@ where
     let pair_matrix = pair_mat(opts.seed.allows_wobble());
     let filter_cfg = &opts.filter;
 
-    let mut emitted = 0usize;
     let mut callback_err: Option<anyhow::Error> = None;
 
     // Unified path: `compute_seed_extension` handles both extension and
@@ -416,14 +421,16 @@ where
             target_transformed_slices(global, target_idx);
 
         let mut seed = seed;
-        normalize_seed_target_start(&mut seed, target_len);
+        seed.target_start = target_len.saturating_sub(seed.target_start + seed.seed_len.get());
 
         let target_trans = match seed.strand {
-            Strand::Forward => t_forward_trans.as_slice(),
-            Strand::Reverse => t_reverse_trans.as_slice(),
+            Strand::Forward => t_forward_trans,
+            Strand::Reverse => t_reverse_trans,
         };
 
-        let ctx = QueryTargetCtx {
+        let Some(hit) = build_hit_from_seed::<M>(
+            &mut state.extender,
+            state.dp_cfg,
             query_idx,
             query_bases,
             seed_interval,
@@ -431,17 +438,14 @@ where
             pair_matrix,
             filter_cfg,
             target_len,
-        };
-
-        let Some(hit) =
-            build_hit_from_seed::<M>(&mut state.extender, state.dp_cfg, &ctx, &seed, target_trans)
-        else {
+            &seed,
+            target_trans,
+        ) else {
             return;
         };
 
-        match on_hit(hit) {
-            Ok(()) => emitted += 1,
-            Err(err) => callback_err = Some(err),
+        if let Err(err) = on_hit(hit) {
+            callback_err = Some(err);
         }
     });
 
@@ -449,14 +453,20 @@ where
         return Err(err);
     }
 
-    Ok(emitted)
+    Ok(())
 }
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 fn build_hit_from_seed<M: DsmModel>(
     extender: &mut DpExtender<M>,
     dp_cfg: DpConfig,
-    ctx: &QueryTargetCtx<'_>,
+    query_idx: u32,
+    query_bases: &[Base],
+    seed_interval: Interval,
+    include_alignment: bool,
+    pair_matrix: &'static [[u8; 6]; 6],
+    filter_cfg: &FilterConfig,
+    target_len: usize,
     seed: &SeedHit,
     target_trans: &[Base],
 ) -> Option<SearchHit> {
@@ -467,27 +477,27 @@ fn build_hit_from_seed<M: DsmModel>(
     let extension = compute_seed_extension::<M>(
         extender,
         dp_cfg,
-        ctx.query_bases,
+        query_bases,
         target_trans,
         seed,
-        ctx.seed_interval,
-        ctx.filter_cfg,
-        ctx.pair_matrix,
-        ctx.include_alignment,
+        seed_interval,
+        filter_cfg,
+        pair_matrix,
+        include_alignment,
     )?;
 
-    if extension.score > ctx.filter_cfg.delta_g {
+    if extension.score > filter_cfg.delta_g {
         return None;
     }
 
     Some(SearchHit::new(
-        ctx.query_idx,
-        ctx.query_bases,
+        query_idx,
+        query_bases,
         target_trans,
         seed,
         &extension,
-        ctx.include_alignment,
-        ctx.target_len,
+        include_alignment,
+        target_len,
     ))
 }
 
@@ -567,8 +577,7 @@ fn compute_seed_extension<M: DsmModel>(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e =
-        seed_energy_transformed::<M>(query_bases, target_trans, q_pos, t_pos, len, penalty);
+    let seed_e = seed_energy_transformed::<M>(query_bases, target_trans, q_pos, t_pos, len, penalty);
 
     let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;

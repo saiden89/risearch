@@ -4,9 +4,10 @@
 //! differences between Rust and C implementations.
 
 use crate::common::search_hit::SearchHitExt;
+use risearch::index::store::TargetStore;
 use risearch::seq::bases_to_rna_string;
 use risearch::types::{Base, Strand};
-use risearch::{QueryRegistry, SearchHit, TargetRegistry};
+use risearch::{QueryRegistry, SearchHit};
 use tabled::{builder::Builder, settings::Style, Table, Tabled};
 
 // =============================================================================
@@ -250,10 +251,10 @@ impl ParsedInteraction {
     fn from_hit_target(
         hit: &SearchHit,
         ref_parts: &ParsedInteraction,
-        target_registry: Option<&TargetRegistry>,
+        target_store: Option<&TargetStore>,
     ) -> Self {
-        let chars: Vec<char> = target_registry
-            .and_then(|tr| aligned_target_track(hit, tr))
+        let chars: Vec<char> = target_store
+            .and_then(|ts| aligned_target_track(hit, ts))
             .unwrap_or_default()
             .chars()
             .collect();
@@ -331,10 +332,12 @@ fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'
     &q_seq[start..end_excl]
 }
 
-fn hit_target_bases<'a>(hit: &SearchHit, target_registry: &'a TargetRegistry) -> &'a [Base] {
+fn hit_target_bases<'a>(hit: &SearchHit, target_store: &'a TargetStore) -> &'a [Base] {
     let t_idx = hit.target_idx as usize;
-    let t_fwd = target_registry.get_sequence(t_idx).as_slice();
-    let t_rc = target_registry.get_sequence_rc(t_idx).as_slice();
+    let (_, t_fwd, t_rc, _) = match target_store.target_seqs(t_idx) {
+        Ok(s) => s,
+        Err(_) => return &[],
+    };
     match hit.strand {
         Strand::Forward => {
             let start = hit.t_start.min(t_fwd.len());
@@ -387,8 +390,8 @@ fn aligned_query_track(hit: &SearchHit, query_registry: &QueryRegistry) -> Optio
     build_track(hit, q_bases, |s| s.consumes_query())
 }
 
-fn aligned_target_track(hit: &SearchHit, target_registry: &TargetRegistry) -> Option<String> {
-    let t_bases = hit_target_bases(hit, target_registry);
+fn aligned_target_track(hit: &SearchHit, target_store: &TargetStore) -> Option<String> {
+    let t_bases = hit_target_bases(hit, target_store);
     build_track(hit, t_bases, |s| s.consumes_target())
 }
 
@@ -401,7 +404,7 @@ pub(crate) struct ParityTable<'a> {
     pub(crate) kind: ParityKind<'a>,
     pub(crate) config: TableConfig,
     pub(crate) query_registry: Option<&'a QueryRegistry>,
-    pub(crate) target_registry: Option<&'a TargetRegistry>,
+    pub(crate) target_store: Option<&'a TargetStore>,
 }
 
 impl<'a> std::fmt::Display for ParityTable<'a> {
@@ -450,7 +453,7 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
         match self.kind {
             ParityKind::RustOnly(r) => {
                 let p = ParsedInteraction::from_hit(r);
-                let p_tgt = ParsedInteraction::from_hit_target(r, &p, self.target_registry);
+                let p_tgt = ParsedInteraction::from_hit_target(r, &p, self.target_store);
                 let p_qry = ParsedInteraction::from_hit_query(r, &p, self.query_registry);
                 add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
                 add_row(&mut builder, RowLabel::SingleQuery, &p_qry);
@@ -458,7 +461,7 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
             }
             ParityKind::COnly(c) => {
                 let p = ParsedInteraction::from_hit(c);
-                let p_tgt = ParsedInteraction::from_hit_target(c, &p, self.target_registry);
+                let p_tgt = ParsedInteraction::from_hit_target(c, &p, self.target_store);
                 let p_qry = ParsedInteraction::from_hit_query(c, &p, self.query_registry);
                 add_row(&mut builder, RowLabel::SingleTarget, &p_tgt);
                 add_row(&mut builder, RowLabel::SingleQuery, &p_qry);
@@ -480,10 +483,10 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
                     ctx_3: "".into(),
                 };
 
-                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c, self.target_registry);
+                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c, self.target_store);
                 // Use Rust query for C since C output lacks query seq but they're same hit
                 let p_c_qry = ParsedInteraction::from_hit_query(r, &p_c, self.query_registry);
-                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r, self.target_registry);
+                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r, self.target_store);
                 let p_r_qry = ParsedInteraction::from_hit_query(r, &p_r, self.query_registry);
 
                 add_row(&mut builder, RowLabel::CompCTarget, &p_c_tgt);
@@ -497,10 +500,10 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
             ParityKind::CoveredBy { c, rust: r } => {
                 // Show C hit (missing), then separator, then overlapping Rust hit
                 let p_c = ParsedInteraction::from_hit(c);
-                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c, self.target_registry);
+                let p_c_tgt = ParsedInteraction::from_hit_target(c, &p_c, self.target_store);
 
                 let p_r = ParsedInteraction::from_hit(r);
-                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r, self.target_registry);
+                let p_r_tgt = ParsedInteraction::from_hit_target(r, &p_r, self.target_store);
                 let p_r_qry = ParsedInteraction::from_hit_query(r, &p_r, self.query_registry);
 
                 // C hit rows

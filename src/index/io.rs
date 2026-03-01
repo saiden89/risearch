@@ -2,8 +2,6 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::registry::TargetRegistry;
-
 pub(crate) fn validate_readable_file(path: &Path) -> Result<()> {
     let md = std::fs::metadata(path)
         .with_context(|| format!("Failed to access input path: {}", path.display()))?;
@@ -25,18 +23,4 @@ pub(crate) fn validate_output_path(path: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-pub fn write_index_file(index: &TargetRegistry, output_file: impl AsRef<Path>) -> Result<()> {
-    validate_output_path(output_file.as_ref())?;
-    let encoded = bincode::serialize(index).context("Failed to serialize index")?;
-    std::fs::write(&output_file, encoded).context("Failed to write index file")?;
-    Ok(())
-}
-
-pub fn load_index_file(input_file: impl AsRef<Path>) -> Result<TargetRegistry> {
-    let data = std::fs::read(&input_file).context("Failed to read index file")?;
-    let index: TargetRegistry =
-        bincode::deserialize(&data).context("Failed to deserialize index")?;
-    Ok(index)
 }

@@ -81,13 +81,13 @@ pub(crate) fn workspace_root() -> PathBuf {
 pub(crate) fn parse_output(
     output: &str,
     query_registry: &risearch::QueryRegistry,
-    target_registry: &risearch::TargetRegistry,
+    target_store: &risearch::TargetStore,
 ) -> (Vec<risearch::SearchHit>, usize) {
     let mut hits: Vec<risearch::SearchHit> = output
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        .filter_map(|l| parse_c_output(l, query_registry, target_registry))
+        .filter_map(|l| parse_c_output(l, query_registry, target_store))
         .collect();
     let parsed_count = hits.len();
     // Sort by group_key, then all coordinates for deterministic dedup

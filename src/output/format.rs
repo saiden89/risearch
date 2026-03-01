@@ -2,7 +2,8 @@ use std::io::Write;
 
 use crate::alignment::{Alignment, PairClass};
 use crate::config::OutputFormat;
-use crate::registry::{QueryRegistry, TargetRegistry};
+use crate::index::store::TargetStore;
+use crate::registry::QueryRegistry;
 use crate::search::SearchHit;
 use crate::seq::{utils::push_bases_as_rna, SeqView};
 use crate::types::Base;
@@ -413,16 +414,25 @@ pub fn write_hit<W: Write + ?Sized>(
     format: OutputFormat,
     writer: &mut W,
     query_registry: &QueryRegistry,
-    target_registry: &TargetRegistry,
+    target_store: &TargetStore,
 ) -> std::io::Result<()> {
     let q_name = query_registry.get_name(hit.query_idx);
-    let t_name = target_registry.get_name(hit.target_idx);
+    let t_name = target_store.get_name(hit.target_idx);
     let q_seq = query_registry.get(hit.query_idx).sequence();
     let t_idx = hit.target_idx as usize;
-    let t_fwd = target_registry.get_sequence(t_idx);
-    let t_rc = target_registry.get_sequence_rc(t_idx);
+    let (_, t_fwd, t_rc, _) = target_store
+        .target_seqs(t_idx)
+        .map_err(std::io::Error::other)?;
     write_hit_names(
-        bufs, hit, format, writer, q_name, t_name, q_seq, t_fwd, t_rc,
+        bufs,
+        hit,
+        format,
+        writer,
+        q_name,
+        t_name,
+        q_seq,
+        SeqView::from(t_fwd),
+        SeqView::from(t_rc),
     )
 }
 
@@ -459,9 +469,9 @@ impl SearchHit {
         w: &mut dyn Write,
         format: OutputFormat,
         query_registry: &QueryRegistry,
-        target_registry: &TargetRegistry,
+        target_store: &TargetStore,
     ) -> std::io::Result<()> {
         let mut bufs = OutputBuffers::new();
-        write_hit(&mut bufs, self, format, w, query_registry, target_registry)
+        write_hit(&mut bufs, self, format, w, query_registry, target_store)
     }
 }

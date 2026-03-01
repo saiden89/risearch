@@ -76,19 +76,6 @@ impl<T: RegistryEntry> Registry<T> {
     }
 }
 
-/// Target data computed once at load/index-build time.
-#[derive(Serialize, Deserialize)]
-pub struct TargetData {
-    /// Sequence identifier.
-    pub name: String,
-    /// Combined sequence: forward ++ [Gap] ++ reverse-complement
-    pub combined_seq: Sequence,
-    /// Suffix array built on combined_seq
-    pub combined_sa: SuffixArray,
-    /// Length of the original forward sequence
-    pub seq_len: usize,
-}
-
 /// Query data computed once at load time.
 ///
 /// Owns all sequence data, suffix arrays, and N-position metadata.
@@ -192,7 +179,6 @@ impl RegistryEntry for QueryData {
 }
 
 pub type QueryRegistry = Registry<QueryData>;
-pub type TargetRegistry = Registry<TargetData>;
 
 fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     validate_readable_file(path)?;
@@ -268,75 +254,5 @@ impl QueryRegistry {
         }
 
         Ok(Self::new(entries))
-    }
-}
-
-impl RegistryEntry for TargetData {
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-impl TargetRegistry {
-    pub fn from_fasta(path: &Path) -> Result<Self> {
-        let sequences = read_and_validate_sequences(path)?;
-
-        let maybe_entries: Vec<Option<TargetData>> = sequences
-            .into_par_iter()
-            .map(|(id, seq)| -> Result<Option<TargetData>> {
-                let Some((name, sequence)) = normalize_record(id, seq)? else {
-                    return Ok(None);
-                };
-
-                // Build combined sequence: fwd ++ [Gap] ++ rc
-                let seq_len = sequence.len();
-                let sequence_rc = sequence.reverse_complement();
-                let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * seq_len + 2);
-                combined_bases.extend_from_slice(&sequence);
-                combined_bases.push(Base::Gap);
-                combined_bases.extend_from_slice(&sequence_rc);
-                let combined_seq = Sequence::from(combined_bases.clone());
-                let combined_sa = SuffixArray::try_from(&combined_seq[..])?;
-
-                Ok(Some(TargetData {
-                    name,
-                    combined_seq,
-                    combined_sa,
-                    seq_len,
-                }))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let entries: Vec<TargetData> = maybe_entries.into_iter().flatten().collect();
-        if entries.is_empty() {
-            bail!(
-                "All sequences were empty after normalization in {}",
-                path.display()
-            );
-        }
-
-        Ok(Self::new(entries))
-    }
-
-    pub fn load(path: &Path) -> Result<Self> {
-        crate::index::io::load_index_file(path)
-    }
-
-    pub fn save(&self, path: &Path) -> Result<()> {
-        crate::index::io::write_index_file(self, path)
-    }
-
-    pub fn get_sequence(&self, seq_idx: usize) -> SeqView<'_> {
-        let t = &self.entries[seq_idx];
-        SeqView::from(&t.combined_seq[..t.seq_len])
-    }
-
-    pub fn get_sequence_rc(&self, seq_idx: usize) -> SeqView<'_> {
-        let t = &self.entries[seq_idx];
-        SeqView::from(&t.combined_seq[t.seq_len + 1..2 * t.seq_len + 1])
-    }
-
-    pub fn get_sequence_len(&self, seq_idx: usize) -> usize {
-        self.entries[seq_idx].seq_len
     }
 }

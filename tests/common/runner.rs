@@ -22,8 +22,6 @@ struct NoIndex;
 /// Marker for an indexed Rust runner.
 struct Indexed {
     index_path: PathBuf,
-    #[allow(dead_code)]
-    index_file: risearch::TargetRegistry,
     target_store: risearch::TargetStore,
 }
 
@@ -65,14 +63,11 @@ impl RustRunner<NoIndex> {
         risearch::TargetStore::build_from_fasta(&self.target_path, &index_path)
             .expect("build store index");
         let target_store = risearch::TargetStore::open(&index_path).expect("open target store");
-        let index_file =
-            risearch::TargetRegistry::from_fasta(&self.target_path).expect("build registry index");
 
         RustRunner {
             target_path: self.target_path,
             state: Indexed {
                 index_path,
-                index_file,
                 target_store,
             },
         }
@@ -104,7 +99,7 @@ impl RustRunner<Indexed> {
         )
         .expect("search");
         let rust_out = String::from_utf8(rust_out).expect("rust output utf8");
-        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.index_file);
+        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_store);
         (hits, query_registry)
     }
 
@@ -167,7 +162,7 @@ impl ParityRunner {
         let c_args = translate_args_for_c(args);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
-        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.index_file);
+        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_store);
 
         (rust_hits, c_hits, query_registry)
     }
@@ -193,7 +188,7 @@ impl ParityRunner {
         result.log_details_with_context(
             test_name,
             Some(&query_registry),
-            Some(&self.rust.state.index_file),
+            Some(&self.rust.state.target_store),
         );
 
         if !result.is_pass(*TEST_PARITY_MODE) {
