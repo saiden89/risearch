@@ -1,133 +1,292 @@
 # RIsearch (Rust)
 
-Energy-based RNA-RNA interaction prediction with a fast suffix-array backend.
+![Version](https://img.shields.io/badge/version-3.0.0--alpha.1-blue)
+![Build](https://img.shields.io/badge/build-cargo%20check%20passing-brightgreen)
+![License](https://img.shields.io/badge/license-GPLv3-blue)
+![MSRV](https://img.shields.io/badge/MSRV-not%20pinned-lightgrey)
 
-Status: alpha. The Rust port is actively optimized and validated against the
-legacy C implementation. Some flags and features are still marked TODO or
-experimental.
+RIsearch predicts RNA-RNA interactions using a suffix-array seed search and
+energy-based extension model. This repository contains the Rust implementation
+and compatibility tooling against the legacy C codebase.
 
-## Features
+## Quick Nav
 
-- Suffix-array (SA) index backend.
-- Seed-and-extend search with configurable seed length, mismatches, and energy
-  thresholds.
-- Multi-threaded search via Rayon.
-- Streaming output to avoid large memory spikes.
-- FASTA/FASTQ input (including .gz) via needletail.
+- [RIsearch (Rust)](#risearch-rust)
+  - [Quick Nav](#quick-nav)
+  - [Why RIsearch](#why-risearch)
+  - [Workflow](#workflow)
+  - [Status](#status)
+  - [Installation](#installation)
+  - [Quickstart](#quickstart)
+  - [Core Commands](#core-commands)
+  - [Common Recipes](#common-recipes)
+  - [Compatibility and Migration](#compatibility-and-migration)
+  - [Performance and Parallelism](#performance-and-parallelism)
+    - [OpenMP Profile for Faster Index Builds](#openmp-profile-for-faster-index-builds)
+  - [Troubleshooting and FAQ](#troubleshooting-and-faq)
+    - [OpenMP build fails with `omp.h file not found`](#openmp-build-fails-with-omph-file-not-found)
+    - [Why are thread counts different between `index` and `search`?](#why-are-thread-counts-different-between-index-and-search)
+    - [I still use `-s`, `-m`, or `-p` and see warnings](#i-still-use--s--m-or--p-and-see-warnings)
+    - [Search returned no hits](#search-returned-no-hits)
+  - [Developer Validation](#developer-validation)
+  - [Further Documentation](#further-documentation)
+  - [License](#license)
 
-## Build
+## Why RIsearch
+
+- Fast suffix-array indexing and seed search for RNA-RNA interaction discovery.
+- Energy-based extension model with practical filters for production pipelines.
+- Modern CLI with streaming output, multiple formats, and gzip/zstd compression.
+- Legacy compatibility path for teams migrating from `risearch2` flags/workflows.
+
+## Workflow
+
+```mermaid
+flowchart LR
+  A["Target FASTA/FASTQ"] --> B["risearch index"]
+  B --> C["target.idx"]
+  D["Query FASTA or FASTA.gz"] --> E["risearch search"]
+  C --> E
+  E --> F["Seed generation and lookup"]
+  F --> G["Energy scoring and DP extension"]
+  G --> H["Output: detailed, cigar, bindingsite, minimal"]
+```
+
+## Status
+
+`risearch` is currently **alpha** (`3.0.0-alpha.1`). Core `index`/`search`
+workflows are active and tested, while some legacy compatibility flags remain
+deprecated and scheduled for removal.
+
+## Installation
+
+Build:
 
 ```bash
 cargo build --release
 ```
 
-Install the CLI locally:
+Install locally:
 
 ```bash
 cargo install --path .
 ```
 
-## Quick start
-
-Index a target FASTA:
+Sanity check:
 
 ```bash
-./target/release/risearch index chr22.fa chr22.idx
+risearch --help
 ```
 
-Search for interactions:
+If you have not installed the binary yet, use `cargo run --release -- ...` in
+the examples below.
+
+## Quickstart
 
 ```bash
-./target/release/risearch search \
+# Build index from target sequences
+risearch index target.fa target.idx
+
+# Run interaction search
+risearch search \
+  -q query.fa \
+  -t target.idx \
+  --seed-length 6 \
+  -l 20 \
+  -e -20 \
+  --format detailed \
+  -o results.tsv
+
+# Optional: compressed output
+risearch search -q query.fa -t target.idx --format minimal -o results.tsv.gz
+```
+
+## Core Commands
+
+```text
+risearch index <INPUT> <OUTPUT>
+risearch search -q <QUERY_FASTA(.gz)> -t <TARGET_INDEX> [OPTIONS]
+```
+
+- `index`: build an index from target FASTA/FASTQ input.
+- `search`: run seed-and-extend search for one or more query sequences.
+
+Global flags:
+
+- `-j, --jobs <N>`: worker threads (defaults to detected CPU parallelism).
+- `-v/-vv/-vvv`: increase log verbosity.
+
+Run `risearch --help`, `risearch index --help`, and `risearch search --help`
+for the full and current option surface.
+
+## Common Recipes
+
+Use modern long-form flags in new scripts and pipelines.
+
+Select seed interval and length:
+
+```bash
+risearch search \
+  -q query.fa \
+  -t target.idx \
+  --seed-start 1 \
+  --seed-end 20 \
+  --seed-length 7
+```
+
+Allow mismatches with explicit constraints:
+
+```bash
+risearch search \
+  -q query.fa \
+  -t target.idx \
+  --mismatch-max 1 \
+  --mismatch-prefix 3 \
+  --mismatch-suffix 3
+```
+
+Enable wobble seed pairing (strict is default):
+
+```bash
+risearch search -q query.fa -t target.idx --seed-pairing allow_wobble
+```
+
+Output formats:
+
+- `--format detailed` (default)
+- `--format cigar`
+- `--format bindingsite`
+- `--format minimal`
+
+Compression and multifile output:
+
+```bash
+risearch search \
   -q queries.fa \
-  -t chr22.idx \
-  -o results.out
+  -t target.idx \
+  --format minimal \
+  --compress zstd \
+  --compress-level 6 \
+  --multifile \
+  -o out_dir
 ```
 
-Or run directly via Cargo:
+Tuning and filtering:
+
+- `-z, --matrix <t04|t99>` energy model (`t04` default).
+- `-d, --penalty <kcal/mol>` per-nucleotide penalty.
+- `-l, --extension <L>` max extension around seed.
+- `-e, --energy <dG>` filter by deltaG threshold.
+- `--seed-energy <threshold>` seed-level energy filter.
+- `--no-max-prune` disable maximality pruning.
+- `--no-dedup-shadow` disable containment dedup (for C-compatible behavior).
+
+## Compatibility and Migration
+
+Legacy short-hands are still accepted but deprecated. Prefer the replacements
+below in new usage.
+
+Legacy C reference implementation:
+
+- Local copy in this repo: [RIsearch2 README](legacy_c/RIsearch2/README)
+- GitHub path: [legacy_c/RIsearch2](https://github.com/saiden89/risearch/tree/main/legacy_c/RIsearch2)
+
+| Legacy usage | Modern usage | Notes |
+| --- | --- | --- |
+| `-i`, `--index` | `-t`, `--target` | Legacy target flags are deprecated aliases. |
+| `-p`, `-p2`, `-p3`, `-p4` | `--format detailed/cigar/bindingsite/minimal` | `--format` takes precedence if both are present. |
+| `-m c[:ps[:pe]]` | `--mismatch-max C --mismatch-prefix PS --mismatch-suffix PE` | Do not combine legacy and modern mismatch forms. |
+| `-s l`, `-s m:n`, `-s m:n/l` | `--seed-length L`, `--seed-start M --seed-end N`, plus optional `--seed-length L` | Do not combine legacy `-s` with `--seed-*` overrides. |
+| `-U`, `--no-guseed` | Default strict mode, or explicit `--seed-pairing strict` | Use `--seed-pairing allow_wobble` to enable wobble. |
+
+## Performance and Parallelism
+
+- Use `--jobs` to control CPU utilization.
+- For large runs, prefer file output (`-o file`) and compression (`--compress`)
+  to reduce I/O overhead and disk footprint.
+
+### OpenMP Profile for Faster Index Builds
+
+To enable OpenMP-backed suffix-array construction during `index`, build with
+the `openmp` feature:
 
 ```bash
-cargo run --release -- search \
-  -q queries.fa \
-  -t chr22.idx \
-  -o results.out
+cargo build --release --features openmp
 ```
 
-Quick sanity check (no data needed):
+Or install with OpenMP enabled:
 
 ```bash
-cargo run --release -- --help
+cargo install --path . --features openmp
 ```
 
-Common tuning flags:
+Run indexing with explicit thread settings:
 
 ```bash
-./target/release/risearch search \
-  -q queries.fa \
-  -t chr22.idx \
-  -o results.out \
-  -s 6            \
-  -l 20           \
-  -e -20          \
-  -m 1:3          \
-  -f=cigar        \
-  -j 8
+OMP_NUM_THREADS=16 risearch -j 16 index target.fa target.idx
 ```
 
-## CLI overview
+Caveats:
 
-Global options:
+- OpenMP currently changes the `index` suffix-array build path (libsais).
+  `search` is still multithreaded, but through Rayon (`--jobs`) rather than
+  OpenMP.
+- `--jobs` controls Rayon threads; OpenMP thread count is controlled separately
+  by the OpenMP runtime (for example `OMP_NUM_THREADS`).
+- On macOS, OpenMP builds can fail with `omp.h file not found` unless `libomp`
+  is installed and visible to the compiler/linker.
+- If OpenMP toolchain support is unavailable, build without `--features openmp`
+  and use the default single-threaded libsais path.
 
-- `-j, --jobs <N>`: number of worker threads.
-- `-v/-vv/-vvv`: increase logging verbosity.
+## Troubleshooting and FAQ
 
-Subcommands:
+### OpenMP build fails with `omp.h file not found`
 
-- `index <INPUT> <OUTPUT>`: build an index from a FASTA/FASTQ file.
-- `search -q <QUERY> -t <TARGET> -o <OUTPUT>`: run the search pipeline.
+OpenMP headers/runtime are missing from your toolchain. Install OpenMP for your
+platform (for example, `libomp` on macOS) and retry with
+`cargo build --release --features openmp`.
 
-Search options (selected):
+### Why are thread counts different between `index` and `search`?
 
-- `-s, --seed <len|start:end>`: seed length or length range (default 6).
-- `-m, --mismatch <c:p>`: allow up to `c` mismatches with `p` consecutive
-  matches at seed ends.
-- `-l, --extension <L>`: max extension length on each side (default 20).
-- `-e, --energy <dG>`: energy threshold in kcal/mol (default -20.0).
-- `-d, --penalty <P>`: per-nucleotide extension penalty.
-- `-f, --format <detailed|cigar|bindingsite>`: output format.
+`search` uses Rayon threads via `--jobs`. With `--features openmp`, part of
+`index` also uses OpenMP-controlled threads (for example via
+`OMP_NUM_THREADS`). Tune both if needed.
 
-Run `risearch --help` or `risearch search --help` for the full list.
+### I still use `-s`, `-m`, or `-p` and see warnings
 
-## Input normalization
+Those flags are accepted for migration but deprecated. Use
+`--seed-start/--seed-end/--seed-length`, `--mismatch-*`, and `--format`.
 
-Sequences are normalized during indexing/search:
+### Search returned no hits
 
-- Lowercased and kept as RNA bases.
-- `T`/`U` are normalized to `T`.
-- Ambiguous bases map to `N`.
-- Gaps (`-`/`.`) are removed.
-- Duplicate FASTA IDs are rejected.
+Start by relaxing constraints: increase `--energy` threshold (less negative),
+reduce `--seed-length`, increase extension length (`-l`), and test
+`--seed-pairing allow_wobble` if biologically appropriate.
 
-## Tests and benches
+## Developer Validation
 
-Run the test suite:
+Run all tests:
 
 ```bash
 cargo test
 ```
 
-Benchmarks and profiling utilities live in `bench.sh`, `bench_band.sh`, and
-`docs/`. These are evolving; treat them as developer tooling.
+Run selected integration suites:
 
-## Docs
+```bash
+cargo test --test cli_output_compress
+cargo test --test cli_multifile_and_seed_validation
+cargo test --test parity_mismatch_regression
+```
 
-Additional technical notes and design docs are in `docs/`:
+## Further Documentation
 
-- `docs/implementation_plan.md`
-- `docs/strategies.md`
-- `docs/parity_divergences.md`
-- `docs/SIMD_ARCHITECTURE.md`
+- [Implementation strategies](docs/strategies.md)
+- [Legacy C implementation reference](docs/c_implementation.md)
+- [SIMD design discussion](docs/SIMD_ARCHITECTURE.md)
+- [Exhaustive testing strategy](docs/testing_strategy_exhaustive.md)
+- [DP profile precomputation notes](docs/dp_profile_precomputation.md)
 
 ## License
 
-See `LICENSE`.
+See [LICENSE](LICENSE).
