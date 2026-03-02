@@ -64,7 +64,7 @@ fn cmd_search(
         search::run_search_multifile(&queries, &targets, &opts, output_path)?
     } else {
         let mut writer =
-            risearch::output::writer::OutputWriter::new(&opts.output, output_path, &queries)?;
+            risearch::output::writer::OutputWriter::new(&opts.output, output_path)?;
 
         let hits = search::run_search(&queries, &targets, &opts, |chunk| {
             writer.write_chunk(&chunk)

@@ -242,11 +242,6 @@ where
 
     let query_name = queries.get_name(query_idx);
     let query_seq = query.sequence().as_slice();
-    let chunk_qi = if opts.output.multifile {
-        Some(query_idx)
-    } else {
-        None
-    };
     let mut local_hits = 0usize;
     let mut last_target_idx = None;
     let mut cached_target = None;
@@ -278,7 +273,6 @@ where
                 query_seq,
                 t_fwd,
                 t_rc,
-                chunk_qi,
             ) {
                 on_chunk(chunk)?;
             }
@@ -288,7 +282,7 @@ where
     )?;
 
     if flush_after_query {
-        if let Some(chunk) = format.flush(chunk_qi) {
+        if let Some(chunk) = format.flush() {
             on_chunk(chunk)?;
         }
     }
@@ -311,7 +305,6 @@ where
     let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
     let mut format = HitFormatter::new(opts.output.format);
     let mut total_hits = 0usize;
-    let multifile = opts.output.multifile;
 
     for (query_idx, query) in queries.entries().iter().enumerate() {
         total_hits += process_query::<M, _, _>(
@@ -323,13 +316,13 @@ where
             opts,
             &mut state,
             &mut format,
-            multifile,
+            false,
             || false,
             on_chunk,
         )?;
     }
 
-    if let Some(chunk) = format.flush(None) {
+    if let Some(chunk) = format.flush() {
         on_chunk(chunk)?;
     }
     Ok(total_hits)

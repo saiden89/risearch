@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ use crate::seq::SeqView;
 use crate::types::Base;
 
 use super::format::{append_hit_names_vec, OutputBuffers};
-use super::{open_output, output_extension};
+use super::open_output;
 
 const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
 
@@ -19,8 +19,6 @@ const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
 pub struct OutputChunk {
     pub data: Vec<u8>,
     pub hits: usize,
-    /// When multi-file output is active, identifies which query produced this chunk.
-    pub query_idx: Option<u32>,
 }
 
 /// Formats `SearchHit`s into `OutputChunk`s, buffering to avoid excessive channel traffic.
@@ -51,7 +49,6 @@ impl HitFormatter {
         query_seq: &[Base],
         t_fwd: &[Base],
         t_rc: &[Base],
-        query_idx: Option<u32>,
     ) -> Option<OutputChunk> {
         append_hit_names_vec(
             &mut self.fmt_bufs,
@@ -67,105 +64,52 @@ impl HitFormatter {
         self.chunk_hits += 1;
 
         if self.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
-            Some(self.take_chunk(query_idx))
+            Some(self.take_chunk())
         } else {
             None
         }
     }
 
-    pub fn take_chunk(&mut self, query_idx: Option<u32>) -> OutputChunk {
+    pub fn take_chunk(&mut self) -> OutputChunk {
         let data = std::mem::replace(
             &mut self.chunk_data,
             Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
         );
         let hits = std::mem::replace(&mut self.chunk_hits, 0);
-        OutputChunk {
-            data,
-            hits,
-            query_idx,
-        }
+        OutputChunk { data, hits }
     }
 
-    pub fn flush(&mut self, query_idx: Option<u32>) -> Option<OutputChunk> {
+    pub fn flush(&mut self) -> Option<OutputChunk> {
         if self.chunk_hits > 0 {
-            Some(self.take_chunk(query_idx))
+            Some(self.take_chunk())
         } else {
             None
         }
     }
 }
 
-/// Orchestrates actual output writing, handling single-file and multi-file logic.
+/// Orchestrates actual output writing for single-file output.
+///
+/// Multifile output is handled directly by `run_search_multifile_by_query`
+/// where each rayon worker owns its own writer.
 pub struct OutputWriter {
-    config: OutputConfig,
-    single_writer: Option<Box<dyn Write>>,
-    multi_writers: HashMap<u32, Box<dyn Write>>,
-    multi_paths: Vec<PathBuf>,
+    writer: Box<dyn Write>,
 }
 
 impl OutputWriter {
-    pub fn new(config: &OutputConfig, output_path: &Path, queries: &QueryRegistry) -> Result<Self> {
-        let config = config.clone();
-        if config.multifile {
-            std::fs::create_dir_all(output_path).with_context(|| {
-                format!(
-                    "Failed to create output directory {:?} for --multifile",
-                    output_path
-                )
-            })?;
-            let ext = output_extension(&config);
-            let multi_paths = build_multifile_paths(queries, output_path, ext);
-            Ok(Self {
-                config,
-                single_writer: None,
-                multi_writers: HashMap::new(),
-                multi_paths,
-            })
-        } else {
-            let single_writer = open_output(Some(output_path), &config)?;
-            Ok(Self {
-                config,
-                single_writer: Some(single_writer),
-                multi_writers: HashMap::new(),
-                multi_paths: Vec::new(),
-            })
-        }
+    pub fn new(config: &OutputConfig, output_path: &Path) -> Result<Self> {
+        let writer = open_output(Some(output_path), config)?;
+        Ok(Self { writer })
     }
 
     pub fn write_chunk(&mut self, chunk: &OutputChunk) -> Result<()> {
-        if let Some(w) = self.single_writer.as_mut() {
-            w.write_all(&chunk.data)
-                .context("Failed to write output chunk")?;
-        } else {
-            let qi = chunk
-                .query_idx
-                .expect("BUG: multifile mode active but OutputChunk has no query_idx");
-            let file_path = self.multi_paths.get(qi as usize).ok_or_else(|| {
-                anyhow::anyhow!("Invalid query index {} for multi-file output", qi)
-            })?;
-            let config = &self.config;
-            let writer = match self.multi_writers.get_mut(&qi) {
-                Some(w) => w,
-                None => {
-                    let w = open_output(Some(file_path), config)?;
-                    self.multi_writers.entry(qi).or_insert(w)
-                }
-            };
-            writer
-                .write_all(&chunk.data)
-                .context("Failed to write output chunk to per-query file")?;
-        }
-        Ok(())
+        self.writer
+            .write_all(&chunk.data)
+            .context("Failed to write output chunk")
     }
 
     pub fn flush_all(&mut self) -> Result<()> {
-        if let Some(w) = self.single_writer.as_mut() {
-            w.flush().context("Failed to flush output")?;
-        }
-        for w in self.multi_writers.values_mut() {
-            w.flush().context("Failed to flush per-query output")?;
-        }
-        Ok(())
+        self.writer.flush().context("Failed to flush output")
     }
 }
 
