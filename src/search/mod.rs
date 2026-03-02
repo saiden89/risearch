@@ -6,11 +6,13 @@
 //! 3) Optional extension of each seed
 //! 4) Materialize and emit final hits
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::Write;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 use crate::alignment::{Alignment, PairClass};
@@ -125,6 +127,56 @@ where
 
         Ok(emitted)
     })?;
+
+    info!("Search complete: {} hits", total);
+    Ok(total)
+}
+
+/// Run search in `--multifile` mode with worker-owned output writers.
+///
+/// Each worker processes one query and writes/compresses that query's output
+/// directly, avoiding the single consumer thread used by `run_search`.
+pub fn run_search_multifile(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchArgs,
+    output_dir: &Path,
+) -> Result<usize> {
+    if !opts.output.multifile {
+        return Err(anyhow::anyhow!(
+            "run_search_multifile requires --multifile mode"
+        ));
+    }
+    if store.is_empty() || queries.is_empty() {
+        return Ok(0);
+    }
+
+    std::fs::create_dir_all(output_dir).with_context(|| {
+        format!(
+            "Failed to create output directory {:?} for --multifile",
+            output_dir
+        )
+    })?;
+
+    let global = store.global_view();
+
+    info!(
+        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        store.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.filter.delta_g
+    );
+
+    let total = match opts.score.matrix {
+        Matrix::T04 => {
+            run_search_multifile_by_query::<T04>(queries, store, &global, opts, output_dir)?
+        }
+        Matrix::T99 => {
+            run_search_multifile_by_query::<T99>(queries, store, &global, opts, output_dir)?
+        }
+    };
 
     info!("Search complete: {} hits", total);
     Ok(total)
@@ -281,6 +333,74 @@ where
         on_chunk(chunk)?;
     }
     Ok(total_hits)
+}
+
+/// Parallel query-major execution where each worker owns output for one query.
+fn run_search_multifile_by_query<M: DsmModel>(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    global: &GlobalView<'_>,
+    opts: &SearchArgs,
+    output_dir: &Path,
+) -> Result<usize> {
+    let total_hits = AtomicUsize::new(0);
+    let ext = crate::output::output_extension(&opts.output);
+    let output_paths = crate::output::writer::build_multifile_paths(queries, output_dir, ext);
+
+    (0..queries.len()).into_par_iter().try_for_each_init(
+        || {
+            (
+                SearchState::<M>::new(&opts.score, &opts.extend),
+                HitFormatter::new(opts.output.format),
+            )
+        },
+        |(state, format), query_idx| -> Result<()> {
+            let query_idx = query_idx as u32;
+            let query = &queries.entries()[query_idx as usize];
+            let file_path = &output_paths[query_idx as usize];
+            let mut writer: Option<Box<dyn Write>> = None;
+
+            let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
+                if writer.is_none() {
+                    writer = Some(
+                        crate::output::open_output(Some(file_path), &opts.output).with_context(
+                            || format!("Failed to open output file {:?}", file_path),
+                        )?,
+                    );
+                }
+                writer
+                    .as_mut()
+                    .expect("writer initialized")
+                    .write_all(&chunk.data)
+                    .with_context(|| format!("Failed to write output file {:?}", file_path))
+            };
+
+            let emitted = process_query::<M, _, _>(
+                query_idx,
+                query,
+                queries,
+                store,
+                global,
+                opts,
+                state,
+                format,
+                true,
+                || false,
+                &mut flush_to_writer,
+            )?;
+
+            if let Some(writer) = writer.as_mut() {
+                writer
+                    .flush()
+                    .with_context(|| format!("Failed to flush output file {:?}", file_path))?;
+            }
+
+            total_hits.fetch_add(emitted, Ordering::Relaxed);
+            Ok(())
+        },
+    )?;
+
+    Ok(total_hits.load(Ordering::Relaxed))
 }
 
 /// Parallel query-major producer: each worker processes one query against the global SA.

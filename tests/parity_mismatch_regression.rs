@@ -3,6 +3,8 @@
 mod common;
 
 use common::{workspace_root, SingleSeqRunner};
+use flate2::read::GzDecoder;
+use std::io::Read;
 use std::io::Write;
 use std::process::Command;
 use tempfile::tempdir;
@@ -75,6 +77,7 @@ fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn st
     assert!(rust_out.status.success(), "Rust search failed");
 
     let c_out = Command::new(&c_bin)
+        .current_dir(tmp.path())
         .arg("-q")
         .arg(&query_path)
         .arg("-i")
@@ -91,18 +94,38 @@ fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn st
         .arg("-t")
         .arg("1")
         .arg("-p4")
-        .arg("--no-compress")
         .output()?;
-    assert!(c_out.status.success(), "C search failed");
+    assert!(
+        c_out.status.success(),
+        "C search failed: status={:?}\nstderr={}\nstdout={}",
+        c_out.status,
+        String::from_utf8_lossy(&c_out.stderr),
+        String::from_utf8_lossy(&c_out.stdout)
+    );
 
     let rust_count = String::from_utf8_lossy(&rust_out.stdout)
         .lines()
         .filter(|l| !l.trim().is_empty())
         .count();
-    let c_count = String::from_utf8_lossy(&c_out.stdout)
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count();
+    let mut c_files: Vec<_> = std::fs::read_dir(tmp.path())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("risearch_") && n.ends_with(".out.gz"))
+        })
+        .collect();
+    c_files.sort();
+
+    let mut c_count = 0usize;
+    for path in c_files {
+        let bytes = std::fs::read(path)?;
+        let mut decoder = GzDecoder::new(&bytes[..]);
+        let mut s = String::new();
+        decoder.read_to_string(&mut s)?;
+        c_count += s.lines().filter(|l| !l.trim().is_empty()).count();
+    }
 
     assert_eq!(
         rust_count, c_count,

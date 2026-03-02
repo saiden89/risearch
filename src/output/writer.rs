@@ -140,8 +140,9 @@ impl OutputWriter {
             let qi = chunk
                 .query_idx
                 .expect("BUG: multifile mode active but OutputChunk has no query_idx");
-            let file_path = self.multi_paths.get(qi as usize)
-                .ok_or_else(|| anyhow::anyhow!("Invalid query index {} for multi-file output", qi))?;
+            let file_path = self.multi_paths.get(qi as usize).ok_or_else(|| {
+                anyhow::anyhow!("Invalid query index {} for multi-file output", qi)
+            })?;
             let config = &self.config;
             let writer = match self.multi_writers.get_mut(&qi) {
                 Some(w) => w,
@@ -170,7 +171,8 @@ impl OutputWriter {
 
 /// Replace characters that are unsafe in filenames and handle reserved names.
 fn sanitize_filename(name: &str) -> String {
-    let mut s: String = name.chars()
+    let mut s: String = name
+        .chars()
         .map(|c| match c {
             '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             _ => c,
@@ -184,8 +186,9 @@ fn sanitize_filename(name: &str) -> String {
     // Handle Windows reserved names (case-insensitive)
     let upper = s.to_uppercase();
     match upper.as_str() {
-        "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-        | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9" => {
+        "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6"
+        | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6"
+        | "LPT7" | "LPT8" | "LPT9" => {
             s.push('_');
         }
         _ => {}
@@ -208,7 +211,11 @@ fn unique_filename_stem(stem: &str, used: &mut HashSet<String>) -> String {
     }
 }
 
-fn build_multifile_paths(queries: &QueryRegistry, output_dir: &Path, ext: &str) -> Vec<PathBuf> {
+pub(crate) fn build_multifile_paths(
+    queries: &QueryRegistry,
+    output_dir: &Path,
+    ext: &str,
+) -> Vec<PathBuf> {
     let mut used_stems: HashSet<String> = HashSet::with_capacity(queries.len());
     let mut out: Vec<PathBuf> = Vec::with_capacity(queries.len());
 
