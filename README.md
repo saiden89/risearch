@@ -60,6 +60,8 @@ deprecated and scheduled for removal.
 
 ## Installation
 
+Need Cargo? Install Rust (includes `cargo`) via https://rustup.rs/
+
 Build:
 
 ```bash
