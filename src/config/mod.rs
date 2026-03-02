@@ -308,10 +308,6 @@ pub struct FilterConfig {
 
     /// Disable maximality check (allows redundant seeds)
     pub no_max_prune: bool,
-
-    /// Disable shadow dedup filtering (keep hits contained by better hits)
-    /// Default: true (filters contained hits). Set --no-dedup-shadow for C-compatible behavior.
-    pub dedup_shadow: bool,
 }
 
 /// Options that apply to the `search` subcommand

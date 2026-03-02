@@ -6,8 +6,13 @@
 ![MSRV](https://img.shields.io/badge/MSRV-not%20pinned-lightgrey)
 
 RIsearch predicts RNA-RNA interactions using a suffix-array seed search and
-energy-based extension model. This repository contains the Rust implementation
-and compatibility tooling against the legacy C codebase.
+energy-based extension model.
+
+This repository is the Rust port of the legacy RIsearch2 C implementation.
+The vendored C code lives in
+[`legacy_c/RIsearch2`](legacy_c/RIsearch2/README) (also on GitHub:
+<https://github.com/saiden89/risearch/tree/main/legacy_c/RIsearch2>), and this
+Rust CLI/library tracks compatibility while modernizing performance and tooling.
 
 ## Quick Nav
 
@@ -181,7 +186,6 @@ Tuning and filtering:
 - `-e, --energy <dG>` filter by deltaG threshold.
 - `--seed-energy <threshold>` seed-level energy filter.
 - `--no-max-prune` disable maximality pruning.
-- `--no-dedup-shadow` disable containment dedup (for C-compatible behavior).
 
 ## Compatibility and Migration
 
@@ -291,4 +295,9 @@ cargo test --test parity_mismatch_regression
 
 ## License
 
-See [LICENSE](LICENSE).
+- Rust port in this repository: GNU GPL v3 (see [LICENSE](LICENSE)).
+- Vendored RIsearch2 C implementation: GPL v3 or later (see
+  [legacy_c/RIsearch2/README](legacy_c/RIsearch2/README)).
+- Vendored `libdivsufsort` under `legacy_c/RIsearch2/libdivsufsort-2.0.1` has
+  its own license text (see
+  [legacy_c/RIsearch2/libdivsufsort-2.0.1/COPYING](legacy_c/RIsearch2/libdivsufsort-2.0.1/COPYING)).

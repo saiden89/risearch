@@ -338,7 +338,6 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
 }
 
 /// Parse CLI-style args into SearchArgs using clap.
-/// Always includes --no-dedup-shadow for C parity (C doesn't filter contained hits).
 fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
     use clap::Parser;
 
@@ -388,9 +387,6 @@ fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
         cli_args.push("--seed-pairing".into());
         cli_args.push("allow_wobble".into());
     }
-    // C doesn't do shadow dedup, so disable it for parity tests
-    cli_args.push("--no-dedup-shadow".into());
-
     #[derive(Parser)]
     struct FakeCmd {
         #[command(flatten)]
