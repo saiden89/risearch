@@ -45,7 +45,8 @@ impl DsmModel {
                 for t1 in 0..6 {
                     for t2 in 0..6 {
                         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-                        flat[idx] = source_table[q1][q2][t1][t2] as i32 - penalty * DSM_EXTEND_FLAT[idx];
+                        flat[idx] =
+                            source_table[q1][q2][t1][t2] as i32 - penalty * DSM_EXTEND_FLAT[idx];
                     }
                 }
             }
@@ -56,13 +57,11 @@ impl DsmModel {
     /// Primary semantic lookup for dinucleotide stacking energy.
     #[inline(always)]
     pub fn lookup(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        self.flat[q1 * 216 + q2 * 36 + t1 * 6 + t2]
-    }
-
-    /// Raw DSM lookup by precomputed flat index (0..1296).
-    #[inline(always)]
-    pub fn lookup_flat(&self, idx: usize) -> i32 {
-        self.flat[idx]
+        debug_assert!(q1 < 6 && q2 < 6 && t1 < 6 && t2 < 6);
+        let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+        // SAFETY: Input indices are guaranteed 0..6 by Base::idx()
+        // and the table size is 1296 (6^4).
+        unsafe { *self.flat.get_unchecked(idx) }
     }
 
     /// Terminal penalty for 5' extension (left DP). DSM[Gap][q][Gap][t]
@@ -78,7 +77,7 @@ impl DsmModel {
     }
 
     /// Full seed energy calculation with antiparallel indexing.
-    pub fn seed_energy(
+    pub fn energy_from_seq(
         &self,
         query: &[Base],
         target: &[Base],

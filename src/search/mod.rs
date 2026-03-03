@@ -454,14 +454,20 @@ fn compute_seed_extension(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e = model.seed_energy(query_bases, target_trans, q_pos, t_pos, len);
+    let seed_e = model.energy_form_seq(query_bases, target_trans, q_pos, t_pos, len);
 
     let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-        let term_5p = model.terminal_5p(query_bases[q_pos].idx(), target_trans[t_match_end].complement().idx());
-        let term_3p = model.terminal_3p(query_bases[q_pos + len - 1].idx(), target_trans[t_pos].complement().idx());
+        let term_5p = model.terminal_5p(
+            query_bases[q_pos].idx(),
+            target_trans[t_match_end].complement().idx(),
+        );
+        let term_3p = model.terminal_3p(
+            query_bases[q_pos + len - 1].idx(),
+            target_trans[t_pos].complement().idx(),
+        );
         let nt_count = (2 * len) as i32;
         return Some(SeedExtension {
             score: crate::dsm::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
