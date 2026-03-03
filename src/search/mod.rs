@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{ExtendConfig, FilterConfig, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::{DpConfig, DpExtender, DpView};
-use crate::dsm::{pair_mat, DsmModel};
+use crate::dsm::DsmModel;
 use crate::index::store::{GlobalView, TargetStore};
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
@@ -103,7 +103,7 @@ impl<'a> SearchContext<'a> {
 
         let global = store.global_view();
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = DsmModel::new(opts.score.matrix, dp_cfg.penalty_raw());
+        let model = DsmModel::new(opts.score.matrix, dp_cfg.penalty_raw(), opts.seed.allows_wobble());
 
         info!(
             "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
@@ -303,7 +303,6 @@ where
     let query_bases = query.sequence().as_slice();
     let seed_interval = query.seed_interval();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
-    let pair_matrix = pair_mat(ctx.opts.seed.allows_wobble());
     let filter_cfg = &ctx.opts.filter;
 
     let mut callback_err: Option<anyhow::Error> = None;
@@ -334,7 +333,6 @@ where
             query_bases,
             seed_interval,
             include_alignment,
-            pair_matrix,
             filter_cfg,
             target_len,
             &seed,
@@ -364,7 +362,6 @@ fn build_hit_from_seed(
     query_bases: &[Base],
     seed_interval: Interval,
     include_alignment: bool,
-    pair_matrix: &'static [[u8; 6]; 6],
     filter_cfg: &FilterConfig,
     target_len: usize,
     seed: &SeedHit,
@@ -383,7 +380,6 @@ fn build_hit_from_seed(
         seed,
         seed_interval,
         filter_cfg,
-        pair_matrix,
         include_alignment,
     )?;
 
@@ -427,7 +423,6 @@ fn compute_seed_extension(
     seed: &SeedHit,
     seed_interval: Interval,
     filter_cfg: &FilterConfig,
-    pair_matrix: &'static [[u8; 6]; 6],
     with_traceback: bool,
 ) -> Option<SeedExtension> {
     let penalty = dp_cfg.penalty_raw();
@@ -437,17 +432,17 @@ fn compute_seed_extension(
 
     // Maximality check in scoring/raw coordinate space.
     if q_pos > seed_interval.start && t_pos + len < target_trans.len() {
-        let p_class =
-            pair_matrix[query_bases[q_pos - 1].idx()][target_trans[t_pos + len].complement().idx()];
-        if p_class != 0 && !filter_cfg.no_max_prune {
+        let q_base = query_bases[q_pos - 1];
+        let t_base = target_trans[t_pos + len].complement();
+        if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
             return None;
         }
     }
 
     if q_pos + len < seed_interval.end && t_pos > 0 {
-        let p_class =
-            pair_matrix[query_bases[q_pos + len].idx()][target_trans[t_pos - 1].complement().idx()];
-        if p_class != 0 && !filter_cfg.no_max_prune {
+        let q_base = query_bases[q_pos + len];
+        let t_base = target_trans[t_pos - 1].complement();
+        if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
             return None;
         }
     }

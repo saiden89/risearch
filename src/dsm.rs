@@ -24,16 +24,18 @@ pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * B
 /// Gap index used for DSM lookups (linked to Base::Gap).
 pub use crate::types::GAP;
 
-/// DSM model representing a specific energy matrix (e.g., T04, T99) with baked-in penalty.
+/// DSM model representing a specific energy matrix (e.g., T04, T99) with baked-in penalty and pairing rules.
 #[derive(Clone, Debug)]
 pub struct DsmModel {
     /// Penalty-adjusted flattened DSM table for this run.
     flat: [i32; DSM_FLAT_SIZE],
+    /// Binary pairing matrix for maximality checks and seed validation.
+    pair_mat: &'static [[u8; 6]; 6],
 }
 
 impl DsmModel {
-    /// Create a new model from a base matrix, baking in the extension penalty.
-    pub fn new(matrix: Matrix, penalty: i32) -> Self {
+    /// Create a new model from a base matrix, baking in the extension penalty and pairing rules.
+    pub fn new(matrix: Matrix, penalty: i32, allow_wobble: bool) -> Self {
         let source_table = match matrix {
             Matrix::T04 => &T04,
             Matrix::T99 => &T99,
@@ -51,7 +53,23 @@ impl DsmModel {
                 }
             }
         }
-        Self { flat }
+
+        let pair_mat = if allow_wobble {
+            &PAIR_MAT
+        } else {
+            &PAIR_MAT_NO_GU
+        };
+
+        Self { flat, pair_mat }
+    }
+
+    /// Check if two bases form a valid pair according to the model's rules.
+    #[inline(always)]
+    pub fn is_pair(&self, q: Base, t: Base) -> bool {
+        let (qi, ti) = (q.idx(), t.idx());
+        debug_assert!(qi < 6 && ti < 6);
+        // SAFETY: Base::idx() is guaranteed 0..6, matching the 6x6 pair_mat.
+        unsafe { *self.pair_mat.get_unchecked(qi).get_unchecked(ti) != 0 }
     }
 
     /// Primary semantic lookup for dinucleotide stacking energy.
@@ -1037,21 +1055,27 @@ const PAIR_MAT_NO_GU: [[u8; 6]; 6] = [
     [0, 0, 0, 0, 0, 0],
 ];
 
-pub(crate) fn pair_mat(allow_wobble: bool) -> &'static [[u8; 6]; 6] {
-    if allow_wobble {
-        &PAIR_MAT
-    } else {
-        &PAIR_MAT_NO_GU
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_pairing() {
+        let strict = DsmModel::new(Matrix::T04, 0, false);
+        let wobble = DsmModel::new(Matrix::T04, 0, true);
+
+        // G-C should always pair
+        assert!(strict.is_pair(Base::G, Base::C));
+        assert!(wobble.is_pair(Base::G, Base::C));
+
+        // G-U should only pair in wobble mode
+        assert!(!strict.is_pair(Base::G, Base::U));
+        assert!(wobble.is_pair(Base::G, Base::U));
+    }
+
+    #[test]
     fn test_dsm_get() {
-        let model = DsmModel::new(Matrix::T04, 0);
+        let model = DsmModel::new(Matrix::T04, 0, true);
         // Just verify lookup works
         let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::U.idx(), Base::A.idx());
         // Gap penalty should be handled by DSM table
@@ -1071,7 +1095,7 @@ mod tests {
     /// CG/GC is the strongest stack at -3.30 kcal/mol = 330 in centidecimals.
     #[test]
     fn test_dsm_known_values() {
-        let model = DsmModel::new(Matrix::T04, 0);
+        let model = DsmModel::new(Matrix::T04, 0, true);
         // Print index mapping for clarity
         println!("Base indices: Gap=0, A=1, G=2, C=3, U=4, N=5");
         println!();
