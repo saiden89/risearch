@@ -330,6 +330,7 @@ fn hit_target_flanks<'a>(
     (flank_5, false, flank_3, true)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_line(
     line_buf: &mut Vec<u8>,
     itoa_buf: &mut itoa::Buffer,
@@ -437,6 +438,7 @@ pub fn write_hit<W: Write + ?Sized>(
 }
 
 /// Write a hit with explicit query/target names.
+#[allow(clippy::too_many_arguments)]
 pub fn write_hit_names<W: Write + ?Sized>(
     bufs: &mut OutputBuffers,
     hit: &SearchHit,

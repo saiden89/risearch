@@ -28,7 +28,7 @@ fn has_any_long_option(args: &[String], longs: &[&str]) -> bool {
 }
 
 fn has_any_exact_flag(args: &[String], flags: &[&str]) -> bool {
-    iter_user_args(args).any(|arg| flags.iter().any(|flag| arg == *flag))
+    iter_user_args(args).any(|arg| flags.contains(&arg))
 }
 
 fn extract_value_option(args: &[String], short: &str, long: &str) -> Option<String> {

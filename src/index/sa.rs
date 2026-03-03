@@ -51,7 +51,10 @@ impl TryFrom<&[Base]> for SuffixArray {
         // Convert Base → sort-byte in a single allocation
         let mut sort_bytes: Vec<u8> = Vec::with_capacity(bases.len());
         // SAFETY: we immediately write all `len` bytes via ptr::write
-        unsafe { sort_bytes.set_len(bases.len()) };
+        #[allow(clippy::uninit_vec)]
+        unsafe {
+            sort_bytes.set_len(bases.len())
+        };
         // Parallelize the byte conversion for large sequences
         sort_bytes
             .par_chunks_mut(1 << 20) // 1 MiB chunks

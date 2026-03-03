@@ -239,7 +239,6 @@ fn bench_many_extensions(c: &mut Criterion) {
                     );
                     let left_result = extender.extend(black_box(&left_view));
                     total_score = total_score.wrapping_add(left_result.score);
-                    drop(left_result);
 
                     // Right extension
                     let right_view = DpView::<T04>::right(

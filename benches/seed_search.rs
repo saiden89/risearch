@@ -73,6 +73,7 @@ fn build_padded_target(t_len: usize, rng_seed: u64) -> (Vec<u64>, Vec<Base>, usi
     (padded_sa, combined_bases, t_sa_len)
 }
 
+#[allow(clippy::type_complexity)]
 fn build_search_pair(
     q_len: usize,
     t_len: usize,

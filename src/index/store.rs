@@ -500,13 +500,13 @@ mod tests {
         assert!(global.sa_real_len > 0);
 
         // Verify target_seqs for each target
-        for i in 0..store.len() {
+        for (i, (expected_name, expected_seq_len)) in expected.iter().enumerate().take(store.len())
+        {
             let (name, fwd, rc, seq_len) = store.target_seqs(i).unwrap();
-            let (expected_name, expected_seq_len) = expected[i];
-            assert_eq!(name, expected_name);
-            assert_eq!(seq_len, expected_seq_len);
-            assert_eq!(fwd.len(), expected_seq_len);
-            assert_eq!(rc.len(), expected_seq_len);
+            assert_eq!(name, *expected_name);
+            assert_eq!(seq_len, *expected_seq_len);
+            assert_eq!(fwd.len(), *expected_seq_len);
+            assert_eq!(rc.len(), *expected_seq_len);
         }
     }
 

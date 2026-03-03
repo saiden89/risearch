@@ -132,8 +132,7 @@ impl<'a> SearchContext<'a> {
     fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
         let target_len = self.global.seq_lens[target_idx] as usize;
         let target_offset = self.global.offsets[target_idx] as usize;
-        let t_fwd =
-            &self.global.combined_seq[target_offset..target_offset + target_len];
+        let t_fwd = &self.global.combined_seq[target_offset..target_offset + target_len];
         let t_rc = &self.global.combined_seq
             [target_offset + target_len + 1..target_offset + 2 * target_len + 1];
         (t_fwd, t_rc, target_len)
@@ -191,8 +190,7 @@ fn run_single_file<M: DsmModel>(ctx: &SearchContext<'_>, output_path: &Path) -> 
 fn run_multifile<M: DsmModel>(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
     let total = AtomicUsize::new(0);
     let ext = crate::output::output_extension(&ctx.opts.output);
-    let output_paths =
-        crate::output::writer::build_multifile_paths(ctx.queries, output_dir, ext);
+    let output_paths = crate::output::writer::build_multifile_paths(ctx.queries, output_dir, ext);
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
@@ -208,9 +206,10 @@ fn run_multifile<M: DsmModel>(ctx: &SearchContext<'_>, output_dir: &Path) -> Res
             let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
                 if writer.is_none() {
                     writer = Some(
-                        crate::output::open_output(Some(file_path), &ctx.opts.output).with_context(
-                            || format!("Failed to open output file {:?}", file_path),
-                        )?,
+                        crate::output::open_output(Some(file_path), &ctx.opts.output)
+                            .with_context(|| {
+                                format!("Failed to open output file {:?}", file_path)
+                            })?,
                     );
                 }
                 writer
@@ -270,38 +269,26 @@ where
     let mut last_target_idx = None;
     let mut cached_target = None;
 
-    search_query::<M, _>(
-        ctx,
-        query_idx,
-        state,
-        &mut |hit: SearchHit| -> Result<()> {
-            if is_cancelled() {
-                return Ok(());
-            }
+    search_query::<M, _>(ctx, query_idx, state, &mut |hit: SearchHit| -> Result<()> {
+        if is_cancelled() {
+            return Ok(());
+        }
 
-            let target_idx = hit.target_idx as usize;
-            if last_target_idx != Some(target_idx) {
-                let (t_fwd, t_rc, _) = ctx.target_slices(target_idx);
-                let target_name = ctx.store.get_name(hit.target_idx);
-                cached_target = Some((target_name, t_fwd, t_rc));
-                last_target_idx = Some(target_idx);
-            }
-            let (target_name, t_fwd, t_rc) = cached_target.as_ref().unwrap();
+        let target_idx = hit.target_idx as usize;
+        if last_target_idx != Some(target_idx) {
+            let (t_fwd, t_rc, _) = ctx.target_slices(target_idx);
+            let target_name = ctx.store.get_name(hit.target_idx);
+            cached_target = Some((target_name, t_fwd, t_rc));
+            last_target_idx = Some(target_idx);
+        }
+        let (target_name, t_fwd, t_rc) = cached_target.as_ref().unwrap();
 
-            if let Some(chunk) = format.add_hit(
-                &hit,
-                query_name,
-                target_name,
-                query_seq,
-                t_fwd,
-                t_rc,
-            ) {
-                on_chunk(chunk)?;
-            }
-            local_hits += 1;
-            Ok(())
-        },
-    )?;
+        if let Some(chunk) = format.add_hit(&hit, query_name, target_name, query_seq, t_fwd, t_rc) {
+            on_chunk(chunk)?;
+        }
+        local_hits += 1;
+        Ok(())
+    })?;
 
     if flush_after_query {
         if let Some(chunk) = format.flush() {
@@ -380,6 +367,7 @@ where
 }
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
+#[allow(clippy::too_many_arguments)]
 fn build_hit_from_seed<M: DsmModel>(
     state: &mut SearchState<M>,
     query_idx: u32,
@@ -464,6 +452,7 @@ fn seed_energy_transformed<M: DsmModel>(
 }
 
 /// Compute optional left/right DP extension around a seed and return extension metadata.
+#[allow(clippy::too_many_arguments)]
 fn compute_seed_extension<M: DsmModel>(
     extender: &mut DpExtender<M>,
     dp_cfg: DpConfig,

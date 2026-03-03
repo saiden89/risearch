@@ -523,7 +523,7 @@ impl<M: DsmModel> DpExtender<M> {
         // =======================================================================
 
         if view.dir == ExtendDir::Left {
-            dp_main_loop_generic::<true, M>(
+            dp_main_loop_generic::<true>(
                 q_ptr,
                 t_ptr,
                 &mut self.grid,
@@ -534,7 +534,7 @@ impl<M: DsmModel> DpExtender<M> {
                 &mut best,
             );
         } else {
-            dp_main_loop_generic::<false, M>(
+            dp_main_loop_generic::<false>(
                 q_ptr,
                 t_ptr,
                 &mut self.grid,

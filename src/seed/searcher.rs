@@ -93,6 +93,7 @@ pub struct SeedSearcher<'a> {
 }
 
 impl<'a> SeedSearcher<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         q_sa: &'a [u64],
         q_seq: &'a [Base],
@@ -192,6 +193,7 @@ struct RecurseCtx<'a, F: FnMut(SeedMatch)> {
     on_match: &'a mut F,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut RecurseCtx<'_, F>,
     ql: usize,
@@ -386,6 +388,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn recurse_if_nonempty<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut RecurseCtx<'_, F>,
     ql: usize,

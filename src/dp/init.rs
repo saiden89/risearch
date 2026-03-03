@@ -41,6 +41,7 @@ fn stack_dir<const LEFT: bool>(
 /// Returns `true` when the main DP region (`i >= 3`, `j >= 3`) exists.
 /// Returns `false` when initialization is complete and no main-loop pass is needed.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn init_frontier<M: DsmModel>(
     view: &DpView<'_, M>,
     q_ptr: *const usize,
@@ -157,6 +158,7 @@ pub(super) fn init_frontier<M: DsmModel>(
 ///
 /// This computes the seed-adjacent band that bridges boundary initialization
 /// to the main DP region, while updating global best score candidates.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
     view: &DpView<'_, M>,
     q_ptr: *const usize,
@@ -240,6 +242,7 @@ pub(super) fn init_limited_rows<const LEFT: bool, M: DsmModel>(
 ///
 /// Symmetric companion of `init_limited_rows`, using rolling predecessor
 /// values to keep pointer traffic low and logic easy to audit.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn init_limited_cols<const LEFT: bool, M: DsmModel>(
     view: &DpView<'_, M>,
     q_ptr: *const usize,

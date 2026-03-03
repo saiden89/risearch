@@ -32,7 +32,7 @@ fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn st
     writeln!(tf, ">t\nCCTGGGGTTGCTGGAAA")?;
 
     let rust_bin = assert_cmd::cargo::cargo_bin!("risearch");
-    let index_status = Command::new(&rust_bin)
+    let index_status = Command::new(rust_bin)
         .arg("index")
         .arg(&target_path)
         .arg(&rust_index)
@@ -47,7 +47,7 @@ fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn st
         .status()?;
     assert!(c_index_status.success(), "C index build failed");
 
-    let rust_out = Command::new(&rust_bin)
+    let rust_out = Command::new(rust_bin)
         .arg("search")
         .arg("-q")
         .arg(&query_path)

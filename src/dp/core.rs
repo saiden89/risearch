@@ -1,6 +1,6 @@
 use std::cmp::max;
 
-use crate::dsm::{dsm_flat_idx, DsmModel, DSM_FLAT_SIZE};
+use crate::dsm::{dsm_flat_idx, DSM_FLAT_SIZE};
 
 use super::{add_e, max3, BestScore, DpCell, DpGrid, MIN_SCORE};
 
@@ -19,7 +19,8 @@ fn dsm_lookup(
 }
 
 #[cfg_attr(feature = "prof", inline(never))]
-pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dp_main_loop_generic<const LEFT: bool>(
     q_ptr: *const usize,
     t_ptr: *const usize,
     grid: &mut DpGrid,
@@ -30,7 +31,7 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
     best: &mut BestScore,
 ) {
     if t_len > LONG_KERNEL_T_LEN_THRESHOLD {
-        dp_main_loop_long::<LEFT, M>(
+        dp_main_loop_long::<LEFT>(
             q_ptr,
             t_ptr,
             grid,
@@ -41,7 +42,7 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
             best,
         );
     } else {
-        dp_main_loop_short::<LEFT, M>(
+        dp_main_loop_short::<LEFT>(
             q_ptr,
             t_ptr,
             grid,
@@ -55,7 +56,8 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool, M: DsmModel>(
 }
 
 #[inline(always)]
-fn dp_main_loop_short<const LEFT: bool, M: DsmModel>(
+#[allow(clippy::too_many_arguments)]
+fn dp_main_loop_short<const LEFT: bool>(
     q_ptr: *const usize,
     t_ptr: *const usize,
     grid: &mut DpGrid,
@@ -157,7 +159,8 @@ fn dp_main_loop_short<const LEFT: bool, M: DsmModel>(
 }
 
 #[inline(always)]
-fn dp_main_loop_long<const LEFT: bool, M: DsmModel>(
+#[allow(clippy::too_many_arguments)]
+fn dp_main_loop_long<const LEFT: bool>(
     q_ptr: *const usize,
     t_ptr: *const usize,
     grid: &mut DpGrid,
@@ -208,8 +211,8 @@ fn dp_main_loop_long<const LEFT: bool, M: DsmModel>(
             }
 
             let mut terminal_profile = [0i32; 6];
-            for t in 0..6 {
-                terminal_profile[t] = if LEFT {
+            for (t, item) in terminal_profile.iter_mut().enumerate() {
+                *item = if LEFT {
                     dsm_lookup(dsm_adjusted, GAP, qi, GAP, t)
                 } else {
                     dsm_lookup(dsm_adjusted, qi, GAP, t, GAP)
