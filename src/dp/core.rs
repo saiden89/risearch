@@ -1,32 +1,21 @@
 use std::cmp::max;
 
-use crate::dsm::{dsm_flat_idx, DSM_FLAT_SIZE};
+use crate::dsm::{DsmModel, GAP};
 
 use super::{add_e, max3, BestScore, DpCell, DpGrid, MIN_SCORE};
 
 /// Threshold where the row-profile-heavy kernel starts to amortize better.
 pub(super) const LONG_KERNEL_T_LEN_THRESHOLD: usize = 24;
 
-#[inline(always)]
-fn dsm_lookup(
-    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
-    q1: usize,
-    q2: usize,
-    t1: usize,
-    t2: usize,
-) -> i32 {
-    dsm_adjusted[dsm_flat_idx(q1, q2, t1, t2)]
-}
-
 #[cfg_attr(feature = "prof", inline(never))]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn dp_main_loop_generic<const LEFT: bool>(
+pub(crate) fn dp_main_loop_generic<const LEFT: bool>(
     q_ptr: *const usize,
     t_ptr: *const usize,
     grid: &mut DpGrid,
     q_len: usize,
     t_len: usize,
-    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
+    model: &DsmModel,
     gap_gap_profile: &[i32; 36],
     best: &mut BestScore,
 ) {
@@ -37,7 +26,7 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool>(
             grid,
             q_len,
             t_len,
-            dsm_adjusted,
+            model,
             gap_gap_profile,
             best,
         );
@@ -48,7 +37,7 @@ pub(super) fn dp_main_loop_generic<const LEFT: bool>(
             grid,
             q_len,
             t_len,
-            dsm_adjusted,
+            model,
             gap_gap_profile,
             best,
         );
@@ -63,12 +52,10 @@ fn dp_main_loop_short<const LEFT: bool>(
     grid: &mut DpGrid,
     q_len: usize,
     t_len: usize,
-    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
+    model: &DsmModel,
     gap_gap_profile: &[i32; 36],
     best: &mut BestScore,
 ) {
-    const GAP: usize = 0; // Base::Gap as usize
-
     // SAFETY invariants:
     // - q_ptr/t_ptr valid for indices [0, q_len) / [0, t_len)
     // - grid sized at least (q_len+1) x (t_len+1)
@@ -87,9 +74,9 @@ fn dp_main_loop_short<const LEFT: bool>(
             for t1 in 0..6 {
                 for t2 in 0..6 {
                     q_profile[t1 * 6 + t2] = if LEFT {
-                        dsm_lookup(dsm_adjusted, qi, qi_prev, t1, t2)
+                        model.lookup(qi, qi_prev, t1, t2)
                     } else {
-                        dsm_lookup(dsm_adjusted, qi_prev, qi, t1, t2)
+                        model.lookup(qi_prev, qi, t1, t2)
                     };
                 }
             }
@@ -117,17 +104,17 @@ fn dp_main_loop_short<const LEFT: bool>(
                     add_e(diag.bq, q_profile[tj])
                 };
                 let s_mt = if LEFT {
-                    add_e(diag.bt, dsm_lookup(dsm_adjusted, qi, GAP, tj, tj_prev))
+                    add_e(diag.bt, model.lookup(qi, GAP, tj, tj_prev))
                 } else {
-                    add_e(diag.bt, dsm_lookup(dsm_adjusted, GAP, qi, tj_prev, tj))
+                    add_e(diag.bt, model.lookup(GAP, qi, tj_prev, tj))
                 };
                 let val_m = max3(s_mm, s_mq, s_mt);
 
                 if val_m > MIN_SCORE {
                     let term = if LEFT {
-                        dsm_lookup(dsm_adjusted, GAP, qi, GAP, tj)
+                        model.terminal_5p(qi, tj)
                     } else {
-                        dsm_lookup(dsm_adjusted, qi, GAP, tj, GAP)
+                        model.terminal_3p(qi, tj)
                     };
                     best.update(val_m, term, i, j);
                 }
@@ -142,9 +129,9 @@ fn dp_main_loop_short<const LEFT: bool>(
 
                 let left = *ptr.add(left_idx);
                 let s_tm = if LEFT {
-                    add_e(left.m, dsm_lookup(dsm_adjusted, GAP, qi, tj, tj_prev))
+                    add_e(left.m, model.lookup(GAP, qi, tj, tj_prev))
                 } else {
-                    add_e(left.m, dsm_lookup(dsm_adjusted, qi, GAP, tj_prev, tj))
+                    add_e(left.m, model.lookup(qi, GAP, tj_prev, tj))
                 };
                 let s_tt = add_e(left.bt, gap_gap_profile[t_stack_idx]);
 
@@ -166,12 +153,10 @@ fn dp_main_loop_long<const LEFT: bool>(
     grid: &mut DpGrid,
     q_len: usize,
     t_len: usize,
-    dsm_adjusted: &[i32; DSM_FLAT_SIZE],
+    model: &DsmModel,
     gap_gap_profile: &[i32; 36],
     best: &mut BestScore,
 ) {
-    const GAP: usize = 0; // Base::Gap as usize
-
     // SAFETY invariants:
     // - q_ptr/t_ptr valid for indices [0, q_len) / [0, t_len)
     // - grid sized at least (q_len+1) x (t_len+1)
@@ -193,19 +178,19 @@ fn dp_main_loop_long<const LEFT: bool>(
                 for t2 in 0..6 {
                     let idx = t1 * 6 + t2;
                     q_profile[idx] = if LEFT {
-                        dsm_lookup(dsm_adjusted, qi, qi_prev, t1, t2)
+                        model.lookup(qi, qi_prev, t1, t2)
                     } else {
-                        dsm_lookup(dsm_adjusted, qi_prev, qi, t1, t2)
+                        model.lookup(qi_prev, qi, t1, t2)
                     };
                     bt_to_m_profile[idx] = if LEFT {
-                        dsm_lookup(dsm_adjusted, qi, GAP, t1, t2)
+                        model.lookup(qi, GAP, t1, t2)
                     } else {
-                        dsm_lookup(dsm_adjusted, GAP, qi, t1, t2)
+                        model.lookup(GAP, qi, t1, t2)
                     };
                     m_to_bt_profile[idx] = if LEFT {
-                        dsm_lookup(dsm_adjusted, GAP, qi, t1, t2)
+                        model.lookup(GAP, qi, t1, t2)
                     } else {
-                        dsm_lookup(dsm_adjusted, qi, GAP, t1, t2)
+                        model.lookup(qi, GAP, t1, t2)
                     };
                 }
             }
@@ -213,9 +198,9 @@ fn dp_main_loop_long<const LEFT: bool>(
             let mut terminal_profile = [0i32; 6];
             for (t, item) in terminal_profile.iter_mut().enumerate() {
                 *item = if LEFT {
-                    dsm_lookup(dsm_adjusted, GAP, qi, GAP, t)
+                    model.terminal_5p(qi, t)
                 } else {
-                    dsm_lookup(dsm_adjusted, qi, GAP, t, GAP)
+                    model.terminal_3p(qi, t)
                 };
             }
 

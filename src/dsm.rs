@@ -11,6 +11,7 @@
 //! Target: 3'─ t1 ─ t2 ─ 5'
 //! ```
 
+use crate::config::Matrix;
 use crate::dsm_extend::DSM_EXTEND_FLAT;
 use crate::types::{Base, BASE_COUNT};
 
@@ -20,182 +21,97 @@ pub(crate) type DsmTable = [[[[i16; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_
 /// Number of entries in a flattened DSM table (6^4 = 1296).
 pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * BASE_COUNT;
 
-/// Flat DSM index for dimensions `[q1][q2][t1][t2]` where each index is 0..6.
-#[inline(always)]
-pub(crate) const fn dsm_flat_idx(q1: usize, q2: usize, t1: usize, t2: usize) -> usize {
-    q1 * 216 + q2 * 36 + t1 * 6 + t2
+/// Gap index used for DSM lookups (linked to Base::Gap).
+pub use crate::types::GAP;
+
+/// DSM model representing a specific energy matrix (e.g., T04, T99) with baked-in penalty.
+#[derive(Clone, Debug)]
+pub struct DsmModel {
+    /// Penalty-adjusted flattened DSM table for this run.
+    flat: [i32; DSM_FLAT_SIZE],
 }
 
-/// DSM model API for zero-cost static dispatch in hot loops.
-pub trait DsmModel {
-    /// Flattened DSM table for this model.
-    const FLAT: [i32; DSM_FLAT_SIZE];
+impl DsmModel {
+    /// Create a new model from a base matrix, baking in the extension penalty.
+    pub fn new(matrix: Matrix, penalty: i32) -> Self {
+        let source_table = match matrix {
+            Matrix::T04 => &T04,
+            Matrix::T99 => &T99,
+        };
 
-    /// Raw DSM lookup for hot path DP (expects indices 0..6).
+        let mut flat = [0i32; DSM_FLAT_SIZE];
+        for q1 in 0..6 {
+            for q2 in 0..6 {
+                for t1 in 0..6 {
+                    for t2 in 0..6 {
+                        let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+                        flat[idx] = source_table[q1][q2][t1][t2] as i32 - penalty * DSM_EXTEND_FLAT[idx];
+                    }
+                }
+            }
+        }
+        Self { flat }
+    }
+
+    /// Primary semantic lookup for dinucleotide stacking energy.
     #[inline(always)]
-    fn lookup_raw(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        Self::FLAT[dsm_flat_idx(q1, q2, t1, t2)]
+    pub fn lookup(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+        self.flat[q1 * 216 + q2 * 36 + t1 * 6 + t2]
     }
 
     /// Raw DSM lookup by precomputed flat index (0..1296).
     #[inline(always)]
-    fn lookup_flat_idx(idx: usize) -> i32 {
-        Self::FLAT[idx]
-    }
-
-    /// Stacking energy for dinucleotide pair (DSM units).
-    #[inline(always)]
-    fn stack_idx(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        Self::lookup_raw(q1, q2, t1, t2)
+    pub fn lookup_flat(&self, idx: usize) -> i32 {
+        self.flat[idx]
     }
 
     /// Terminal penalty for 5' extension (left DP). DSM[Gap][q][Gap][t]
     #[inline(always)]
-    fn terminal_5p(q: Base, t: Base) -> i32 {
-        Self::stack_idx(Base::Gap.idx(), q.idx(), Base::Gap.idx(), t.idx())
+    pub fn terminal_5p(&self, q: usize, t: usize) -> i32 {
+        self.lookup(GAP, q, GAP, t)
     }
 
     /// Terminal penalty for 3' extension (right DP). DSM[q][Gap][t][Gap]
     #[inline(always)]
-    fn terminal_3p(q: Base, t: Base) -> i32 {
-        Self::stack_idx(q.idx(), Base::Gap.idx(), t.idx(), Base::Gap.idx())
+    pub fn terminal_3p(&self, q: usize, t: usize) -> i32 {
+        self.lookup(q, GAP, t, GAP)
     }
 
     /// Full seed energy calculation with antiparallel indexing.
-    fn seed_energy(query: &[Base], target: &[Base], q_pos: usize, t_end: usize, len: usize) -> i32 {
-        (0..len.saturating_sub(1))
-            .map(|k| {
-                let q1 = query[q_pos + k];
-                let q2 = query[q_pos + k + 1];
-                let t1 = target[t_end - k];
-                let t2 = target[t_end - (k + 1)];
-                Self::stack_idx(q1.idx(), q2.idx(), t1.idx(), t2.idx())
-            })
-            .sum()
-    }
-
-    /// Convert DSM units → kcal/mol. 559 = terminal penalty offset.
-    #[inline(always)]
-    fn to_kcal(raw: i32) -> f64 {
-        (raw as f64 - 559.0) / -100.0
-    }
-}
-
-/// RIsearch2 extension mask lookup (dsm_extend_pos), flattened.
-/// Index layout matches DSM: q1*216 + q2*36 + t1*6 + t2.
-#[inline(always)]
-pub(crate) fn extend_lookup_raw(q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-    DSM_EXTEND_FLAT[dsm_flat_idx(q1, q2, t1, t2)]
-}
-
-/// Apply per-nucleotide extension penalty in dacal/mol units.
-#[inline(always)]
-pub(crate) fn stack_with_penalty<M: DsmModel>(
-    q1: usize,
-    q2: usize,
-    t1: usize,
-    t2: usize,
-    penalty: i32,
-) -> i32 {
-    let base = M::lookup_raw(q1, q2, t1, t2);
-    if penalty == 0 {
-        base
-    } else {
-        base - penalty * extend_lookup_raw(q1, q2, t1, t2)
-    }
-}
-
-/// Build a penalty-adjusted flattened DSM table for hot-path DP lookups.
-///
-/// Result layout matches `DsmModel::FLAT` and `DSM_EXTEND_FLAT`.
-pub(crate) fn build_penalty_adjusted_flat<M: DsmModel>(penalty: i32) -> [i32; DSM_FLAT_SIZE] {
-    if penalty == 0 {
-        M::FLAT
-    } else {
-        let mut out = [0i32; DSM_FLAT_SIZE];
-        let mut idx = 0;
-        while idx < DSM_FLAT_SIZE {
-            out[idx] = M::FLAT[idx] - penalty * DSM_EXTEND_FLAT[idx];
-            idx += 1;
+    pub fn seed_energy(
+        &self,
+        query: &[Base],
+        target: &[Base],
+        q_pos: usize,
+        t_pos: usize,
+        len: usize,
+    ) -> i32 {
+        if len <= 1 {
+            return 0;
         }
-        out
-    }
-}
-
-#[inline(always)]
-pub(crate) fn terminal_5p<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
-    stack_with_penalty::<M>(Base::Gap.idx(), q.idx(), Base::Gap.idx(), t.idx(), penalty)
-}
-
-#[inline(always)]
-pub(crate) fn terminal_3p<M: DsmModel>(q: Base, t: Base, penalty: i32) -> i32 {
-    stack_with_penalty::<M>(q.idx(), Base::Gap.idx(), t.idx(), Base::Gap.idx(), penalty)
-}
-
-/// Full seed energy with optional extension-penalty-adjusted DSM.
-pub(crate) fn seed_energy<M: DsmModel>(
-    query: &[Base],
-    target: &[Base],
-    q_pos: usize,
-    t_end: usize,
-    len: usize,
-    penalty: i32,
-) -> i32 {
-    (0..len.saturating_sub(1))
-        .map(|k| {
-            let q1 = query[q_pos + k];
-            let q2 = query[q_pos + k + 1];
-            let t1 = target[t_end - k];
-            let t2 = target[t_end - (k + 1)];
-            stack_with_penalty::<M>(q1.idx(), q2.idx(), t1.idx(), t2.idx(), penalty)
-        })
-        .sum()
-}
-
-/// Build a flattened DSM lookup table.
-/// Index = q1*216 + q2*36 + t1*6 + t2 where each dim is 0..6.
-const fn build_flat(pos: &DsmTable) -> [i32; DSM_FLAT_SIZE] {
-    let mut flat = [0i32; DSM_FLAT_SIZE];
-    let mut q1 = 0;
-    while q1 < 6 {
-        let mut q2 = 0;
-        while q2 < 6 {
-            let mut t1 = 0;
-            while t1 < 6 {
-                let mut t2 = 0;
-                while t2 < 6 {
-                    let idx = dsm_flat_idx(q1, q2, t1, t2);
-                    flat[idx] = pos[q1][q2][t1][t2] as i32;
-                    t2 += 1;
-                }
-                t1 += 1;
-            }
-            q2 += 1;
+        let mut score = 0;
+        let t_match_end = t_pos + len - 1;
+        for i in 0..(len - 1) {
+            score += self.lookup(
+                query[q_pos + i].idx(),
+                query[q_pos + i + 1].idx(),
+                target[t_match_end - i].complement().idx(),
+                target[t_match_end - i - 1].complement().idx(),
+            );
         }
-        q1 += 1;
+        score
     }
-    flat
 }
 
-/// Turner 2004 DSM model (positive strand).
-pub struct T04;
-
-impl DsmModel for T04 {
-    const FLAT: [i32; DSM_FLAT_SIZE] = build_flat(&DSM_T04_POS);
+/// Convert DSM units → kcal/mol. 559 = terminal penalty offset.
+#[inline(always)]
+pub fn to_kcal(raw: i32) -> f64 {
+    (raw as f64 - 559.0) / -100.0
 }
 
 // No additional public helpers; use DsmModel methods.
 
-/// Turner 1999 DSM model (positive strand).
-pub struct T99;
-
-impl DsmModel for T99 {
-    const FLAT: [i32; DSM_FLAT_SIZE] = build_flat(&DSM_T99_POS);
-}
-
-// No additional public helpers; use DsmModel methods.
-
-const DSM_T04_POS: DsmTable = [
+const T04: DsmTable = [
     [
         [
             [-2000, -123, -123, -123, -123, -123],
@@ -801,7 +717,7 @@ pub(crate) const DSM_T04_NEG: DsmTable = [
     ],
 ];
 
-const DSM_T99_POS: DsmTable = [
+const T99: DsmTable = [
     [
         [
             [-2000, -123, -123, -123, -123, -123],
@@ -1136,10 +1052,11 @@ mod tests {
 
     #[test]
     fn test_dsm_get() {
+        let model = DsmModel::new(Matrix::T04, 0);
         // Just verify lookup works
-        let energy = T04::stack_idx(Base::A.idx(), Base::U.idx(), Base::U.idx(), Base::A.idx());
+        let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::U.idx(), Base::A.idx());
         // Gap penalty should be handled by DSM table
-        let gap_energy = T04::stack_idx(
+        let gap_energy = model.lookup(
             Base::Gap.idx(),
             Base::A.idx(),
             Base::Gap.idx(),
@@ -1155,6 +1072,7 @@ mod tests {
     /// CG/GC is the strongest stack at -3.30 kcal/mol = 330 in centidecimals.
     #[test]
     fn test_dsm_known_values() {
+        let model = DsmModel::new(Matrix::T04, 0);
         // Print index mapping for clarity
         println!("Base indices: Gap=0, A=1, G=2, C=3, U=4, N=5");
         println!();
@@ -1167,7 +1085,7 @@ mod tests {
             for q2 in 0..6 {
                 for t1 in 0..6 {
                     for t2 in 0..6 {
-                        let val = T04::stack_idx(q1, q2, t1, t2);
+                        let val = model.lookup(q1, q2, t1, t2);
                         if val == 330 {
                             println!("  DSM[{}][{}][{}][{}] = 330", q1, q2, t1, t2);
                         }
@@ -1177,7 +1095,7 @@ mod tests {
         }
 
         // The value at DSM[3][2][3][2] should be determinable
-        let actual = T04::stack_idx(Base::C.idx(), Base::G.idx(), Base::C.idx(), Base::G.idx());
+        let actual = model.lookup(Base::C.idx(), Base::G.idx(), Base::C.idx(), Base::G.idx());
         println!();
         println!("DSM[C=3][G=2][C=3][G=2] = {}", actual);
     }

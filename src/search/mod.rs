@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
+use crate::config::{ExtendConfig, FilterConfig, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::{DpConfig, DpExtender, DpView};
-use crate::dsm::{pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99};
+use crate::dsm::{pair_mat, DsmModel};
 use crate::index::store::{GlobalView, TargetStore};
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
@@ -52,15 +52,6 @@ pub struct SearchHit {
 // ORCHESTRATION
 // =============================================================================
 
-macro_rules! dispatch_matrix {
-    ($matrix:expr, $func:ident($($args:expr),* $(,)?)) => {
-        match $matrix {
-            Matrix::T04 => $func::<T04>($($args),*),
-            Matrix::T99 => $func::<T99>($($args),*),
-        }
-    };
-}
-
 /// Run search against mmap-backed target store and write hits to `output_path`.
 ///
 /// In multifile mode, `output_path` is the directory where per-query files are
@@ -82,9 +73,9 @@ pub fn run_search(
                 output_path
             )
         })?;
-        dispatch_matrix!(opts.score.matrix, run_multifile(&ctx, output_path))
+        run_multifile(&ctx, output_path)
     } else {
-        dispatch_matrix!(opts.score.matrix, run_single_file(&ctx, output_path))
+        run_single_file(&ctx, output_path)
     }?;
 
     info!("Search complete: {} hits", total);
@@ -97,6 +88,7 @@ struct SearchContext<'a> {
     store: &'a TargetStore,
     global: GlobalView<'a>,
     opts: &'a SearchArgs,
+    model: DsmModel,
 }
 
 impl<'a> SearchContext<'a> {
@@ -110,6 +102,8 @@ impl<'a> SearchContext<'a> {
         }
 
         let global = store.global_view();
+        let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
+        let model = DsmModel::new(opts.score.matrix, dp_cfg.penalty_raw());
 
         info!(
             "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
@@ -125,6 +119,7 @@ impl<'a> SearchContext<'a> {
             store,
             global,
             opts,
+            model,
         })
     }
 
@@ -140,43 +135,38 @@ impl<'a> SearchContext<'a> {
 }
 
 /// Reusable per-worker state.
-struct SearchState<M: DsmModel> {
-    extender: DpExtender<M>,
+struct SearchState {
+    extender: DpExtender,
     dp_cfg: DpConfig,
 }
 
-impl<M: DsmModel> SearchState<M> {
-    fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
+impl SearchState {
+    fn new(model: DsmModel, score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
         let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
-            extender: DpExtender::<M>::from_config(dp_cfg),
+            extender: DpExtender::from_config(model, dp_cfg),
             dp_cfg,
         }
     }
 }
 
 /// Single-file backend: `Mutex<OutputWriter>` + rayon `par_iter`.
-fn run_single_file<M: DsmModel>(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
+fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
     let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
     let total = AtomicUsize::new(0);
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
             (
-                SearchState::<M>::new(&ctx.opts.score, &ctx.opts.extend),
+                SearchState::new(ctx.model.clone(), &ctx.opts.score, &ctx.opts.extend),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
         |(state, fmt), qi| -> Result<()> {
-            let emitted = process_query::<M, _, _>(
-                ctx,
-                qi as u32,
-                state,
-                fmt,
-                true,
-                || false,
-                &mut |chunk| writer.lock().unwrap().write_chunk(&chunk),
-            )?;
+            let emitted =
+                process_query(ctx, qi as u32, state, fmt, true, || false, &mut |chunk| {
+                    writer.lock().unwrap().write_chunk(&chunk)
+                })?;
             total.fetch_add(emitted, Ordering::Relaxed);
             Ok(())
         },
@@ -187,7 +177,7 @@ fn run_single_file<M: DsmModel>(ctx: &SearchContext<'_>, output_path: &Path) -> 
 }
 
 /// Multifile backend: per-worker lazy file writers + rayon `par_iter`.
-fn run_multifile<M: DsmModel>(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
+fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
     let total = AtomicUsize::new(0);
     let ext = crate::output::output_extension(&ctx.opts.output);
     let output_paths = crate::output::writer::build_multifile_paths(ctx.queries, output_dir, ext);
@@ -195,7 +185,7 @@ fn run_multifile<M: DsmModel>(ctx: &SearchContext<'_>, output_dir: &Path) -> Res
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
             (
-                SearchState::<M>::new(&ctx.opts.score, &ctx.opts.extend),
+                SearchState::new(ctx.model.clone(), &ctx.opts.score, &ctx.opts.extend),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
@@ -219,7 +209,7 @@ fn run_multifile<M: DsmModel>(ctx: &SearchContext<'_>, output_dir: &Path) -> Res
                     .with_context(|| format!("Failed to write output file {:?}", file_path))
             };
 
-            let emitted = process_query::<M, _, _>(
+            let emitted = process_query(
                 ctx,
                 query_idx as u32,
                 state,
@@ -244,17 +234,16 @@ fn run_multifile<M: DsmModel>(ctx: &SearchContext<'_>, output_dir: &Path) -> Res
 }
 
 /// Process one query end-to-end and stream formatted chunks via `on_chunk`.
-fn process_query<M, FC, FO>(
+fn process_query<FC, FO>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
-    state: &mut SearchState<M>,
+    state: &mut SearchState,
     format: &mut HitFormatter,
     flush_after_query: bool,
     is_cancelled: FC,
     on_chunk: &mut FO,
 ) -> Result<usize>
 where
-    M: DsmModel,
     FC: Fn() -> bool,
     FO: FnMut(OutputChunk) -> Result<()>,
 {
@@ -269,7 +258,7 @@ where
     let mut last_target_idx = None;
     let mut cached_target = None;
 
-    search_query::<M, _>(ctx, query_idx, state, &mut |hit: SearchHit| -> Result<()> {
+    search_query(ctx, query_idx, state, &mut |hit: SearchHit| -> Result<()> {
         if is_cancelled() {
             return Ok(());
         }
@@ -301,14 +290,13 @@ where
 
 /// Enumerate seeds for a single query across all targets via the global SA,
 /// optionally extend them, and emit hits.
-fn search_query<M, F>(
+fn search_query<F>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
-    state: &mut SearchState<M>,
+    state: &mut SearchState,
     on_hit: &mut F,
 ) -> Result<()>
 where
-    M: DsmModel,
     F: FnMut(SearchHit) -> Result<()>,
 {
     let query = &ctx.queries.entries()[query_idx as usize];
@@ -339,8 +327,9 @@ where
             Strand::Reverse => t_reverse_trans,
         };
 
-        let Some(hit) = build_hit_from_seed::<M>(
+        let Some(hit) = build_hit_from_seed(
             state,
+            &ctx.model,
             query_idx,
             query_bases,
             seed_interval,
@@ -368,8 +357,9 @@ where
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 #[allow(clippy::too_many_arguments)]
-fn build_hit_from_seed<M: DsmModel>(
-    state: &mut SearchState<M>,
+fn build_hit_from_seed(
+    state: &mut SearchState,
+    model: &DsmModel,
     query_idx: u32,
     query_bases: &[Base],
     seed_interval: Interval,
@@ -384,8 +374,9 @@ fn build_hit_from_seed<M: DsmModel>(
         return None;
     }
 
-    let extension = compute_seed_extension::<M>(
+    let extension = compute_seed_extension(
         &mut state.extender,
+        model,
         state.dp_cfg,
         query_bases,
         target_trans,
@@ -425,36 +416,11 @@ struct SeedExtension {
     right_pairs: SmallVec<[PairClass; 64]>,
 }
 
-#[inline(always)]
-fn seed_energy_transformed<M: DsmModel>(
-    query_bases: &[Base],
-    target_transformed: &[Base],
-    q_pos: usize,
-    t_pos: usize,
-    len: usize,
-    penalty: i32,
-) -> i32 {
-    if len <= 1 {
-        return 0;
-    }
-    let mut score = 0;
-    let t_match_end = t_pos + len - 1;
-    for i in 0..(len - 1) {
-        score += stack_with_penalty::<M>(
-            query_bases[q_pos + i].idx(),
-            query_bases[q_pos + i + 1].idx(),
-            target_transformed[t_match_end - i].complement().idx(),
-            target_transformed[t_match_end - i - 1].complement().idx(),
-            penalty,
-        );
-    }
-    score
-}
-
 /// Compute optional left/right DP extension around a seed and return extension metadata.
 #[allow(clippy::too_many_arguments)]
-fn compute_seed_extension<M: DsmModel>(
-    extender: &mut DpExtender<M>,
+fn compute_seed_extension(
+    extender: &mut DpExtender,
+    model: &DsmModel,
     dp_cfg: DpConfig,
     query_bases: &[Base],
     target_trans: &[Base],
@@ -488,26 +454,17 @@ fn compute_seed_extension<M: DsmModel>(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e =
-        seed_energy_transformed::<M>(query_bases, target_trans, q_pos, t_pos, len, penalty);
+    let seed_e = model.seed_energy(query_bases, target_trans, q_pos, t_pos, len);
 
     let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-        let term_5p = terminal_5p::<M>(
-            query_bases[q_pos],
-            target_trans[t_match_end].complement(),
-            penalty,
-        );
-        let term_3p = terminal_3p::<M>(
-            query_bases[q_pos + len - 1],
-            target_trans[t_pos].complement(),
-            penalty,
-        );
+        let term_5p = model.terminal_5p(query_bases[q_pos].idx(), target_trans[t_match_end].complement().idx());
+        let term_3p = model.terminal_3p(query_bases[q_pos + len - 1].idx(), target_trans[t_pos].complement().idx());
         let nt_count = (2 * len) as i32;
         return Some(SeedExtension {
-            score: M::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
+            score: crate::dsm::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
             l_q: 0,
             l_t: 0,
             r_q: 0,
@@ -518,7 +475,7 @@ fn compute_seed_extension<M: DsmModel>(
     }
 
     let (l_score, l_q, l_t, left_pairs) = {
-        let view = DpView::<M>::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
+        let view = DpView::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -529,7 +486,7 @@ fn compute_seed_extension<M: DsmModel>(
     };
 
     let (r_score, r_q, r_t, right_pairs) = {
-        let view = DpView::<M>::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
+        let view = DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -541,7 +498,7 @@ fn compute_seed_extension<M: DsmModel>(
 
     let nt_count = (l_q + l_t + r_q + r_t + 2 * len) as i32;
     Some(SeedExtension {
-        score: M::to_kcal(seed_e + l_score + r_score + nt_count * penalty),
+        score: crate::dsm::to_kcal(seed_e + l_score + r_score + nt_count * penalty),
         l_q,
         l_t,
         r_q,

@@ -183,6 +183,9 @@ impl Base {
 /// Number of nucleotide types (Gap, A, G, C, U, N)
 pub const BASE_COUNT: usize = 6;
 
+/// Constant for Gap index used in array indexing and DSM lookups.
+pub const GAP: usize = Base::Gap as usize;
+
 // =============================================================================
 // IDENTIFIERS / UNITS
 // =============================================================================

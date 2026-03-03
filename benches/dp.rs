@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::dp::{DpExtender, DpView};
-use risearch::dsm::T04;
+use risearch::dsm::DsmModel;
+use risearch::config::Matrix;
 use risearch::seq::Sequence;
 use risearch::types::Base;
 
@@ -57,6 +58,7 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
 
 fn bench_extend_left(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_left");
+    let model = DsmModel::new(Matrix::T04, 0);
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
@@ -65,10 +67,10 @@ fn bench_extend_left(c: &mut Criterion) {
             let q_start = 50;
             let t_start = 50;
 
-            let mut extender = DpExtender::<T04>::new();
+            let mut extender = DpExtender::new(model.clone());
 
             b.iter(|| {
-                let view = DpView::<T04>::left(
+                let view = DpView::left(
                     black_box(&query),
                     black_box(&target),
                     black_box(q_start),
@@ -85,6 +87,7 @@ fn bench_extend_left(c: &mut Criterion) {
 
 fn bench_extend_right(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_right");
+    let model = DsmModel::new(Matrix::T04, 0);
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
@@ -93,10 +96,10 @@ fn bench_extend_right(c: &mut Criterion) {
             let q_end = 49;
             let t_end = 49;
 
-            let mut extender = DpExtender::<T04>::new();
+            let mut extender = DpExtender::new(model.clone());
 
             b.iter(|| {
-                let view = DpView::<T04>::right(
+                let view = DpView::right(
                     black_box(&query),
                     black_box(&target),
                     black_box(q_end),
@@ -115,6 +118,7 @@ fn bench_extend_right(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("throughput");
     group.sample_size(10); // Smaller sample size for realistic wall-clock time
+    let model = DsmModel::new(Matrix::T04, 0);
 
     for len in [10, 20, 30, 50].iter() {
         // Left extension throughput: query_len × target_len DP cells
@@ -127,14 +131,14 @@ fn bench_throughput(c: &mut Criterion) {
                 let q_start = 50;
                 let t_start = 50;
 
-                let mut extender = DpExtender::<T04>::new();
+                let mut extender = DpExtender::new(model.clone());
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let view = DpView::<T04>::left(
+                        let view = DpView::left(
                             black_box(&query),
                             black_box(&target),
                             black_box(q_start),
@@ -163,14 +167,14 @@ fn bench_throughput(c: &mut Criterion) {
                 let q_end = 49;
                 let t_end = 49;
 
-                let mut extender = DpExtender::<T04>::new();
+                let mut extender = DpExtender::new(model.clone());
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let view = DpView::<T04>::right(
+                        let view = DpView::right(
                             black_box(&query),
                             black_box(&target),
                             black_box(q_end),
@@ -198,6 +202,7 @@ fn bench_throughput(c: &mut Criterion) {
 fn bench_many_extensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("many_extensions");
     group.sample_size(10);
+    let model = DsmModel::new(Matrix::T04, 0);
 
     group.bench_function("100_extensions_len30", |b| {
         let queries: Vec<Sequence> = (0..10)
@@ -207,7 +212,7 @@ fn bench_many_extensions(c: &mut Criterion) {
             .map(|i| generate_sequence(100, 5000 + i as u64))
             .collect();
 
-        let mut extender = DpExtender::<T04>::new();
+        let mut extender = DpExtender::new(model.clone());
 
         b.iter(|| {
             let mut total_score = 0i32;
@@ -230,7 +235,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                     };
 
                     // Left extension
-                    let left_view = DpView::<T04>::left(
+                    let left_view = DpView::left(
                         black_box(query),
                         black_box(target),
                         black_box(q_start),
@@ -241,7 +246,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                     total_score = total_score.wrapping_add(left_result.score);
 
                     // Right extension
-                    let right_view = DpView::<T04>::right(
+                    let right_view = DpView::right(
                         black_box(query),
                         black_box(target),
                         black_box(q_end),
