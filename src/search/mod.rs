@@ -12,16 +12,16 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{ExtendConfig, FilterConfig, Matrix, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::{DpConfig, DpExtender, DpView};
 use crate::dsm::{pair_mat, stack_with_penalty, terminal_3p, terminal_5p, DsmModel, T04, T99};
 use crate::index::store::{GlobalView, TargetStore};
-use crate::output::writer::{HitFormatter, OutputChunk};
-use crate::registry::{QueryData, QueryRegistry};
+use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
+use crate::registry::QueryRegistry;
 use crate::seed::{for_each_seed, SeedHit};
 use crate::seq::Sequence;
 use crate::types::{Base, Energy, Interval, Strand};
@@ -48,145 +48,97 @@ pub struct SearchHit {
     pub flank_3: Sequence,
 }
 
-/// Run search against mmap-backed target store and emit hits through callback.
-pub fn run_search<F>(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    opts: &SearchArgs,
-    mut on_chunk: F,
-) -> Result<usize>
-where
-    F: FnMut(OutputChunk) -> Result<()>,
-{
-    if store.is_empty() || queries.is_empty() {
-        return Ok(0);
-    }
-
-    let global = store.global_view();
-
-    info!(
-        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
-        queries.len(),
-        store.len(),
-        opts.seed.seed,
-        opts.extend.max_extension,
-        opts.filter.delta_g
-    );
-
-    // Fast path for single-worker runs: avoid producer thread + channel fan-in.
-    if rayon::current_num_threads() == 1 {
-        let total = match opts.score.matrix {
-            Matrix::T04 => {
-                run_search_single_thread::<T04, _>(queries, store, &global, opts, &mut on_chunk)?
-            }
-            Matrix::T99 => {
-                run_search_single_thread::<T99, _>(queries, store, &global, opts, &mut on_chunk)?
-            }
-        };
-        info!("Search complete: {} hits", total);
-        return Ok(total);
-    }
-
-    let (tx, rx) = mpsc::sync_channel::<OutputChunk>(CHUNK_CHANNEL_CAPACITY);
-    let cancelled = AtomicBool::new(false);
-
-    let total = std::thread::scope(|scope| -> Result<usize> {
-        let cancel = &cancelled;
-        let producer = scope.spawn(move || -> Result<()> {
-            match opts.score.matrix {
-                Matrix::T04 => produce_by_query::<T04>(queries, store, &global, opts, tx, cancel),
-                Matrix::T99 => produce_by_query::<T99>(queries, store, &global, opts, tx, cancel),
-            }
-        });
-
-        let mut emitted = 0usize;
-        let mut callback_err: Option<anyhow::Error> = None;
-
-        while let Ok(chunk) = rx.recv() {
-            if callback_err.is_some() {
-                continue;
-            }
-            let count = chunk.hits;
-            match on_chunk(chunk) {
-                Ok(()) => emitted += count,
-                Err(err) => {
-                    callback_err = Some(err);
-                    cancelled.store(true, Ordering::Relaxed);
-                }
-            }
-        }
-
-        match producer.join() {
-            Ok(result) => result?,
-            Err(_) => return Err(anyhow::anyhow!("Parallel search producer thread panicked")),
-        }
-
-        if let Some(err) = callback_err {
-            return Err(err);
-        }
-
-        Ok(emitted)
-    })?;
-
-    info!("Search complete: {} hits", total);
-    Ok(total)
-}
-
-/// Run search in `--multifile` mode with worker-owned output writers.
-///
-/// Each worker processes one query and writes/compresses that query's output
-/// directly, avoiding the single consumer thread used by `run_search`.
-pub fn run_search_multifile(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    opts: &SearchArgs,
-    output_dir: &Path,
-) -> Result<usize> {
-    if !opts.output.multifile {
-        return Err(anyhow::anyhow!(
-            "run_search_multifile requires --multifile mode"
-        ));
-    }
-    if store.is_empty() || queries.is_empty() {
-        return Ok(0);
-    }
-
-    std::fs::create_dir_all(output_dir).with_context(|| {
-        format!(
-            "Failed to create output directory {:?} for --multifile",
-            output_dir
-        )
-    })?;
-
-    let global = store.global_view();
-
-    info!(
-        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
-        queries.len(),
-        store.len(),
-        opts.seed.seed,
-        opts.extend.max_extension,
-        opts.filter.delta_g
-    );
-
-    let total = match opts.score.matrix {
-        Matrix::T04 => {
-            run_search_multifile_by_query::<T04>(queries, store, &global, opts, output_dir)?
-        }
-        Matrix::T99 => {
-            run_search_multifile_by_query::<T99>(queries, store, &global, opts, output_dir)?
-        }
-    };
-
-    info!("Search complete: {} hits", total);
-    Ok(total)
-}
-
 // =============================================================================
 // ORCHESTRATION
 // =============================================================================
 
-const CHUNK_CHANNEL_CAPACITY: usize = 128;
+macro_rules! dispatch_matrix {
+    ($matrix:expr, $func:ident($($args:expr),* $(,)?)) => {
+        match $matrix {
+            Matrix::T04 => $func::<T04>($($args),*),
+            Matrix::T99 => $func::<T99>($($args),*),
+        }
+    };
+}
+
+/// Run search against mmap-backed target store and write hits to `output_path`.
+///
+/// In multifile mode, `output_path` is the directory where per-query files are
+/// created. Otherwise it is the single output file path.
+pub fn run_search(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchArgs,
+    output_path: &Path,
+) -> Result<usize> {
+    let Some(ctx) = SearchContext::try_new(queries, store, opts) else {
+        return Ok(0);
+    };
+
+    let total = if opts.output.multifile {
+        std::fs::create_dir_all(output_path).with_context(|| {
+            format!(
+                "Failed to create output directory {:?} for --multifile",
+                output_path
+            )
+        })?;
+        dispatch_matrix!(opts.score.matrix, run_multifile(&ctx, output_path))
+    } else {
+        dispatch_matrix!(opts.score.matrix, run_single_file(&ctx, output_path))
+    }?;
+
+    info!("Search complete: {} hits", total);
+    Ok(total)
+}
+
+/// Shared context for all search backends.
+struct SearchContext<'a> {
+    queries: &'a QueryRegistry,
+    store: &'a TargetStore,
+    global: GlobalView<'a>,
+    opts: &'a SearchArgs,
+}
+
+impl<'a> SearchContext<'a> {
+    fn try_new(
+        queries: &'a QueryRegistry,
+        store: &'a TargetStore,
+        opts: &'a SearchArgs,
+    ) -> Option<Self> {
+        if store.is_empty() || queries.is_empty() {
+            return None;
+        }
+
+        let global = store.global_view();
+
+        info!(
+            "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
+            queries.len(),
+            store.len(),
+            opts.seed.seed,
+            opts.extend.max_extension,
+            opts.filter.delta_g
+        );
+
+        Some(Self {
+            queries,
+            store,
+            global,
+            opts,
+        })
+    }
+
+    #[inline]
+    fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
+        let target_len = self.global.seq_lens[target_idx] as usize;
+        let target_offset = self.global.offsets[target_idx] as usize;
+        let t_fwd =
+            &self.global.combined_seq[target_offset..target_offset + target_len];
+        let t_rc = &self.global.combined_seq
+            [target_offset + target_len + 1..target_offset + 2 * target_len + 1];
+        (t_fwd, t_rc, target_len)
+    }
+}
 
 /// Reusable per-worker state.
 struct SearchState<M: DsmModel> {
@@ -204,27 +156,98 @@ impl<M: DsmModel> SearchState<M> {
     }
 }
 
-#[inline]
-fn target_transformed_slices<'a>(
-    global: &'a GlobalView<'_>,
-    target_idx: usize,
-) -> (&'a [Base], &'a [Base], usize) {
-    let target_len = global.seq_lens[target_idx] as usize;
-    let target_offset = global.offsets[target_idx] as usize;
-    let t_fwd = &global.combined_seq[target_offset..target_offset + target_len];
-    let t_rc =
-        &global.combined_seq[target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-    (t_fwd, t_rc, target_len)
+/// Single-file backend: `Mutex<OutputWriter>` + rayon `par_iter`.
+fn run_single_file<M: DsmModel>(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
+    let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
+    let total = AtomicUsize::new(0);
+
+    (0..ctx.queries.len()).into_par_iter().try_for_each_init(
+        || {
+            (
+                SearchState::<M>::new(&ctx.opts.score, &ctx.opts.extend),
+                HitFormatter::new(ctx.opts.output.format),
+            )
+        },
+        |(state, fmt), qi| -> Result<()> {
+            let emitted = process_query::<M, _, _>(
+                ctx,
+                qi as u32,
+                state,
+                fmt,
+                true,
+                || false,
+                &mut |chunk| writer.lock().unwrap().write_chunk(&chunk),
+            )?;
+            total.fetch_add(emitted, Ordering::Relaxed);
+            Ok(())
+        },
+    )?;
+
+    writer.into_inner().unwrap().flush_all()?;
+    Ok(total.load(Ordering::Relaxed))
+}
+
+/// Multifile backend: per-worker lazy file writers + rayon `par_iter`.
+fn run_multifile<M: DsmModel>(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
+    let total = AtomicUsize::new(0);
+    let ext = crate::output::output_extension(&ctx.opts.output);
+    let output_paths =
+        crate::output::writer::build_multifile_paths(ctx.queries, output_dir, ext);
+
+    (0..ctx.queries.len()).into_par_iter().try_for_each_init(
+        || {
+            (
+                SearchState::<M>::new(&ctx.opts.score, &ctx.opts.extend),
+                HitFormatter::new(ctx.opts.output.format),
+            )
+        },
+        |(state, format), query_idx| -> Result<()> {
+            let file_path = &output_paths[query_idx];
+            let mut writer: Option<Box<dyn Write>> = None;
+
+            let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
+                if writer.is_none() {
+                    writer = Some(
+                        crate::output::open_output(Some(file_path), &ctx.opts.output).with_context(
+                            || format!("Failed to open output file {:?}", file_path),
+                        )?,
+                    );
+                }
+                writer
+                    .as_mut()
+                    .expect("writer initialized")
+                    .write_all(&chunk.data)
+                    .with_context(|| format!("Failed to write output file {:?}", file_path))
+            };
+
+            let emitted = process_query::<M, _, _>(
+                ctx,
+                query_idx as u32,
+                state,
+                format,
+                true,
+                || false,
+                &mut flush_to_writer,
+            )?;
+
+            if let Some(writer) = writer.as_mut() {
+                writer
+                    .flush()
+                    .with_context(|| format!("Failed to flush output file {:?}", file_path))?;
+            }
+
+            total.fetch_add(emitted, Ordering::Relaxed);
+            Ok(())
+        },
+    )?;
+
+    Ok(total.load(Ordering::Relaxed))
 }
 
 /// Process one query end-to-end and stream formatted chunks via `on_chunk`.
 fn process_query<M, FC, FO>(
+    ctx: &SearchContext<'_>,
     query_idx: u32,
-    query: &QueryData,
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    global: &GlobalView<'_>,
-    opts: &SearchArgs,
     state: &mut SearchState<M>,
     format: &mut HitFormatter,
     flush_after_query: bool,
@@ -240,17 +263,16 @@ where
         return Ok(0);
     }
 
-    let query_name = queries.get_name(query_idx);
+    let query_name = ctx.queries.get_name(query_idx);
+    let query = &ctx.queries.entries()[query_idx as usize];
     let query_seq = query.sequence().as_slice();
     let mut local_hits = 0usize;
     let mut last_target_idx = None;
     let mut cached_target = None;
 
     search_query::<M, _>(
+        ctx,
         query_idx,
-        query,
-        global,
-        opts,
         state,
         &mut |hit: SearchHit| -> Result<()> {
             if is_cancelled() {
@@ -259,8 +281,8 @@ where
 
             let target_idx = hit.target_idx as usize;
             if last_target_idx != Some(target_idx) {
-                let (t_fwd, t_rc, _) = target_transformed_slices(global, target_idx);
-                let target_name = store.get_name(hit.target_idx);
+                let (t_fwd, t_rc, _) = ctx.target_slices(target_idx);
+                let target_name = ctx.store.get_name(hit.target_idx);
                 cached_target = Some((target_name, t_fwd, t_rc));
                 last_target_idx = Some(target_idx);
             }
@@ -290,165 +312,11 @@ where
     Ok(local_hits)
 }
 
-/// Single-thread execution path (no channel fan-in).
-fn run_search_single_thread<M, F>(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    global: &GlobalView<'_>,
-    opts: &SearchArgs,
-    on_chunk: &mut F,
-) -> Result<usize>
-where
-    M: DsmModel,
-    F: FnMut(OutputChunk) -> Result<()>,
-{
-    let mut state = SearchState::<M>::new(&opts.score, &opts.extend);
-    let mut format = HitFormatter::new(opts.output.format);
-    let mut total_hits = 0usize;
-
-    for (query_idx, query) in queries.entries().iter().enumerate() {
-        total_hits += process_query::<M, _, _>(
-            query_idx as u32,
-            query,
-            queries,
-            store,
-            global,
-            opts,
-            &mut state,
-            &mut format,
-            false,
-            || false,
-            on_chunk,
-        )?;
-    }
-
-    if let Some(chunk) = format.flush() {
-        on_chunk(chunk)?;
-    }
-    Ok(total_hits)
-}
-
-/// Parallel query-major execution where each worker owns output for one query.
-fn run_search_multifile_by_query<M: DsmModel>(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    global: &GlobalView<'_>,
-    opts: &SearchArgs,
-    output_dir: &Path,
-) -> Result<usize> {
-    let total_hits = AtomicUsize::new(0);
-    let ext = crate::output::output_extension(&opts.output);
-    let output_paths = crate::output::writer::build_multifile_paths(queries, output_dir, ext);
-
-    (0..queries.len()).into_par_iter().try_for_each_init(
-        || {
-            (
-                SearchState::<M>::new(&opts.score, &opts.extend),
-                HitFormatter::new(opts.output.format),
-            )
-        },
-        |(state, format), query_idx| -> Result<()> {
-            let query_idx = query_idx as u32;
-            let query = &queries.entries()[query_idx as usize];
-            let file_path = &output_paths[query_idx as usize];
-            let mut writer: Option<Box<dyn Write>> = None;
-
-            let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
-                if writer.is_none() {
-                    writer = Some(
-                        crate::output::open_output(Some(file_path), &opts.output).with_context(
-                            || format!("Failed to open output file {:?}", file_path),
-                        )?,
-                    );
-                }
-                writer
-                    .as_mut()
-                    .expect("writer initialized")
-                    .write_all(&chunk.data)
-                    .with_context(|| format!("Failed to write output file {:?}", file_path))
-            };
-
-            let emitted = process_query::<M, _, _>(
-                query_idx,
-                query,
-                queries,
-                store,
-                global,
-                opts,
-                state,
-                format,
-                true,
-                || false,
-                &mut flush_to_writer,
-            )?;
-
-            if let Some(writer) = writer.as_mut() {
-                writer
-                    .flush()
-                    .with_context(|| format!("Failed to flush output file {:?}", file_path))?;
-            }
-
-            total_hits.fetch_add(emitted, Ordering::Relaxed);
-            Ok(())
-        },
-    )?;
-
-    Ok(total_hits.load(Ordering::Relaxed))
-}
-
-/// Parallel query-major producer: each worker processes one query against the global SA.
-fn produce_by_query<M: DsmModel>(
-    queries: &QueryRegistry,
-    store: &TargetStore,
-    global: &GlobalView<'_>,
-    opts: &SearchArgs,
-    tx: mpsc::SyncSender<OutputChunk>,
-    cancelled: &AtomicBool,
-) -> Result<()> {
-    (0..queries.len()).into_par_iter().try_for_each_init(
-        || {
-            (
-                SearchState::<M>::new(&opts.score, &opts.extend),
-                HitFormatter::new(opts.output.format),
-                tx.clone(),
-            )
-        },
-        |(state, format, tx), query_idx| {
-            if cancelled.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-
-            let mut flush_to_tx = |chunk: OutputChunk| -> Result<()> {
-                tx.send(chunk)
-                    .map_err(|_| anyhow::anyhow!("Search hit channel disconnected"))
-            };
-
-            process_query::<M, _, _>(
-                query_idx as u32,
-                &queries.entries()[query_idx as usize],
-                queries,
-                store,
-                global,
-                opts,
-                state,
-                format,
-                true,
-                || cancelled.load(Ordering::Relaxed),
-                &mut flush_to_tx,
-            )?;
-
-            Ok(())
-        },
-    )
-}
-
 /// Enumerate seeds for a single query across all targets via the global SA,
 /// optionally extend them, and emit hits.
 fn search_query<M, F>(
+    ctx: &SearchContext<'_>,
     query_idx: u32,
-    query: &QueryData,
-    global: &GlobalView<'_>,
-    opts: &SearchArgs,
     state: &mut SearchState<M>,
     on_hit: &mut F,
 ) -> Result<()>
@@ -456,25 +324,25 @@ where
     M: DsmModel,
     F: FnMut(SearchHit) -> Result<()>,
 {
+    let query = &ctx.queries.entries()[query_idx as usize];
     let query_bases = query.sequence().as_slice();
     let seed_interval = query.seed_interval();
-    let include_alignment = opts.output.format != OutputFormat::Minimal;
-    let pair_matrix = pair_mat(opts.seed.allows_wobble());
-    let filter_cfg = &opts.filter;
+    let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
+    let pair_matrix = pair_mat(ctx.opts.seed.allows_wobble());
+    let filter_cfg = &ctx.opts.filter;
 
     let mut callback_err: Option<anyhow::Error> = None;
 
     // Unified path: `compute_seed_extension` handles both extension and
     // max_extension==0 no-extension cases.
-    for_each_seed(query, global, &opts.seed, |seed| {
+    for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
         if callback_err.is_some() {
             return;
         }
 
         let target_idx_u32 = seed.target_id.0;
         let target_idx = target_idx_u32 as usize;
-        let (t_forward_trans, t_reverse_trans, target_len) =
-            target_transformed_slices(global, target_idx);
+        let (t_forward_trans, t_reverse_trans, target_len) = ctx.target_slices(target_idx);
 
         let mut seed = seed;
         seed.target_start = target_len.saturating_sub(seed.target_start + seed.seed_len.get());
@@ -485,8 +353,7 @@ where
         };
 
         let Some(hit) = build_hit_from_seed::<M>(
-            &mut state.extender,
-            state.dp_cfg,
+            state,
             query_idx,
             query_bases,
             seed_interval,
@@ -514,8 +381,7 @@ where
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 fn build_hit_from_seed<M: DsmModel>(
-    extender: &mut DpExtender<M>,
-    dp_cfg: DpConfig,
+    state: &mut SearchState<M>,
     query_idx: u32,
     query_bases: &[Base],
     seed_interval: Interval,
@@ -531,8 +397,8 @@ fn build_hit_from_seed<M: DsmModel>(
     }
 
     let extension = compute_seed_extension::<M>(
-        extender,
-        dp_cfg,
+        &mut state.extender,
+        state.dp_cfg,
         query_bases,
         target_trans,
         seed,

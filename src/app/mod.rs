@@ -60,19 +60,7 @@ fn cmd_search(
 
     debug!("Starting search...");
 
-    let hits = if opts.output.multifile {
-        search::run_search_multifile(&queries, &targets, &opts, output_path)?
-    } else {
-        let mut writer =
-            risearch::output::writer::OutputWriter::new(&opts.output, output_path)?;
-
-        let hits = search::run_search(&queries, &targets, &opts, |chunk| {
-            writer.write_chunk(&chunk)
-        })?;
-
-        writer.flush_all().context("Failed to flush output")?;
-        hits
-    };
+    let hits = search::run_search(&queries, &targets, &opts, output_path)?;
 
     info!("Done: {} hits", hits);
     Ok(())

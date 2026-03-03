@@ -87,18 +87,15 @@ impl RustRunner<Indexed> {
         // Parity parser expects binding-site columns (pairing + target sequence, optional flanks).
         search_args.output.format = risearch::config::OutputFormat::BindingSite;
 
-        let mut rust_out = Vec::with_capacity(64 * 1024);
+        let tmp = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         risearch::search::run_search(
             &query_registry,
             &self.state.target_store,
             &search_args,
-            |chunk| -> anyhow::Result<()> {
-                rust_out.extend_from_slice(&chunk.data);
-                Ok(())
-            },
+            tmp.path(),
         )
         .expect("search");
-        let rust_out = String::from_utf8(rust_out).expect("rust output utf8");
+        let rust_out = fs::read_to_string(tmp.path()).expect("read output");
         let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_store);
         (hits, query_registry)
     }

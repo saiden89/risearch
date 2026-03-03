@@ -17,11 +17,11 @@ pub mod writer;
 pub use writer::{HitFormatter, OutputChunk, OutputWriter};
 
 /// Open output writer from parsed search output config.
-pub fn open_output(path: Option<impl AsRef<Path>>, cfg: &OutputConfig) -> Result<Box<dyn Write>> {
+pub fn open_output(path: Option<impl AsRef<Path>>, cfg: &OutputConfig) -> Result<Box<dyn Write + Send>> {
     let path_ref = path.as_ref().map(|p| p.as_ref());
 
     // Create underlying writer
-    let inner: Box<dyn Write> = match path_ref {
+    let inner: Box<dyn Write + Send> = match path_ref {
         Some(p) if p != Path::new("-") => {
             Box::new(std::fs::File::create(p).context("Failed to create output file")?)
         }

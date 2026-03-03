@@ -93,7 +93,7 @@ impl HitFormatter {
 /// Multifile output is handled directly by `run_search_multifile_by_query`
 /// where each rayon worker owns its own writer.
 pub struct OutputWriter {
-    writer: Box<dyn Write>,
+    writer: Box<dyn Write + Send>,
 }
 
 impl OutputWriter {
