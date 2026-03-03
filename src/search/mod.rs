@@ -454,7 +454,7 @@ fn compute_seed_extension(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e = model.energy_form_seq(query_bases, target_trans, q_pos, t_pos, len);
+    let seed_e = model.seed_energy(query_bases, target_trans, q_pos, t_pos, len);
 
     let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;

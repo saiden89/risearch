@@ -77,7 +77,7 @@ impl DsmModel {
     }
 
     /// Full seed energy calculation with antiparallel indexing.
-    pub fn energy_from_seq(
+    pub fn seed_energy(
         &self,
         query: &[Base],
         target: &[Base],
