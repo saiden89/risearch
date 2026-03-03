@@ -121,7 +121,7 @@ impl<'a> SeedSearcher<'a> {
     where
         F: FnMut(SeedMatch),
     {
-        let mut ctx = RecurseCtx {
+        let mut ctx = SeedingContext {
             q_sa: self.q_sa,
             q_seq: self.q_seq,
             t_sa: self.t_sa,
@@ -180,7 +180,7 @@ impl<'a> SeedSearcher<'a> {
 /// - canonical: A↔U, G↔C, C↔G, U↔A
 /// - wobble (optional): G↔U, U↔G
 /// - everything else is mismatch
-struct RecurseCtx<'a, F: FnMut(SeedMatch)> {
+struct SeedingContext<'a, F: FnMut(SeedMatch)> {
     q_sa: &'a [u64],
     q_seq: &'a [Base],
     t_sa: &'a [u64],
@@ -195,7 +195,7 @@ struct RecurseCtx<'a, F: FnMut(SeedMatch)> {
 
 #[allow(clippy::too_many_arguments)]
 fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
-    ctx: &mut RecurseCtx<'_, F>,
+    ctx: &mut SeedingContext<'_, F>,
     ql: usize,
     qr: usize,
     sl: usize,
@@ -390,7 +390,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn recurse_if_nonempty<F: FnMut(SeedMatch), const WOBBLE: bool>(
-    ctx: &mut RecurseCtx<'_, F>,
+    ctx: &mut SeedingContext<'_, F>,
     ql: usize,
     qr: usize,
     sl: usize,

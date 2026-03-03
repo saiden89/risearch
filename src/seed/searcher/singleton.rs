@@ -1,7 +1,8 @@
 use crate::types::Interval;
 
 use super::{
-    partition_interval_into, recurse_if_nonempty, sa_char, sa_suffix_pos, RecurseCtx, SeedMatch,
+    partition_interval_into, recurse_if_nonempty, sa_char, sa_suffix_pos, SeedMatch,
+    SeedingContext,
     BASE_A, BASE_C, BASE_G, BASE_U,
 };
 
@@ -19,7 +20,7 @@ fn is_match_pair<const WOBBLE: bool>(q_char: u8, s_char: u8) -> bool {
 
 #[inline(always)]
 pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
-    ctx: &mut RecurseCtx<'_, F>,
+    ctx: &mut SeedingContext<'_, F>,
     q_idx: usize,
     sl: usize,
     sr: usize,
@@ -266,7 +267,7 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
 /// target base is the natural direction when the partition is on the query side.
 #[inline(always)]
 pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
-    ctx: &mut RecurseCtx<'_, F>,
+    ctx: &mut SeedingContext<'_, F>,
     ql: usize,
     qr: usize,
     s_idx: usize,
@@ -362,7 +363,7 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
 #[inline(always)]
 pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
-    ctx: &mut RecurseCtx<'_, F>,
+    ctx: &mut SeedingContext<'_, F>,
     q_idx: usize,
     s_idx: usize,
     mut depth: usize,
