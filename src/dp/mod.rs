@@ -407,23 +407,20 @@ impl<'a> ExtendResult<'a> {
 }
 
 impl DpExtender {
-    pub fn new(model: DsmModel) -> Self {
+    pub fn new(model: DsmModel, max_extension: usize) -> Self {
         let mut gap_gap_profile = [0i32; 36];
         for t1 in 0..6 {
             for t2 in 0..6 {
                 gap_gap_profile[t1 * 6 + t2] = model.lookup(GAP, GAP, t1, t2);
             }
         }
+        let side = max_extension.min(MAX_EXT).saturating_add(1).max(1);
 
         Self {
-            grid: DpGrid::new(200, 200),
+            grid: DpGrid::new(side, side),
             model,
             gap_gap_profile,
         }
-    }
-
-    pub fn from_config(model: DsmModel, _cfg: DpConfig) -> Self {
-        Self::new(model)
     }
 
     #[cfg_attr(feature = "prof", inline(never))]

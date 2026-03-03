@@ -144,7 +144,7 @@ impl SearchState {
     fn new(model: DsmModel, score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
         let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
-            extender: DpExtender::from_config(model, dp_cfg),
+            extender: DpExtender::new(model, dp_cfg.max_extension()),
             dp_cfg,
         }
     }
