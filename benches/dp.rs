@@ -58,7 +58,7 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
 
 fn bench_extend_left(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_left");
-    let model = DsmModel::new(Matrix::T04, 0);
+    let model = DsmModel::new(Matrix::T04, 0, false);
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
@@ -87,7 +87,7 @@ fn bench_extend_left(c: &mut Criterion) {
 
 fn bench_extend_right(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_right");
-    let model = DsmModel::new(Matrix::T04, 0);
+    let model = DsmModel::new(Matrix::T04, 0, false);
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
@@ -118,7 +118,7 @@ fn bench_extend_right(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("throughput");
     group.sample_size(10); // Smaller sample size for realistic wall-clock time
-    let model = DsmModel::new(Matrix::T04, 0);
+    let model = DsmModel::new(Matrix::T04, 0, false);
 
     for len in [10, 20, 30, 50].iter() {
         // Left extension throughput: query_len × target_len DP cells
@@ -202,7 +202,7 @@ fn bench_throughput(c: &mut Criterion) {
 fn bench_many_extensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("many_extensions");
     group.sample_size(10);
-    let model = DsmModel::new(Matrix::T04, 0);
+    let model = DsmModel::new(Matrix::T04, 0, false);
 
     group.bench_function("100_extensions_len30", |b| {
         let queries: Vec<Sequence> = (0..10)
