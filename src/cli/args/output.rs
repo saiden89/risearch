@@ -13,7 +13,7 @@ pub struct OutputArgs {
         short = 'f',
         long = "format",
         value_name = "FORMAT",
-        default_missing_value = "detailed",
+        default_missing_value = "minimal",
         value_enum
     )]
     pub report_format: Option<OutputFormat>,
@@ -56,7 +56,7 @@ impl OutputArgs {
                 _ => config::OutputFormat::Detailed,
             }
         } else {
-            config::OutputFormat::Detailed
+            config::OutputFormat::Minimal
         }
     }
 }

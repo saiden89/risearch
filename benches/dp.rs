@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use risearch::config::Matrix;
 use risearch::dp::{DpExtender, DpView};
 use risearch::dsm::DsmModel;
-use risearch::config::Matrix;
 use risearch::seq::Sequence;
 use risearch::types::Base;
 

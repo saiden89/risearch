@@ -160,10 +160,10 @@ risearch search -q query.fa -t target.idx --seed-pairing allow_wobble
 
 Output formats:
 
-- `--format detailed` (default)
+- `--format detailed`
 - `--format cigar`
 - `--format bindingsite`
-- `--format minimal`
+- `--format minimal` (default)
 
 Compression and multifile output:
 
