@@ -2,8 +2,7 @@ use crate::types::Interval;
 
 use super::{
     partition_interval_into, recurse_if_nonempty, sa_char, sa_suffix_pos, SeedMatch,
-    SeedingContext,
-    BASE_A, BASE_C, BASE_G, BASE_U,
+    SeedingContext, BASE_A, BASE_C, BASE_G, BASE_U,
 };
 
 /// Check if a query base pairs with a target base (in complement-transformed space).

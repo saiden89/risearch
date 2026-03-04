@@ -103,7 +103,11 @@ impl<'a> SearchContext<'a> {
 
         let global = store.global_view();
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = DsmModel::new(opts.score.matrix, dp_cfg.penalty_raw(), opts.seed.allows_wobble());
+        let model = DsmModel::new(
+            opts.score.matrix,
+            dp_cfg.penalty_raw(),
+            opts.seed.allows_wobble(),
+        );
 
         info!(
             "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",

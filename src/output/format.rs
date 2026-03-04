@@ -5,7 +5,7 @@ use crate::config::OutputFormat;
 use crate::index::store::TargetStore;
 use crate::registry::QueryRegistry;
 use crate::search::SearchHit;
-use crate::seq::{utils::push_bases_as_rna, SeqView};
+use crate::seq::SeqView;
 use crate::types::Base;
 
 /// Reusable buffers for hit formatting (avoids per-hit allocation).
@@ -231,6 +231,60 @@ fn push_alignment_target_seq(buf: &mut Vec<u8>, alignment: &Alignment, t_bases: 
 }
 
 #[inline]
+fn push_base_as_rna_lower_complement(buf: &mut Vec<u8>, b: Base) {
+    let out = match b {
+        Base::A => b'u',
+        Base::G => b'c',
+        Base::C => b'g',
+        Base::U => b'a',
+        Base::N => b'n',
+        Base::Gap => b'-',
+    };
+    buf.push(out);
+}
+
+#[inline]
+fn push_bases_as_rna_lower_complement(buf: &mut Vec<u8>, s: SeqView<'_>, reverse: bool) {
+    let s = s.as_slice();
+    if reverse {
+        for &b in s.iter().rev() {
+            push_base_as_rna_lower_complement(buf, b);
+        }
+    } else {
+        for &b in s {
+            push_base_as_rna_lower_complement(buf, b);
+        }
+    }
+}
+
+/// Emit binding-site target track in C `-p3` orientation.
+///
+/// The current internal target track is opposite-orientation transformed-space.
+/// C expects the reverse-complemented target track (RNA lowercase).
+#[inline]
+fn push_alignment_target_seq_bindingsite(
+    buf: &mut Vec<u8>,
+    alignment: &Alignment,
+    t_bases: &[Base],
+) {
+    let mut t_idx = alignment
+        .steps()
+        .iter()
+        .filter(|step| step.consumes_target())
+        .count();
+
+    for &step in alignment.steps().iter().rev() {
+        if step.consumes_target() {
+            t_idx = t_idx.saturating_sub(1);
+            let b = t_bases.get(t_idx).copied().unwrap_or(Base::Gap);
+            push_base_as_rna_lower_complement(buf, b);
+        } else {
+            buf.push(b'-');
+        }
+    }
+}
+
+#[inline]
 fn push_alignment_line(buf: &mut Vec<u8>, alignment: &Alignment) {
     push_alignment_mapped(buf, alignment, |p| p.alignment_symbol() as u8);
 }
@@ -398,11 +452,18 @@ fn build_line(
             FieldKind::TargetSeq => {
                 if let Some(align) = alignment {
                     let t_bases = hit_target_bases(hit, t_fwd, t_rc);
-                    push_alignment_target_seq(line_buf, align, t_bases);
+                    push_alignment_target_seq_bindingsite(line_buf, align, t_bases);
                 }
             }
-            FieldKind::Flank5 => push_bases_as_rna(line_buf, SeqView::from(flank_5), flank_5_rev),
-            FieldKind::Flank3 => push_bases_as_rna(line_buf, SeqView::from(flank_3), flank_3_rev),
+            // C `-p3` semantics:
+            // - flank_5 is complemented output from our current flank_3 side.
+            // - flank_3 is complemented output from our current flank_5 side.
+            FieldKind::Flank5 => {
+                push_bases_as_rna_lower_complement(line_buf, SeqView::from(flank_3), flank_3_rev)
+            }
+            FieldKind::Flank3 => {
+                push_bases_as_rna_lower_complement(line_buf, SeqView::from(flank_5), flank_5_rev)
+            }
         }
     }
     line_buf.push(b'\n');

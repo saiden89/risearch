@@ -217,8 +217,7 @@ pub(super) fn init_limited_rows<const LEFT: bool>(
 
             // Secondary[2,k] = Bq
             let m1k = (*cell(ptr, width, 1, k)).m;
-            (*cell(ptr, width, 2, k)).bq =
-                add_e(m1k, stack_dir::<LEFT>(qi1, qi2, tj, GAP, model));
+            (*cell(ptr, width, 2, k)).bq = add_e(m1k, stack_dir::<LEFT>(qi1, qi2, tj, GAP, model));
 
             // Primary[2,k] = Bt
             let bt2 = best2(
@@ -301,8 +300,7 @@ pub(super) fn init_limited_cols<const LEFT: bool>(
 
             // Secondary[ k,2 ] = Bt
             let m_k1 = (*cell(ptr, width, k, 1)).m; // Preinitialized in frontier.
-            (*cell(ptr, width, k, 2)).bt =
-                add_e(m_k1, stack_dir::<LEFT>(qi, GAP, tj1, tj2, model));
+            (*cell(ptr, width, k, 2)).bt = add_e(m_k1, stack_dir::<LEFT>(qi, GAP, tj1, tj2, model));
 
             // Primary[ k,2 ] = Bq
             let bq2 = best2(
