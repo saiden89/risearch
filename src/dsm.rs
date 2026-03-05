@@ -27,10 +27,45 @@ pub use crate::types::GAP;
 /// DSM model representing a specific energy matrix (e.g., T04, T99) with baked-in penalty and pairing rules.
 #[derive(Clone, Debug)]
 pub struct DsmModel {
-    /// Penalty-adjusted flattened DSM table for this run.
-    flat: [i32; DSM_FLAT_SIZE],
+    /// Penalty-adjusted right-canonical table for this run (identity orientation).
+    right: [i32; DSM_FLAT_SIZE],
+    /// Left-canonical table: `left[q1][q2][t1][t2] = right[q2][q1][t2][t1]`.
+    left: [i32; DSM_FLAT_SIZE],
+    /// Gap-gap transition profile for right-canonical lookups.
+    gap_gap_profile_right: [i32; 36],
+    /// Gap-gap transition profile for left-canonical lookups.
+    gap_gap_profile_left: [i32; 36],
     /// Binary pairing matrix for maximality checks and seed validation.
     pair_mat: &'static [[u8; 6]; 6],
+}
+
+/// Encapsulated handle for direction-canonical DSM lookups.
+///
+/// Points to either the original (right) or transposed (left) flat table.
+/// All direction-dependent stacking order is resolved by which table is chosen;
+/// consumers always call `lookup(q1, q2, t1, t2)` in the same canonical order.
+#[derive(Clone, Copy)]
+pub(crate) struct DirectionalDsm<'a> {
+    table: &'a [i32; DSM_FLAT_SIZE],
+    gap_gap_profile: &'a [i32; 36],
+}
+
+impl DirectionalDsm<'_> {
+    #[inline(always)]
+    pub(crate) fn lookup(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+        let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+        unsafe { *self.table.get_unchecked(idx) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn terminal(&self, q: usize, t: usize) -> i32 {
+        self.lookup(q, GAP, t, GAP)
+    }
+
+    #[inline(always)]
+    pub(crate) fn gap_gap_profile(&self) -> &[i32; 36] {
+        self.gap_gap_profile
+    }
 }
 
 impl DsmModel {
@@ -41,18 +76,37 @@ impl DsmModel {
             Matrix::T99 => &T99,
         };
 
-        let mut flat = [0i32; DSM_FLAT_SIZE];
+        let mut right = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {
             for q2 in 0..6 {
                 for t1 in 0..6 {
                     for t2 in 0..6 {
                         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-                        flat[idx] =
+                        right[idx] =
                             source_table[q1][q2][t1][t2] as i32 - penalty * DSM_EXTEND_FLAT[idx];
                     }
                 }
             }
         }
+
+        let mut left = [0i32; DSM_FLAT_SIZE];
+        for q1 in 0..6 {
+            for q2 in 0..6 {
+                for t1 in 0..6 {
+                    for t2 in 0..6 {
+                        let dst = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+                        let src = q2 * 216 + q1 * 36 + t2 * 6 + t1;
+                        left[dst] = right[src];
+                    }
+                }
+            }
+        }
+
+        let mut gap_gap_profile_right = [0i32; 36];
+        let mut gap_gap_profile_left = [0i32; 36];
+        let gap_gap_start = GAP * 216 + GAP * 36;
+        gap_gap_profile_right.copy_from_slice(&right[gap_gap_start..(gap_gap_start + 36)]);
+        gap_gap_profile_left.copy_from_slice(&left[gap_gap_start..(gap_gap_start + 36)]);
 
         let pair_mat = if allow_wobble {
             &PAIR_MAT
@@ -60,7 +114,29 @@ impl DsmModel {
             &PAIR_MAT_NO_GU
         };
 
-        Self { flat, pair_mat }
+        Self {
+            right,
+            left,
+            gap_gap_profile_right,
+            gap_gap_profile_left,
+            pair_mat,
+        }
+    }
+
+    /// Left-canonical DSM handle (transposed table).
+    pub(crate) fn left(&self) -> DirectionalDsm<'_> {
+        DirectionalDsm {
+            table: &self.left,
+            gap_gap_profile: &self.gap_gap_profile_left,
+        }
+    }
+
+    /// Right-canonical DSM handle (original table, identity).
+    pub(crate) fn right(&self) -> DirectionalDsm<'_> {
+        DirectionalDsm {
+            table: &self.right,
+            gap_gap_profile: &self.gap_gap_profile_right,
+        }
     }
 
     /// Check if two bases form a valid pair according to the model's rules.
@@ -79,19 +155,7 @@ impl DsmModel {
         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
         // SAFETY: Input indices are guaranteed 0..6 by Base::idx()
         // and the table size is 1296 (6^4).
-        unsafe { *self.flat.get_unchecked(idx) }
-    }
-
-    /// Terminal penalty for 5' extension (left DP). DSM[Gap][q][Gap][t]
-    #[inline(always)]
-    pub fn terminal_5p(&self, q: usize, t: usize) -> i32 {
-        self.lookup(GAP, q, GAP, t)
-    }
-
-    /// Terminal penalty for 3' extension (right DP). DSM[q][Gap][t][Gap]
-    #[inline(always)]
-    pub fn terminal_3p(&self, q: usize, t: usize) -> i32 {
-        self.lookup(q, GAP, t, GAP)
+        unsafe { *self.right.get_unchecked(idx) }
     }
 
     /// Full seed energy calculation with antiparallel indexing.

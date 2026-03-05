@@ -67,7 +67,7 @@ fn bench_extend_left(c: &mut Criterion) {
             let q_start = 50;
             let t_start = 50;
 
-            let mut extender = DpExtender::new(model.clone(), 200);
+            let mut extender = DpExtender::new(200);
 
             b.iter(|| {
                 let view = DpView::left(
@@ -76,6 +76,7 @@ fn bench_extend_left(c: &mut Criterion) {
                     black_box(q_start),
                     black_box(t_start),
                     black_box(len),
+                    &model,
                 );
                 let _ = extender.extend(black_box(&view));
             });
@@ -96,7 +97,7 @@ fn bench_extend_right(c: &mut Criterion) {
             let q_end = 49;
             let t_end = 49;
 
-            let mut extender = DpExtender::new(model.clone(), 200);
+            let mut extender = DpExtender::new(200);
 
             b.iter(|| {
                 let view = DpView::right(
@@ -105,6 +106,7 @@ fn bench_extend_right(c: &mut Criterion) {
                     black_box(q_end),
                     black_box(t_end),
                     black_box(len),
+                    &model,
                 );
                 let _ = extender.extend(black_box(&view));
             });
@@ -131,7 +133,7 @@ fn bench_throughput(c: &mut Criterion) {
                 let q_start = 50;
                 let t_start = 50;
 
-                let mut extender = DpExtender::new(model.clone(), 200);
+                let mut extender = DpExtender::new(200);
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
@@ -144,6 +146,7 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(q_start),
                             black_box(t_start),
                             black_box(len),
+                            &model,
                         );
                         let result = extender.extend(black_box(&view));
                         total_duration += start.elapsed();
@@ -167,7 +170,7 @@ fn bench_throughput(c: &mut Criterion) {
                 let q_end = 49;
                 let t_end = 49;
 
-                let mut extender = DpExtender::new(model.clone(), 200);
+                let mut extender = DpExtender::new(200);
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
@@ -180,6 +183,7 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(q_end),
                             black_box(t_end),
                             black_box(len),
+                            &model,
                         );
                         let result = extender.extend(black_box(&view));
                         total_duration += start.elapsed();
@@ -212,7 +216,7 @@ fn bench_many_extensions(c: &mut Criterion) {
             .map(|i| generate_sequence(100, 5000 + i as u64))
             .collect();
 
-        let mut extender = DpExtender::new(model.clone(), 200);
+        let mut extender = DpExtender::new(200);
 
         b.iter(|| {
             let mut total_score = 0i32;
@@ -241,6 +245,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(q_start),
                         black_box(t_start),
                         black_box(30),
+                        &model,
                     );
                     let left_result = extender.extend(black_box(&left_view));
                     total_score = total_score.wrapping_add(left_result.score);
@@ -252,6 +257,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(q_end),
                         black_box(t_end),
                         black_box(30),
+                        &model,
                     );
                     let right_result = extender.extend(black_box(&right_view));
                     total_score = total_score.wrapping_add(right_result.score);

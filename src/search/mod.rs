@@ -145,10 +145,10 @@ struct SearchState {
 }
 
 impl SearchState {
-    fn new(model: DsmModel, score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
+    fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
         let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
-            extender: DpExtender::new(model, dp_cfg.max_extension()),
+            extender: DpExtender::new(dp_cfg.max_extension()),
             dp_cfg,
         }
     }
@@ -162,7 +162,7 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
             (
-                SearchState::new(ctx.model.clone(), &ctx.opts.score, &ctx.opts.extend),
+                SearchState::new(&ctx.opts.score, &ctx.opts.extend),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
@@ -189,7 +189,7 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
             (
-                SearchState::new(ctx.model.clone(), &ctx.opts.score, &ctx.opts.extend),
+                SearchState::new(&ctx.opts.score, &ctx.opts.extend),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
@@ -459,11 +459,11 @@ fn compute_seed_extension(
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-        let term_5p = model.terminal_5p(
+        let term_5p = model.left().terminal(
             query_bases[q_pos].idx(),
             target_trans[t_match_end].complement().idx(),
         );
-        let term_3p = model.terminal_3p(
+        let term_3p = model.right().terminal(
             query_bases[q_pos + len - 1].idx(),
             target_trans[t_pos].complement().idx(),
         );
@@ -480,7 +480,7 @@ fn compute_seed_extension(
     }
 
     let (l_score, l_q, l_t, left_pairs) = {
-        let view = DpView::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
+        let view = DpView::left(query_bases, target_trans, q_pos, t_match_end, max_ext, model);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -491,7 +491,8 @@ fn compute_seed_extension(
     };
 
     let (r_score, r_q, r_t, right_pairs) = {
-        let view = DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
+        let view =
+            DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext, model);
         let result = extender.extend(&view);
         let pairs = if with_traceback {
             result.traceback(&view)

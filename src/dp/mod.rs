@@ -1,6 +1,6 @@
 use crate::alignment::PairClass;
 use crate::config::{ExtendConfig, ScoreConfig};
-use crate::dsm::{DsmModel, GAP};
+use crate::dsm::{DirectionalDsm, DsmModel, GAP};
 use crate::types::Base;
 use log::trace;
 use smallvec::SmallVec;
@@ -46,11 +46,14 @@ impl From<(&ScoreConfig, &ExtendConfig)> for DpConfig {
     }
 }
 
-/// Extension direction - determines terminal stacking order
+/// Extension direction - determines sequence indexing polarity.
+///
+/// After canonical DSM construction, direction only affects `q()`/`t()` index
+/// arithmetic. All stacking order is resolved by the canonical table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExtendDir {
-    Left,  // Terminal: Gap→Q, Gap→T (extending into sequence from gap)
-    Right, // Terminal: Q→Gap, T→Gap (extending out of sequence into gap)
+    Left,
+    Right,
 }
 
 impl std::fmt::Display for ExtendDir {
@@ -63,32 +66,23 @@ impl std::fmt::Display for ExtendDir {
 }
 
 // =============================================================================
-// DP VIEW - Direction-aware sequence access abstraction
+// DP VIEW - Direction-aware sequence access + canonical DSM
 // =============================================================================
 
 /// View into sequences for DP extension.
 ///
-/// Abstracts away index arithmetic and DSM stacking order differences
-/// between left and right extensions. The DP loop uses uniform calls
-/// like `view.e(q_prev, q_curr, t_prev, t_curr)` and the view handles
-/// direction-specific reordering internally.
-///
-/// # Stacking Order
-///
-/// RNA stacking energy is directional (5'→3'). For nearest-neighbor model:
-/// - **Left extension** (toward 5'): DSM[curr, prev, curr, prev]
-/// - **Right extension** (toward 3'): DSM[prev, curr, prev, curr]
-///
-/// The `e()` method always takes arguments in (prev, curr, prev, curr) order
-/// and internally reorders for left extension.
+/// Stores a `DirectionalDsm` handle that absorbs all direction-dependent stacking
+/// order. The DP loop uses uniform calls like `view.e(q_prev, q_curr, t_prev, t_curr)`
+/// and the canonical table provides the correct energy for both directions.
 pub struct DpView<'a> {
     query: &'a [Base],
     target_transformed: &'a [Base],
     q_anchor: usize,
     t_anchor: usize,
-    pub dir: ExtendDir,
+    pub(super) dir: ExtendDir,
     pub q_len: usize,
     pub t_len: usize,
+    dsm: DirectionalDsm<'a>,
 }
 
 impl<'a> DpView<'a> {
@@ -124,6 +118,7 @@ impl<'a> DpView<'a> {
         q_start: usize,
         t_start: usize,
         max_ext: usize,
+        model: &'a DsmModel,
     ) -> Self {
         Self {
             query,
@@ -133,6 +128,7 @@ impl<'a> DpView<'a> {
             dir: ExtendDir::Left,
             q_len: (q_start + 1).min(max_ext),
             t_len: (target_transformed.len() - t_start).min(max_ext),
+            dsm: model.left(),
         }
     }
 
@@ -143,6 +139,7 @@ impl<'a> DpView<'a> {
         q_end: usize,
         t_end: usize,
         max_ext: usize,
+        model: &'a DsmModel,
     ) -> Self {
         Self {
             query,
@@ -152,6 +149,7 @@ impl<'a> DpView<'a> {
             dir: ExtendDir::Right,
             q_len: (query.len() - q_end).min(max_ext),
             t_len: (t_end + 1).min(max_ext),
+            dsm: model.right(),
         }
     }
 
@@ -178,75 +176,71 @@ impl<'a> DpView<'a> {
         }
     }
 
-    /// Stacking energy with direction-aware ordering.
+    /// Canonical stacking energy lookup.
     ///
-    /// Always called with arguments in (prev, curr, prev, curr) order.
-    /// Left extension internally swaps to (curr, prev, curr, prev).
+    /// Arguments are always in (prev, curr, prev, curr) order.
+    /// The canonical table handles direction-specific reordering.
     #[inline(always)]
-    pub fn e(&self, q1: usize, q2: usize, t1: usize, t2: usize, model: &DsmModel) -> i32 {
-        match self.dir {
-            // Left: DSM[curr, prev, curr, prev] - stacking toward 5'
-            ExtendDir::Left => model.lookup(q2, q1, t2, t1),
-            // Right: DSM[prev, curr, prev, curr] - stacking toward 3'
-            ExtendDir::Right => model.lookup(q1, q2, t1, t2),
-        }
+    pub fn e(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+        self.dsm.lookup(q1, q2, t1, t2)
     }
 
     /// Terminal penalty at position (i, j) - stacking with gap boundary.
     #[inline(always)]
-    pub fn terminal(&self, i: usize, j: usize, model: &DsmModel) -> i32 {
-        match self.dir {
-            ExtendDir::Left => model.terminal_5p(self.q(i), self.t(j)),
-            ExtendDir::Right => model.terminal_3p(self.q(i), self.t(j)),
-        }
+    pub fn terminal(&self, i: usize, j: usize) -> i32 {
+        self.dsm.terminal(self.q(i), self.t(j))
     }
 
     /// Match/mismatch energy at (i, j) from diagonal (i-1, j-1)
     #[inline(always)]
-    pub fn match_e(&self, i: usize, j: usize, model: &DsmModel) -> i32 {
-        self.e(self.q(i - 1), self.q(i), self.t(j - 1), self.t(j), model)
+    pub fn match_e(&self, i: usize, j: usize) -> i32 {
+        self.e(self.q(i - 1), self.q(i), self.t(j - 1), self.t(j))
     }
 
     // =========================================================================
     // DP TRANSITION HELPERS - exactly match the DP recurrence semantics
     // =========================================================================
-    // All methods take arguments in (prev, curr) order; view.e() swaps for LEFT.
-    // These match the actual energy lookups in the DP main loop.
 
     /// M[i,j] from Bq[i-1,j-1]: re-entry to match from query bulge
     #[inline(always)]
-    pub fn m_from_bq(&self, i: usize, j: usize, model: &DsmModel) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, self.t(j), model)
+    pub fn m_from_bq(&self, i: usize, j: usize) -> i32 {
+        self.e(self.q(i - 1), self.q(i), GAP, self.t(j))
     }
 
     /// M[i,j] from Bt[i-1,j-1]: re-entry to match from target bulge
     #[inline(always)]
-    pub fn m_from_bt(&self, i: usize, j: usize, model: &DsmModel) -> i32 {
-        self.e(GAP, self.q(i), self.t(j - 1), self.t(j), model)
+    pub fn m_from_bt(&self, i: usize, j: usize) -> i32 {
+        self.e(GAP, self.q(i), self.t(j - 1), self.t(j))
     }
 
     /// Bq[i,j] from M[i-1,j]: open query bulge (gap in target)
     #[inline(always)]
-    pub fn bq_open(&self, i: usize, j: usize, model: &DsmModel) -> i32 {
-        self.e(self.q(i - 1), self.q(i), self.t(j), GAP, model)
+    pub fn bq_open(&self, i: usize, j: usize) -> i32 {
+        self.e(self.q(i - 1), self.q(i), self.t(j), GAP)
     }
 
     /// Bq[i,j] from Bq[i-1,j]: extend query bulge
     #[inline(always)]
-    pub fn bq_ext(&self, i: usize, model: &DsmModel) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, GAP, model)
+    pub fn bq_ext(&self, i: usize) -> i32 {
+        self.e(self.q(i - 1), self.q(i), GAP, GAP)
     }
 
     /// Bt[i,j] from M[i,j-1]: open target bulge (gap in query)
     #[inline(always)]
-    pub fn bt_open(&self, i: usize, j: usize, model: &DsmModel) -> i32 {
-        self.e(self.q(i), GAP, self.t(j - 1), self.t(j), model)
+    pub fn bt_open(&self, i: usize, j: usize) -> i32 {
+        self.e(self.q(i), GAP, self.t(j - 1), self.t(j))
     }
 
     /// Bt[i,j] from Bt[i,j-1]: extend target bulge
     #[inline(always)]
-    pub fn bt_ext(&self, j: usize, model: &DsmModel) -> i32 {
-        self.e(GAP, GAP, self.t(j - 1), self.t(j), model)
+    pub fn bt_ext(&self, j: usize) -> i32 {
+        self.e(GAP, GAP, self.t(j - 1), self.t(j))
+    }
+
+    /// Canonical DSM accessor for core loop and init code.
+    #[inline(always)]
+    pub(super) fn dsm(&self) -> &DirectionalDsm<'a> {
+        &self.dsm
     }
 }
 
@@ -399,11 +393,12 @@ impl DpGrid {
     }
 }
 
-/// Stateful DP extender with reusable grid
+/// Stateful DP extender with reusable grid.
+///
+/// Direction-agnostic: the canonical DSM in `DpView` resolves all
+/// direction-dependent stacking order at view construction time.
 pub struct DpExtender {
     grid: DpGrid,
-    model: DsmModel,
-    gap_gap_profile: [i32; 36],
 }
 
 /// Guard holding a reference to the DP grid after forward pass.
@@ -411,7 +406,6 @@ pub struct DpExtender {
 /// (borrow checker enforces this via the lifetime on `grid`).
 pub struct ExtendResult<'a> {
     grid: &'a DpGrid,
-    model: &'a DsmModel,
     pub score: i32,
     pub q_len: usize,
     pub t_len: usize,
@@ -420,29 +414,18 @@ pub struct ExtendResult<'a> {
 impl<'a> ExtendResult<'a> {
     /// Run traceback to reconstruct alignment as Pairings.
     /// Only call when alignment output is needed (skip for Minimal format).
-    pub fn traceback(&self, view: &DpView<'a>) -> SmallVec<[PairClass; 64]> {
+    pub fn traceback(&self, view: &DpView<'_>) -> SmallVec<[PairClass; 64]> {
         let mut out = SmallVec::new();
-        traceback(
-            view, self.grid, self.model, self.q_len, self.t_len, &mut out,
-        );
+        traceback(view, self.grid, self.q_len, self.t_len, &mut out);
         out
     }
 }
 
 impl DpExtender {
-    pub fn new(model: DsmModel, max_extension: usize) -> Self {
-        let mut gap_gap_profile = [0i32; 36];
-        for t1 in 0..6 {
-            for t2 in 0..6 {
-                gap_gap_profile[t1 * 6 + t2] = model.lookup(GAP, GAP, t1, t2);
-            }
-        }
+    pub fn new(max_extension: usize) -> Self {
         let side = max_extension.min(MAX_EXT).saturating_add(1).max(1);
-
         Self {
             grid: DpGrid::new(side, side),
-            model,
-            gap_gap_profile,
         }
     }
 
@@ -455,13 +438,12 @@ impl DpExtender {
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
 
         // Initial score: terminal penalty for seed boundary
-        let mut best = BestScore::new(view.terminal(0, 0, &self.model));
+        let mut best = BestScore::new(view.terminal(0, 0));
 
         // Early return
         if q_len <= 1 || t_len <= 1 {
             return ExtendResult {
                 grid: &self.grid,
-                model: &self.model,
                 score: best.score,
                 q_len: 0,
                 t_len: 0,
@@ -494,19 +476,17 @@ impl DpExtender {
         // =====================================================================
 
         let has_main_region = init_frontier(
-            view,
             q_ptr,
             t_ptr,
             &mut self.grid,
             q_len,
             t_len,
-            &self.model,
+            view.dsm(),
             &mut best,
         );
         if !has_main_region {
             return ExtendResult {
                 grid: &self.grid,
-                model: &self.model,
                 score: best.score,
                 q_len: best.i,
                 t_len: best.j,
@@ -517,29 +497,15 @@ impl DpExtender {
         // MAIN DP LOOP (i >= 3, j >= 3)
         // =======================================================================
 
-        if view.dir == ExtendDir::Left {
-            dp_main_loop_generic::<true>(
-                q_ptr,
-                t_ptr,
-                &mut self.grid,
-                q_len,
-                t_len,
-                &self.model,
-                &self.gap_gap_profile,
-                &mut best,
-            );
-        } else {
-            dp_main_loop_generic::<false>(
-                q_ptr,
-                t_ptr,
-                &mut self.grid,
-                q_len,
-                t_len,
-                &self.model,
-                &self.gap_gap_profile,
-                &mut best,
-            );
-        }
+        dp_main_loop_generic(
+            q_ptr,
+            t_ptr,
+            &mut self.grid,
+            q_len,
+            t_len,
+            view.dsm(),
+            &mut best,
+        );
 
         trace!(
             "{} result: score={} q_len={} t_len={}",
@@ -551,7 +517,6 @@ impl DpExtender {
 
         ExtendResult {
             grid: &self.grid,
-            model: &self.model,
             score: best.score,
             q_len: best.i,
             t_len: best.j,

@@ -3,7 +3,6 @@ use smallvec::SmallVec;
 
 use super::{DpGrid, DpView, NEG_INF};
 use crate::alignment::PairClass;
-use crate::dsm::DsmModel;
 use crate::types::Base;
 
 /// Traceback state — internal to this module, never stored.
@@ -29,7 +28,6 @@ fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
 pub(super) fn traceback(
     view: &DpView<'_>,
     grid: &DpGrid,
-    model: &DsmModel,
     best_i: usize,
     best_j: usize,
     out: &mut SmallVec<[PairClass; 64]>,
@@ -48,9 +46,9 @@ pub(super) fn traceback(
                 let m_val = c.m;
                 let diag = grid.get(i - 1, j - 1);
 
-                let match_e = view.match_e(i, j, model);
-                let m_from_bq = view.m_from_bq(i, j, model);
-                let m_from_bt = view.m_from_bt(i, j, model);
+                let match_e = view.match_e(i, j);
+                let m_from_bq = view.m_from_bq(i, j);
+                let m_from_bt = view.m_from_bt(i, j);
 
                 let next = if is_transition(m_val, diag.m, match_e) {
                     Some(State::Match)
@@ -85,8 +83,8 @@ pub(super) fn traceback(
                 let bq_val = c.bq;
                 let up = grid.get(i - 1, j);
 
-                let bq_open = view.bq_open(i, j, model);
-                let bq_ext = view.bq_ext(i, model);
+                let bq_open = view.bq_open(i, j);
+                let bq_ext = view.bq_ext(i);
 
                 let next = if is_transition(bq_val, up.m, bq_open) {
                     Some(State::Match)
@@ -118,8 +116,8 @@ pub(super) fn traceback(
                 let bt_val = c.bt;
                 let left = grid.get(i, j - 1);
 
-                let bt_open = view.bt_open(i, j, model);
-                let bt_ext = view.bt_ext(j, model);
+                let bt_open = view.bt_open(i, j);
+                let bt_ext = view.bt_ext(j);
 
                 let next = if is_transition(bt_val, left.m, bt_open) {
                     Some(State::Match)
