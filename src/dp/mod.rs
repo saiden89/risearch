@@ -250,9 +250,35 @@ impl<'a> DpView<'a> {
     }
 }
 
-/// Sentinel value for invalid/uninitialized score (~ -1 billion).
-/// Safe for arithmetic: MIN_SCORE + energy (±2000) will not overflow/underflow i32.
-pub(super) const MIN_SCORE: i32 = -1_000_000_000;
+/// Negative infinity for the (max, +) semiring over DP scores.
+///
+/// Must satisfy two invariants (enforced by compile-time assert below):
+/// 1. Invalid scores can never drift into valid range through accumulated adds
+/// 2. No i32 underflow from accumulated negative energy
+pub(super) const NEG_INF: i32 = -1_000_000_000;
+
+/// Conservative upper bound on |energy| from a single DSM lookup.
+/// Source tables are i16 (max 32767); penalty adds modest overhead.
+/// Real values are ~300-400 (0.01 kcal/mol units), but we bound generously.
+const MAX_ENERGY: i64 = 40_000;
+
+// Compile-time proof that NEG_INF arithmetic is safe for MAX_EXT.
+const _: () = {
+    // Longest path through MAX_EXT × MAX_EXT grid
+    let max_drift = 2 * MAX_EXT as i64 * MAX_ENERGY;
+    let neg_inf_abs = -(NEG_INF as i64);
+
+    // Invalid scores must stay below valid range after max positive drift
+    assert!(
+        neg_inf_abs > 2 * max_drift,
+        "NEG_INF too close to zero: invalid scores could enter valid range"
+    );
+    // NEG_INF minus max negative drift must not underflow i32
+    assert!(
+        neg_inf_abs + max_drift < (i32::MAX as i64 + 1),
+        "NEG_INF too close to i32::MIN: arithmetic could overflow"
+    );
+};
 
 /// Tracks the best scoring position found during DP extension.
 #[derive(Clone, Copy)]
@@ -270,26 +296,22 @@ impl BestScore {
     /// Update if `val + term` exceeds current best.
     #[inline(always)]
     pub(super) fn update(&mut self, val: i32, term: i32, i: usize, j: usize) {
-        if val > MIN_SCORE {
-            let curr = val + term;
-            if curr > self.score {
-                self.score = curr;
-                self.i = i;
-                self.j = j;
-            }
+        let curr = val + term;
+        if curr > self.score {
+            self.score = curr;
+            self.i = i;
+            self.j = j;
         }
     }
 }
 
-/// Helper: add energy if base is valid (not MIN_SCORE).
-/// Simple branch - LLVM optimizes to CMOV when beneficial.
+/// Add stacking energy to a DP score.
+///
+/// NEG_INF propagates naturally: NEG_INF + energy ≈ NEG_INF,
+/// which can never reach the valid score range (see NEG_INF docs).
 #[inline(always)]
 pub(super) fn add_e(base: i32, energy: i32) -> i32 {
-    if base > MIN_SCORE {
-        base + energy
-    } else {
-        MIN_SCORE
-    }
+    base + energy
 }
 
 /// max of 3 values - branchless
@@ -317,9 +339,9 @@ pub(super) struct DpCell {
 
 impl DpCell {
     pub(super) const EMPTY: Self = Self {
-        m: MIN_SCORE,
-        bq: MIN_SCORE,
-        bt: MIN_SCORE,
+        m: NEG_INF,
+        bq: NEG_INF,
+        bt: NEG_INF,
     };
 }
 

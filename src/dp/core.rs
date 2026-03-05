@@ -2,7 +2,7 @@ use std::cmp::max;
 
 use crate::dsm::{DsmModel, GAP};
 
-use super::{add_e, max3, BestScore, DpCell, DpGrid, MIN_SCORE};
+use super::{add_e, max3, BestScore, DpCell, DpGrid};
 
 /// Threshold where the row-profile-heavy kernel starts to amortize better.
 pub(super) const LONG_KERNEL_T_LEN_THRESHOLD: usize = 24;
@@ -110,14 +110,12 @@ fn dp_main_loop_short<const LEFT: bool>(
                 };
                 let val_m = max3(s_mm, s_mq, s_mt);
 
-                if val_m > MIN_SCORE {
-                    let term = if LEFT {
-                        model.terminal_5p(qi, tj)
-                    } else {
-                        model.terminal_3p(qi, tj)
-                    };
-                    best.update(val_m, term, i, j);
-                }
+                let term = if LEFT {
+                    model.terminal_5p(qi, tj)
+                } else {
+                    model.terminal_3p(qi, tj)
+                };
+                best.update(val_m, term, i, j);
 
                 let up = *ptr.add(up_idx);
                 let s_qm = if LEFT {
@@ -228,10 +226,7 @@ fn dp_main_loop_long<const LEFT: bool>(
                 };
                 let s_mt = add_e(diag.bt, bt_to_m_profile[t_stack_idx]);
                 let val_m = max3(s_mm, s_mq, s_mt);
-
-                if val_m > MIN_SCORE {
-                    best.update(val_m, terminal_profile[tj], i, j);
-                }
+                best.update(val_m, terminal_profile[tj], i, j);
 
                 let up = *ptr.add(up_idx);
                 let s_qm = if LEFT {

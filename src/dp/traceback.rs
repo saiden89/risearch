@@ -1,7 +1,7 @@
 use log::trace;
 use smallvec::SmallVec;
 
-use super::{DpGrid, DpView, MIN_SCORE};
+use super::{DpGrid, DpView, NEG_INF};
 use crate::alignment::PairClass;
 use crate::dsm::DsmModel;
 use crate::types::Base;
@@ -17,7 +17,7 @@ enum State {
 /// Check if a DP transition is valid: predecessor score is valid and produces the expected value.
 #[inline(always)]
 fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
-    pred > MIN_SCORE && val == pred + energy
+    pred > NEG_INF && val == pred + energy
 }
 
 /// Reconstruct alignment from score-only DP matrices, emitting `PairClass` path directly.

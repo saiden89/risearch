@@ -2,7 +2,7 @@ use std::cmp::max;
 
 use crate::dsm::{DsmModel, GAP};
 
-use super::{add_e, BestScore, DpCell, DpGrid, DpView, ExtendDir, MIN_SCORE};
+use super::{add_e, BestScore, DpCell, DpGrid, DpView, ExtendDir, NEG_INF};
 
 // =============================================================================
 // INIT HELPERS - Reduce code duplication in DP initialization
@@ -60,43 +60,43 @@ pub(crate) fn init_frontier(
         // Corner cells: explicit NA values (like C code)
         *cell(ptr, width, 0, 0) = DpCell {
             m: 0,
-            bq: MIN_SCORE,
-            bt: MIN_SCORE,
+            bq: NEG_INF,
+            bt: NEG_INF,
         };
         *cell(ptr, width, 0, 1) = DpCell {
-            m: MIN_SCORE,
-            bq: MIN_SCORE,
+            m: NEG_INF,
+            bq: NEG_INF,
             bt: view.bt_open(0, 1, model),
         };
         *cell(ptr, width, 1, 0) = DpCell {
-            m: MIN_SCORE,
+            m: NEG_INF,
             bq: view.bq_open(1, 0, model),
-            bt: MIN_SCORE,
+            bt: NEG_INF,
         };
 
         let m11 = view.match_e(1, 1, model);
         *cell(ptr, width, 1, 1) = DpCell {
             m: m11,
-            bq: MIN_SCORE,
-            bt: MIN_SCORE,
+            bq: NEG_INF,
+            bt: NEG_INF,
         };
         best.update(m11, view.terminal(1, 1, model), 1, 1);
 
         // Row 0 (Bt only) and Row 1 (M) - unconditional writes
         for k in 2..t_len {
             let prev = (*cell(ptr, width, 0, k - 1)).bt;
-            // Always write - use add_e to propagate MIN_SCORE
+            // Always write - use add_e to propagate NEG_INF
             let bt_val = add_e(prev, view.bt_ext(k, model));
             let m_val = add_e(prev, view.m_from_bt(1, k, model));
             *cell(ptr, width, 0, k) = DpCell {
-                m: MIN_SCORE,
-                bq: MIN_SCORE,
+                m: NEG_INF,
+                bq: NEG_INF,
                 bt: bt_val,
             };
             *cell(ptr, width, 1, k) = DpCell {
                 m: m_val,
-                bq: MIN_SCORE,
-                bt: MIN_SCORE,
+                bq: NEG_INF,
+                bt: NEG_INF,
             };
             best.update(m_val, view.terminal(1, k, model), 1, k);
         }
@@ -107,14 +107,14 @@ pub(crate) fn init_frontier(
             let bq_val = add_e(prev, view.bq_ext(k, model));
             let m_val = add_e(prev, view.m_from_bq(k, 1, model));
             *cell(ptr, width, k, 0) = DpCell {
-                m: MIN_SCORE,
+                m: NEG_INF,
                 bq: bq_val,
-                bt: MIN_SCORE,
+                bt: NEG_INF,
             };
             *cell(ptr, width, k, 1) = DpCell {
                 m: m_val,
-                bq: MIN_SCORE,
-                bt: MIN_SCORE,
+                bq: NEG_INF,
+                bt: NEG_INF,
             };
             best.update(m_val, view.terminal(k, 1, model), k, 1);
         }
