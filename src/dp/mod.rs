@@ -260,6 +260,7 @@ pub(super) const NEG_INF: i32 = -1_000_000_000;
 /// Conservative upper bound on |energy| from a single DSM lookup.
 /// Source tables are i16 (max 32767); penalty adds modest overhead.
 /// Real values are ~300-400 (0.01 kcal/mol units), but we bound generously.
+/// Enforced at runtime in DsmModel::new.
 const MAX_ENERGY: i64 = 40_000;
 
 // Compile-time proof that NEG_INF arithmetic is safe for MAX_EXT.

@@ -1,5 +1,13 @@
 use crate::config::{self, Matrix};
 
+fn parse_penalty(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|e| format!("{e}"))?;
+    if !(0.0..=50.0).contains(&v) {
+        return Err(format!("penalty must be between 0 and 50, got {v}"));
+    }
+    Ok(v)
+}
+
 /// Arguments for global scoring model
 #[derive(clap::Args, Debug, Clone)]
 pub struct ScoreArgs {
@@ -7,12 +15,13 @@ pub struct ScoreArgs {
     #[arg(short = 'z', long = "matrix", value_name = "MATRIX", default_value_t = Matrix::T04, value_enum)]
     pub matrix: Matrix,
 
-    /// Per-nucleotide penalty used by the scoring model (in kcal/mol)
+    /// Per-nucleotide penalty used by the scoring model (in kcal/mol, 0–50)
     #[arg(
         short = 'd',
         long = "penalty",
         value_name = "PENALTY",
-        default_value_t = 0.0
+        default_value_t = 0.0,
+        value_parser = parse_penalty
     )]
     pub penalty: f64,
 
