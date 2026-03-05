@@ -39,6 +39,7 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let can_mm = ctx.max_mm > 0
         && mm_count < ctx.max_mm
         && d1 > ctx.min_prefix
+        && match_streak < ctx.min_len
         && ctx.max_len - d1 >= ctx.min_suffix;
 
     let (sa_lo, sa_hi) = (sint[0], sint[1]);
@@ -286,6 +287,7 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let can_mm = ctx.max_mm > 0
         && mm_count < ctx.max_mm
         && d1 > ctx.min_prefix
+        && match_streak < ctx.min_len
         && ctx.max_len - d1 >= ctx.min_suffix;
 
     let (qa_lo, qa_hi) = (qint[0], qint[1]);
@@ -368,14 +370,16 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     mut depth: usize,
     mut match_streak: usize,
     mut mm_count: usize,
+    mut emit_current: bool,
 ) {
     let q_suffix_pos = sa_suffix_pos(ctx.q_sa, q_idx);
     let s_suffix_pos = sa_suffix_pos(ctx.t_sa, s_idx);
 
     loop {
-        if depth >= ctx.min_len
+        if emit_current
+            && depth >= ctx.min_len
             && depth <= ctx.max_len
-            && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < depth))
+            && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < ctx.min_len))
         {
             (ctx.on_match)(SeedMatch {
                 query_interval: Interval::new(q_idx, q_idx + 1),
@@ -383,6 +387,7 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
                 seed_len: depth,
             });
         }
+        emit_current = true;
 
         if depth >= ctx.max_len {
             return;
@@ -399,6 +404,7 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
         let can_mm = ctx.max_mm > 0
             && mm_count < ctx.max_mm
             && d1 > ctx.min_prefix
+            && match_streak < ctx.min_len
             && ctx.max_len - d1 >= ctx.min_suffix;
 
         // SAFETY: SA_CHAR_PADDING sentinels guarantee in-bounds access

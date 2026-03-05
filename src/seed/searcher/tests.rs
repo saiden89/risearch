@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::{MismatchSpec, SeedConfig, SeedSpec};
 use crate::index::sa::SuffixArray;
 use crate::seq::Sequence;
 use crate::types::Base;
@@ -28,4 +29,44 @@ fn test_partition_basic() {
     assert_eq!(parts[3] - parts[2], 1); // G
     assert_eq!(parts[4] - parts[3], 0); // N
     assert_eq!(parts[5] - parts[4], 1); // U
+}
+
+#[test]
+fn singleton_handoff_does_not_double_emit() {
+    // Distinct first symbols force singleton intervals at depth=1 in both
+    // query and target branches, exercising the singleton fast-path handoff.
+    let q_seq = Sequence::from(vec![Base::A, Base::C]);
+    let t_seq = Sequence::from(vec![Base::U, Base::G]);
+    let (q_sa, q_seq_padded, q_sa_len) = build_padded_sa(&q_seq);
+    let (t_sa, t_seq_padded, t_sa_len) = build_padded_sa(&t_seq);
+
+    let cfg = SeedConfig::with_wobble(SeedSpec::LengthOnly(1), MismatchSpec::exact(), false);
+    let searcher = SeedSearcher::new(
+        &q_sa,
+        &q_seq_padded,
+        0,
+        q_sa_len,
+        &t_sa,
+        &t_seq_padded,
+        t_sa_len,
+        &cfg,
+    );
+
+    let mut results = Vec::new();
+    searcher.search_length_range(1, 2, &mut results);
+
+    let mut seen = std::collections::HashSet::new();
+    for m in &results {
+        assert!(
+            seen.insert((
+                m.query_interval.start,
+                m.query_interval.end,
+                m.target_interval.start,
+                m.target_interval.end,
+                m.seed_len
+            )),
+            "duplicate seed match emitted: {:?}",
+            m
+        );
+    }
 }

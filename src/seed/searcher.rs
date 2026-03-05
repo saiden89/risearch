@@ -205,12 +205,12 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     mm_count: usize,     // mismatches accumulated so far
 ) {
     // Emit match if within valid length range.
-    // When mm_count > 0, also require: enough trailing matches (suffix constraint)
-    // and match_streak < depth (ensures at least one mismatch actually occurred,
-    // preventing pure-match seeds from being re-emitted on the mismatch path).
+    // When mm_count > 0, mirror C's `last_match_count < depth` where `depth`
+    // is the minimum seed length (not current recursion depth). This keeps
+    // mismatch seeds non-overlapping with pure-match seeds.
     if depth >= ctx.min_len
         && depth <= ctx.max_len
-        && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < depth))
+        && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < ctx.min_len))
     {
         (ctx.on_match)(SeedMatch {
             query_interval: Interval::new(ql, qr),
@@ -234,7 +234,9 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     // Singleton fast paths: when one or both SA intervals have a single entry,
     // skip partition overhead and compare characters directly.
     if qr - ql == 1 && sr - sl == 1 {
-        recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, match_streak, mm_count);
+        // Current-node emission already happened above in `recurse`; skip it in
+        // singleton mode to avoid double-emitting the same (ql,qr,sl,sr,depth).
+        recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, match_streak, mm_count, false);
         return;
     }
     if qr - ql == 1 {
@@ -267,6 +269,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let can_mm = ctx.max_mm > 0
         && mm_count < ctx.max_mm
         && d1 > ctx.min_prefix
+        && match_streak < ctx.min_len
         && ctx.max_len - d1 >= ctx.min_suffix;
 
     let (qa_lo, qa_hi) = (qint[0], qint[1]);
