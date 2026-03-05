@@ -50,8 +50,9 @@ harness = false
 
 [profile.profiling]
 inherits = "release"
-debug = true
+debug = 2
 lto = false
+split-debuginfo = "packed"
 
 [profile.release]
 debug = false
