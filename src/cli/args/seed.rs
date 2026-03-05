@@ -185,7 +185,7 @@ pub struct SeedConfig {
     #[arg(
         long = "seed-pairing",
         value_enum,
-        default_value_t = SeedPairingMode::Strict
+        default_value_t = SeedPairingMode::AllowWobble
     )]
     pub pairing: SeedPairingMode,
 

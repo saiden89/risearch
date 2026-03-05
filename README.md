@@ -152,10 +152,10 @@ risearch search \
   --mismatch-suffix 3
 ```
 
-Enable wobble seed pairing (strict is default):
+Use strict seed pairing (wobble is default):
 
 ```bash
-risearch search -q query.fa -t target.idx --seed-pairing allow_wobble
+risearch search -q query.fa -t target.idx --seed-pairing strict
 ```
 
 Output formats:
@@ -203,7 +203,7 @@ Legacy C reference implementation:
 | `-p`, `-p2`, `-p3`, `-p4` | `--format detailed/cigar/bindingsite/minimal` | `--format` takes precedence if both are present. |
 | `-m c[:ps[:pe]]` | `--mismatch-max C --mismatch-prefix PS --mismatch-suffix PE` | Do not combine legacy and modern mismatch forms. |
 | `-s l`, `-s m:n`, `-s m:n/l` | `--seed-length L`, `--seed-start M --seed-end N`, plus optional `--seed-length L` | Do not combine legacy `-s` with `--seed-*` overrides. |
-| `-U`, `--no-guseed` | Default strict mode, or explicit `--seed-pairing strict` | Use `--seed-pairing allow_wobble` to enable wobble. |
+| `-U`, `--no-guseed` | `--seed-pairing strict` | Default mode is `allow_wobble`; use strict to disable wobble. |
 
 ## Performance and Parallelism
 
@@ -266,8 +266,8 @@ Those flags are accepted for migration but deprecated. Use
 ### Search returned no hits
 
 Start by relaxing constraints: increase `--energy` threshold (less negative),
-reduce `--seed-length`, increase extension length (`-l`), and test
-`--seed-pairing allow_wobble` if biologically appropriate.
+reduce `--seed-length`, increase extension length (`-l`), and if needed test
+`--seed-pairing strict` for stricter seed matching.
 
 ## Developer Validation
 

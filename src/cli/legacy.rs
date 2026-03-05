@@ -243,7 +243,7 @@ pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -
 
     if legacy_no_guseed {
         warn!(
-            "Legacy --no-guseed is deprecated; wobble is disabled by default. Use --seed-pairing allow_wobble to enable."
+            "Legacy --no-guseed is deprecated; wobble is enabled by default. Use --seed-pairing strict."
         );
         if explicit_pairing {
             warn!(
