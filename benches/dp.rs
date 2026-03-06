@@ -1,7 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::Matrix;
+use risearch::dp::gotoh::Gotoh;
 use risearch::dp::{DpExtender, DpView};
-use risearch::dsm::DsmModel;
+use risearch::dsm::ScoringTable;
 use risearch::seq::Sequence;
 use risearch::types::Base;
 
@@ -29,7 +30,7 @@ impl SimpleLcg {
         self.state
     }
 
-    /// Generate next base (0-4: A, G, C, U, N)
+    /// Generate a random RNA base (A, G, C, U, or N).
     fn next_base(&mut self) -> Base {
         match (self.next() >> 32) % 5 {
             0 => Base::A,
@@ -58,7 +59,9 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
 
 fn bench_extend_left(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_left");
-    let model = DsmModel::new(Matrix::T04, 0, false);
+    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let left_model = model.transpose();
+    let gotoh = Gotoh::new(&left_model);
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
@@ -76,9 +79,8 @@ fn bench_extend_left(c: &mut Criterion) {
                     black_box(q_start),
                     black_box(t_start),
                     black_box(len),
-                    &model,
                 );
-                let _ = extender.extend(black_box(&view));
+                let _ = extender.extend(black_box(&view), &gotoh);
             });
         });
     }
@@ -88,7 +90,8 @@ fn bench_extend_left(c: &mut Criterion) {
 
 fn bench_extend_right(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_right");
-    let model = DsmModel::new(Matrix::T04, 0, false);
+    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let gotoh = Gotoh::new(&model);
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
@@ -106,9 +109,8 @@ fn bench_extend_right(c: &mut Criterion) {
                     black_box(q_end),
                     black_box(t_end),
                     black_box(len),
-                    &model,
                 );
-                let _ = extender.extend(black_box(&view));
+                let _ = extender.extend(black_box(&view), &gotoh);
             });
         });
     }
@@ -120,7 +122,10 @@ fn bench_extend_right(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("throughput");
     group.sample_size(10); // Smaller sample size for realistic wall-clock time
-    let model = DsmModel::new(Matrix::T04, 0, false);
+    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let left_model = model.transpose();
+    let gotoh_right = Gotoh::new(&model);
+    let gotoh_left = Gotoh::new(&left_model);
 
     for len in [10, 20, 30, 50].iter() {
         // Left extension throughput: query_len × target_len DP cells
@@ -146,9 +151,8 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(q_start),
                             black_box(t_start),
                             black_box(len),
-                            &model,
                         );
-                        let result = extender.extend(black_box(&view));
+                        let result = extender.extend(black_box(&view), &gotoh_left);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -183,9 +187,8 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(q_end),
                             black_box(t_end),
                             black_box(len),
-                            &model,
                         );
-                        let result = extender.extend(black_box(&view));
+                        let result = extender.extend(black_box(&view), &gotoh_right);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -206,7 +209,10 @@ fn bench_throughput(c: &mut Criterion) {
 fn bench_many_extensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("many_extensions");
     group.sample_size(10);
-    let model = DsmModel::new(Matrix::T04, 0, false);
+    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let left_model = model.transpose();
+    let gotoh_right = Gotoh::new(&model);
+    let gotoh_left = Gotoh::new(&left_model);
 
     group.bench_function("100_extensions_len30", |b| {
         let queries: Vec<Sequence> = (0..10)
@@ -245,9 +251,8 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(q_start),
                         black_box(t_start),
                         black_box(30),
-                        &model,
                     );
-                    let left_result = extender.extend(black_box(&left_view));
+                    let left_result = extender.extend(black_box(&left_view), &gotoh_left);
                     total_score = total_score.wrapping_add(left_result.score);
 
                     // Right extension
@@ -257,9 +262,8 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(q_end),
                         black_box(t_end),
                         black_box(30),
-                        &model,
                     );
-                    let right_result = extender.extend(black_box(&right_view));
+                    let right_result = extender.extend(black_box(&right_view), &gotoh_right);
                     total_score = total_score.wrapping_add(right_result.score);
                 }
             }

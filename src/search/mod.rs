@@ -17,8 +17,9 @@ use std::sync::Mutex;
 
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{ExtendConfig, FilterConfig, OutputFormat, ScoreConfig, SearchArgs};
+use crate::dp::gotoh::Gotoh;
 use crate::dp::{DpConfig, DpExtender, DpView};
-use crate::dsm::DsmModel;
+use crate::dsm::ScoringTable;
 use crate::index::store::{GlobalView, TargetStore};
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
@@ -88,7 +89,9 @@ struct SearchContext<'a> {
     store: &'a TargetStore,
     global: GlobalView<'a>,
     opts: &'a SearchArgs,
-    model: DsmModel,
+    model: ScoringTable,
+    gotoh_left: Gotoh,
+    gotoh_right: Gotoh,
 }
 
 impl<'a> SearchContext<'a> {
@@ -103,11 +106,14 @@ impl<'a> SearchContext<'a> {
 
         let global = store.global_view();
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = DsmModel::new(
+        let model = ScoringTable::new(
             opts.score.matrix,
             dp_cfg.penalty_raw(),
             opts.seed.allows_wobble(),
         );
+        let left_model = model.transpose();
+        let gotoh_right = Gotoh::new(&model);
+        let gotoh_left = Gotoh::new(&left_model);
 
         info!(
             "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
@@ -124,6 +130,8 @@ impl<'a> SearchContext<'a> {
             global,
             opts,
             model,
+            gotoh_left,
+            gotoh_right,
         })
     }
 
@@ -333,6 +341,8 @@ where
         let Some(hit) = build_hit_from_seed(
             state,
             &ctx.model,
+            &ctx.gotoh_left,
+            &ctx.gotoh_right,
             query_idx,
             query_bases,
             seed_interval,
@@ -361,7 +371,9 @@ where
 #[allow(clippy::too_many_arguments)]
 fn build_hit_from_seed(
     state: &mut SearchState,
-    model: &DsmModel,
+    model: &ScoringTable,
+    gotoh_left: &Gotoh,
+    gotoh_right: &Gotoh,
     query_idx: u32,
     query_bases: &[Base],
     seed_interval: Interval,
@@ -378,6 +390,8 @@ fn build_hit_from_seed(
     let extension = compute_seed_extension(
         &mut state.extender,
         model,
+        gotoh_left,
+        gotoh_right,
         state.dp_cfg,
         query_bases,
         target_trans,
@@ -420,7 +434,9 @@ struct SeedExtension {
 #[allow(clippy::too_many_arguments)]
 fn compute_seed_extension(
     extender: &mut DpExtender,
-    model: &DsmModel,
+    model: &ScoringTable,
+    gotoh_left: &Gotoh,
+    gotoh_right: &Gotoh,
     dp_cfg: DpConfig,
     query_bases: &[Base],
     target_trans: &[Base],
@@ -453,17 +469,17 @@ fn compute_seed_extension(
 
     let t_match_end = t_pos + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e = model.seed_energy(query_bases, target_trans, q_pos, t_pos, len);
+    let seed_e = crate::dsm::seed_energy(model, query_bases, target_trans, q_pos, t_pos, len);
 
     let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
     let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-        let term_5p = model.left().terminal(
+        let term_5p = gotoh_left.terminal(
             query_bases[q_pos].idx(),
             target_trans[t_match_end].complement().idx(),
         );
-        let term_3p = model.right().terminal(
+        let term_3p = gotoh_right.terminal(
             query_bases[q_pos + len - 1].idx(),
             target_trans[t_pos].complement().idx(),
         );
@@ -480,8 +496,8 @@ fn compute_seed_extension(
     }
 
     let (l_score, l_q, l_t, left_pairs) = {
-        let view = DpView::left(query_bases, target_trans, q_pos, t_match_end, max_ext, model);
-        let result = extender.extend(&view);
+        let view = DpView::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
+        let result = extender.extend(&view, gotoh_left);
         let pairs = if with_traceback {
             result.traceback(&view)
         } else {
@@ -492,8 +508,8 @@ fn compute_seed_extension(
 
     let (r_score, r_q, r_t, right_pairs) = {
         let view =
-            DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext, model);
-        let result = extender.extend(&view);
+            DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
+        let result = extender.extend(&view, gotoh_right);
         let pairs = if with_traceback {
             result.traceback(&view)
         } else {

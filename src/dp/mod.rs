@@ -1,11 +1,12 @@
 use crate::alignment::PairClass;
 use crate::config::{ExtendConfig, ScoreConfig};
-use crate::dsm::{DirectionalDsm, DsmModel, GAP};
+use crate::dp::gotoh::Gotoh;
 use crate::types::Base;
 use log::trace;
 use smallvec::SmallVec;
 
 mod core;
+pub mod gotoh;
 mod init;
 mod traceback;
 use std::cmp::max;
@@ -46,10 +47,11 @@ impl From<(&ScoreConfig, &ExtendConfig)> for DpConfig {
     }
 }
 
-/// Extension direction - determines sequence indexing polarity.
+/// Extension direction — determines sequence indexing polarity.
 ///
-/// After canonical DSM construction, direction only affects `q()`/`t()` index
-/// arithmetic. All stacking order is resolved by the canonical table.
+/// After scoring tables are built for each direction, extension direction
+/// only affects `q()`/`t()` index arithmetic. Stacking order is resolved
+/// by the direction-canonical `Gotoh` tables.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExtendDir {
     Left,
@@ -66,14 +68,14 @@ impl std::fmt::Display for ExtendDir {
 }
 
 // =============================================================================
-// DP VIEW - Direction-aware sequence access + canonical DSM
+// DP VIEW - Direction-aware sequence access (no scoring)
 // =============================================================================
 
 /// View into sequences for DP extension.
 ///
-/// Stores a `DirectionalDsm` handle that absorbs all direction-dependent stacking
-/// order. The DP loop uses uniform calls like `view.e(q_prev, q_curr, t_prev, t_curr)`
-/// and the canonical table provides the correct energy for both directions.
+/// Pure sequence access — knows nothing about scoring or energy.
+/// Direction-dependent base indexing is resolved here;
+/// scoring is done via `Gotoh` transition tables.
 pub struct DpView<'a> {
     query: &'a [Base],
     target_transformed: &'a [Base],
@@ -82,7 +84,6 @@ pub struct DpView<'a> {
     pub(super) dir: ExtendDir,
     pub q_len: usize,
     pub t_len: usize,
-    dsm: DirectionalDsm<'a>,
 }
 
 impl<'a> DpView<'a> {
@@ -118,7 +119,6 @@ impl<'a> DpView<'a> {
         q_start: usize,
         t_start: usize,
         max_ext: usize,
-        model: &'a DsmModel,
     ) -> Self {
         Self {
             query,
@@ -128,7 +128,6 @@ impl<'a> DpView<'a> {
             dir: ExtendDir::Left,
             q_len: (q_start + 1).min(max_ext),
             t_len: (target_transformed.len() - t_start).min(max_ext),
-            dsm: model.left(),
         }
     }
 
@@ -139,7 +138,6 @@ impl<'a> DpView<'a> {
         q_end: usize,
         t_end: usize,
         max_ext: usize,
-        model: &'a DsmModel,
     ) -> Self {
         Self {
             query,
@@ -149,7 +147,6 @@ impl<'a> DpView<'a> {
             dir: ExtendDir::Right,
             q_len: (query.len() - q_end).min(max_ext),
             t_len: (t_end + 1).min(max_ext),
-            dsm: model.right(),
         }
     }
 
@@ -175,73 +172,6 @@ impl<'a> DpView<'a> {
                 .idx(),
         }
     }
-
-    /// Canonical stacking energy lookup.
-    ///
-    /// Arguments are always in (prev, curr, prev, curr) order.
-    /// The canonical table handles direction-specific reordering.
-    #[inline(always)]
-    pub fn e(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        self.dsm.lookup(q1, q2, t1, t2)
-    }
-
-    /// Terminal penalty at position (i, j) - stacking with gap boundary.
-    #[inline(always)]
-    pub fn terminal(&self, i: usize, j: usize) -> i32 {
-        self.dsm.terminal(self.q(i), self.t(j))
-    }
-
-    /// Match/mismatch energy at (i, j) from diagonal (i-1, j-1)
-    #[inline(always)]
-    pub fn match_e(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), self.t(j - 1), self.t(j))
-    }
-
-    // =========================================================================
-    // DP TRANSITION HELPERS - exactly match the DP recurrence semantics
-    // =========================================================================
-
-    /// M[i,j] from Bq[i-1,j-1]: re-entry to match from query bulge
-    #[inline(always)]
-    pub fn m_from_bq(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, self.t(j))
-    }
-
-    /// M[i,j] from Bt[i-1,j-1]: re-entry to match from target bulge
-    #[inline(always)]
-    pub fn m_from_bt(&self, i: usize, j: usize) -> i32 {
-        self.e(GAP, self.q(i), self.t(j - 1), self.t(j))
-    }
-
-    /// Bq[i,j] from M[i-1,j]: open query bulge (gap in target)
-    #[inline(always)]
-    pub fn bq_open(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), self.t(j), GAP)
-    }
-
-    /// Bq[i,j] from Bq[i-1,j]: extend query bulge
-    #[inline(always)]
-    pub fn bq_ext(&self, i: usize) -> i32 {
-        self.e(self.q(i - 1), self.q(i), GAP, GAP)
-    }
-
-    /// Bt[i,j] from M[i,j-1]: open target bulge (gap in query)
-    #[inline(always)]
-    pub fn bt_open(&self, i: usize, j: usize) -> i32 {
-        self.e(self.q(i), GAP, self.t(j - 1), self.t(j))
-    }
-
-    /// Bt[i,j] from Bt[i,j-1]: extend target bulge
-    #[inline(always)]
-    pub fn bt_ext(&self, j: usize) -> i32 {
-        self.e(GAP, GAP, self.t(j - 1), self.t(j))
-    }
-
-    /// Canonical DSM accessor for core loop and init code.
-    #[inline(always)]
-    pub(super) fn dsm(&self) -> &DirectionalDsm<'a> {
-        &self.dsm
-    }
 }
 
 /// Negative infinity for the (max, +) semiring over DP scores.
@@ -251,10 +181,10 @@ impl<'a> DpView<'a> {
 /// 2. No i32 underflow from accumulated negative energy
 pub(super) const NEG_INF: i32 = -1_000_000_000;
 
-/// Conservative upper bound on |energy| from a single DSM lookup.
+/// Conservative upper bound on |energy| from a single scoring table lookup.
 /// Source tables are i16 (max 32767); penalty adds modest overhead.
 /// Real values are ~300-400 (0.01 kcal/mol units), but we bound generously.
-/// Enforced at runtime in DsmModel::new.
+/// Enforced at runtime in ScoringTable::new.
 const MAX_ENERGY: i64 = 40_000;
 
 // Compile-time proof that NEG_INF arithmetic is safe for MAX_EXT.
@@ -379,6 +309,9 @@ impl DpGrid {
             idx,
             self.data.len()
         );
+        // SAFETY: Bounds verified by debug_assert above. In release, callers
+        // (init, core, traceback) only access indices within the grid allocation
+        // established by grid.resize(t_len+1, q_len+1).
         unsafe { *self.data.get_unchecked(idx) }
     }
 
@@ -395,8 +328,8 @@ impl DpGrid {
 
 /// Stateful DP extender with reusable grid.
 ///
-/// Direction-agnostic: the canonical DSM in `DpView` resolves all
-/// direction-dependent stacking order at view construction time.
+/// Direction-agnostic: the `Gotoh` tables resolve all scoring;
+/// `DpView` resolves sequence access.
 pub struct DpExtender {
     grid: DpGrid,
 }
@@ -404,8 +337,11 @@ pub struct DpExtender {
 /// Guard holding a reference to the DP grid after forward pass.
 /// While this exists, the extender cannot be used for another extension
 /// (borrow checker enforces this via the lifetime on `grid`).
+/// Stores the `Gotoh` reference used during the forward pass so that
+/// `traceback()` is guaranteed to use the same scoring tables.
 pub struct ExtendResult<'a> {
     grid: &'a DpGrid,
+    gotoh: &'a Gotoh,
     pub score: i32,
     pub q_len: usize,
     pub t_len: usize,
@@ -416,7 +352,7 @@ impl<'a> ExtendResult<'a> {
     /// Only call when alignment output is needed (skip for Minimal format).
     pub fn traceback(&self, view: &DpView<'_>) -> SmallVec<[PairClass; 64]> {
         let mut out = SmallVec::new();
-        traceback(view, self.grid, self.q_len, self.t_len, &mut out);
+        traceback(view, self.gotoh, self.grid, self.q_len, self.t_len, &mut out);
         out
     }
 }
@@ -432,18 +368,19 @@ impl DpExtender {
     #[cfg_attr(feature = "prof", inline(never))]
     /// Run DP forward pass and return an ExtendResult guard.
     /// Call `.traceback()` on the result if alignment is needed.
-    pub fn extend(&mut self, view: &DpView<'_>) -> ExtendResult<'_> {
+    pub fn extend<'a>(&'a mut self, view: &DpView<'_>, gotoh: &'a Gotoh) -> ExtendResult<'a> {
         let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
 
         // Initial score: terminal penalty for seed boundary
-        let mut best = BestScore::new(view.terminal(0, 0));
+        let mut best = BestScore::new(gotoh.terminal(view.q(0), view.t(0)));
 
         // Early return
         if q_len <= 1 || t_len <= 1 {
             return ExtendResult {
                 grid: &self.grid,
+                gotoh,
                 score: best.score,
                 q_len: 0,
                 t_len: 0,
@@ -460,14 +397,17 @@ impl DpExtender {
         let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
         let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
 
-        // SAFETY: We only read indices we explicitly write below.
         let q_ptr = q_idx.as_mut_ptr() as *mut usize;
         let t_ptr = t_idx.as_mut_ptr() as *mut usize;
 
         for i in 0..q_len {
+            // SAFETY: i < q_len ≤ MAX_EXT, so q_ptr.add(i) is within the
+            // MaybeUninit allocation. view.q(i) returns Base::idx() ∈ 0..6.
             unsafe { *q_ptr.add(i) = view.q(i) };
         }
         for j in 0..t_len {
+            // SAFETY: j < t_len ≤ MAX_EXT, so t_ptr.add(j) is within the
+            // MaybeUninit allocation. view.t(j) returns Base::idx() ∈ 0..6.
             unsafe { *t_ptr.add(j) = view.t(j) };
         }
 
@@ -481,12 +421,13 @@ impl DpExtender {
             &mut self.grid,
             q_len,
             t_len,
-            view.dsm(),
+            gotoh,
             &mut best,
         );
         if !has_main_region {
             return ExtendResult {
                 grid: &self.grid,
+                gotoh,
                 score: best.score,
                 q_len: best.i,
                 t_len: best.j,
@@ -503,7 +444,7 @@ impl DpExtender {
             &mut self.grid,
             q_len,
             t_len,
-            view.dsm(),
+            gotoh,
             &mut best,
         );
 
@@ -517,6 +458,7 @@ impl DpExtender {
 
         ExtendResult {
             grid: &self.grid,
+            gotoh,
             score: best.score,
             q_len: best.i,
             t_len: best.j,

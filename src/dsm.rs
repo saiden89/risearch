@@ -24,89 +24,40 @@ pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * B
 /// Gap index used for DSM lookups (linked to Base::Gap).
 pub use crate::types::GAP;
 
-/// DSM model representing a specific energy matrix (e.g., T04, T99) with baked-in penalty and pairing rules.
+// =============================================================================
+// SCORING TABLE - Direction-agnostic penalty-adjusted lookup table
+// =============================================================================
+
+/// Penalty-adjusted flat DSM table for one orientation.
+///
+/// Each instance is one canonical orientation (right or left).
+/// Use `transpose()` to create the other orientation.
 #[derive(Clone, Debug)]
-pub struct DsmModel {
-    /// Penalty-adjusted right-canonical table for this run (identity orientation).
-    right: [i32; DSM_FLAT_SIZE],
-    /// Left-canonical table: `left[q1][q2][t1][t2] = right[q2][q1][t2][t1]`.
-    left: [i32; DSM_FLAT_SIZE],
-    /// Gap-gap transition profile for right-canonical lookups.
-    gap_gap_profile_right: [i32; 36],
-    /// Gap-gap transition profile for left-canonical lookups.
-    gap_gap_profile_left: [i32; 36],
-    /// Binary pairing matrix for maximality checks and seed validation.
+pub struct ScoringTable {
+    table: [i32; DSM_FLAT_SIZE],
     pair_mat: &'static [[u8; 6]; 6],
 }
 
-/// Encapsulated handle for direction-canonical DSM lookups.
-///
-/// Points to either the original (right) or transposed (left) flat table.
-/// All direction-dependent stacking order is resolved by which table is chosen;
-/// consumers always call `lookup(q1, q2, t1, t2)` in the same canonical order.
-#[derive(Clone, Copy)]
-pub(crate) struct DirectionalDsm<'a> {
-    table: &'a [i32; DSM_FLAT_SIZE],
-    gap_gap_profile: &'a [i32; 36],
-}
-
-impl DirectionalDsm<'_> {
-    #[inline(always)]
-    pub(crate) fn lookup(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
-        let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-        unsafe { *self.table.get_unchecked(idx) }
-    }
-
-    #[inline(always)]
-    pub(crate) fn terminal(&self, q: usize, t: usize) -> i32 {
-        self.lookup(q, GAP, t, GAP)
-    }
-
-    #[inline(always)]
-    pub(crate) fn gap_gap_profile(&self) -> &[i32; 36] {
-        self.gap_gap_profile
-    }
-}
-
-impl DsmModel {
-    /// Create a new model from a base matrix, baking in the extension penalty and pairing rules.
+impl ScoringTable {
+    /// Create a new scoring table from a base matrix, baking in the extension penalty.
     pub fn new(matrix: Matrix, penalty: i32, allow_wobble: bool) -> Self {
         let source_table = match matrix {
             Matrix::T04 => &T04,
             Matrix::T99 => &T99,
         };
 
-        let mut right = [0i32; DSM_FLAT_SIZE];
+        let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {
             for q2 in 0..6 {
                 for t1 in 0..6 {
                     for t2 in 0..6 {
                         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-                        right[idx] =
+                        table[idx] =
                             source_table[q1][q2][t1][t2] as i32 - penalty * DSM_EXTEND_FLAT[idx];
                     }
                 }
             }
         }
-
-        let mut left = [0i32; DSM_FLAT_SIZE];
-        for q1 in 0..6 {
-            for q2 in 0..6 {
-                for t1 in 0..6 {
-                    for t2 in 0..6 {
-                        let dst = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-                        let src = q2 * 216 + q1 * 36 + t2 * 6 + t1;
-                        left[dst] = right[src];
-                    }
-                }
-            }
-        }
-
-        let mut gap_gap_profile_right = [0i32; 36];
-        let mut gap_gap_profile_left = [0i32; 36];
-        let gap_gap_start = GAP * 216 + GAP * 36;
-        gap_gap_profile_right.copy_from_slice(&right[gap_gap_start..(gap_gap_start + 36)]);
-        gap_gap_profile_left.copy_from_slice(&left[gap_gap_start..(gap_gap_start + 36)]);
 
         let pair_mat = if allow_wobble {
             &PAIR_MAT
@@ -114,74 +65,71 @@ impl DsmModel {
             &PAIR_MAT_NO_GU
         };
 
+        Self { table, pair_mat }
+    }
+
+    /// Produce a left-canonical (transposed) copy: `[q1][q2][t1][t2] → [q2][q1][t2][t1]`.
+    pub fn transpose(&self) -> Self {
+        let mut table = [0i32; DSM_FLAT_SIZE];
+        for q1 in 0..6 {
+            for q2 in 0..6 {
+                for t1 in 0..6 {
+                    for t2 in 0..6 {
+                        let dst = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+                        let src = q2 * 216 + q1 * 36 + t2 * 6 + t1;
+                        table[dst] = self.table[src];
+                    }
+                }
+            }
+        }
         Self {
-            right,
-            left,
-            gap_gap_profile_right,
-            gap_gap_profile_left,
-            pair_mat,
+            table,
+            pair_mat: self.pair_mat,
         }
     }
 
-    /// Left-canonical DSM handle (transposed table).
-    pub(crate) fn left(&self) -> DirectionalDsm<'_> {
-        DirectionalDsm {
-            table: &self.left,
-            gap_gap_profile: &self.gap_gap_profile_left,
-        }
-    }
-
-    /// Right-canonical DSM handle (original table, identity).
-    pub(crate) fn right(&self) -> DirectionalDsm<'_> {
-        DirectionalDsm {
-            table: &self.right,
-            gap_gap_profile: &self.gap_gap_profile_right,
-        }
-    }
-
-    /// Check if two bases form a valid pair according to the model's rules.
-    #[inline(always)]
-    pub fn is_pair(&self, q: Base, t: Base) -> bool {
-        let (qi, ti) = (q.idx(), t.idx());
-        debug_assert!(qi < 6 && ti < 6);
-        // SAFETY: Base::idx() is guaranteed 0..6, matching the 6x6 pair_mat.
-        unsafe { *self.pair_mat.get_unchecked(qi).get_unchecked(ti) != 0 }
-    }
-
-    /// Primary semantic lookup for dinucleotide stacking energy.
+    /// Point query for dinucleotide stacking energy.
     #[inline(always)]
     pub fn lookup(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
         debug_assert!(q1 < 6 && q2 < 6 && t1 < 6 && t2 < 6);
         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-        // SAFETY: Input indices are guaranteed 0..6 by Base::idx()
-        // and the table size is 1296 (6^4).
-        unsafe { *self.right.get_unchecked(idx) }
+        // SAFETY: All args ∈ 0..6. Max idx = 5*216+5*36+5*6+5 = 1295 < 1296.
+        unsafe { *self.table.get_unchecked(idx) }
     }
 
-    /// Full seed energy calculation with antiparallel indexing.
-    pub fn seed_energy(
-        &self,
-        query: &[Base],
-        target: &[Base],
-        q_pos: usize,
-        t_pos: usize,
-        len: usize,
-    ) -> i32 {
-        if len <= 1 {
-            return 0;
-        }
-        let mut score = 0;
-        let t_match_end = t_pos + len - 1;
-        for i in 0..(len - 1) {
-            score += self.lookup(
-                query[q_pos + i].idx(),
-                query[q_pos + i + 1].idx(),
-                target[t_match_end - i].complement().idx(),
-                target[t_match_end - i - 1].complement().idx(),
-            );
-        }
-        score
+    /// Check if two bases form a valid pair.
+    #[inline(always)]
+    pub fn is_pair(&self, q: Base, t: Base) -> bool {
+        let (qi, ti) = (q.idx(), t.idx());
+        debug_assert!(qi < 6 && ti < 6);
+        // SAFETY: Base::idx() returns 0..6, matching the 6×6 pair_mat dimensions.
+        unsafe { *self.pair_mat.get_unchecked(qi).get_unchecked(ti) != 0 }
     }
+}
+
+/// Seed energy calculation with antiparallel indexing.
+pub fn seed_energy(
+    model: &ScoringTable,
+    query: &[Base],
+    target: &[Base],
+    q_pos: usize,
+    t_pos: usize,
+    len: usize,
+) -> i32 {
+    if len <= 1 {
+        return 0;
+    }
+    let mut score = 0;
+    let t_match_end = t_pos + len - 1;
+    for i in 0..(len - 1) {
+        score += model.lookup(
+            query[q_pos + i].idx(),
+            query[q_pos + i + 1].idx(),
+            target[t_match_end - i].complement().idx(),
+            target[t_match_end - i - 1].complement().idx(),
+        );
+    }
+    score
 }
 
 /// Convert DSM units → kcal/mol. 559 = terminal penalty offset.
@@ -189,8 +137,6 @@ impl DsmModel {
 pub fn to_kcal(raw: i32) -> f64 {
     (raw as f64 - 559.0) / -100.0
 }
-
-// No additional public helpers; use DsmModel methods.
 
 const T04: DsmTable = [
     [
@@ -1125,24 +1071,20 @@ mod tests {
 
     #[test]
     fn test_pairing() {
-        let strict = DsmModel::new(Matrix::T04, 0, false);
-        let wobble = DsmModel::new(Matrix::T04, 0, true);
+        let strict = ScoringTable::new(Matrix::T04, 0, false);
+        let wobble = ScoringTable::new(Matrix::T04, 0, true);
 
-        // G-C should always pair
         assert!(strict.is_pair(Base::G, Base::C));
         assert!(wobble.is_pair(Base::G, Base::C));
 
-        // G-U should only pair in wobble mode
         assert!(!strict.is_pair(Base::G, Base::U));
         assert!(wobble.is_pair(Base::G, Base::U));
     }
 
     #[test]
     fn test_dsm_get() {
-        let model = DsmModel::new(Matrix::T04, 0, true);
-        // Just verify lookup works
+        let model = ScoringTable::new(Matrix::T04, 0, true);
         let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::U.idx(), Base::A.idx());
-        // Gap penalty should be handled by DSM table
         let gap_energy = model.lookup(
             Base::Gap.idx(),
             Base::A.idx(),
@@ -1155,35 +1097,31 @@ mod tests {
         );
     }
 
-    /// Test specific stacking energies against known Turner 04 values.
-    /// CG/GC is the strongest stack at -3.30 kcal/mol = 330 in centidecimals.
     #[test]
     fn test_dsm_known_values() {
-        let model = DsmModel::new(Matrix::T04, 0, true);
-        // Print index mapping for clarity
-        println!("Base indices: Gap=0, A=1, G=2, C=3, U=4, N=5");
-        println!();
+        let model = ScoringTable::new(Matrix::T04, 0, true);
+        // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
+        let actual = model.lookup(Base::G.idx(), Base::G.idx(), Base::C.idx(), Base::C.idx());
+        assert_eq!(actual, 330);
+    }
 
-        // The strongest stack should be around 330 (3.30 kcal/mol)
-        // Let's find where 330 is in the table
-        println!();
-        println!("Looking for 330 (expected CG/GC):");
+    #[test]
+    fn test_transpose_symmetry() {
+        let right = ScoringTable::new(Matrix::T04, 50, true);
+        let left = right.transpose();
         for q1 in 0..6 {
             for q2 in 0..6 {
                 for t1 in 0..6 {
                     for t2 in 0..6 {
-                        let val = model.lookup(q1, q2, t1, t2);
-                        if val == 330 {
-                            println!("  DSM[{}][{}][{}][{}] = 330", q1, q2, t1, t2);
-                        }
+                        assert_eq!(
+                            left.lookup(q1, q2, t1, t2),
+                            right.lookup(q2, q1, t2, t1),
+                            "transpose mismatch at ({},{},{},{})",
+                            q1, q2, t1, t2
+                        );
                     }
                 }
             }
         }
-
-        // The value at DSM[3][2][3][2] should be determinable
-        let actual = model.lookup(Base::C.idx(), Base::G.idx(), Base::C.idx(), Base::G.idx());
-        println!();
-        println!("DSM[C=3][G=2][C=3][G=2] = {}", actual);
     }
 }
