@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::Matrix;
 use risearch::dp::gotoh::Gotoh;
-use risearch::dp::{DpExtender, DpView};
+use risearch::dp::{DpGrid, DpView};
 use risearch::dsm::ScoringTable;
 use risearch::seq::Sequence;
 use risearch::types::Base;
@@ -70,7 +70,7 @@ fn bench_extend_left(c: &mut Criterion) {
             let q_start = 50;
             let t_start = 50;
 
-            let mut extender = DpExtender::new(200);
+            let mut grid = DpGrid::new(200);
 
             b.iter(|| {
                 let view = DpView::left(
@@ -80,7 +80,7 @@ fn bench_extend_left(c: &mut Criterion) {
                     black_box(t_start),
                     black_box(len),
                 );
-                let _ = extender.extend(black_box(&view), &gotoh);
+                let _ = gotoh.extend(black_box(&view), &mut grid);
             });
         });
     }
@@ -100,7 +100,7 @@ fn bench_extend_right(c: &mut Criterion) {
             let q_end = 49;
             let t_end = 49;
 
-            let mut extender = DpExtender::new(200);
+            let mut grid = DpGrid::new(200);
 
             b.iter(|| {
                 let view = DpView::right(
@@ -110,7 +110,7 @@ fn bench_extend_right(c: &mut Criterion) {
                     black_box(t_end),
                     black_box(len),
                 );
-                let _ = extender.extend(black_box(&view), &gotoh);
+                let _ = gotoh.extend(black_box(&view), &mut grid);
             });
         });
     }
@@ -138,7 +138,7 @@ fn bench_throughput(c: &mut Criterion) {
                 let q_start = 50;
                 let t_start = 50;
 
-                let mut extender = DpExtender::new(200);
+                let mut grid = DpGrid::new(200);
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
@@ -152,7 +152,7 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(t_start),
                             black_box(len),
                         );
-                        let result = extender.extend(black_box(&view), &gotoh_left);
+                        let result = gotoh_left.extend(black_box(&view), &mut grid);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -174,7 +174,7 @@ fn bench_throughput(c: &mut Criterion) {
                 let q_end = 49;
                 let t_end = 49;
 
-                let mut extender = DpExtender::new(200);
+                let mut grid = DpGrid::new(200);
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
@@ -188,7 +188,7 @@ fn bench_throughput(c: &mut Criterion) {
                             black_box(t_end),
                             black_box(len),
                         );
-                        let result = extender.extend(black_box(&view), &gotoh_right);
+                        let result = gotoh_right.extend(black_box(&view), &mut grid);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -222,7 +222,7 @@ fn bench_many_extensions(c: &mut Criterion) {
             .map(|i| generate_sequence(100, 5000 + i as u64))
             .collect();
 
-        let mut extender = DpExtender::new(200);
+        let mut grid = DpGrid::new(200);
 
         b.iter(|| {
             let mut total_score = 0i32;
@@ -252,7 +252,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(t_start),
                         black_box(30),
                     );
-                    let left_result = extender.extend(black_box(&left_view), &gotoh_left);
+                    let left_result = gotoh_left.extend(black_box(&left_view), &mut grid);
                     total_score = total_score.wrapping_add(left_result.score);
 
                     // Right extension
@@ -263,7 +263,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(t_end),
                         black_box(30),
                     );
-                    let right_result = extender.extend(black_box(&right_view), &gotoh_right);
+                    let right_result = gotoh_right.extend(black_box(&right_view), &mut grid);
                     total_score = total_score.wrapping_add(right_result.score);
                 }
             }

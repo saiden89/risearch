@@ -2,7 +2,6 @@ use crate::alignment::PairClass;
 use crate::config::{ExtendConfig, ScoreConfig};
 use crate::dp::gotoh::Gotoh;
 use crate::types::Base;
-use log::trace;
 use smallvec::SmallVec;
 
 mod core;
@@ -11,8 +10,6 @@ mod init;
 mod traceback;
 use std::cmp::max;
 
-pub(crate) use self::core::dp_main_loop_generic;
-pub(crate) use self::init::init_frontier;
 use self::traceback::traceback;
 
 /// Maximum extension length for precomputed index arrays.
@@ -230,15 +227,6 @@ impl BestScore {
     }
 }
 
-/// Add stacking energy to a DP score.
-///
-/// NEG_INF propagates naturally: NEG_INF + energy ≈ NEG_INF,
-/// which can never reach the valid score range (see NEG_INF docs).
-#[inline(always)]
-pub(super) fn add_e(base: i32, energy: i32) -> i32 {
-    base + energy
-}
-
 /// max of 3 values - branchless
 #[inline(always)]
 pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
@@ -274,16 +262,17 @@ impl DpCell {
 ///
 /// Row-major layout: cell (i, j) is at index `i * width + j`.
 /// Reused across extensions (resized, not reallocated).
-pub(super) struct DpGrid {
+pub struct DpGrid {
     data: Vec<DpCell>,
     width: usize,
 }
 
 impl DpGrid {
-    fn new(width: usize, height: usize) -> Self {
+    pub fn new(max_extension: usize) -> Self {
+        let side = max_extension.min(MAX_EXT).saturating_add(1).max(1);
         Self {
-            data: vec![DpCell::EMPTY; width * height],
-            width,
+            data: vec![DpCell::EMPTY; side * side],
+            width: side,
         }
     }
 
@@ -326,16 +315,8 @@ impl DpGrid {
     }
 }
 
-/// Stateful DP extender with reusable grid.
-///
-/// Direction-agnostic: the `Gotoh` tables resolve all scoring;
-/// `DpView` resolves sequence access.
-pub struct DpExtender {
-    grid: DpGrid,
-}
-
 /// Guard holding a reference to the DP grid after forward pass.
-/// While this exists, the extender cannot be used for another extension
+/// While this exists, the grid cannot be reused for another extension
 /// (borrow checker enforces this via the lifetime on `grid`).
 /// Stores the `Gotoh` reference used during the forward pass so that
 /// `traceback()` is guaranteed to use the same scoring tables.
@@ -352,116 +333,9 @@ impl<'a> ExtendResult<'a> {
     /// Only call when alignment output is needed (skip for Minimal format).
     pub fn traceback(&self, view: &DpView<'_>) -> SmallVec<[PairClass; 64]> {
         let mut out = SmallVec::new();
-        traceback(view, self.gotoh, self.grid, self.q_len, self.t_len, &mut out);
+        traceback(
+            view, self.gotoh, self.grid, self.q_len, self.t_len, &mut out,
+        );
         out
-    }
-}
-
-impl DpExtender {
-    pub fn new(max_extension: usize) -> Self {
-        let side = max_extension.min(MAX_EXT).saturating_add(1).max(1);
-        Self {
-            grid: DpGrid::new(side, side),
-        }
-    }
-
-    #[cfg_attr(feature = "prof", inline(never))]
-    /// Run DP forward pass and return an ExtendResult guard.
-    /// Call `.traceback()` on the result if alignment is needed.
-    pub fn extend<'a>(&'a mut self, view: &DpView<'_>, gotoh: &'a Gotoh) -> ExtendResult<'a> {
-        let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
-
-        trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
-
-        // Initial score: terminal penalty for seed boundary
-        let mut best = BestScore::new(gotoh.terminal(view.q(0), view.t(0)));
-
-        // Early return
-        if q_len <= 1 || t_len <= 1 {
-            return ExtendResult {
-                grid: &self.grid,
-                gotoh,
-                score: best.score,
-                q_len: 0,
-                t_len: 0,
-            };
-        }
-
-        // Resize grid
-        self.grid.resize(t_len + 1, q_len + 1);
-
-        // =====================================================================
-        // PRECOMPUTE Q/T BASE INDICES (used by init AND main loop)
-        // =====================================================================
-
-        let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
-        let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
-
-        let q_ptr = q_idx.as_mut_ptr() as *mut usize;
-        let t_ptr = t_idx.as_mut_ptr() as *mut usize;
-
-        for i in 0..q_len {
-            // SAFETY: i < q_len ≤ MAX_EXT, so q_ptr.add(i) is within the
-            // MaybeUninit allocation. view.q(i) returns Base::idx() ∈ 0..6.
-            unsafe { *q_ptr.add(i) = view.q(i) };
-        }
-        for j in 0..t_len {
-            // SAFETY: j < t_len ≤ MAX_EXT, so t_ptr.add(j) is within the
-            // MaybeUninit allocation. view.t(j) returns Base::idx() ∈ 0..6.
-            unsafe { *t_ptr.add(j) = view.t(j) };
-        }
-
-        // =====================================================================
-        // INITIALIZATION - Unconditional writes to avoid stale data
-        // =====================================================================
-
-        let has_main_region = init_frontier(
-            q_ptr,
-            t_ptr,
-            &mut self.grid,
-            q_len,
-            t_len,
-            gotoh,
-            &mut best,
-        );
-        if !has_main_region {
-            return ExtendResult {
-                grid: &self.grid,
-                gotoh,
-                score: best.score,
-                q_len: best.i,
-                t_len: best.j,
-            };
-        }
-
-        // =======================================================================
-        // MAIN DP LOOP (i >= 3, j >= 3)
-        // =======================================================================
-
-        dp_main_loop_generic(
-            q_ptr,
-            t_ptr,
-            &mut self.grid,
-            q_len,
-            t_len,
-            gotoh,
-            &mut best,
-        );
-
-        trace!(
-            "{} result: score={} q_len={} t_len={}",
-            view.dir,
-            best.score,
-            best.i,
-            best.j,
-        );
-
-        ExtendResult {
-            grid: &self.grid,
-            gotoh,
-            score: best.score,
-            q_len: best.i,
-            t_len: best.j,
-        }
     }
 }

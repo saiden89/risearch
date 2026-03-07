@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{ExtendConfig, FilterConfig, OutputFormat, ScoreConfig, SearchArgs};
 use crate::dp::gotoh::Gotoh;
-use crate::dp::{DpConfig, DpExtender, DpView};
+use crate::dp::{DpConfig, DpGrid, DpView};
 use crate::dsm::ScoringTable;
 use crate::index::store::{GlobalView, TargetStore};
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
@@ -148,7 +148,7 @@ impl<'a> SearchContext<'a> {
 
 /// Reusable per-worker state.
 struct SearchState {
-    extender: DpExtender,
+    grid: DpGrid,
     dp_cfg: DpConfig,
 }
 
@@ -156,7 +156,7 @@ impl SearchState {
     fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
         let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
         Self {
-            extender: DpExtender::new(dp_cfg.max_extension()),
+            grid: DpGrid::new(dp_cfg.max_extension()),
             dp_cfg,
         }
     }
@@ -388,7 +388,7 @@ fn build_hit_from_seed(
     }
 
     let extension = compute_seed_extension(
-        &mut state.extender,
+        &mut state.grid,
         model,
         gotoh_left,
         gotoh_right,
@@ -433,7 +433,7 @@ struct SeedExtension {
 /// Compute optional left/right DP extension around a seed and return extension metadata.
 #[allow(clippy::too_many_arguments)]
 fn compute_seed_extension(
-    extender: &mut DpExtender,
+    grid: &mut DpGrid,
     model: &ScoringTable,
     gotoh_left: &Gotoh,
     gotoh_right: &Gotoh,
@@ -497,7 +497,7 @@ fn compute_seed_extension(
 
     let (l_score, l_q, l_t, left_pairs) = {
         let view = DpView::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
-        let result = extender.extend(&view, gotoh_left);
+        let result = gotoh_left.extend(&view, grid);
         let pairs = if with_traceback {
             result.traceback(&view)
         } else {
@@ -507,9 +507,8 @@ fn compute_seed_extension(
     };
 
     let (r_score, r_q, r_t, right_pairs) = {
-        let view =
-            DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
-        let result = extender.extend(&view, gotoh_right);
+        let view = DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
+        let result = gotoh_right.extend(&view, grid);
         let pairs = if with_traceback {
             result.traceback(&view)
         } else {

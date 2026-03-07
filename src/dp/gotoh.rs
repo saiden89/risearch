@@ -13,6 +13,9 @@
 
 use crate::dsm::{ScoringTable, GAP};
 use crate::types::BASE_COUNT;
+use log::trace;
+
+use super::{BestScore, DpGrid, DpView, ExtendResult, MAX_EXT};
 
 const BC: usize = BASE_COUNT; // 6
 
@@ -112,7 +115,11 @@ impl Gotoh {
     pub fn match_energy(&self, qp: usize, qc: usize, tp: usize, tc: usize) -> i32 {
         // SAFETY: All args are Base::idx() ∈ 0..6.
         // Max index = 5*216 + 5*36 + 5*6 + 5 = 1295 < 1296.
-        unsafe { *self.match_mm.get_unchecked(qp * 216 + qc * 36 + tp * 6 + tc) }
+        unsafe {
+            *self
+                .match_mm
+                .get_unchecked(qp * 216 + qc * 36 + tp * 6 + tc)
+        }
     }
 
     /// M ← Bq transition energy.
@@ -221,6 +228,90 @@ impl Gotoh {
         // SAFETY: qc ∈ 0..6. Max start = 30, end = 36 = len.
         unsafe { self.terminal.get_unchecked(start..start + 6) }
     }
+
+    #[cfg_attr(feature = "prof", inline(never))]
+    /// Run DP forward pass over `view`, reusing the caller-provided grid.
+    /// Call `.traceback()` on the result if alignment is needed.
+    pub fn extend<'a>(&'a self, view: &DpView<'_>, grid: &'a mut DpGrid) -> ExtendResult<'a> {
+        let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
+
+        trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
+
+        // Initial score: terminal penalty for seed boundary
+        let mut best = BestScore::new(self.terminal(view.q(0), view.t(0)));
+
+        // Early return
+        if q_len <= 1 || t_len <= 1 {
+            return ExtendResult {
+                grid,
+                gotoh: self,
+                score: best.score,
+                q_len: 0,
+                t_len: 0,
+            };
+        }
+
+        // Resize grid
+        grid.resize(t_len + 1, q_len + 1);
+
+        // =====================================================================
+        // PRECOMPUTE Q/T BASE INDICES (used by init AND main loop)
+        // =====================================================================
+
+        let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
+        let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
+
+        let q_ptr = q_idx.as_mut_ptr() as *mut usize;
+        let t_ptr = t_idx.as_mut_ptr() as *mut usize;
+
+        for i in 0..q_len {
+            // SAFETY: i < q_len ≤ MAX_EXT, so q_ptr.add(i) is within the
+            // MaybeUninit allocation. view.q(i) returns Base::idx() ∈ 0..6.
+            unsafe { *q_ptr.add(i) = view.q(i) };
+        }
+        for j in 0..t_len {
+            // SAFETY: j < t_len ≤ MAX_EXT, so t_ptr.add(j) is within the
+            // MaybeUninit allocation. view.t(j) returns Base::idx() ∈ 0..6.
+            unsafe { *t_ptr.add(j) = view.t(j) };
+        }
+
+        // =====================================================================
+        // INITIALIZATION - Unconditional writes to avoid stale data
+        // =====================================================================
+
+        let has_main_region = self.init_frontier(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
+        if !has_main_region {
+            return ExtendResult {
+                grid,
+                gotoh: self,
+                score: best.score,
+                q_len: best.i,
+                t_len: best.j,
+            };
+        }
+
+        // =======================================================================
+        // MAIN DP LOOP (i >= 3, j >= 3)
+        // =======================================================================
+
+        self.dp_main_loop_generic(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
+
+        trace!(
+            "{} result: score={} q_len={} t_len={}",
+            view.dir,
+            best.score,
+            best.i,
+            best.j,
+        );
+
+        ExtendResult {
+            grid,
+            gotoh: self,
+            score: best.score,
+            q_len: best.i,
+            t_len: best.j,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -241,7 +332,10 @@ mod tests {
                             gotoh.match_energy(q1, q2, t1, t2),
                             table.lookup(q1, q2, t1, t2),
                             "match_energy mismatch at ({},{},{},{})",
-                            q1, q2, t1, t2
+                            q1,
+                            q2,
+                            t1,
+                            t2
                         );
                     }
                 }
@@ -257,49 +351,28 @@ mod tests {
         for qp in 0..6 {
             for qc in 0..6 {
                 for tc in 0..6 {
-                    assert_eq!(
-                        gotoh.m_from_bq(qp, qc, tc),
-                        table.lookup(qp, qc, GAP, tc),
-                    );
-                    assert_eq!(
-                        gotoh.bq_open(qp, qc, tc),
-                        table.lookup(qp, qc, tc, GAP),
-                    );
+                    assert_eq!(gotoh.m_from_bq(qp, qc, tc), table.lookup(qp, qc, GAP, tc),);
+                    assert_eq!(gotoh.bq_open(qp, qc, tc), table.lookup(qp, qc, tc, GAP),);
                 }
-                assert_eq!(
-                    gotoh.bq_extend(qp, qc),
-                    table.lookup(qp, qc, GAP, GAP),
-                );
+                assert_eq!(gotoh.bq_extend(qp, qc), table.lookup(qp, qc, GAP, GAP),);
             }
         }
 
         for qc in 0..6 {
             for tp in 0..6 {
                 for tc in 0..6 {
-                    assert_eq!(
-                        gotoh.m_from_bt(qc, tp, tc),
-                        table.lookup(GAP, qc, tp, tc),
-                    );
-                    assert_eq!(
-                        gotoh.bt_open(qc, tp, tc),
-                        table.lookup(qc, GAP, tp, tc),
-                    );
+                    assert_eq!(gotoh.m_from_bt(qc, tp, tc), table.lookup(GAP, qc, tp, tc),);
+                    assert_eq!(gotoh.bt_open(qc, tp, tc), table.lookup(qc, GAP, tp, tc),);
                 }
             }
             for tc in 0..6 {
-                assert_eq!(
-                    gotoh.terminal(qc, tc),
-                    table.lookup(qc, GAP, tc, GAP),
-                );
+                assert_eq!(gotoh.terminal(qc, tc), table.lookup(qc, GAP, tc, GAP),);
             }
         }
 
         for tp in 0..6 {
             for tc in 0..6 {
-                assert_eq!(
-                    gotoh.bt_extend_e(tp, tc),
-                    table.lookup(GAP, GAP, tp, tc),
-                );
+                assert_eq!(gotoh.bt_extend_e(tp, tc), table.lookup(GAP, GAP, tp, tc),);
             }
         }
     }

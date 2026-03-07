@@ -1117,7 +1117,10 @@ mod tests {
                             left.lookup(q1, q2, t1, t2),
                             right.lookup(q2, q1, t2, t1),
                             "transpose mismatch at ({},{},{},{})",
-                            q1, q2, t1, t2
+                            q1,
+                            q2,
+                            t1,
+                            t2
                         );
                     }
                 }
