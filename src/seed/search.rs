@@ -55,7 +55,7 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
     config: &SeedConfig,
     mut on_seed: F,
 ) {
-    let interval = query.seed_interval();
+    let interval = &query.seed_interval;
     let q_offset = interval.start;
     let q_end = interval.end;
     let q_seed_len = query.seed_sequence().len();

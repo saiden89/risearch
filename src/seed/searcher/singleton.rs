@@ -1,4 +1,4 @@
-use crate::types::Interval;
+use std::ops::Range;
 
 use super::{
     partition_interval_into, recurse_if_nonempty, sa_char, sa_suffix_pos, SeedMatch,
@@ -382,8 +382,14 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
             && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < ctx.min_len))
         {
             (ctx.on_match)(SeedMatch {
-                query_interval: Interval::new(q_idx, q_idx + 1),
-                target_interval: Interval::new(s_idx, s_idx + 1),
+                query_interval: Range {
+                    start: q_idx,
+                    end: q_idx + 1,
+                },
+                target_interval: Range {
+                    start: s_idx,
+                    end: s_idx + 1,
+                },
                 seed_len: depth,
             });
         }

@@ -216,30 +216,6 @@ impl SeedLen {
     }
 }
 
-/// Half-open interval [start, end).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct Interval {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl Interval {
-    #[inline]
-    pub const fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
-    }
-
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.start >= self.end
-    }
-
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
-    }
-}
-
 /// Strand direction for search
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

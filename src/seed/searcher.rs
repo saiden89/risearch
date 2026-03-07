@@ -6,7 +6,8 @@
 //! - `recurse`: recursive parallel SA traversal with inline match/mismatch
 
 use crate::config::SeedConfig;
-use crate::types::{Base, Interval};
+use std::ops::Range;
+use crate::types::Base;
 
 mod partition;
 mod singleton;
@@ -66,8 +67,8 @@ fn sa_suffix_pos(sa: &[u64], sa_idx: usize) -> usize {
 /// A seed match found by parallel SA search.
 #[derive(Debug, Clone)]
 pub struct SeedMatch {
-    pub(crate) query_interval: Interval,
-    pub(crate) target_interval: Interval,
+    pub(crate) query_interval: Range<usize>,
+    pub(crate) target_interval: Range<usize>,
     pub(crate) seed_len: usize,
 }
 
@@ -213,8 +214,8 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < ctx.min_len))
     {
         (ctx.on_match)(SeedMatch {
-            query_interval: Interval::new(ql, qr),
-            target_interval: Interval::new(sl, sr),
+            query_interval: ql..qr,
+            target_interval: sl..sr,
             seed_len: depth,
         });
     }

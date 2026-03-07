@@ -11,6 +11,7 @@ use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::io::Write;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -25,7 +26,7 @@ use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
 use crate::seed::{for_each_seed, SeedHit};
 use crate::seq::Sequence;
-use crate::types::{Base, Energy, Interval, Strand};
+use crate::types::{Base, Energy, Strand};
 
 // =============================================================================
 // PUBLIC API
@@ -313,7 +314,7 @@ where
 {
     let query = &ctx.queries.entries()[query_idx as usize];
     let query_bases = query.sequence().as_slice();
-    let seed_interval = query.seed_interval();
+    let seed_interval = query.seed_interval.clone();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
     let filter_cfg = &ctx.opts.filter;
 
@@ -342,7 +343,7 @@ where
             &ctx.gotoh_right,
             query_idx,
             query_bases,
-            seed_interval,
+            seed_interval.clone(),
             include_alignment,
             filter_cfg,
             target_len,
@@ -373,7 +374,7 @@ fn build_hit_from_seed(
     gotoh_right: &Gotoh,
     query_idx: u32,
     query_bases: &[Base],
-    seed_interval: Interval,
+    seed_interval: Range<usize>,
     include_alignment: bool,
     filter_cfg: &FilterConfig,
     target_len: usize,
@@ -438,7 +439,7 @@ fn compute_seed_extension(
     query_bases: &[Base],
     target_trans: &[Base],
     seed: &SeedHit,
-    seed_interval: Interval,
+    seed_interval: Range<usize>,
     filter_cfg: &FilterConfig,
     with_traceback: bool,
 ) -> Option<SeedExtension> {

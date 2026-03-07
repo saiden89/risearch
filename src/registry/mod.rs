@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::Path;
 
 use crate::config::SeedConfig;
@@ -9,7 +10,7 @@ use crate::fastx::read_fasta_sequences;
 use crate::index::io::validate_readable_file;
 use crate::index::sa::SuffixArray;
 use crate::seq::{SeqView, Sequence};
-use crate::types::{Base, Interval};
+use crate::types::Base;
 
 pub trait RegistryEntry {
     fn name(&self) -> &str;
@@ -87,7 +88,7 @@ pub struct Query {
     /// Suffix array built over `seed_sequence`
     sa: SuffixArray,
     /// Pre-computed normalized seed interval bounds on the full query
-    seed_interval: Interval,
+    pub(crate) seed_interval: Range<usize>,
     /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
@@ -115,7 +116,7 @@ impl Query {
             .seed
             .normalize(q_len)
             .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
-        let seed_interval = Interval::new(start1 - 1, end1);
+        let seed_interval = (start1 - 1)..end1;
         let seed_sequence = Sequence::from(sequence[seed_interval.start..seed_interval.end].to_vec());
         let sa = SuffixArray::try_from(&seed_sequence[..])
             .map_err(|err| anyhow!("Failed to build seed SA for query '{}': {}", name, err))?;
@@ -157,8 +158,8 @@ impl Query {
     }
 
     #[inline]
-    pub fn seed_interval(&self) -> Interval {
-        self.seed_interval
+    pub fn seed_interval(&self) -> Range<usize> {
+        self.seed_interval.clone()
     }
 
     #[inline(always)]
@@ -269,7 +270,7 @@ mod tests {
         };
         let query = make_query_data(sequence, seed.clone());
 
-        assert_eq!(query.seed_interval(), Interval::new(1, 5));
+        assert_eq!(query.seed_interval, 1..5);
         assert_eq!(query.seed_sequence().as_slice(), &query.sequence().as_slice()[1..5]);
 
         let expected_sa =
@@ -283,7 +284,7 @@ mod tests {
         let seed = SeedSpec::LengthOnly(3);
         let query = make_query_data(sequence, seed.clone());
 
-        assert_eq!(query.seed_interval(), Interval::new(0, 5));
+        assert_eq!(query.seed_interval, 0..5);
         assert_eq!(query.seed_sequence().len(), 5);
         assert_eq!(query.seed_sequence().as_slice(), query.sequence().as_slice());
     }
