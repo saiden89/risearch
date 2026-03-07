@@ -45,7 +45,7 @@ name = "output"
 harness = false
 
 [[bench]]
-name = "seed_search"
+name = "seed"
 harness = false
 
 [profile.profiling]
