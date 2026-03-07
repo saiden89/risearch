@@ -331,7 +331,7 @@ where
         let (t_forward_trans, t_reverse_trans, target_len) = ctx.target_slices(target_idx);
 
         let mut seed = seed;
-        seed.target_start = target_len.saturating_sub(seed.target_start + seed.seed_len.get());
+        seed.target_start = target_len.saturating_sub(seed.target_start + seed.len.get());
 
         let target_trans = match seed.strand {
             Strand::Forward => t_forward_trans,
@@ -383,7 +383,7 @@ fn build_hit_from_seed(
     seed: &SeedHit,
     target_trans: &[Base],
 ) -> Option<SearchHit> {
-    if seed.target_start + seed.seed_len.get() > target_trans.len() {
+    if seed.target_start + seed.len.get() > target_trans.len() {
         return None;
     }
 
@@ -446,42 +446,42 @@ fn compute_seed_extension(
     with_traceback: bool,
 ) -> Option<SeedExtension> {
     let penalty = dp_cfg.penalty_raw();
-    let q_pos = seed.query_pos;
-    let t_pos = seed.target_start;
-    let len = seed.seed_len.get();
+    let q_start = seed.query_start;
+    let t_start = seed.target_start;
+    let len = seed.len.get();
 
     // Maximality check in scoring/raw coordinate space.
-    if q_pos > seed_interval.start && t_pos + len < target_trans.len() {
-        let q_base = query_bases[q_pos - 1];
-        let t_base = target_trans[t_pos + len].complement();
+    if q_start > seed_interval.start && t_start + len < target_trans.len() {
+        let q_base = query_bases[q_start - 1];
+        let t_base = target_trans[t_start + len].complement();
         if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
             return None;
         }
     }
 
-    if q_pos + len < seed_interval.end && t_pos > 0 {
-        let q_base = query_bases[q_pos + len];
-        let t_base = target_trans[t_pos - 1].complement();
+    if q_start + len < seed_interval.end && t_start > 0 {
+        let q_base = query_bases[q_start + len];
+        let t_base = target_trans[t_start - 1].complement();
         if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
             return None;
         }
     }
 
-    let t_match_end = t_pos + len - 1;
+    let t_match_end = t_start + len - 1;
     let max_ext = dp_cfg.max_extension();
-    let seed_e = crate::dsm::seed_energy(model, query_bases, target_trans, q_pos, t_pos, len);
+    let seed_e = crate::dsm::seed_energy(model, query_bases, target_trans, q_start, t_start, len);
 
-    let can_extend_left = q_pos > 0 && t_pos + len < target_trans.len();
-    let can_extend_right = q_pos + len < query_bases.len() && t_pos > 0;
+    let can_extend_left = q_start > 0 && t_start + len < target_trans.len();
+    let can_extend_right = q_start + len < query_bases.len() && t_start > 0;
 
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
         let term_5p = gotoh_left.terminal(
-            query_bases[q_pos].idx(),
+            query_bases[q_start].idx(),
             target_trans[t_match_end].complement().idx(),
         );
         let term_3p = gotoh_right.terminal(
-            query_bases[q_pos + len - 1].idx(),
-            target_trans[t_pos].complement().idx(),
+            query_bases[q_start + len - 1].idx(),
+            target_trans[t_start].complement().idx(),
         );
         let nt_count = (2 * len) as i32;
         return Some(SeedExtension {
@@ -496,7 +496,7 @@ fn compute_seed_extension(
     }
 
     let (l_score, l_q, l_t, left_pairs) = {
-        let view = DpView::left(query_bases, target_trans, q_pos, t_match_end, max_ext);
+        let view = DpView::left(query_bases, target_trans, q_start, t_match_end, max_ext);
         let result = gotoh_left.extend(&view, grid);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -507,7 +507,13 @@ fn compute_seed_extension(
     };
 
     let (r_score, r_q, r_t, right_pairs) = {
-        let view = DpView::right(query_bases, target_trans, q_pos + len - 1, t_pos, max_ext);
+        let view = DpView::right(
+            query_bases,
+            target_trans,
+            q_start + len - 1,
+            t_start,
+            max_ext,
+        );
         let result = gotoh_right.extend(&view, grid);
         let pairs = if with_traceback {
             result.traceback(&view)
@@ -544,12 +550,12 @@ impl SearchHit {
         include_alignment: bool,
         original_target_len: usize,
     ) -> Self {
-        let q_pos = seed.query_pos;
+        let q_start = seed.query_start;
         let t_start = seed.target_start;
-        let len = seed.seed_len.get();
+        let len = seed.len.get();
 
-        let final_q_start = q_pos.saturating_sub(ext.l_q);
-        let final_q_end = (q_pos + len - 1) + ext.r_q;
+        let final_q_start = q_start.saturating_sub(ext.l_q);
+        let final_q_end = (q_start + len - 1) + ext.r_q;
         let final_t_start = t_start.saturating_sub(ext.r_t);
         let final_t_end = (t_start + len - 1) + ext.l_t;
 
@@ -567,7 +573,7 @@ impl SearchHit {
             let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
             for i in 0..len {
                 seed_pairs.push(PairClass::from_bases(
-                    query_bases[q_pos + i],
+                    query_bases[q_start + i],
                     target_trans[t_match_end - i].complement(),
                 ));
             }

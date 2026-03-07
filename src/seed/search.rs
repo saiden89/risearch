@@ -101,11 +101,7 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
 
     let offsets = global.offsets;
     let seq_lens = global.seq_lens;
-    let mut group_id: u32 = 0;
-
     searcher.for_each_length_range(min_len, max_len, |m| {
-        group_id = group_id.wrapping_add(1);
-        let this_group = group_id;
         let seed_len = m.seed_len;
         let Some(seed_len_typed) = SeedLen::new(seed_len) else {
             return;
@@ -136,7 +132,7 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
 
                 // Determine strand from local position within target block.
                 // Block layout: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
-                let (strand, target_start) = if local_pos < seq_len {
+                let (strand, t_start) = if local_pos < seq_len {
                     if local_pos + seed_len > seq_len {
                         continue;
                     }
@@ -152,11 +148,10 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
                 };
 
                 on_seed(SeedHit {
-                    group_id: this_group,
-                    query_pos: q_pos,
+                    query_start: q_pos,
                     target_id: TargetId(target_idx as u32),
-                    target_start,
-                    seed_len: seed_len_typed,
+                    target_start: t_start,
+                    len: seed_len_typed,
                     strand,
                 });
             }
