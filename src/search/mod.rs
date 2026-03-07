@@ -330,9 +330,6 @@ where
         let target_idx = target_idx_u32 as usize;
         let (t_forward_trans, t_reverse_trans, target_len) = ctx.target_slices(target_idx);
 
-        let mut seed = seed;
-        seed.target_start = target_len.saturating_sub(seed.target_start + seed.len.get());
-
         let target_trans = match seed.strand {
             Strand::Forward => t_forward_trans,
             Strand::Reverse => t_reverse_trans,

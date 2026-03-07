@@ -12,7 +12,7 @@ pub struct SeedHit {
     pub query_start: usize,
     /// Index of target sequence in the index
     pub target_id: TargetId,
-    /// Start position in target sequence (0-based)
+    /// Start position in the strand-selected target view used by seeding/DP (0-based)
     pub target_start: usize,
     /// Length of the seed match
     pub len: SeedLen,

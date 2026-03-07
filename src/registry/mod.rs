@@ -76,34 +76,26 @@ impl<T: RegistryEntry> Registry<T> {
     }
 }
 
-/// Query data computed once at load time.
-///
-/// Owns all sequence data, suffix arrays, and N-position metadata.
-/// For config-dependent views (interval bounds), use `QueryView`.
-pub struct QueryData {
+/// Query prepared once at load time for the current seed configuration.
+pub struct Query {
     /// Sequence identifier
     name: String,
-    /// Forward sequence
+    /// Full forward sequence used for extension and output
     sequence: Sequence,
-    /// Suffix array for forward sequence (`u64` suffix positions)
+    /// Seed-interval slice used by the seeding suffix array
+    seed_sequence: Sequence,
+    /// Suffix array built over `seed_sequence`
     sa: SuffixArray,
-    /// Pre-computed seed interval bounds
+    /// Pre-computed normalized seed interval bounds on the full query
     seed_interval: Interval,
-    /// Minimum seed length
-    min_seed_len: usize,
     /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
     has_n_any: bool,
 }
 
-impl QueryData {
-    fn from_parts(
-        name: String,
-        sequence: Sequence,
-        sa: SuffixArray,
-        config: &SeedConfig,
-    ) -> Result<Self> {
+impl Query {
+    fn from_parts(name: String, sequence: Sequence, config: &SeedConfig) -> Result<Self> {
         let q_len = sequence.len();
 
         // Compute N-prefix for O(1) N-checking
@@ -119,18 +111,21 @@ impl QueryData {
         let has_n_any = n_total != 0;
 
         // Compute seed interval once and fail early at boundary if invalid.
-        let (start1, end1, min_seed_len) = config
+        let (start1, end1, _min_seed_len) = config
             .seed
             .normalize(q_len)
             .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
         let seed_interval = Interval::new(start1 - 1, end1);
+        let seed_sequence = Sequence::from(sequence[seed_interval.start..seed_interval.end].to_vec());
+        let sa = SuffixArray::try_from(&seed_sequence[..])
+            .map_err(|err| anyhow!("Failed to build seed SA for query '{}': {}", name, err))?;
 
         Ok(Self {
             name,
             sequence,
+            seed_sequence,
             sa,
             seed_interval,
-            min_seed_len,
             n_prefix,
             has_n_any,
         })
@@ -166,19 +161,19 @@ impl QueryData {
         self.seed_interval
     }
 
-    #[inline]
-    pub fn min_seed_len(&self) -> usize {
-        self.min_seed_len
+    #[inline(always)]
+    pub fn seed_sequence(&self) -> SeqView<'_> {
+        self.seed_sequence.as_view()
     }
 }
 
-impl RegistryEntry for QueryData {
+impl RegistryEntry for Query {
     fn name(&self) -> &str {
-        QueryData::name(self)
+        Query::name(self)
     }
 }
 
-pub type QueryRegistry = Registry<QueryData>;
+pub type QueryRegistry = Registry<Query>;
 
 fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     validate_readable_file(path)?;
@@ -231,21 +226,18 @@ impl QueryRegistry {
     pub fn from_fasta(path: &Path, config: &SeedConfig) -> Result<Self> {
         let sequences = read_and_validate_sequences(path)?;
 
-        let maybe_entries: Vec<Option<QueryData>> = sequences
+        let maybe_entries: Vec<Option<Query>> = sequences
             .into_par_iter()
-            .map(|(id, seq)| -> Result<Option<QueryData>> {
+            .map(|(id, seq)| -> Result<Option<Query>> {
                 let Some((name, sequence)) = normalize_record(id, seq)? else {
                     return Ok(None);
                 };
 
-                // Build SA on forward sequence
-                let sa = SuffixArray::try_from(&sequence[..])?;
-
-                Ok(Some(QueryData::from_parts(name, sequence, sa, config)?))
+                Ok(Some(Query::from_parts(name, sequence, config)?))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let entries: Vec<QueryData> = maybe_entries.into_iter().flatten().collect();
+        let entries: Vec<Query> = maybe_entries.into_iter().flatten().collect();
         if entries.is_empty() {
             bail!(
                 "All sequences were empty after normalization in {}",
@@ -254,5 +246,45 @@ impl QueryRegistry {
         }
 
         Ok(Self::new(entries))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{MismatchSpec, SeedSpec};
+
+    fn make_query_data(sequence: Sequence, seed: SeedSpec) -> Query {
+        let cfg = SeedConfig::with_wobble(seed, MismatchSpec::exact(), false);
+        Query::from_parts("q".into(), sequence, &cfg).expect("query data")
+    }
+
+    #[test]
+    fn seed_sa_is_built_on_interval_slice() {
+        let sequence = Sequence::from(vec![Base::A, Base::U, Base::G, Base::C, Base::A, Base::U]);
+        let seed = SeedSpec::IntervalWithLength {
+            start: 2,
+            end: 5,
+            length: 2,
+        };
+        let query = make_query_data(sequence, seed.clone());
+
+        assert_eq!(query.seed_interval(), Interval::new(1, 5));
+        assert_eq!(query.seed_sequence().as_slice(), &query.sequence().as_slice()[1..5]);
+
+        let expected_sa =
+            SuffixArray::try_from(query.seed_sequence().as_slice()).expect("slice SA");
+        assert_eq!(query.sa(), expected_sa.as_ref());
+    }
+
+    #[test]
+    fn seed_sequence_tracks_only_valid_interval_starts() {
+        let sequence = Sequence::from(vec![Base::A, Base::G, Base::C, Base::U, Base::A]);
+        let seed = SeedSpec::LengthOnly(3);
+        let query = make_query_data(sequence, seed.clone());
+
+        assert_eq!(query.seed_interval(), Interval::new(0, 5));
+        assert_eq!(query.seed_sequence().len(), 5);
+        assert_eq!(query.seed_sequence().as_slice(), query.sequence().as_slice());
     }
 }

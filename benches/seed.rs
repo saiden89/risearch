@@ -8,7 +8,7 @@ use risearch::config::{
 };
 use risearch::index::sa::SuffixArray;
 use risearch::index::store::SA_CHAR_PADDING;
-use risearch::registry::{QueryData, QueryRegistry};
+use risearch::registry::{Query, QueryRegistry};
 use risearch::search::run_search;
 use risearch::seed::searcher::{SeedMatch, SeedSearcher};
 use risearch::seq::Sequence;
@@ -171,18 +171,30 @@ fn build_production_dataset(
     }
 }
 
-fn prepare_query_for_seed_search(query: &QueryData) -> Option<PreparedQuery> {
+fn prepare_query_for_seed_search(
+    query: &Query,
+    seed_config: &SeedConfig,
+) -> Option<PreparedQuery> {
     let interval = query.seed_interval();
-    let min_len = query.min_seed_len();
+    let min_len = seed_config
+        .seed
+        .normalize(query.sequence().len())
+        .expect("prepared query must be used with a compatible seed config")
+        .2;
     let max_len = interval.end.saturating_sub(interval.start);
-    let q_sa_len = query.seed_search_sa_len();
+    let q_sa_len = query.sa().len();
     if q_sa_len == 0 {
         return None;
     }
 
+    let mut padded_q_sa = query.sa().to_vec();
+    padded_q_sa.resize(q_sa_len + SA_CHAR_PADDING, 0u64);
+    let mut padded_q_seq = query.seed_sequence().as_slice().to_vec();
+    padded_q_seq.resize(query.seed_sequence().len() + SA_CHAR_PADDING, Base::Gap);
+
     Some(PreparedQuery {
-        padded_q_sa: query.padded_seed_search_sa().to_vec(),
-        padded_q_seq: query.padded_sequence().to_vec(),
+        padded_q_sa,
+        padded_q_seq,
         q_sa_start: 0,
         q_sa_len,
         min_len,
@@ -306,7 +318,7 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
             .queries
             .entries()
             .iter()
-            .filter_map(prepare_query_for_seed_search)
+            .filter_map(|query| prepare_query_for_seed_search(query, &seed_config))
             .collect();
         let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
 
@@ -390,7 +402,7 @@ fn bench_seed_prod_shaped_searcher(c: &mut Criterion) {
         .queries
         .entries()
         .iter()
-        .filter_map(prepare_query_for_seed_search)
+        .filter_map(|query| prepare_query_for_seed_search(query, &seed_config))
         .collect();
     let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
 
