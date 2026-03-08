@@ -49,44 +49,6 @@ static BYTE_TO_BASE: [Base; 256] = {
     table
 };
 
-/// Static lookup table for RNA reverse complement (byte → complemented byte).
-/// Single lookup, no enum conversion, SIMD-vectorizable.
-/// A↔U, G↔C, unknown→N, outputs uppercase.
-pub static RC_RNA_TABLE: [u8; 256] = {
-    let mut t = [b'N'; 256];
-    t[b'A' as usize] = b'U';
-    t[b'a' as usize] = b'U';
-    t[b'U' as usize] = b'A';
-    t[b'u' as usize] = b'A';
-    t[b'T' as usize] = b'A';
-    t[b't' as usize] = b'A';
-    t[b'G' as usize] = b'C';
-    t[b'g' as usize] = b'C';
-    t[b'C' as usize] = b'G';
-    t[b'c' as usize] = b'G';
-    t[b'-' as usize] = b'-';
-    t[b'.' as usize] = b'-';
-    t
-};
-
-/// DNA reverse complement LUT: byte → complemented lowercase byte (T not U).
-pub static RC_DNA_TABLE: [u8; 256] = {
-    let mut t = [b'n'; 256];
-    t[b'A' as usize] = b't';
-    t[b'a' as usize] = b't';
-    t[b'U' as usize] = b'a';
-    t[b'u' as usize] = b'a';
-    t[b'T' as usize] = b'a';
-    t[b't' as usize] = b'a';
-    t[b'G' as usize] = b'c';
-    t[b'g' as usize] = b'c';
-    t[b'C' as usize] = b'g';
-    t[b'c' as usize] = b'g';
-    t[b'-' as usize] = b'-';
-    t[b'.' as usize] = b'-';
-    t
-};
-
 // =============================================================================
 // BASE CONVERSION LUTS - Constant-time lookups for Base enum
 // =============================================================================
@@ -96,28 +58,6 @@ static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'G', b'C', b'U', b'N'];
 
 /// Base → lowercase ASCII byte (for to_byte())
 static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'g', b'c', b't', b'n'];
-
-/// Base → complement Base (indexed by Base as usize)
-static BASE_COMPLEMENT: [Base; 6] = [Base::Gap, Base::U, Base::C, Base::G, Base::A, Base::N];
-
-/// Byte → complement byte (256-entry LUT for direct ASCII lookup)
-/// A<->U/T, C<->G, N->N, others->N (all lowercase output)
-pub static COMPLEMENT: [u8; 256] = {
-    let mut lut = [b'n'; 256];
-    lut[b'a' as usize] = b't';
-    lut[b'A' as usize] = b't';
-    lut[b't' as usize] = b'a';
-    lut[b'T' as usize] = b'a';
-    lut[b'u' as usize] = b'a';
-    lut[b'U' as usize] = b'a';
-    lut[b'c' as usize] = b'g';
-    lut[b'C' as usize] = b'g';
-    lut[b'g' as usize] = b'c';
-    lut[b'G' as usize] = b'c';
-    lut[b'n' as usize] = b'n';
-    lut[b'N' as usize] = b'n';
-    lut
-};
 
 /// Index → Base (for from_idx)
 static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::G, Base::C, Base::U, Base::N];
@@ -165,9 +105,16 @@ impl Base {
     }
 
     /// Watson-Crick complement (A <-> U/T, G <-> C)
-    #[inline]
-    pub fn complement(self) -> Self {
-        BASE_COMPLEMENT[self as usize]
+    #[inline(always)]
+    pub const fn complement(self) -> Self {
+        match self {
+            Base::Gap => Base::Gap,
+            Base::A => Base::U,
+            Base::G => Base::C,
+            Base::C => Base::G,
+            Base::U => Base::A,
+            Base::N => Base::N,
+        }
     }
 
     /// Convert from raw u8 discriminant without bounds check.

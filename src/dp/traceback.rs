@@ -40,7 +40,7 @@ pub(super) fn traceback(
         match state {
             State::Match if i > 0 && j > 0 => {
                 let q_base = Base::from_idx(view.q(i));
-                let t_base = Base::from_idx(view.t(j));
+                let t_base = Base::from_idx(view.t(j)).complement();
                 out.push(PairClass::from_bases(q_base, t_base));
 
                 let c = grid.get(i, j);

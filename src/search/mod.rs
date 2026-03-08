@@ -451,7 +451,7 @@ fn compute_seed_extension(
     // Maximality check in scoring/raw coordinate space.
     if q_start > seed_interval.start && t_start + len < target_trans.len() {
         let q_base = query_bases[q_start - 1];
-        let t_base = target_trans[t_start + len].complement();
+        let t_base = target_trans[t_start + len];
         if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
             return None;
         }
@@ -459,7 +459,7 @@ fn compute_seed_extension(
 
     if q_start + len < seed_interval.end && t_start > 0 {
         let q_base = query_bases[q_start + len];
-        let t_base = target_trans[t_start - 1].complement();
+        let t_base = target_trans[t_start - 1];
         if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
             return None;
         }
@@ -475,11 +475,11 @@ fn compute_seed_extension(
     if max_ext == 0 || (!can_extend_left && !can_extend_right) {
         let term_5p = gotoh_left.terminal(
             query_bases[q_start].idx(),
-            target_trans[t_match_end].complement().idx(),
+            target_trans[t_match_end].idx(),
         );
         let term_3p = gotoh_right.terminal(
             query_bases[q_start + len - 1].idx(),
-            target_trans[t_start].complement().idx(),
+            target_trans[t_start].idx(),
         );
         let nt_count = (2 * len) as i32;
         return Some(SeedExtension {

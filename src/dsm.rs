@@ -35,7 +35,7 @@ pub use crate::types::GAP;
 #[derive(Clone, Debug)]
 pub struct ScoringTable {
     table: [i32; DSM_FLAT_SIZE],
-    pair_mat: &'static [[u8; 6]; 6],
+    pair_mat: [[u8; 6]; 6],
 }
 
 impl ScoringTable {
@@ -51,19 +51,32 @@ impl ScoringTable {
             for q2 in 0..6 {
                 for t1 in 0..6 {
                     for t2 in 0..6 {
+                        let t1_orig = Base::from_idx(t1).complement().idx();
+                        let t2_orig = Base::from_idx(t2).complement().idx();
+                        
                         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+                        let orig_idx = q1 * 216 + q2 * 36 + t1_orig * 6 + t2_orig;
+                        
                         table[idx] =
-                            source_table[q1][q2][t1][t2] as i32 - penalty * DSM_EXTEND_FLAT[idx];
+                            source_table[q1][q2][t1_orig][t2_orig] as i32 - penalty * DSM_EXTEND_FLAT[orig_idx];
                     }
                 }
             }
         }
 
-        let pair_mat = if allow_wobble {
+        let source_pair_mat = if allow_wobble {
             &PAIR_MAT
         } else {
             &PAIR_MAT_NO_GU
         };
+
+        let mut pair_mat = [[0u8; 6]; 6];
+        for q in 0..6 {
+            for t in 0..6 {
+                let t_orig = Base::from_idx(t).complement().idx();
+                pair_mat[q][t] = source_pair_mat[q][t_orig];
+            }
+        }
 
         Self { table, pair_mat }
     }
@@ -125,8 +138,8 @@ pub fn seed_energy(
         score += model.lookup(
             query[q_pos + i].idx(),
             query[q_pos + i + 1].idx(),
-            target[t_match_end - i].complement().idx(),
-            target[t_match_end - i - 1].complement().idx(),
+            target[t_match_end - i].idx(),
+            target[t_match_end - i - 1].idx(),
         );
     }
     score
@@ -1074,22 +1087,25 @@ mod tests {
         let strict = ScoringTable::new(Matrix::T04, 0, false);
         let wobble = ScoringTable::new(Matrix::T04, 0, true);
 
-        assert!(strict.is_pair(Base::G, Base::C));
-        assert!(wobble.is_pair(Base::G, Base::C));
+        // G pairs with C (index space C is G)
+        assert!(strict.is_pair(Base::G, Base::G));
+        assert!(wobble.is_pair(Base::G, Base::G));
 
-        assert!(!strict.is_pair(Base::G, Base::U));
-        assert!(wobble.is_pair(Base::G, Base::U));
+        // G pairs with wobble U (index space U is A)
+        assert!(!strict.is_pair(Base::G, Base::A));
+        assert!(wobble.is_pair(Base::G, Base::A));
     }
 
     #[test]
     fn test_dsm_get() {
         let model = ScoringTable::new(Matrix::T04, 0, true);
-        let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::U.idx(), Base::A.idx());
+        // Original target was U-A, index space is A-U
+        let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::A.idx(), Base::U.idx());
         let gap_energy = model.lookup(
             Base::Gap.idx(),
             Base::A.idx(),
             Base::Gap.idx(),
-            Base::U.idx(),
+            Base::A.idx(), // original was U, index is A
         );
         assert!(
             gap_energy != 0 || energy != 0,
@@ -1101,7 +1117,8 @@ mod tests {
     fn test_dsm_known_values() {
         let model = ScoringTable::new(Matrix::T04, 0, true);
         // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
-        let actual = model.lookup(Base::G.idx(), Base::G.idx(), Base::C.idx(), Base::C.idx());
+        // Original target was CC, index space is GG
+        let actual = model.lookup(Base::G.idx(), Base::G.idx(), Base::G.idx(), Base::G.idx());
         assert_eq!(actual, 330);
     }
 

@@ -157,16 +157,12 @@ impl<'a> DpView<'a> {
     }
 
     /// Get target base index at DP position j (0 = anchor).
-    /// Bases are complemented on-the-fly from the transformed index.
+    /// Bases are passed straight from the transformed index.
     #[inline(always)]
     pub fn t(&self, j: usize) -> usize {
         match self.dir {
-            ExtendDir::Left => Self::right_base(self.target_transformed, self.t_anchor, j)
-                .complement()
-                .idx(),
-            ExtendDir::Right => Self::left_base(self.target_transformed, self.t_anchor, j)
-                .complement()
-                .idx(),
+            ExtendDir::Left => Self::right_base(self.target_transformed, self.t_anchor, j).idx(),
+            ExtendDir::Right => Self::left_base(self.target_transformed, self.t_anchor, j).idx(),
         }
     }
 }
