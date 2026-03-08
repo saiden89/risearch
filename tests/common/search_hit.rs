@@ -7,7 +7,6 @@
 use risearch::alignment::Alignment;
 use risearch::index::store::TargetStore;
 use risearch::registry::QueryRegistry;
-use risearch::seq::Sequence;
 use risearch::types::{Energy, Strand};
 use risearch::SearchHit;
 
@@ -131,22 +130,6 @@ pub(crate) fn parse_c_output(
         _ => (None, None),
     };
 
-    // Optional flanks
-    let flank_5 = match fields.get(10) {
-        Some(s) => {
-            let clean = strip_markers_simple(s);
-            Sequence::normalize("flank_5", clean.as_bytes()).ok()?.0
-        }
-        None => Sequence::from(Vec::new()),
-    };
-    let flank_3 = match fields.get(11) {
-        Some(s) => {
-            let clean = strip_markers_simple(s);
-            Sequence::normalize("flank_3", clean.as_bytes()).ok()?.0
-        }
-        None => Sequence::from(Vec::new()),
-    };
-
     Some(SearchHit {
         query_idx,
         target_idx,
@@ -159,8 +142,6 @@ pub(crate) fn parse_c_output(
         seed_start,
         seed_end,
         alignment: Some(alignment),
-        flank_5,
-        flank_3,
     })
 }
 

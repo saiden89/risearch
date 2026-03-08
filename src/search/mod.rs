@@ -22,10 +22,10 @@ use crate::dp::gotoh::Gotoh;
 use crate::dp::{DpConfig, DpGrid, DpView};
 use crate::dsm::ScoringTable;
 use crate::index::store::{GlobalView, TargetStore};
+use crate::output::format::HitCtx;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
 use crate::seed::{for_each_seed, SeedHit};
-use crate::seq::Sequence;
 use crate::types::{Base, Energy, Strand};
 
 // =============================================================================
@@ -46,8 +46,6 @@ pub struct SearchHit {
     pub seed_start: Option<usize>,
     pub seed_end: Option<usize>,
     pub alignment: Option<Alignment>,
-    pub flank_5: Sequence,
-    pub flank_3: Sequence,
 }
 
 // =============================================================================
@@ -279,13 +277,13 @@ where
         let target_idx = hit.target_idx as usize;
         if last_target_idx != Some(target_idx) {
             let (t_fwd, t_rc, _) = ctx.target_slices(target_idx);
-            let target_name = ctx.store.get_name(hit.target_idx);
-            cached_target = Some((target_name, t_fwd, t_rc));
+            let t_name = ctx.store.get_name(hit.target_idx);
+            cached_target = Some(HitCtx { q_name: query_name, q_seq: query_seq, t_name, t_fwd, t_rc });
             last_target_idx = Some(target_idx);
         }
-        let (target_name, t_fwd, t_rc) = cached_target.as_ref().unwrap();
+        let hit_ctx = *cached_target.as_ref().unwrap();
 
-        if let Some(chunk) = format.add_hit(&hit, query_name, target_name, query_seq, t_fwd, t_rc) {
+        if let Some(chunk) = format.add_hit(&hit, hit_ctx) {
             on_chunk(chunk)?;
         }
         local_hits += 1;
@@ -603,8 +601,6 @@ impl SearchHit {
             seed_start,
             seed_end,
             alignment,
-            flank_5: Sequence::from(Vec::new()),
-            flank_3: Sequence::from(Vec::new()),
         }
     }
 }

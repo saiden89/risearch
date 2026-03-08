@@ -48,6 +48,10 @@ harness = false
 name = "seed"
 harness = false
 
+[[bench]]
+name = "format"
+harness = false
+
 [profile.profiling]
 inherits = "release"
 debug = 2

@@ -5,7 +5,6 @@
 
 use crate::common::search_hit::SearchHitExt;
 use risearch::index::store::TargetStore;
-use risearch::seq::bases_to_rna_string;
 use risearch::types::{Base, Strand};
 use risearch::{QueryRegistry, SearchHit};
 use tabled::{builder::Builder, settings::Style, Table, Tabled};
@@ -239,11 +238,11 @@ impl ParsedInteraction {
         };
 
         Self {
-            ctx_5: bases_to_rna_string(hit.flank_5.as_view(), false),
+            ctx_5: "".into(),
             ext_5: left,
             seed,
             ext_3: right,
-            ctx_3: bases_to_rna_string(hit.flank_3.as_view(), false),
+            ctx_3: "".into(),
         }
     }
 

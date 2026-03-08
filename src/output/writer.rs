@@ -7,10 +7,8 @@ use anyhow::{Context, Result};
 use crate::config::{OutputConfig, OutputFormat};
 use crate::registry::QueryRegistry;
 use crate::search::SearchHit;
-use crate::seq::SeqView;
-use crate::types::Base;
 
-use super::format::{append_hit_names_vec, OutputBuffers};
+use super::format::{format_hit_into, HitCtx};
 use super::open_output;
 
 const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
@@ -23,7 +21,7 @@ pub struct OutputChunk {
 
 /// Formats `SearchHit`s into `OutputChunk`s, buffering to avoid excessive channel traffic.
 pub struct HitFormatter {
-    fmt_bufs: OutputBuffers,
+    itoa: itoa::Buffer,
     chunk_data: Vec<u8>,
     chunk_hits: usize,
     output_format: OutputFormat,
@@ -32,7 +30,7 @@ pub struct HitFormatter {
 impl HitFormatter {
     pub fn new(output_format: OutputFormat) -> Self {
         Self {
-            fmt_bufs: OutputBuffers::new(),
+            itoa: itoa::Buffer::new(),
             chunk_data: Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
             chunk_hits: 0,
             output_format,
@@ -40,27 +38,8 @@ impl HitFormatter {
     }
 
     #[inline]
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_hit(
-        &mut self,
-        hit: &SearchHit,
-        query_name: &str,
-        target_name: &str,
-        query_seq: &[Base],
-        t_fwd: &[Base],
-        t_rc: &[Base],
-    ) -> Option<OutputChunk> {
-        append_hit_names_vec(
-            &mut self.fmt_bufs,
-            hit,
-            self.output_format,
-            &mut self.chunk_data,
-            query_name,
-            target_name,
-            SeqView::from(query_seq),
-            SeqView::from(t_fwd),
-            SeqView::from(t_rc),
-        );
+    pub fn add_hit(&mut self, hit: &SearchHit, ctx: HitCtx<'_>) -> Option<OutputChunk> {
+        format_hit_into(&mut self.chunk_data, &mut self.itoa, hit, ctx, self.output_format);
         self.chunk_hits += 1;
 
         if self.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {

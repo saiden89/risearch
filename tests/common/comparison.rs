@@ -623,7 +623,7 @@ impl<'a> ParityComparator<'a> {
 mod tests {
     use super::*;
     use risearch::types::{Energy, Strand};
-    use risearch::{Alignment, PairClass, Sequence};
+    use risearch::{Alignment, PairClass};
 
     fn make_hit(
         q_start: usize,
@@ -660,8 +660,6 @@ mod tests {
             seed_start: None,
             seed_end: None,
             alignment: Some(alignment),
-            flank_5: Sequence::from(Vec::new()),
-            flank_3: Sequence::from(Vec::new()),
         }
     }
 

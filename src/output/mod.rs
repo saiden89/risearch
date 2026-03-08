@@ -11,7 +11,7 @@ use zstd::stream;
 use crate::config::{OutputCompression, OutputConfig};
 
 pub mod format;
-pub use format::{append_hit_minimal_names_vec, write_hit, write_hit_names, OutputBuffers};
+pub use format::{format_hit_into, write_hit, HitCtx};
 
 pub mod writer;
 pub use writer::{HitFormatter, OutputChunk, OutputWriter};
