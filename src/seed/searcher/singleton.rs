@@ -9,10 +9,10 @@ use super::{
 #[inline(always)]
 fn is_match_pair<const WOBBLE: bool>(q_char: u8, s_char: u8) -> bool {
     match q_char {
-        BASE_A => s_char == BASE_A, // orig U
-        BASE_C => s_char == BASE_G, // orig G
-        BASE_G => s_char == BASE_C || (WOBBLE && s_char == BASE_A),
-        BASE_U => s_char == BASE_U || (WOBBLE && s_char == BASE_G),
+        BASE_A => s_char == BASE_U,
+        BASE_C => s_char == BASE_G,
+        BASE_G => s_char == BASE_C || (WOBBLE && s_char == BASE_U),
+        BASE_U => s_char == BASE_A || (WOBBLE && s_char == BASE_G),
         _ => false,
     }
 }
