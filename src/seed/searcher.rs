@@ -15,33 +15,12 @@ mod singleton;
 use partition::partition_interval_into;
 use singleton::{recurse_q_singleton, recurse_s_singleton, recurse_singleton};
 
-// Raw Base discriminant values (from #[repr(u8)] Base enum), as returned by sa_char().
-const BASE_A: u8 = Base::A as u8;
-const BASE_G: u8 = Base::G as u8;
-const BASE_C: u8 = Base::C as u8;
-const BASE_U: u8 = Base::U as u8;
-
-// Rank-ordered values for SA partitioning.
-// Rank order: Gap(0) < A(1) < C(2) < G(3) < N(4) < U(5).
-// Mirrors C's XSTRM + "acgnu" character class ordering.
-const RANK_A: u8 = 1;
-const RANK_C: u8 = 2;
-const RANK_G: u8 = 3;
-const RANK_N: u8 = 4;
-const RANK_U: u8 = 5;
-
-/// Map raw Base discriminant to sorted rank for SA partitioning.
-#[inline(always)]
-fn sa_char_rank(sa: &[u64], seq: &[Base], sa_idx: usize, offset: usize) -> u8 {
-    match sa_char(sa, seq, sa_idx, offset) {
-        BASE_A => RANK_A,
-        BASE_C => RANK_C,
-        BASE_G => RANK_G,
-        BASE_U => RANK_U,
-        5 => RANK_N, // Base::N — rarely hit, not worth a const
-        _ => 0,      // Gap/sentinel
-    }
-}
+// Raw Base discriminant values (from #[repr(u8)] Base enum).
+// Since the enum order is Gap < A < C < G < N < U, these also act as the SA sort ranks.
+const BASE_A: u8 = Base::A as u8; // 1
+const BASE_C: u8 = Base::C as u8; // 2
+const BASE_G: u8 = Base::G as u8; // 3
+const BASE_U: u8 = Base::U as u8; // 5
 
 /// Read the base discriminant at `sa[sa_idx].pos + offset` from the sequence.
 ///

@@ -24,10 +24,10 @@ pub enum Base {
     #[default]
     Gap = 0,
     A = 1,
-    G = 2,
-    C = 3,
-    U = 4,
-    N = 5,
+    C = 2,
+    G = 3,
+    N = 4,
+    U = 5,
 }
 
 /// Static lookup table for byte-to-Base conversion (256 entries, O(1) access).
@@ -54,13 +54,13 @@ static BYTE_TO_BASE: [Base; 256] = {
 // =============================================================================
 
 /// Base → uppercase ASCII byte
-static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'G', b'C', b'U', b'N'];
+static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'C', b'G', b'N', b'U'];
 
 /// Base → lowercase ASCII byte (for to_byte())
-static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'g', b'c', b't', b'n'];
+static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'c', b'g', b'n', b'u'];
 
 /// Index → Base (for from_idx)
-static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::G, Base::C, Base::U, Base::N];
+static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
 
 impl Base {
     /// Convert ASCII nucleotide byte to Base enum via lookup table.

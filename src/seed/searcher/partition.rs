@@ -1,6 +1,8 @@
 use crate::types::Base;
 
-use super::{sa_char_rank, RANK_A, RANK_C, RANK_G, RANK_N, RANK_U};
+use super::{sa_char, BASE_A, BASE_C, BASE_G, BASE_U};
+
+const BASE_N: u8 = Base::N as u8;
 
 const LINEAR_PARTITION_CUTOFF: usize = 1024;
 
@@ -26,23 +28,23 @@ pub(super) fn partition_interval_into(
     if end - start <= LINEAR_PARTITION_CUTOFF {
         let mut i = start;
 
-        while i < end && sa_char_rank(sa, seq, i, offset) < RANK_A {
+        while i < end && sa_char(sa, seq, i, offset) < BASE_A {
             i += 1;
         }
         out[0] = i;
-        while i < end && sa_char_rank(sa, seq, i, offset) < RANK_C {
+        while i < end && sa_char(sa, seq, i, offset) < BASE_C {
             i += 1;
         }
         out[1] = i;
-        while i < end && sa_char_rank(sa, seq, i, offset) < RANK_G {
+        while i < end && sa_char(sa, seq, i, offset) < BASE_G {
             i += 1;
         }
         out[2] = i;
-        while i < end && sa_char_rank(sa, seq, i, offset) < RANK_N {
+        while i < end && sa_char(sa, seq, i, offset) < BASE_N {
             i += 1;
         }
         out[3] = i;
-        while i < end && sa_char_rank(sa, seq, i, offset) < RANK_U {
+        while i < end && sa_char(sa, seq, i, offset) < BASE_U {
             i += 1;
         }
         out[4] = i;
@@ -50,11 +52,11 @@ pub(super) fn partition_interval_into(
         return;
     }
 
-    out[0] = sa_search_left(sa, seq, start, end, offset, RANK_A);
-    out[1] = sa_search_left(sa, seq, start, end, offset, RANK_C);
-    out[2] = sa_search_left(sa, seq, start, end, offset, RANK_G);
-    out[3] = sa_search_left(sa, seq, start, end, offset, RANK_N);
-    out[4] = sa_search_left(sa, seq, start, end, offset, RANK_U);
+    out[0] = sa_search_left(sa, seq, start, end, offset, BASE_A);
+    out[1] = sa_search_left(sa, seq, start, end, offset, BASE_C);
+    out[2] = sa_search_left(sa, seq, start, end, offset, BASE_G);
+    out[3] = sa_search_left(sa, seq, start, end, offset, BASE_N);
+    out[4] = sa_search_left(sa, seq, start, end, offset, BASE_U);
     out[5] = end;
 }
 
@@ -88,7 +90,7 @@ fn sa_search_left(
     let mut half = (end - start) >> 1;
     while start < end {
         let mid = start + half;
-        let char_val = sa_char_rank(sa, seq, mid, offset);
+        let char_val = sa_char(sa, seq, mid, offset);
 
         if char_val >= target {
             end = start + half;
