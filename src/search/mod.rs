@@ -306,7 +306,7 @@ fn build_hit_from_seed(
     engine
         .extend_seed(query_bases, target_trans, seed, seed_interval, filter_cfg, include_alignment)
         .filter(|ext| ext.score <= filter_cfg.delta_g)
-        .map(|ext| SearchHit::new(query_idx, query_bases, target_trans, seed, &ext, target_len))
+        .map(|ext| SearchHit::new(query_idx, query_bases, target_trans, seed, &ext, include_alignment, target_len))
 }
 
 // =============================================================================
@@ -324,7 +324,64 @@ struct SeedExtension {
     pairs: Option<AlignmentPairs>,
 }
 
+impl SeedExtension {
+    fn build_alignment(
+        &self,
+        seed: &SeedHit,
+        query_bases: &[Base],
+        target_trans: &[Base],
+    ) -> (Alignment, usize, usize) {
+        let q_start = seed.query_start;
+        let len = seed.len.get();
+        let t_match_end = seed.target_start + len - 1;
+
+        let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
+        for i in 0..len {
+            seed_pairs.push(PairClass::from_bases(
+                query_bases[q_start + i],
+                target_trans[t_match_end - i].complement(),
+            ));
+        }
+
+        let (left, right) = self
+            .pairs
+            .as_ref()
+            .map(|(l, r)| (l.as_slice(), r.as_slice()))
+            .unwrap_or((&[], &[]));
+        let start = left.len();
+        (Alignment::new(left, &seed_pairs, right), start, start + len)
+    }
+}
+
 impl ExtensionEngine {
+    /// Returns true if the seed can be extended by one base on either side to
+    /// form a valid pair — i.e. it is not maximal and should be pruned.
+    fn is_maximal(
+        &self,
+        seed: &SeedHit,
+        query_bases: &[Base],
+        target_trans: &[Base],
+        seed_interval: &Range<usize>,
+    ) -> bool {
+        let q_start = seed.query_start;
+        let t_start = seed.target_start;
+        let len = seed.len.get();
+
+        if q_start > seed_interval.start && t_start + len < target_trans.len() {
+            if self.model.is_pair(query_bases[q_start - 1], target_trans[t_start + len]) {
+                return false;
+            }
+        }
+
+        if q_start + len < seed_interval.end && t_start > 0 {
+            if self.model.is_pair(query_bases[q_start + len], target_trans[t_start - 1]) {
+                return false;
+            }
+        }
+
+        true
+    }
+
     fn extend_seed(
         &mut self,
         query_bases: &[Base],
@@ -339,21 +396,8 @@ impl ExtensionEngine {
         let t_start = seed.target_start;
         let len = seed.len.get();
 
-        // Maximality check in scoring/raw coordinate space.
-        if q_start > seed_interval.start && t_start + len < target_trans.len() {
-            let q_base = query_bases[q_start - 1];
-            let t_base = target_trans[t_start + len];
-            if self.model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
-                return None;
-            }
-        }
-
-        if q_start + len < seed_interval.end && t_start > 0 {
-            let q_base = query_bases[q_start + len];
-            let t_base = target_trans[t_start - 1];
-            if self.model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
-                return None;
-            }
+        if !filter_cfg.no_max_prune && !self.is_maximal(seed, query_bases, target_trans, &seed_interval) {
+            return None;
         }
 
         let t_match_end = t_start + len - 1;
@@ -379,7 +423,7 @@ impl ExtensionEngine {
                 l_t: 0,
                 r_q: 0,
                 r_t: 0,
-                pairs: include_alignment.then(|| (SmallVec::new(), SmallVec::new())),
+                pairs: None,
             });
         }
 
@@ -421,6 +465,7 @@ impl SearchHit {
         target_trans: &[Base],
         seed: &SeedHit,
         ext: &SeedExtension,
+        include_alignment: bool,
         original_target_len: usize,
     ) -> Self {
         let q_start = seed.query_start;
@@ -441,17 +486,9 @@ impl SearchHit {
             }
         };
 
-        let (alignment, seed_start, seed_end) = if let Some((left, right)) = &ext.pairs {
-            let t_match_end = seed.target_start + len - 1;
-            let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
-            for i in 0..len {
-                seed_pairs.push(PairClass::from_bases(
-                    query_bases[q_start + i],
-                    target_trans[t_match_end - i].complement(),
-                ));
-            }
-            let start = left.len();
-            (Some(Alignment::new(left, &seed_pairs, right)), Some(start), Some(start + len))
+        let (alignment, seed_start, seed_end) = if include_alignment {
+            let (aln, start, end) = ext.build_alignment(seed, query_bases, target_trans);
+            (Some(aln), Some(start), Some(end))
         } else {
             (None, None, None)
         };
