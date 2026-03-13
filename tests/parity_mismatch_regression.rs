@@ -2,11 +2,11 @@
 
 mod support;
 
-use support::{workspace_root, SingleSeqRunner};
 use flate2::read::GzDecoder;
 use std::io::Read;
 use std::io::Write;
 use std::process::Command;
+use support::{workspace_root, SingleSeqRunner};
 use tempfile::tempdir;
 
 #[test]

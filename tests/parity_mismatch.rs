@@ -2,8 +2,8 @@
 
 mod support;
 
-use support::{workspace_root, ParityRunner};
 use rstest::rstest;
+use support::{workspace_root, ParityRunner};
 
 #[rstest]
 fn test_mismatch(

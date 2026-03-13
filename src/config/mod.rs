@@ -207,8 +207,8 @@ impl From<&std::path::Path> for OutputCodec {
 pub enum OutputCompression {
     #[default]
     None,
-    Gzip(u8),   // level 0–9
-    Zstd(i32),  // level -7..22
+    Gzip(u8),  // level 0–9
+    Zstd(i32), // level -7..22
 }
 
 // =============================================================================

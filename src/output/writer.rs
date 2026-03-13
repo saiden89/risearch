@@ -41,7 +41,13 @@ impl HitFormatter {
 
     #[inline]
     pub fn add_hit(&mut self, hit: &SearchHit, ctx: HitCtx<'_>) -> Option<OutputChunk> {
-        format_hit_into(&mut self.chunk_data, &mut self.itoa, hit, ctx, self.output_format);
+        format_hit_into(
+            &mut self.chunk_data,
+            &mut self.itoa,
+            hit,
+            ctx,
+            self.output_format,
+        );
         self.chunk_hits += 1;
 
         if self.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
@@ -90,9 +96,10 @@ impl OutputWriter {
 
         let writer: Box<dyn Write + Send> = match config.compress {
             OutputCompression::None => Box::new(BufWriter::with_capacity(256 * 1024, inner)),
-            OutputCompression::Gzip(level) => {
-                Box::new(BufWriter::with_capacity(256 * 1024, GzEncoder::new(inner, Compression::new(level as u32))))
-            }
+            OutputCompression::Gzip(level) => Box::new(BufWriter::with_capacity(
+                256 * 1024,
+                GzEncoder::new(inner, Compression::new(level as u32)),
+            )),
             OutputCompression::Zstd(level) => {
                 let encoder = stream::write::Encoder::new(inner, level)
                     .context("zstd encoder init failed")?
@@ -114,7 +121,6 @@ impl OutputWriter {
         self.writer.flush().context("Failed to flush output")
     }
 }
-
 
 /// Replace characters that are unsafe in filenames and handle reserved names.
 fn sanitize_filename(name: &str) -> String {

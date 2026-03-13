@@ -58,18 +58,18 @@ impl ScoringModel {
                     for t2 in 0..6 {
                         let t1_orig = Base::from_idx(t1).complement().idx();
                         let t2_orig = Base::from_idx(t2).complement().idx();
-                        
+
                         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
 
                         let l_q1 = new_to_legacy[q1];
                         let l_q2 = new_to_legacy[q2];
                         let l_t1_orig = new_to_legacy[t1_orig];
                         let l_t2_orig = new_to_legacy[t2_orig];
-                        
+
                         let orig_idx = l_q1 * 216 + l_q2 * 36 + l_t1_orig * 6 + l_t2_orig;
-                        
-                        table[idx] =
-                            source_table[l_q1][l_q2][l_t1_orig][l_t2_orig] as i32 - penalty * DSM_EXTEND_FLAT[orig_idx];
+
+                        table[idx] = source_table[l_q1][l_q2][l_t1_orig][l_t2_orig] as i32
+                            - penalty * DSM_EXTEND_FLAT[orig_idx];
                     }
                 }
             }
@@ -155,7 +155,6 @@ impl ScoringModel {
         score
     }
 }
-
 
 const T04: DsmTable = [
     [

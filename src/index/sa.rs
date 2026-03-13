@@ -34,9 +34,8 @@ impl TryFrom<&[Base]> for SuffixArray {
     fn try_from(bases: &[Base]) -> Result<Self, Self::Error> {
         // SAFETY: Base is #[repr(u8)] and its enum discriminants perfectly
         // match the required suffix array lexicographical sort order.
-        let sort_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(bases.as_ptr().cast::<u8>(), bases.len())
-        };
+        let sort_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(bases.as_ptr().cast::<u8>(), bases.len()) };
 
         // Build the suffix array. Use OpenMP if feature is enabled.
         #[cfg(feature = "openmp")]

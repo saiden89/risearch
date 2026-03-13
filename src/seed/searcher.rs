@@ -6,8 +6,8 @@
 //! - `recurse`: recursive parallel SA traversal with inline match/mismatch
 
 use crate::config::SeedConfig;
-use std::ops::Range;
 use crate::types::Base;
+use std::ops::Range;
 
 mod partition;
 mod singleton;

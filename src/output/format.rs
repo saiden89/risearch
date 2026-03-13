@@ -90,10 +90,22 @@ const FIELDS_BINDING_SITE: &[FieldKind] = &[
 
 fn format_spec(format: OutputFormat) -> FormatSpec {
     match format {
-        OutputFormat::Minimal => FormatSpec { prelude: PreludeKind::None, fields: FIELDS_BASE },
-        OutputFormat::Detailed => FormatSpec { prelude: PreludeKind::DetailedAlignment, fields: FIELDS_BASE },
-        OutputFormat::Cigar => FormatSpec { prelude: PreludeKind::None, fields: FIELDS_CIGAR },
-        OutputFormat::BindingSite => FormatSpec { prelude: PreludeKind::None, fields: FIELDS_BINDING_SITE },
+        OutputFormat::Minimal => FormatSpec {
+            prelude: PreludeKind::None,
+            fields: FIELDS_BASE,
+        },
+        OutputFormat::Detailed => FormatSpec {
+            prelude: PreludeKind::DetailedAlignment,
+            fields: FIELDS_BASE,
+        },
+        OutputFormat::Cigar => FormatSpec {
+            prelude: PreludeKind::None,
+            fields: FIELDS_CIGAR,
+        },
+        OutputFormat::BindingSite => FormatSpec {
+            prelude: PreludeKind::None,
+            fields: FIELDS_BINDING_SITE,
+        },
     }
 }
 
@@ -153,12 +165,27 @@ fn push_alignment_target_seq(buf: &mut Vec<u8>, alignment: &Alignment, t_bases: 
 /// The internal target track is in opposite-orientation transformed space.
 /// C expects the reverse-complemented track (RNA lowercase).
 #[inline]
-fn push_alignment_target_seq_bindingsite(buf: &mut Vec<u8>, alignment: &Alignment, t_bases: &[Base]) {
-    let mut t_idx = alignment.steps().iter().filter(|s| s.consumes_target()).count();
+fn push_alignment_target_seq_bindingsite(
+    buf: &mut Vec<u8>,
+    alignment: &Alignment,
+    t_bases: &[Base],
+) {
+    let mut t_idx = alignment
+        .steps()
+        .iter()
+        .filter(|s| s.consumes_target())
+        .count();
     for &step in alignment.steps().iter().rev() {
         if step.consumes_target() {
             t_idx = t_idx.saturating_sub(1);
-            buf.push(t_bases.get(t_idx).copied().unwrap_or(Base::Gap).complement().to_byte());
+            buf.push(
+                t_bases
+                    .get(t_idx)
+                    .copied()
+                    .unwrap_or(Base::Gap)
+                    .complement()
+                    .to_byte(),
+            );
         } else {
             buf.push(b'-');
         }
@@ -175,11 +202,14 @@ fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
     push_alignment_mapped(buf, alignment, |p| p.symbol() as u8);
 }
 
-
 fn hit_query_bases<'a>(hit: &SearchHit, q_seq: &'a [Base]) -> &'a [Base] {
     let start = hit.q_start.min(q_seq.len());
     let end = hit.q_end.saturating_add(1).min(q_seq.len());
-    if end < start { &q_seq[0..0] } else { &q_seq[start..end] }
+    if end < start {
+        &q_seq[0..0]
+    } else {
+        &q_seq[start..end]
+    }
 }
 
 fn hit_target_bases<'a>(hit: &SearchHit, t_fwd: &'a [Base], t_rc: &'a [Base]) -> &'a [Base] {
@@ -187,14 +217,29 @@ fn hit_target_bases<'a>(hit: &SearchHit, t_fwd: &'a [Base], t_rc: &'a [Base]) ->
         Strand::Forward => {
             let start = hit.t_start.min(t_fwd.len());
             let end = hit.t_end.saturating_add(1).min(t_fwd.len());
-            if end < start { &t_fwd[0..0] } else { &t_fwd[start..end] }
+            if end < start {
+                &t_fwd[0..0]
+            } else {
+                &t_fwd[start..end]
+            }
         }
         Strand::Reverse => {
             let len = t_fwd.len();
-            if len == 0 { return &t_rc[0..0]; }
-            let start = len.saturating_sub(hit.t_end.saturating_add(1)).min(t_rc.len());
-            let end = len.saturating_sub(hit.t_start.saturating_add(1)).saturating_add(1).min(t_rc.len());
-            if end < start { &t_rc[0..0] } else { &t_rc[start..end] }
+            if len == 0 {
+                return &t_rc[0..0];
+            }
+            let start = len
+                .saturating_sub(hit.t_end.saturating_add(1))
+                .min(t_rc.len());
+            let end = len
+                .saturating_sub(hit.t_start.saturating_add(1))
+                .saturating_add(1)
+                .min(t_rc.len());
+            if end < start {
+                &t_rc[0..0]
+            } else {
+                &t_rc[start..end]
+            }
         }
     }
 }
@@ -215,11 +260,21 @@ fn hit_target_flanks<'a>(
     }
 
     let (oriented, start, end) = match hit.strand {
-        Strand::Forward => (t_fwd, hit.t_start.min(len), hit.t_end.min(len.saturating_sub(1))),
+        Strand::Forward => (
+            t_fwd,
+            hit.t_start.min(len),
+            hit.t_end.min(len.saturating_sub(1)),
+        ),
         Strand::Reverse => {
-            if t_rc.is_empty() { return (&t_fwd[0..0], false, &t_fwd[0..0], false); }
-            let start = len.saturating_sub(hit.t_end.saturating_add(1)).min(t_rc.len());
-            let end = len.saturating_sub(hit.t_start.saturating_add(1)).min(t_rc.len().saturating_sub(1));
+            if t_rc.is_empty() {
+                return (&t_fwd[0..0], false, &t_fwd[0..0], false);
+            }
+            let start = len
+                .saturating_sub(hit.t_end.saturating_add(1))
+                .min(t_rc.len());
+            let end = len
+                .saturating_sub(hit.t_start.saturating_add(1))
+                .min(t_rc.len().saturating_sub(1));
             (t_rc, start, end)
         }
     };
@@ -229,11 +284,18 @@ fn hit_target_flanks<'a>(
     }
 
     let right_start = end.saturating_add(1).min(oriented.len());
-    let right_end = right_start.saturating_add(BINDING_SITE_FLANK_LEN).min(oriented.len());
+    let right_end = right_start
+        .saturating_add(BINDING_SITE_FLANK_LEN)
+        .min(oriented.len());
     let left_end = start;
     let left_start = left_end.saturating_sub(BINDING_SITE_FLANK_LEN);
 
-    (&oriented[right_start..right_end], false, &oriented[left_start..left_end], true)
+    (
+        &oriented[right_start..right_end],
+        false,
+        &oriented[left_start..left_end],
+        true,
+    )
 }
 
 // =============================================================================
@@ -252,18 +314,31 @@ pub fn format_hit_into(
     ctx: HitCtx<'_>,
     format: OutputFormat,
 ) {
-    let HitCtx { q_name, q_seq, t_name, t_fwd, t_rc } = ctx;
+    let HitCtx {
+        q_name,
+        q_seq,
+        t_name,
+        t_fwd,
+        t_rc,
+    } = ctx;
 
     // Minimal fast path: 8 direct writes, no field loop or match dispatch.
     if format == OutputFormat::Minimal {
         out.reserve(q_name.len() + t_name.len() + 72);
-        out.extend_from_slice(q_name.as_bytes()); out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.q_start + 1).as_bytes()); out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.q_end + 1).as_bytes()); out.push(b'\t');
-        out.extend_from_slice(t_name.as_bytes()); out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.t_start + 1).as_bytes()); out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.t_end + 1).as_bytes()); out.push(b'\t');
-        out.push(char::from(hit.strand) as u8); out.push(b'\t');
+        out.extend_from_slice(q_name.as_bytes());
+        out.push(b'\t');
+        out.extend_from_slice(itoa.format(hit.q_start + 1).as_bytes());
+        out.push(b'\t');
+        out.extend_from_slice(itoa.format(hit.q_end + 1).as_bytes());
+        out.push(b'\t');
+        out.extend_from_slice(t_name.as_bytes());
+        out.push(b'\t');
+        out.extend_from_slice(itoa.format(hit.t_start + 1).as_bytes());
+        out.push(b'\t');
+        out.extend_from_slice(itoa.format(hit.t_end + 1).as_bytes());
+        out.push(b'\t');
+        out.push(char::from(hit.strand) as u8);
+        out.push(b'\t');
         append_score_2dp(out, itoa, hit.energy.as_f64());
         out.push(b'\n');
         return;
@@ -280,54 +355,75 @@ pub fn format_hit_into(
         None
     };
 
-    let flank_len = flanks.map(|(f5, _, f3, _)| f5.len() + f3.len()).unwrap_or(0);
+    let flank_len = flanks
+        .map(|(f5, _, f3, _)| f5.len() + f3.len())
+        .unwrap_or(0);
     out.reserve(q_name.len() + t_name.len() + (steps_len * 2) + flank_len + 96);
 
     if spec.prelude == PreludeKind::DetailedAlignment {
         if let Some(align) = alignment {
             let q_bases = hit_query_bases(hit, q_seq);
             let t_bases = hit_target_bases(hit, t_fwd, t_rc);
-            push_alignment_query_seq(out, align, q_bases); out.push(b'\n');
-            push_alignment_line(out, align);              out.push(b'\n');
-            push_alignment_target_seq(out, align, t_bases); out.push(b'\n');
+            push_alignment_query_seq(out, align, q_bases);
+            out.push(b'\n');
+            push_alignment_line(out, align);
+            out.push(b'\n');
+            push_alignment_target_seq(out, align, t_bases);
+            out.push(b'\n');
         }
     }
 
     for (idx, field) in spec.fields.iter().enumerate() {
-        if idx > 0 { out.push(b'\t'); }
+        if idx > 0 {
+            out.push(b'\t');
+        }
         match field {
-            FieldKind::QueryId   => out.extend_from_slice(q_name.as_bytes()),
-            FieldKind::QStart    => out.extend_from_slice(itoa.format(hit.q_start + 1).as_bytes()),
-            FieldKind::QEnd      => out.extend_from_slice(itoa.format(hit.q_end + 1).as_bytes()),
-            FieldKind::TargetId  => out.extend_from_slice(t_name.as_bytes()),
-            FieldKind::TStart    => out.extend_from_slice(itoa.format(hit.t_start + 1).as_bytes()),
-            FieldKind::TEnd      => out.extend_from_slice(itoa.format(hit.t_end + 1).as_bytes()),
-            FieldKind::Strand    => out.push(char::from(hit.strand) as u8),
+            FieldKind::QueryId => out.extend_from_slice(q_name.as_bytes()),
+            FieldKind::QStart => out.extend_from_slice(itoa.format(hit.q_start + 1).as_bytes()),
+            FieldKind::QEnd => out.extend_from_slice(itoa.format(hit.q_end + 1).as_bytes()),
+            FieldKind::TargetId => out.extend_from_slice(t_name.as_bytes()),
+            FieldKind::TStart => out.extend_from_slice(itoa.format(hit.t_start + 1).as_bytes()),
+            FieldKind::TEnd => out.extend_from_slice(itoa.format(hit.t_end + 1).as_bytes()),
+            FieldKind::Strand => out.push(char::from(hit.strand) as u8),
             FieldKind::Energy2dp => append_score_2dp(out, itoa, hit.energy.as_f64()),
-            FieldKind::Pairing   => {
-                if let Some(align) = alignment { push_pairing_string(out, align); }
+            FieldKind::Pairing => {
+                if let Some(align) = alignment {
+                    push_pairing_string(out, align);
+                }
             }
             FieldKind::TargetSeq => {
                 if let Some(align) = alignment {
-                    push_alignment_target_seq_bindingsite(out, align, hit_target_bases(hit, t_fwd, t_rc));
+                    push_alignment_target_seq_bindingsite(
+                        out,
+                        align,
+                        hit_target_bases(hit, t_fwd, t_rc),
+                    );
                 }
             }
             // C `-p3` semantics: output `flank5` = our `flank_3` complemented, and vice-versa.
             FieldKind::Flank5 => {
                 if let Some((_, _, flank_3, flank_3_rev)) = flanks {
                     if flank_3_rev {
-                        for &b in flank_3.iter().rev() { out.push(b.complement().to_byte()); }
+                        for &b in flank_3.iter().rev() {
+                            out.push(b.complement().to_byte());
+                        }
                     } else {
-                        for &b in flank_3 { out.push(b.complement().to_byte()); }
+                        for &b in flank_3 {
+                            out.push(b.complement().to_byte());
+                        }
                     }
                 }
             }
             FieldKind::Flank3 => {
                 if let Some((flank_5, flank_5_rev, _, _)) = flanks {
                     if flank_5_rev {
-                        for &b in flank_5.iter().rev() { out.push(b.complement().to_byte()); }
+                        for &b in flank_5.iter().rev() {
+                            out.push(b.complement().to_byte());
+                        }
                     } else {
-                        for &b in flank_5 { out.push(b.complement().to_byte()); }
+                        for &b in flank_5 {
+                            out.push(b.complement().to_byte());
+                        }
                     }
                 }
             }

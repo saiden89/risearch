@@ -99,15 +99,15 @@ struct SearchContext<'a> {
 }
 
 impl<'a> SearchContext<'a> {
-    fn new(
-        queries: &'a QueryRegistry,
-        store: &'a TargetStore,
-        opts: &'a SearchConfig,
-    ) -> Self {
+    fn new(queries: &'a QueryRegistry, store: &'a TargetStore, opts: &'a SearchConfig) -> Self {
         let global = store.global_view();
-        Self { queries, store, global, opts }
+        Self {
+            queries,
+            store,
+            global,
+            opts,
+        }
     }
-
 }
 
 /// Per-worker DP extension engine. Each worker owns one; `&mut` is safe because
@@ -131,7 +131,13 @@ impl ExtensionEngine {
         let left_model = right_model.transpose();
         let gotoh_right = Gotoh::new(&right_model);
         let gotoh_left = Gotoh::new(&left_model);
-        Self { grid: DpGrid::new(dp_cfg.max_extension()), dp_cfg, model: right_model, gotoh_left, gotoh_right }
+        Self {
+            grid: DpGrid::new(dp_cfg.max_extension()),
+            dp_cfg,
+            model: right_model,
+            gotoh_left,
+            gotoh_right,
+        }
     }
 }
 
@@ -184,7 +190,8 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
                 writer.as_mut().unwrap().write_chunk(&chunk)
             };
 
-            let emitted = process_query(ctx, query_idx as u32, engine, format, &mut flush_to_writer)?;
+            let emitted =
+                process_query(ctx, query_idx as u32, engine, format, &mut flush_to_writer)?;
 
             if let Some(w) = writer.as_mut() {
                 w.flush_all()?;
@@ -283,9 +290,26 @@ fn build_hit_from_seed(
 ) -> Option<SearchHit> {
     debug_assert!(seed.target_start + seed.len.get() <= target_trans.len());
     engine
-        .extend_seed(query_bases, target_trans, seed, seed_interval, filter_cfg, include_alignment)
+        .extend_seed(
+            query_bases,
+            target_trans,
+            seed,
+            seed_interval,
+            filter_cfg,
+            include_alignment,
+        )
         .filter(|ext| ext.energy.as_f64() <= filter_cfg.delta_g)
-        .map(|ext| SearchHit::new(query_idx, query_bases, target_trans, seed, &ext, include_alignment, target_len))
+        .map(|ext| {
+            SearchHit::new(
+                query_idx,
+                query_bases,
+                target_trans,
+                seed,
+                &ext,
+                include_alignment,
+                target_len,
+            )
+        })
 }
 
 // =============================================================================
@@ -347,13 +371,19 @@ impl ExtensionEngine {
         let len = seed.len.get();
 
         if q_start > seed_interval.start && t_start + len < target_trans.len() {
-            if self.model.is_pair(query_bases[q_start - 1], target_trans[t_start + len]) {
+            if self
+                .model
+                .is_pair(query_bases[q_start - 1], target_trans[t_start + len])
+            {
                 return false;
             }
         }
 
         if q_start + len < seed_interval.end && t_start > 0 {
-            if self.model.is_pair(query_bases[q_start + len], target_trans[t_start - 1]) {
+            if self
+                .model
+                .is_pair(query_bases[q_start + len], target_trans[t_start - 1])
+            {
                 return false;
             }
         }
@@ -375,22 +405,25 @@ impl ExtensionEngine {
         let t_start = seed.target_start;
         let len = seed.len.get();
 
-        if !filter_cfg.no_max_prune && !self.is_maximal(seed, query_bases, target_trans, &seed_interval) {
+        if !filter_cfg.no_max_prune
+            && !self.is_maximal(seed, query_bases, target_trans, &seed_interval)
+        {
             return None;
         }
 
         let t_match_end = t_start + len - 1;
         let max_ext = self.dp_cfg.max_extension();
-        let seed_e = self.model.seed_energy(query_bases, target_trans, q_start, t_start, len);
+        let seed_e = self
+            .model
+            .seed_energy(query_bases, target_trans, q_start, t_start, len);
 
         let can_extend_left = q_start > 0 && t_start + len < target_trans.len();
         let can_extend_right = q_start + len < query_bases.len() && t_start > 0;
 
         if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-            let term_5p = self.gotoh_left.terminal(
-                query_bases[q_start].idx(),
-                target_trans[t_match_end].idx(),
-            );
+            let term_5p = self
+                .gotoh_left
+                .terminal(query_bases[q_start].idx(), target_trans[t_match_end].idx());
             let term_3p = self.gotoh_right.terminal(
                 query_bases[q_start + len - 1].idx(),
                 target_trans[t_start].idx(),
@@ -414,7 +447,13 @@ impl ExtensionEngine {
         };
 
         let (r_score, r_q, r_t, r_pairs) = {
-            let view = DpView::right(query_bases, target_trans, q_start + len - 1, t_start, max_ext);
+            let view = DpView::right(
+                query_bases,
+                target_trans,
+                q_start + len - 1,
+                t_start,
+                max_ext,
+            );
             let result = self.gotoh_right.extend(&view, &mut self.grid);
             let pairs = include_alignment.then(|| result.traceback(&view));
             (result.score, result.q_len, result.t_len, pairs)

@@ -69,7 +69,6 @@ impl OutputArgs {
 
         Ok(())
     }
-
 }
 
 fn parse_legacy_format(s: &str) -> Result<OutputFormat, String> {
@@ -95,7 +94,10 @@ impl From<OutputArgs> for config::OutputConfig {
         };
 
         config::OutputConfig {
-            format: value.report_format.or(value.report_legacy).unwrap_or_default(),
+            format: value
+                .report_format
+                .or(value.report_legacy)
+                .unwrap_or_default(),
             compress,
             multifile: value.output_multifile,
         }

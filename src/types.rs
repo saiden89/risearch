@@ -59,7 +59,6 @@ static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'C', b'G', b'N', b'U'];
 /// Base → lowercase ASCII byte (for to_byte())
 static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'c', b'g', b'n', b'u'];
 
-
 /// Index → Base (for from_idx)
 static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
 
@@ -98,7 +97,6 @@ impl Base {
     pub fn to_byte(self) -> u8 {
         BASE_TO_BYTE[self as usize]
     }
-
 
     /// Get char representation
     #[inline]
@@ -228,7 +226,6 @@ impl Energy {
     pub fn new(value: f64) -> Self {
         Energy(value)
     }
-
 
     /// Get the raw kcal/mol value.
     #[inline]

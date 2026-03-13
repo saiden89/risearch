@@ -171,10 +171,7 @@ fn build_production_dataset(
     }
 }
 
-fn prepare_query_for_seed_search(
-    query: &Query,
-    seed_config: &SeedConfig,
-) -> Option<PreparedQuery> {
+fn prepare_query_for_seed_search(query: &Query, seed_config: &SeedConfig) -> Option<PreparedQuery> {
     let interval = query.seed_interval();
     let min_len = seed_config
         .seed

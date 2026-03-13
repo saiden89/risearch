@@ -142,9 +142,9 @@ fn test_log_details_co_optimal() {
 
 #[rstest]
 #[case(ParityMode::Absolute, false, false, false, false)]
-#[case(ParityMode::Strict,   false, false, false, false)]
+#[case(ParityMode::Strict, false, false, false, false)]
 #[case(ParityMode::Balanced, false, false, false, false)]
-#[case(ParityMode::Relaxed,  true,  true,  false, false)]
+#[case(ParityMode::Relaxed, true, true, false, false)]
 fn test_missing_reason_acceptable(
     #[case] mode: ParityMode,
     #[case] better_ok: bool,

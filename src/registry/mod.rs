@@ -117,7 +117,8 @@ impl Query {
             .normalize(q_len)
             .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
         let seed_interval = (start1 - 1)..end1;
-        let seed_sequence = Sequence::from(sequence[seed_interval.start..seed_interval.end].to_vec());
+        let seed_sequence =
+            Sequence::from(sequence[seed_interval.start..seed_interval.end].to_vec());
         let sa = SuffixArray::try_from(&seed_sequence[..])
             .map_err(|err| anyhow!("Failed to build seed SA for query '{}': {}", name, err))?;
 
@@ -271,7 +272,10 @@ mod tests {
         let query = make_query_data(sequence, seed.clone());
 
         assert_eq!(query.seed_interval, 1..5);
-        assert_eq!(query.seed_sequence().as_slice(), &query.sequence().as_slice()[1..5]);
+        assert_eq!(
+            query.seed_sequence().as_slice(),
+            &query.sequence().as_slice()[1..5]
+        );
 
         let expected_sa =
             SuffixArray::try_from(query.seed_sequence().as_slice()).expect("slice SA");
@@ -286,6 +290,9 @@ mod tests {
 
         assert_eq!(query.seed_interval, 0..5);
         assert_eq!(query.seed_sequence().len(), 5);
-        assert_eq!(query.seed_sequence().as_slice(), query.sequence().as_slice());
+        assert_eq!(
+            query.seed_sequence().as_slice(),
+            query.sequence().as_slice()
+        );
     }
 }

@@ -64,7 +64,6 @@ impl Sequence {
         Self(rc_bases)
     }
 
-
     /// Iterator over bases
     pub fn iter(&self) -> impl Iterator<Item = &Base> {
         self.0.iter()
@@ -189,7 +188,6 @@ mod tests {
         assert_eq!(rc[2], Base::G); // C -> G
         assert_eq!(rc[3], Base::U); // A -> U
     }
-
 
     #[test]
     fn test_deref() {

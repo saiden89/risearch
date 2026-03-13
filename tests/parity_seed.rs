@@ -2,8 +2,8 @@
 
 mod support;
 
-use support::{workspace_root, ParityRunner};
 use rstest::rstest;
+use support::{workspace_root, ParityRunner};
 
 /// Main seed length × extension limit matrix.
 /// Tests all combinations on mirnas.fa vs RHOC.fa.

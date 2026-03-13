@@ -143,7 +143,11 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit) -> anyhow::Result<()>>(
             }
         }
     });
-    if let Some(err) = callback_err { Err(err) } else { Ok(()) }
+    if let Some(err) = callback_err {
+        Err(err)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

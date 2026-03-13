@@ -2,8 +2,8 @@
 
 mod support;
 
-use support::SingleSeqRunner;
 use rstest::rstest;
+use support::SingleSeqRunner;
 
 fn wc_complement(seq: &str) -> String {
     seq.chars()
