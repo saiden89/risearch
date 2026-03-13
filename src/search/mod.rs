@@ -109,15 +109,6 @@ impl<'a> SearchContext<'a> {
         Self { queries, store, global, opts }
     }
 
-    #[inline]
-    fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
-        let target_len = self.global.seq_lens[target_idx] as usize;
-        let target_offset = self.global.offsets[target_idx] as usize;
-        let t_fwd = &self.global.combined_seq[target_offset..target_offset + target_len];
-        let t_rc = &self.global.combined_seq
-            [target_offset + target_len + 1..target_offset + 2 * target_len + 1];
-        (t_fwd, t_rc, target_len)
-    }
 }
 
 /// Per-worker DP extension engine. Each worker owns one; `&mut` is safe because
@@ -244,7 +235,7 @@ where
 
     for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
         let target_idx = seed.target_id.0 as usize;
-        let (t_fwd, t_rc, target_len) = ctx.target_slices(target_idx);
+        let (t_fwd, t_rc, target_len) = ctx.global.target_slices(target_idx);
         let target_trans = match seed.strand {
             Strand::Forward => t_fwd,
             Strand::Reverse => t_rc,

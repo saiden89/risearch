@@ -69,6 +69,20 @@ pub struct GlobalView<'a> {
     pub seq_lens: &'a [u32],
 }
 
+impl<'a> GlobalView<'a> {
+    /// Return the forward and reverse-complement slices for a target, plus its length.
+    ///
+    /// Layout within global: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap.
+    #[inline]
+    pub fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
+        let seq_len = self.seq_lens[target_idx] as usize;
+        let offset = self.offsets[target_idx] as usize;
+        let t_fwd = &self.combined_seq[offset..offset + seq_len];
+        let t_rc = &self.combined_seq[offset + seq_len + 1..offset + 2 * seq_len + 1];
+        (t_fwd, t_rc, seq_len)
+    }
+}
+
 impl TargetStore {
     /// Build a new RSIDX6 index from a FASTA file.
     ///
