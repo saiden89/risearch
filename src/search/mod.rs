@@ -313,31 +313,11 @@ fn build_hit_from_seed(
     seed: &SeedHit,
     target_trans: &[Base],
 ) -> Option<SearchHit> {
-    if seed.target_start + seed.len.get() > target_trans.len() {
-        return None;
-    }
-
-    let extension = engine.extend_seed(
-        query_bases,
-        target_trans,
-        seed,
-        seed_interval,
-        filter_cfg,
-        include_alignment,
-    )?;
-
-    if extension.score > filter_cfg.delta_g {
-        return None;
-    }
-
-    Some(SearchHit::new(
-        query_idx,
-        query_bases,
-        target_trans,
-        seed,
-        &extension,
-        target_len,
-    ))
+    debug_assert!(seed.target_start + seed.len.get() <= target_trans.len());
+    engine
+        .extend_seed(query_bases, target_trans, seed, seed_interval, filter_cfg, include_alignment)
+        .filter(|ext| ext.score <= filter_cfg.delta_g)
+        .map(|ext| SearchHit::new(query_idx, query_bases, target_trans, seed, &ext, target_len))
 }
 
 // =============================================================================
