@@ -296,7 +296,7 @@ fn build_hit_from_seed(
     debug_assert!(seed.target_start + seed.len.get() <= target_trans.len());
     engine
         .extend_seed(query_bases, target_trans, seed, seed_interval, filter_cfg, include_alignment)
-        .filter(|ext| ext.score <= filter_cfg.delta_g)
+        .filter(|ext| ext.energy.as_f64() <= filter_cfg.delta_g)
         .map(|ext| SearchHit::new(query_idx, query_bases, target_trans, seed, &ext, include_alignment, target_len))
 }
 
@@ -307,7 +307,7 @@ fn build_hit_from_seed(
 type AlignmentPairs = (SmallVec<[PairClass; 64]>, SmallVec<[PairClass; 64]>);
 
 struct SeedExtension {
-    score: f64,
+    energy: Energy,
     l_q: usize,
     l_t: usize,
     r_q: usize,
@@ -409,7 +409,7 @@ impl ExtensionEngine {
             );
             let nt_count = (2 * len) as i32;
             return Some(SeedExtension {
-                score: crate::dsm::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
+                energy: Energy::from(seed_e + term_5p + term_3p + nt_count * penalty),
                 l_q: 0,
                 l_t: 0,
                 r_q: 0,
@@ -434,7 +434,7 @@ impl ExtensionEngine {
 
         let nt_count = (l_q + l_t + r_q + r_t + 2 * len) as i32;
         Some(SeedExtension {
-            score: crate::dsm::to_kcal(seed_e + l_score + r_score + nt_count * penalty),
+            energy: Energy::from(seed_e + l_score + r_score + nt_count * penalty),
             l_q,
             l_t,
             r_q,
@@ -492,7 +492,7 @@ impl SearchHit {
             t_start: final_t_start,
             t_end: final_t_end,
             strand,
-            energy: ext.score.into(),
+            energy: ext.energy,
             seed_start,
             seed_end,
             alignment,

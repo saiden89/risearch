@@ -156,11 +156,6 @@ impl ScoringModel {
     }
 }
 
-/// Convert DSM units → kcal/mol. 559 = terminal penalty offset.
-#[inline(always)]
-pub fn to_kcal(raw: i32) -> f64 {
-    (raw as f64 - 559.0) / -100.0
-}
 
 const T04: DsmTable = [
     [

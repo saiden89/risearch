@@ -227,6 +227,7 @@ impl Energy {
         Energy(value)
     }
 
+
     /// Get the raw kcal/mol value.
     #[inline]
     pub fn as_f64(&self) -> f64 {
@@ -237,5 +238,12 @@ impl Energy {
 impl From<f64> for Energy {
     fn from(v: f64) -> Self {
         Energy(v)
+    }
+}
+
+/// Convert DSM raw integer units → kcal/mol. 559 = terminal penalty offset.
+impl From<i32> for Energy {
+    fn from(raw: i32) -> Self {
+        Energy((raw as f64 - 559.0) / -100.0)
     }
 }
