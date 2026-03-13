@@ -124,15 +124,15 @@ struct ExtensionEngine {
 impl ExtensionEngine {
     fn new(opts: &SearchConfig) -> Self {
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = ScoringModel::new(
+        let right_model = ScoringModel::new(
             opts.score.matrix,
             dp_cfg.penalty_raw(),
             opts.seed.allows_wobble(),
         );
-        let left_model = model.transpose();
-        let gotoh_right = Gotoh::new(&model);
+        let left_model = right_model.transpose();
+        let gotoh_right = Gotoh::new(&right_model);
         let gotoh_left = Gotoh::new(&left_model);
-        Self { grid: DpGrid::new(dp_cfg.max_extension()), dp_cfg, model, gotoh_left, gotoh_right }
+        Self { grid: DpGrid::new(dp_cfg.max_extension()), dp_cfg, model: right_model, gotoh_left, gotoh_right }
     }
 }
 
