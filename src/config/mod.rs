@@ -176,15 +176,39 @@ pub enum OutputFormat {
     Minimal,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// CLI-facing codec selector — what the `--compress` flag parses into.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 #[clap(rename_all = "lowercase")]
-pub enum OutputCompression {
-    #[default]
+pub enum OutputCodec {
     None,
     #[value(alias = "gz")]
     Gzip,
     #[value(alias = "zst")]
     Zstd,
+}
+
+impl From<&std::path::Path> for OutputCodec {
+    /// Infer codec from file extension. Unrecognised or absent → `None`.
+    fn from(path: &std::path::Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(ext) => match ext.to_ascii_lowercase().as_str() {
+                "gz" | "gzip" => Self::Gzip,
+                "zst" | "zstd" => Self::Zstd,
+                _ => Self::None,
+            },
+            None => Self::None,
+        }
+    }
+}
+
+/// Config-facing compression value — codec and level bound together.
+/// Illegal states (level without codec) are unrepresentable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OutputCompression {
+    #[default]
+    None,
+    Gzip(u8),   // level 0–9
+    Zstd(i32),  // level -7..22
 }
 
 // =============================================================================
@@ -331,11 +355,8 @@ pub struct OutputConfig {
     /// Output format
     pub format: OutputFormat,
 
-    /// Output compression codec (overrides file extension inference; gzip/gz, zstd/zst accepted)
-    pub compress: Option<OutputCompression>,
-
-    /// Output compression level (codec-specific)
-    pub level: Option<i32>,
+    /// Compression codec and level, bound together (resolved at arg boundary)
+    pub compress: OutputCompression,
 
     /// Write one output file per query (directory mode)
     pub multifile: bool,

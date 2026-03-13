@@ -1,4 +1,4 @@
-use crate::config::{self, OutputCompression, OutputFormat};
+use crate::config::{self, OutputCodec, OutputCompression, OutputFormat};
 use anyhow::{bail, Result};
 use std::path::PathBuf;
 
@@ -32,9 +32,9 @@ pub struct OutputArgs {
 
     /// Output compression codec (overrides file extension inference; gzip/gz, zstd/zst accepted)
     #[arg(long = "compress", value_enum)]
-    pub output_compress: Option<OutputCompression>,
+    pub output_compress: Option<OutputCodec>,
 
-    /// Output compression level (codec-specific)
+    /// Output compression level (codec-specific: gzip 0–9, zstd -7..22)
     #[arg(long = "compress-level", value_name = "LEVEL")]
     pub output_level: Option<i32>,
 
@@ -47,6 +47,23 @@ impl OutputArgs {
     pub fn validate(&self) -> Result<()> {
         if self.output_multifile && self.path.as_os_str() == "-" {
             bail!("--multifile requires -o/--output to be a directory path; '-' (stdout) is not allowed.");
+        }
+
+        let codec = self
+            .output_compress
+            .unwrap_or_else(|| OutputCodec::from(self.path.as_path()));
+
+        if let Some(level) = self.output_level {
+            match codec {
+                OutputCodec::None => bail!("--compress-level requires compressed output"),
+                OutputCodec::Gzip if !(0..=9).contains(&level) => {
+                    bail!("gzip level must be 0-9 (got {})", level)
+                }
+                OutputCodec::Zstd if !(-7..=22).contains(&level) => {
+                    bail!("zstd level must be -7..22 (got {})", level)
+                }
+                _ => {}
+            }
         }
 
         Ok(())
@@ -72,10 +89,19 @@ impl OutputArgs {
 
 impl From<OutputArgs> for config::OutputConfig {
     fn from(value: OutputArgs) -> Self {
+        let codec = value
+            .output_compress
+            .unwrap_or_else(|| OutputCodec::from(value.path.as_path()));
+
+        let compress = match (codec, value.output_level) {
+            (OutputCodec::None, _) => OutputCompression::None,
+            (OutputCodec::Gzip, lvl) => OutputCompression::Gzip(lvl.unwrap_or(6) as u8),
+            (OutputCodec::Zstd, lvl) => OutputCompression::Zstd(lvl.unwrap_or(3)),
+        };
+
         config::OutputConfig {
             format: value.resolved_format(),
-            compress: value.output_compress,
-            level: value.output_level,
+            compress,
             multifile: value.output_multifile,
         }
     }

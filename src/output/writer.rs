@@ -1,15 +1,17 @@
 use std::collections::HashSet;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use zstd::stream;
 
-use crate::config::{OutputConfig, OutputFormat};
+use crate::config::{OutputCompression, OutputConfig, OutputFormat};
 use crate::registry::QueryRegistry;
 use crate::search::SearchHit;
 
 use super::format::{format_hit_into, HitCtx};
-use super::open_output;
 
 const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
 
@@ -67,17 +69,38 @@ impl HitFormatter {
     }
 }
 
-/// Orchestrates actual output writing for single-file output.
+/// Owns the full lifecycle of a single output destination: path resolution,
+/// compression wrapping, buffering, writing, and flushing.
 ///
-/// Multifile output is handled directly by `run_search_multifile_by_query`
-/// where each rayon worker owns its own writer.
+/// Pass `-` as `output_path` to write to stdout.
 pub struct OutputWriter {
     writer: Box<dyn Write + Send>,
 }
 
 impl OutputWriter {
     pub fn new(config: &OutputConfig, output_path: &Path) -> Result<Self> {
-        let writer = open_output(Some(output_path), config)?;
+        let inner: Box<dyn Write + Send> = if output_path == Path::new("-") {
+            Box::new(std::io::stdout())
+        } else {
+            Box::new(
+                std::fs::File::create(output_path)
+                    .with_context(|| format!("Failed to create output file {:?}", output_path))?,
+            )
+        };
+
+        let writer: Box<dyn Write + Send> = match config.compress {
+            OutputCompression::None => Box::new(BufWriter::with_capacity(256 * 1024, inner)),
+            OutputCompression::Gzip(level) => {
+                Box::new(BufWriter::with_capacity(256 * 1024, GzEncoder::new(inner, Compression::new(level as u32))))
+            }
+            OutputCompression::Zstd(level) => {
+                let encoder = stream::write::Encoder::new(inner, level)
+                    .context("zstd encoder init failed")?
+                    .auto_finish();
+                Box::new(BufWriter::with_capacity(256 * 1024, encoder))
+            }
+        };
+
         Ok(Self { writer })
     }
 
@@ -91,6 +114,7 @@ impl OutputWriter {
         self.writer.flush().context("Failed to flush output")
     }
 }
+
 
 /// Replace characters that are unsafe in filenames and handle reserved names.
 fn sanitize_filename(name: &str) -> String {

@@ -10,7 +10,6 @@ use anyhow::{Context, Result};
 use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::io::Write;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -176,30 +175,19 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
         },
         |(engine, format), query_idx| -> Result<()> {
             let file_path = &output_paths[query_idx];
-            let mut writer: Option<Box<dyn Write>> = None;
+            let mut writer: Option<OutputWriter> = None;
 
             let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
                 if writer.is_none() {
-                    writer = Some(
-                        crate::output::open_output(Some(file_path), &ctx.opts.output)
-                            .with_context(|| {
-                                format!("Failed to open output file {:?}", file_path)
-                            })?,
-                    );
+                    writer = Some(OutputWriter::new(&ctx.opts.output, file_path)?);
                 }
-                writer
-                    .as_mut()
-                    .expect("writer initialized")
-                    .write_all(&chunk.data)
-                    .with_context(|| format!("Failed to write output file {:?}", file_path))
+                writer.as_mut().unwrap().write_chunk(&chunk)
             };
 
             let emitted = process_query(ctx, query_idx as u32, engine, format, &mut flush_to_writer)?;
 
-            if let Some(writer) = writer.as_mut() {
-                writer
-                    .flush()
-                    .with_context(|| format!("Failed to flush output file {:?}", file_path))?;
+            if let Some(w) = writer.as_mut() {
+                w.flush_all()?;
             }
 
             total.fetch_add(emitted, Ordering::Relaxed);

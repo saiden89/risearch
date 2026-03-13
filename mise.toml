@@ -1,6 +1,7 @@
 [tools]
 rust = "latest"
 cmake = "latest"
+codex = "latest"
 # [tools]
 # rust = { version = "1.90", profile = "default" }
 

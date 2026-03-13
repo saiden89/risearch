@@ -1,102 +1,184 @@
-
 # Optimizations from Legacy C (RIsearch2)
 
-Analysis of `legacy_c/RIsearch2/src/search.c` and `sa.h` reveals several optimization techniques used in the C implementation that differ from the current Rust approach.
+This note tracks which ideas from the legacy C implementation still look
+relevant against the current Rust codebase, and which ones are already matched
+or no longer look attractive.
 
-## 1. Suffix Array "Packing" (Cache Locality)
+The old version of this file had become stale. In particular, it overstated the
+value of SA character packing and described a DP representation that Rust no
+longer uses.
 
-**Concept:**
-Standard Suffix Arrays store indices $p$ into the text. To check a character during search, you must read `Text[p]`. This causes random memory access (cache misses) across the huge `Text` array.
+## Still Worth Considering
 
-**C Implementation (`sa.h`):**
-RIsearch2 "packs" the character at `Text[p]` *directly* into the 64-bit Suffix Array entry.
+### 1. O(1) Target-ID Recovery for SA Hits
 
-```c
-// sa.h
-/* SA is stored in bits 34-0 */
-#define XSA(_x) ((_x)&0x00000003ffffffff)
-/* Character is stored in bits 38-34 */
-#define XRIS(_x) (((_x)&0x0000001c00000000)>>34)
-```
+**What C does**
 
-* **Bit 0-33:** The Suffix Array Index (positions up to ~17 billion).
-* **Bit 34-38:** The character code (A, C, G, U, N).
-* **Result:** When performing binary search or traversal, the algorithm reads the 64-bit integer and immediately knows the character *without* dereferencing the text pointer.
+C stores the target/transcript id in each packed SA entry via `XIDX(...)` in
+`legacy_c/RIsearch2/src/sa.h`, written during `sa_merge(...)` in
+`legacy_c/RIsearch2/src/sa.c`.
 
-**Rust Implementation:**
-Currently likely uses `Vec<u64>` or `Vec<usize>` for SA values and looks up characters in `Vec<u8>` text.
-
-* **Optimization Opportunity:** Implement a custom Struct or bit-packed `u64` for the SA to include the first character (or first 2 characters) of the suffix.
-
-## 2. Sentinel Values vs Option Types (Memory Density)
-
-**Concept:**
-Rust's `Option<i32>` is safe but consumes 8 bytes (4 bytes data + 4 bytes tag/alignment). For a DP matrix, this doubles memory bandwidth usage.
-
-**C Implementation (`search.c`):**
-Uses a sentinel value (`INT_MIN / 2`) to represent "None"/"Not Reachable".
+That means hit emission can do:
 
 ```c
-#define NA INT_MIN / 2
-// ...
-int *M = (int *)calloc(dp_size, sizeof(int)); // 4 bytes per cell
-M[TI(0, 0)] = NA;
+t_start = XSA(sa[j]);
+idx = XIDX(sa[j]);
 ```
 
-* **Result:** 2x better cache density for DP matrices.
+with no extra search.
 
-**Rust Implementation:**
-Uses `Grid<Option<i32>>`.
+**What Rust does now**
 
-* **Optimization Opportunity:** Switch to `Grid<i32>` and use a constant like `i32::MIN / 2` to represent "Empty".
+Rust enumerates target suffix positions from the global SA, then remaps each
+global position back to a target id with a binary search over target offsets in
+`src/seed/search.rs`:
 
-## 3. Subseed Filtering Heuristic
-
-**Concept:**
-Sometimes a long seed has a poor overall energy, but contains a short "subseed" with very good energy. Conversely, a seed might pass the threshold but only because of one good region.
-
-**C Implementation (`sa_evaluate_interval`):**
-If `seed_threshold_flag` is set, it performs a sliding window check over every seed match:
-
-```c
-// search.c:1877
-for (j = seed_len - 1; j >= (min_seed_length - 1); j--) {
-  // ... efficient O(N) scan to find best sub-seed energy ...
-}
-if (best_perlength_score < threshold) continue;
+```rust
+let target_idx = match offsets.partition_point(|&o| o <= t_pos as u64) {
+    0 => continue,
+    i => i - 1,
+};
 ```
 
-It effectively maximizes the "Energy Per Nucleotide" metric to filter out weak seeds early.
+**Why this still looks attractive**
 
-## 4. Flattened 1D Array Access
+This is the clearest remaining constant-factor win from the C data model. It is
+not about recovering the base. Rust already gets the base in O(1) from
+`combined_seq[p]`. The missing piece is target ownership metadata.
 
-**Concept:**
-Multi-dimensional array access `M[i][j]` can involve pointer indirection.
+**Likely Rust-friendly version**
 
-**C Implementation:**
-Explicitly manages 1D flat arrays with macros:
+Do not copy the full packed C layout blindly. The cleaner Rust version is
+probably:
 
-```c
-#define TI(q, t) ((q) * (lt) + (t))
-M[TI(i, j)] = ...
+- add a sidecar `sa_target_idx: &[u32]`, or
+- pack only target id into spare bits if the index format can support it safely.
+
+The sidecar is the safer first step because it avoids overloading one array with
+two index spaces.
+
+### 2. Interval-Level Seed Energy Reuse and Early Pruning
+
+**What C does**
+
+In `sa_evaluate_interval(...)` in `legacy_c/RIsearch2/src/search.c`, C computes
+the seed energy once for the whole `(query_interval, target_interval, seed_len)`
+match interval before expanding the nested `for (j)` / `for (k)` loops.
+
+When seed-threshold filtering is enabled, it also runs the subseed scan once and
+can `continue` before materializing any hits from that interval.
+
+**What Rust does now**
+
+Rust expands the interval into individual `SeedHit`s in `src/seed/search.rs`,
+and later computes `seed_energy(...)` per hit inside
+`compute_seed_extension(...)` in `src/search/mod.rs`.
+
+The relevant call is:
+
+```rust
+let seed_e = crate::dsm::seed_energy(model, query_bases, target_trans, q_start, t_start, len);
 ```
 
-**Rust Implementation:**
-Already does this in `Grid<T>`, so parity is good here.
+Because all suffixes inside a finished SA match interval share the same seed
+string on both sides, this seed energy is interval-invariant. Recomputing it per
+hit is unnecessary work.
 
-## 5. "Double Walking" Suffix Trees
+**Why this still looks attractive**
 
-**Concept:**
-`sa_parallel_match_neg` recursively steps through *both* the Query Suffix Array and Target Suffix Array simultaneously.
-It uses small arrays `qint[6]` and `sint[6]` to store the intervals for A,C,G,U,N at the current depth.
-It then recurses only on matching or valid wobble pairs.
+This is a real C idea that still applies to the Rust pipeline. It can help in
+two ways:
 
-```c
-// e.g. Match G with C
-if (qint[3] - qint[2]) { // Query has G
-  if (sint[2] - sint[1]) // Target has C
-     recurse(...)
-}
-```
+- compute the seed energy once and carry it with the interval or `SeedHit`
+- apply seed-energy rejection before exploding the query×target cross product
 
-This is likely similar to the Rust `search_sa_simple` stack approach but ensures very explicit handling of mismatches/wobbles at the tree level.
+There is also a parity angle here: Rust exposes `filter.seed_energy` in config,
+but the current search path only applies `delta_g` filtering in
+`src/search/mod.rs`. That suggests interval-level seed filtering may still be
+missing, not just unoptimized.
+
+### 3. C-Style Subseed Thresholding
+
+**What C does**
+
+C does not only score the full seed. With `seed_threshold_flag`, it scans all
+subseeds down to the minimum seed length and keeps the best energy-per-length
+score for the interval.
+
+**Why this still matters**
+
+If Rust wants true RIsearch2 seed-threshold parity, the relevant inspiration is
+the whole interval-level subseed heuristic, not just a cheap whole-seed cutoff.
+
+This is more of a feature/parity item than a pure micro-optimization, but it
+could also save work by rejecting weak intervals early.
+
+## Already Matched or Better in Rust
+
+### 4. DP Sentinel Storage
+
+This used to be a gap. It no longer is.
+
+Rust does not use `Option<i32>` DP cells in the hot path. The current DP grid
+stores plain `i32` values in `DpCell` and reuses the same allocation across
+extensions:
+
+- `src/dp/mod.rs`
+- `src/dp/core.rs`
+- `src/dp/init.rs`
+
+This area is already in better shape than the stale version of this note
+claimed.
+
+### 5. Flat DP Arrays
+
+Also already matched.
+
+The legacy C code uses flat 1D indexing macros. Rust already uses flat storage
+and contiguous traversal in the current DP grid implementation, so there is no
+obvious C-specific gain left here.
+
+### 6. Parallel SA Walking
+
+Also already matched.
+
+The useful part of C's `sa_parallel_match_neg(...)` is the parallel walk over
+query and target SA intervals with explicit canonical/wobble branching. Rust's
+`SeedSearcher` already does this and adds extra optimizations on top:
+
+- singleton fast paths
+- small-interval linear partitioning
+- mismatch pruning
+
+This is not an area where Rust is obviously missing a C trick.
+
+## Probably Not Worth Copying Directly
+
+### 7. Packing the Base into the SA Entry
+
+**What C does**
+
+C can recover the base at text position `p` with `XSTRM(sa[p])` because the base
+code is packed into each entry.
+
+**Why this is lower priority now**
+
+Rust already gets the base in O(1) from `combined_seq[p]`, where `Base` is
+`#[repr(u8)]`. Copying the C layout would:
+
+- complicate the index format
+- make the data model harder to reason about
+- trade a 1-byte base load for an 8-byte packed-entry load plus bit extraction
+
+That might still be worth measuring one day, but it is not the first place to
+look for gains anymore. The target-id lookup path is a much stronger remaining
+candidate.
+
+## Current Priority Order
+
+If we want to borrow from C today, the priority should be:
+
+1. Add O(1) target-id recovery for emitted SA hits.
+2. Move seed-energy computation and seed-threshold pruning to the interval level.
+3. Decide whether full RIsearch2 subseed-threshold parity is required.
+4. Leave full SA/base packing alone unless profiles say otherwise.
