@@ -209,31 +209,3 @@ fn c_binary_path(root: &Path) -> PathBuf {
         release_bin
     }
 }
-
-// =============================================================================
-// UNIT TESTS
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_c_binary_path_structure() {
-        let root = PathBuf::from("/fake/root");
-        let debug_path = root.join("legacy_c/RIsearch2/bin/risearch2.dbg.x");
-        let release_path = root.join("legacy_c/RIsearch2/bin/risearch2.x");
-
-        assert!(debug_path.to_str().unwrap().contains("dbg"));
-        assert!(!release_path.to_str().unwrap().contains("dbg"));
-    }
-
-    // Type-state compile-time test:
-    // The following would NOT compile if uncommented:
-    // ```
-    // fn test_type_state_prevents_search_without_index() {
-    //     let runner = CRunner::<NoIndex>::new(&PathBuf::from("/fake"));
-    //     runner.search(...); // ERROR: no method `search` on `CRunner<NoIndex>`
-    // }
-    // ```
-}

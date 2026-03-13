@@ -1,8 +1,8 @@
 //! Extension parity tests: DP extension logic (left, right, both).
 
-mod common;
+mod support;
 
-use common::SingleSeqRunner;
+use support::SingleSeqRunner;
 
 #[test]
 fn test_seed_only() {

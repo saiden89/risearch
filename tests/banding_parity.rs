@@ -3,9 +3,9 @@
 //! These tests compare banded Rust output against the legacy C implementation.
 //! They are ignored by default because banding is experimental.
 
-mod common;
+mod support;
 
-use common::{workspace_root, ParityRunner};
+use support::{workspace_root, ParityRunner};
 use rstest::rstest;
 
 #[rstest]

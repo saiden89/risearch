@@ -4,9 +4,9 @@
 //! root-interval behavior where suffix-length validity is not monotonic
 //! in suffix-array order.
 
-mod common;
+mod support;
 
-use common::SingleSeqRunner;
+use support::SingleSeqRunner;
 
 #[test]
 fn test_root_preprune_non_monotonic_validity() {

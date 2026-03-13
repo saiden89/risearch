@@ -1,8 +1,8 @@
 //! Minimal reproducer for strict mismatch parity divergence seen in benchmark.
 
-mod common;
+mod support;
 
-use common::{workspace_root, SingleSeqRunner};
+use support::{workspace_root, SingleSeqRunner};
 use flate2::read::GzDecoder;
 use std::io::Read;
 use std::io::Write;

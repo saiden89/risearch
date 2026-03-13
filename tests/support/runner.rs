@@ -7,10 +7,10 @@ use log::info;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::common::c_runner::{CRunner, NoIndex as CNoIndex};
-use crate::common::comparison::{LogTag, ParityComparator};
-use crate::common::status::TEST_PARITY_MODE;
-use crate::common::{init_test_logging, parse_output, workspace_root};
+use crate::support::c_runner::{CRunner, NoIndex as CNoIndex};
+use crate::support::comparison::{LogTag, ParityComparator};
+use crate::support::status::TEST_PARITY_MODE;
+use crate::support::{init_test_logging, parse_output, workspace_root};
 
 // =============================================================================
 // TYPE-STATE MARKERS
@@ -116,7 +116,7 @@ impl RustRunner<Indexed> {
 /// Manages both runners and provides comparison methods.
 pub(crate) struct ParityRunner {
     rust: RustRunner<Indexed>,
-    c: CRunner<crate::common::c_runner::Indexed>,
+    c: CRunner<crate::support::c_runner::Indexed>,
     #[allow(dead_code)]
     tmpdir: tempfile::TempDir,
 }
@@ -205,6 +205,40 @@ impl ParityRunner {
 }
 
 // =============================================================================
+// RUST-ONLY RUNNER
+// =============================================================================
+
+/// Runner for Rust-only integration tests.
+pub(crate) struct RustOnlyRunner {
+    rust: RustRunner<Indexed>,
+    #[allow(dead_code)]
+    tmpdir: tempfile::TempDir,
+}
+
+impl RustOnlyRunner {
+    /// Create a new Rust-only runner for the given target.
+    pub(crate) fn new(target: &Path) -> Self {
+        init_test_logging();
+
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let rust_index_path = tmpdir.path().join("target.idx");
+        let rust = RustRunner::<NoIndex>::new(target).create_index(Some(&rust_index_path));
+
+        Self { rust, tmpdir }
+    }
+
+    /// Search using only the Rust implementation and return parsed hits.
+    pub(crate) fn search(
+        &self,
+        query: &Path,
+        args: &[&str],
+    ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
+        let search_args = parse_search_args(args);
+        self.rust.search(query, &search_args)
+    }
+}
+
+// =============================================================================
 // SINGLE SEQ PARITY RUNNER
 // =============================================================================
 
@@ -249,6 +283,43 @@ impl SingleSeqRunner {
     /// Run comparison and assert parity passes.
     pub(crate) fn assert_pass(&self, test_name: &str, args: &[&str]) {
         self.runner.assert_pass(&self.query_path, test_name, args);
+    }
+}
+
+/// Runner for Rust-only tests built from inline query/target sequences.
+pub(crate) struct SingleSeqRustRunner {
+    query_path: PathBuf,
+    runner: RustOnlyRunner,
+    #[allow(dead_code)]
+    tmpdir: tempfile::TempDir,
+}
+
+impl SingleSeqRustRunner {
+    pub(crate) fn new(query_seq: &str, target_seq: &str) -> Self {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+
+        let query_path = tmpdir.path().join("query.fa");
+        let target_path = tmpdir.path().join("target.fa");
+
+        fs::write(&query_path, format!(">query\n{}\n", query_seq.to_uppercase()))
+            .expect("write query");
+        fs::write(&target_path, format!(">target\n{}\n", target_seq.to_uppercase()))
+            .expect("write target");
+
+        let runner = RustOnlyRunner::new(&target_path);
+
+        Self {
+            query_path,
+            runner,
+            tmpdir,
+        }
+    }
+
+    pub(crate) fn search(
+        &self,
+        args: &[&str],
+    ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
+        self.runner.search(&self.query_path, args)
     }
 }
 

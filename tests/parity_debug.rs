@@ -1,8 +1,8 @@
 //! Debug/regression parity tests: isolated reproductions for specific issues.
 
-mod common;
+mod support;
 
-use common::SingleSeqRunner;
+use support::SingleSeqRunner;
 
 #[test]
 fn test_alignment_repro() {

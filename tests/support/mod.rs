@@ -1,4 +1,4 @@
-//! Common test utilities for parity testing.
+//! Shared test utilities for parity and Rust-only integration testing.
 //!
 //! This module provides infrastructure for comparing Rust and C risearch output.
 //!
@@ -14,12 +14,12 @@
 // SUBMODULES
 // =============================================================================
 
-mod c_runner;
-mod comparison;
-mod runner;
-mod search_hit;
-mod status;
-mod table;
+pub(crate) mod c_runner;
+pub(crate) mod comparison;
+pub(crate) mod runner;
+pub(crate) mod search_hit;
+pub(crate) mod status;
+pub(crate) mod table;
 
 // =============================================================================
 // RE-EXPORTS (public API)
@@ -29,10 +29,10 @@ mod table;
 
 // Used by c_parity.rs (not necessarily used in every test crate)
 #[allow(unused_imports)]
-pub(crate) use runner::{ParityRunner, SingleSeqRunner};
+pub(crate) use runner::{ParityRunner, RustOnlyRunner, SingleSeqRunner, SingleSeqRustRunner};
 
 // Re-export test extensions for SearchHit
-pub(crate) use search_hit::{parse_c_output, SearchHitExt};
+pub(crate) use search_hit::{parse_bindingsite_output, SearchHitExt};
 
 // =============================================================================
 // LOGGING SETUP
@@ -87,7 +87,7 @@ pub(crate) fn parse_output(
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        .filter_map(|l| parse_c_output(l, query_registry, target_store))
+        .filter_map(|l| parse_bindingsite_output(l, query_registry, target_store))
         .collect();
     let parsed_count = hits.len();
     // Sort by group_key, then all coordinates for deterministic dedup

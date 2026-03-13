@@ -2,7 +2,7 @@
 //!
 //! This module provides:
 //! - `SearchHitExt` trait: Comparison helpers for parity testing
-//! - `parse_c_output()`: Parse C risearch output into `SearchHit`
+//! - `parse_bindingsite_output()`: Parse bindingsite output into `SearchHit`
 
 use risearch::alignment::Alignment;
 use risearch::index::store::TargetStore;
@@ -79,19 +79,19 @@ impl SearchHitExt for SearchHit {
 }
 
 // =============================================================================
-// C OUTPUT PARSING
+// BINDINGSITE OUTPUT PARSING
 // =============================================================================
 
-/// Parse a SearchHit from C risearch output line.
+/// Parse a SearchHit from Rust or C bindingsite output line.
 ///
-/// C output format (tab-separated):
+/// Binding-site output format (tab-separated):
 /// `q_id, q_start, q_end, t_id, t_start, t_end, strand, energy, interaction, target_seq, [flank_5, flank_3]`
 ///
-/// Handles C quirks:
+/// Handles C quirks when present:
 /// - Seed markers 'y' and 'x' in interaction/target strings
 /// - Missing optional columns (flanks)
 /// - 1-based coordinates
-pub(crate) fn parse_c_output(
+pub(crate) fn parse_bindingsite_output(
     line: &str,
     query_registry: &QueryRegistry,
     target_store: &TargetStore,

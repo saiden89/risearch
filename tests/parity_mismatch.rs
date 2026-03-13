@@ -1,8 +1,8 @@
 //! Mismatch parity tests: -m c:p (max mismatches : min consecutive matches).
 
-mod common;
+mod support;
 
-use common::{workspace_root, ParityRunner};
+use support::{workspace_root, ParityRunner};
 use rstest::rstest;
 
 #[rstest]

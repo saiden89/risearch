@@ -3,7 +3,7 @@
 //! Provides `ParityTable` and related types for visualizing alignment
 //! differences between Rust and C implementations.
 
-use crate::common::search_hit::SearchHitExt;
+use crate::support::search_hit::SearchHitExt;
 use risearch::index::store::TargetStore;
 use risearch::types::{Base, Strand};
 use risearch::{QueryRegistry, SearchHit};
@@ -66,7 +66,7 @@ pub(crate) enum ParityKind<'a> {
 
 /// Column types for parity tables.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum ColumnKind {
+pub(crate) enum ColumnKind {
     Label,
     Ctx5,
     Ext5,
@@ -76,7 +76,7 @@ enum ColumnKind {
 }
 
 impl ColumnKind {
-    fn header(&self) -> &'static str {
+    pub(crate) fn header(&self) -> &'static str {
         match self {
             Self::Label => "",
             Self::Ctx5 => "5' Ctx",
@@ -118,7 +118,7 @@ impl Default for TableConfig {
 
 /// Labels for table rows.
 #[derive(Debug, Clone, Copy)]
-enum RowLabel {
+pub(crate) enum RowLabel {
     SingleFP,
     SingleTarget,
     SingleQuery,
@@ -154,13 +154,13 @@ impl std::fmt::Display for RowLabel {
 
 /// Character-level diff indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DiffChar {
+pub(crate) enum DiffChar {
     Match,    // ' '
     Mismatch, // 'X'
 }
 
 impl DiffChar {
-    fn as_char(&self) -> char {
+    pub(crate) fn as_char(&self) -> char {
         match self {
             Self::Match => ' ',
             Self::Mismatch => 'X',
@@ -179,7 +179,7 @@ impl From<(char, char)> for DiffChar {
 }
 
 /// Build a diff string comparing two strings character by character.
-fn build_diff(a: &str, b: &str) -> String {
+pub(crate) fn build_diff(a: &str, b: &str) -> String {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
     let len = a_chars.len().max(b_chars.len());
@@ -525,48 +525,5 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
         }
 
         write!(f, "{}", builder.build().with(Style::rounded()))
-    }
-}
-
-// =============================================================================
-// UNIT TESTS
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_diff_identical() {
-        assert_eq!(build_diff("PPPP", "PPPP"), "    ");
-    }
-
-    #[test]
-    fn test_build_diff_mismatch() {
-        assert_eq!(build_diff("PPUP", "PPPP"), "  X ");
-    }
-
-    #[test]
-    fn test_build_diff_length_mismatch() {
-        let diff = build_diff("PPP", "PPPPP");
-        assert_eq!(diff.len(), 5);
-    }
-
-    #[test]
-    fn test_diff_char_conversion() {
-        assert_eq!(DiffChar::from(('P', 'P')).as_char(), ' ');
-        assert_eq!(DiffChar::from(('P', 'U')).as_char(), 'X');
-    }
-
-    #[test]
-    fn test_column_kind_headers() {
-        assert_eq!(ColumnKind::Seed.header(), "SEED");
-        assert_eq!(ColumnKind::Ext5.header(), "5' EXT");
-    }
-
-    #[test]
-    fn test_row_label_display() {
-        assert_eq!(format!("{}", RowLabel::CompDiff), "DIFF");
-        assert_eq!(format!("{}", RowLabel::SingleFP), "FP");
     }
 }

@@ -4,8 +4,8 @@
 
 use std::collections::HashSet;
 
-use crate::common::search_hit::SearchHitExt;
-use crate::common::status::{HitStatus, MissingReason, ParityMode, TEST_PARITY_MODE};
+use crate::support::search_hit::SearchHitExt;
+use crate::support::status::{HitStatus, MissingReason, ParityMode, TEST_PARITY_MODE};
 use risearch::SearchHit;
 
 // =============================================================================
@@ -99,7 +99,7 @@ impl ParityResult {
         query_registry: Option<&risearch::QueryRegistry>,
         target_store: Option<&risearch::TargetStore>,
     ) {
-        use crate::common::table::{ParityKind, ParityTable, TableConfig};
+        use crate::support::table::{ParityKind, ParityTable, TableConfig};
         use std::collections::BTreeMap;
 
         log::debug!("{} {} Summary:", LogTag::Parity, test_name);
@@ -249,7 +249,7 @@ impl ParityResult {
         }
 
         // Final summary table (matching old compare_recs_impl format)
-        use crate::common::table::{render_summary_table, SummaryRow};
+        use crate::support::table::{render_summary_table, SummaryRow};
 
         let total_rust = self.exact_matches
             + self.rust_better.len()
@@ -400,13 +400,13 @@ impl ParityResult {
 // =============================================================================
 
 /// Check if two coordinate ranges overlap.
-fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
+pub(crate) fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
     a_start <= b_end && b_start <= a_end
 }
 
 /// Check if two hits overlap in both query and target coordinates.
 /// Also requires same query_id and target_id to be meaningful.
-fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
+pub(crate) fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
     a.query_idx == b.query_idx
         && a.target_idx == b.target_idx
         && a.strand == b.strand
@@ -416,7 +416,7 @@ fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
 
 /// Classify why a C hit is missing from Rust output.
 /// Returns the reason and optionally the best overlapping Rust hit.
-fn classify_missing<'a>(
+pub(crate) fn classify_missing<'a>(
     c_hit: &SearchHit,
     rust_hits: &[&'a SearchHit],
 ) -> (MissingReason, Option<&'a SearchHit>) {
@@ -618,162 +618,3 @@ impl<'a> ParityComparator<'a> {
 // =============================================================================
 // UNIT TESTS
 // =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use risearch::types::{Energy, Strand};
-    use risearch::{Alignment, PairClass};
-
-    fn make_hit(
-        q_start: usize,
-        q_end: usize,
-        t_start: usize,
-        t_end: usize,
-        strand: &str,
-        energy: &str,
-    ) -> SearchHit {
-        let strand_enum = if strand == "+" {
-            Strand::Forward
-        } else {
-            Strand::Reverse
-        };
-        let energy_val = energy
-            .parse::<f64>()
-            .map(Energy::new)
-            .unwrap_or(Energy::new(0.0));
-
-        // Create a simple alignment with all Match pairings
-        let len = q_end.saturating_sub(q_start).max(1);
-        let seed: Vec<PairClass> = (0..len).map(|_| PairClass::Match).collect();
-        let alignment = Alignment::new(&[], &seed, &[]);
-
-        SearchHit {
-            query_idx: 0,
-            target_idx: 0,
-            q_start,
-            q_end,
-            t_start,
-            t_end,
-            strand: strand_enum,
-            energy: energy_val,
-            seed_start: None,
-            seed_end: None,
-            alignment: Some(alignment),
-        }
-    }
-
-    #[test]
-    fn test_ranges_overlap() {
-        assert!(ranges_overlap(1, 10, 5, 15));
-        assert!(ranges_overlap(1, 10, 1, 10));
-        assert!(ranges_overlap(1, 10, 3, 7));
-        assert!(!ranges_overlap(1, 10, 11, 20));
-        assert!(ranges_overlap(1, 10, 10, 20));
-    }
-
-    #[test]
-    fn test_hits_overlap() {
-        let a = make_hit(1, 10, 100, 110, "+", "-10.0");
-        let b = make_hit(5, 15, 105, 115, "+", "-12.0");
-        let c = make_hit(1, 10, 100, 110, "-", "-10.0");
-        assert!(hits_overlap(&a, &b));
-        assert!(!hits_overlap(&a, &c));
-    }
-
-    #[test]
-    fn test_classify_missing_better_energy() {
-        let c_hit = make_hit(1, 10, 100, 110, "+", "-10.0");
-        let rust_hits = [make_hit(1, 10, 100, 110, "+", "-15.0")];
-        let refs: Vec<&SearchHit> = rust_hits.iter().collect();
-        let (reason, _) = classify_missing(&c_hit, &refs);
-        assert_eq!(reason, MissingReason::BetterEnergy);
-    }
-
-    #[test]
-    fn test_parity_comparator_exact_match() {
-        let rust = vec![make_hit(1, 10, 100, 110, "+", "-10.00")];
-        let c = vec![make_hit(1, 10, 100, 110, "+", "-10.00")];
-        let result = ParityComparator::new(&rust, &c).compare();
-        assert_eq!(result.exact_matches, 1);
-        assert!(result.is_pass(ParityMode::Relaxed));
-    }
-
-    #[test]
-    fn test_parity_comparator_rust_better() {
-        let rust = vec![make_hit(1, 10, 100, 110, "+", "-15.00")];
-        let c = vec![make_hit(1, 10, 100, 110, "+", "-10.00")];
-        let result = ParityComparator::new(&rust, &c).compare();
-        assert_eq!(result.rust_better.len(), 1);
-        assert!(result.is_pass(ParityMode::Relaxed));
-    }
-
-    #[test]
-    fn test_parity_comparator_rust_worse_fails() {
-        let rust = vec![make_hit(1, 10, 100, 110, "+", "-5.00")];
-        let c = vec![make_hit(1, 10, 100, 110, "+", "-10.00")];
-        let result = ParityComparator::new(&rust, &c).compare();
-        assert_eq!(result.rust_worse.len(), 1);
-        assert!(!result.is_pass(ParityMode::Relaxed));
-    }
-
-    #[test]
-    fn test_log_details_covers_all_categories() {
-        // Create a result with all hit types
-        let rust = vec![
-            make_hit(1, 10, 100, 110, "+", "-10.00"), // exact match
-            make_hit(1, 10, 200, 210, "+", "-15.00"), // rust better
-            make_hit(1, 10, 300, 310, "+", "-5.00"),  // rust worse
-            make_hit(1, 10, 400, 410, "+", "-8.00"),  // extra (no C match)
-        ];
-        let c = vec![
-            make_hit(1, 10, 100, 110, "+", "-10.00"), // exact match
-            make_hit(1, 10, 200, 210, "+", "-10.00"), // rust better
-            make_hit(1, 10, 300, 310, "+", "-10.00"), // rust worse
-            make_hit(1, 10, 500, 510, "+", "-8.00"),  // missing (no Rust match)
-        ];
-
-        let result = ParityComparator::new(&rust, &c).compare();
-
-        // Verify all categories are populated
-        assert_eq!(result.exact_matches, 1, "exact matches");
-        assert_eq!(result.rust_better.len(), 1, "rust better");
-        assert_eq!(result.rust_worse.len(), 1, "rust worse");
-        assert_eq!(result.extras.len(), 1, "extras");
-        assert_eq!(result.missings.len(), 1, "missings");
-
-        // log_details shouldn't panic - this is a smoke test for visualization
-        result.log_details("test_all_categories");
-    }
-
-    #[test]
-    fn test_log_details_empty_result() {
-        let result = ParityResult::default();
-        // Should not panic with empty result
-        result.log_details("empty_test");
-    }
-
-    #[test]
-    fn test_log_details_co_optimal() {
-        // Same coords and energy but different fingerprints (detected via coord match)
-        // Create two hits with same coords but they'll have different alignments
-        let rust_hit = make_hit(1, 10, 100, 110, "+", "-10.00");
-        let c_hit = make_hit(1, 10, 100, 110, "+", "-10.00");
-
-        // Since both have same energy and we create them with identical alignments,
-        // they should be exact matches. For co-optimal we'd need different alignments.
-        // For now, just verify the test runs without panicking.
-        let rust = vec![rust_hit];
-        let c = vec![c_hit];
-        let result = ParityComparator::new(&rust, &c).compare();
-
-        // With identical hits, should be exact match
-        assert!(
-            result.exact_matches >= 1 || !result.co_optimal.is_empty(),
-            "should handle equal hits"
-        );
-
-        // Visualization smoke test
-        result.log_details("co_optimal_test");
-    }
-}

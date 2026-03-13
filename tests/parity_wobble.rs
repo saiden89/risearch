@@ -1,8 +1,8 @@
 //! Wobble parity tests: G-U wobble pairing in seed region.
 
-mod common;
+mod support;
 
-use common::SingleSeqRunner;
+use support::SingleSeqRunner;
 
 #[test]
 fn test_wobble_seed() {

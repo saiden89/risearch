@@ -1,8 +1,8 @@
 //! DSM parity tests: dinucleotide/trinucleotide stacking energy calculations.
 
-mod common;
+mod support;
 
-use common::SingleSeqRunner;
+use support::SingleSeqRunner;
 use rstest::rstest;
 
 fn wc_complement(seq: &str) -> String {

@@ -1,8 +1,8 @@
 //! Seed parity tests: seed length, interval, and spec configurations.
 
-mod common;
+mod support;
 
-use common::{workspace_root, ParityRunner};
+use support::{workspace_root, ParityRunner};
 use rstest::rstest;
 
 /// Main seed length × extension limit matrix.
