@@ -53,7 +53,7 @@ fn cmd_search(
     let raw_args: Vec<String> = std::env::args().collect();
 
     // Convert CLI args to config (handles deprecated flag translation)
-    let mut opts: risearch::config::SearchArgs = cli_opts.clone().into();
+    let mut opts: risearch::config::SearchConfig = cli_opts.clone().into();
     emit_legacy_warnings(&raw_args, &mut opts)?;
 
     debug!("Loading queries from {:?}", query_path);

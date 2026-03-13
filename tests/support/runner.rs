@@ -79,7 +79,7 @@ impl RustRunner<Indexed> {
     fn search(
         &self,
         query_path: &Path,
-        args: &risearch::config::SearchArgs,
+        args: &risearch::config::SearchConfig,
     ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
         let query_registry =
             risearch::QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
@@ -335,7 +335,7 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
 }
 
 /// Parse CLI-style args into SearchArgs using clap.
-fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
+fn parse_search_args(args: &[&str]) -> risearch::config::SearchConfig {
     use clap::Parser;
 
     let mut cli_args: Vec<String> = vec!["risearch".into()];
@@ -391,7 +391,7 @@ fn parse_search_args(args: &[&str]) -> risearch::config::SearchArgs {
     }
 
     let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
-    let mut search: risearch::config::SearchArgs = parsed.search.into();
+    let mut search: risearch::config::SearchConfig = parsed.search.into();
     let explicit_pairing = args
         .iter()
         .any(|arg| *arg == "--seed-pairing" || arg.starts_with("--seed-pairing="));

@@ -312,7 +312,7 @@ pub struct FilterConfig {
 
 /// Options that apply to the `search` subcommand
 #[derive(Debug, Clone)]
-pub struct SearchArgs {
+pub struct SearchConfig {
     pub seed: SeedConfig,
     pub score: ScoreConfig,
     pub extend: ExtendConfig,

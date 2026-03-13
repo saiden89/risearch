@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{FilterConfig, OutputFormat, SearchArgs};
+use crate::config::{FilterConfig, OutputFormat, SearchConfig};
 use crate::dp::gotoh::Gotoh;
 use crate::dp::{DpConfig, DpGrid, DpView};
 use crate::dsm::ScoringTable;
@@ -59,12 +59,21 @@ pub struct SearchHit {
 pub fn run_search(
     queries: &QueryRegistry,
     store: &TargetStore,
-    opts: &SearchArgs,
+    opts: &SearchConfig,
     output_path: &Path,
 ) -> Result<usize> {
-    let Some(ctx) = SearchContext::try_new(queries, store, opts) else {
+    if store.is_empty() || queries.is_empty() {
         return Ok(0);
-    };
+    }
+    info!(
+        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        store.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.filter.delta_g
+    );
+    let ctx = SearchContext::new(queries, store, opts);
 
     let total = if opts.output.multifile {
         std::fs::create_dir_all(output_path).with_context(|| {
@@ -87,29 +96,17 @@ struct SearchContext<'a> {
     queries: &'a QueryRegistry,
     store: &'a TargetStore,
     global: GlobalView<'a>,
-    opts: &'a SearchArgs,
+    opts: &'a SearchConfig,
 }
 
 impl<'a> SearchContext<'a> {
-    fn try_new(
+    fn new(
         queries: &'a QueryRegistry,
         store: &'a TargetStore,
-        opts: &'a SearchArgs,
-    ) -> Option<Self> {
-        if store.is_empty() || queries.is_empty() {
-            return None;
-        }
-
-        info!(
-            "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
-            queries.len(),
-            store.len(),
-            opts.seed.seed,
-            opts.extend.max_extension,
-            opts.filter.delta_g
-        );
-
-        Some(Self { queries, store, global: store.global_view(), opts })
+        opts: &'a SearchConfig,
+    ) -> Self {
+        let global = store.global_view();
+        Self { queries, store, global, opts }
     }
 
     #[inline]
@@ -134,7 +131,7 @@ struct ExtensionEngine {
 }
 
 impl ExtensionEngine {
-    fn new(opts: &SearchArgs) -> Self {
+    fn new(opts: &SearchConfig) -> Self {
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
         let model = ScoringTable::new(
             opts.score.matrix,

@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use log::warn;
 
 use risearch::cli::args::{CliMismatchSpec, CliSeedSpec};
-use risearch::config::{SearchArgs, SeedSpec};
+use risearch::config::{SearchConfig, SeedSpec};
 
 fn iter_user_args(args: &[String]) -> impl Iterator<Item = &str> {
     args.iter().skip(1).map(String::as_str)
@@ -119,7 +119,7 @@ fn extract_legacy_target_flag(args: &[String]) -> Option<&'static str> {
     None
 }
 
-pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchArgs) -> Result<()> {
+pub(crate) fn emit_legacy_warnings(raw_args: &[String], opts: &mut SearchConfig) -> Result<()> {
     let legacy_mismatch = extract_legacy_mismatch_arg(raw_args);
     let legacy_seed = extract_legacy_seed_arg(raw_args);
     let legacy_no_guseed = has_no_guseed_arg(raw_args);

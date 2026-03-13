@@ -53,9 +53,9 @@ pub struct SearchArgs {
     pub five_prime_match: Option<String>,
 }
 
-impl From<SearchArgs> for config::SearchArgs {
+impl From<SearchArgs> for config::SearchConfig {
     fn from(value: SearchArgs) -> Self {
-        config::SearchArgs {
+        config::SearchConfig {
             seed: value.seed.into(),
             score: value.score.into(),
             extend: value.extend.into(),
