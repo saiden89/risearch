@@ -158,10 +158,9 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
             )
         },
         |(engine, fmt), qi| -> Result<()> {
-            let emitted =
-                process_query(ctx, qi as u32, engine, fmt, true, || false, &mut |chunk| {
-                    writer.lock().unwrap().write_chunk(&chunk)
-                })?;
+            let emitted = process_query(ctx, qi as u32, engine, fmt, &mut |chunk| {
+                writer.lock().unwrap().write_chunk(&chunk)
+            })?;
             total.fetch_add(emitted, Ordering::Relaxed);
             Ok(())
         },
@@ -204,15 +203,7 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
                     .with_context(|| format!("Failed to write output file {:?}", file_path))
             };
 
-            let emitted = process_query(
-                ctx,
-                query_idx as u32,
-                engine,
-                format,
-                true,
-                || false,
-                &mut flush_to_writer,
-            )?;
+            let emitted = process_query(ctx, query_idx as u32, engine, format, &mut flush_to_writer)?;
 
             if let Some(writer) = writer.as_mut() {
                 writer
@@ -228,100 +219,46 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
     Ok(total.load(Ordering::Relaxed))
 }
 
-/// Process one query end-to-end and stream formatted chunks via `on_chunk`.
-fn process_query<FC, FO>(
+/// Process one query end-to-end: enumerate seeds, extend, filter, format, and
+/// stream chunks via `on_chunk`.
+fn process_query<FO>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
     engine: &mut ExtensionEngine,
     format: &mut HitFormatter,
-    flush_after_query: bool,
-    is_cancelled: FC,
     on_chunk: &mut FO,
 ) -> Result<usize>
 where
-    FC: Fn() -> bool,
     FO: FnMut(OutputChunk) -> Result<()>,
 {
-    if is_cancelled() {
-        return Ok(0);
-    }
-
+    let query = &ctx.queries.entries()[query_idx as usize];
     let query_name = ctx.queries.get_name(query_idx);
-    let query = &ctx.queries.entries()[query_idx as usize];
     let query_seq = query.sequence().as_slice();
-    let mut local_hits = 0usize;
-    let mut last_target_idx = None;
-    let mut cached_target = None;
-
-    search_query(ctx, query_idx, engine, &mut |hit: SearchHit| -> Result<()> {
-        if is_cancelled() {
-            return Ok(());
-        }
-
-        let target_idx = hit.target_idx as usize;
-        if last_target_idx != Some(target_idx) {
-            let (t_fwd, t_rc, _) = ctx.target_slices(target_idx);
-            let t_name = ctx.store.get_name(hit.target_idx);
-            cached_target = Some(HitCtx { q_name: query_name, q_seq: query_seq, t_name, t_fwd, t_rc });
-            last_target_idx = Some(target_idx);
-        }
-        let hit_ctx = *cached_target.as_ref().unwrap();
-
-        if let Some(chunk) = format.add_hit(&hit, hit_ctx) {
-            on_chunk(chunk)?;
-        }
-        local_hits += 1;
-        Ok(())
-    })?;
-
-    if flush_after_query {
-        if let Some(chunk) = format.flush() {
-            on_chunk(chunk)?;
-        }
-    }
-
-    Ok(local_hits)
-}
-
-/// Enumerate seeds for a single query across all targets via the global SA,
-/// optionally extend them, and emit hits.
-fn search_query<F>(
-    ctx: &SearchContext<'_>,
-    query_idx: u32,
-    engine: &mut ExtensionEngine,
-    on_hit: &mut F,
-) -> Result<()>
-where
-    F: FnMut(SearchHit) -> Result<()>,
-{
-    let query = &ctx.queries.entries()[query_idx as usize];
-    let query_bases = query.sequence().as_slice();
     let seed_interval = query.seed_interval.clone();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
     let filter_cfg = &ctx.opts.filter;
 
+    let mut local_hits = 0usize;
+    let mut last_target_idx = None::<usize>;
+    let mut cached_t_name = None;
     let mut callback_err: Option<anyhow::Error> = None;
 
-    // Unified path: `compute_seed_extension` handles both extension and
-    // max_extension==0 no-extension cases.
     for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
         if callback_err.is_some() {
             return;
         }
 
-        let target_idx_u32 = seed.target_id.0;
-        let target_idx = target_idx_u32 as usize;
-        let (t_forward_trans, t_reverse_trans, target_len) = ctx.target_slices(target_idx);
-
+        let target_idx = seed.target_id.0 as usize;
+        let (t_fwd, t_rc, target_len) = ctx.target_slices(target_idx);
         let target_trans = match seed.strand {
-            Strand::Forward => t_forward_trans,
-            Strand::Reverse => t_reverse_trans,
+            Strand::Forward => t_fwd,
+            Strand::Reverse => t_rc,
         };
 
         let Some(hit) = build_hit_from_seed(
             engine,
             query_idx,
-            query_bases,
+            query_seq,
             seed_interval.clone(),
             include_alignment,
             filter_cfg,
@@ -332,16 +269,36 @@ where
             return;
         };
 
-        if let Err(err) = on_hit(hit) {
-            callback_err = Some(err);
+        if last_target_idx != Some(target_idx) {
+            cached_t_name = Some(ctx.store.get_name(hit.target_idx));
+            last_target_idx = Some(target_idx);
         }
+        let hit_ctx = HitCtx {
+            q_name: query_name,
+            q_seq: query_seq,
+            t_name: cached_t_name.unwrap(),
+            t_fwd,
+            t_rc,
+        };
+
+        if let Some(chunk) = format.add_hit(&hit, hit_ctx) {
+            if let Err(err) = on_chunk(chunk) {
+                callback_err = Some(err);
+                return;
+            }
+        }
+        local_hits += 1;
     });
 
     if let Some(err) = callback_err {
         return Err(err);
     }
 
-    Ok(())
+    if let Some(chunk) = format.flush() {
+        on_chunk(chunk)?;
+    }
+
+    Ok(local_hits)
 }
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
