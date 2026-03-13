@@ -49,12 +49,12 @@ fn map_target_view_start(
 /// The global combined_seq contains all targets concatenated with Gap separators.
 /// After the SeedSearcher finds matches in the global SA, we remap each target
 /// position back to a specific target using binary search on the offset table.
-pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
+pub(crate) fn for_each_seed<F: FnMut(SeedHit) -> anyhow::Result<()>>(
     query: &Query,
     global: &GlobalView<'_>,
     config: &SeedConfig,
     mut on_seed: F,
-) {
+) -> anyhow::Result<()> {
     let interval = &query.seed_interval;
     let q_offset = interval.start;
     let q_end = interval.end;
@@ -68,7 +68,7 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
 
     let q_sa_real_len = query.sa().len();
     if q_sa_real_len == 0 {
-        return;
+        return Ok(());
     }
     let mut padded_q_sa = Vec::with_capacity(q_sa_real_len + SA_CHAR_PADDING);
     padded_q_sa.extend_from_slice(query.sa());
@@ -90,7 +90,11 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
 
     let offsets = global.offsets;
     let seq_lens = global.seq_lens;
+    let mut callback_err: Option<anyhow::Error> = None;
     searcher.for_each_length_range(min_len, max_len, |m| {
+        if callback_err.is_some() {
+            return;
+        }
         let seed_len = m.seed_len;
         let Some(seed_len_typed) = SeedLen::new(seed_len) else {
             return;
@@ -126,16 +130,20 @@ pub(crate) fn for_each_seed<F: FnMut(SeedHit)>(
                     continue;
                 };
 
-                on_seed(SeedHit {
+                if let Err(err) = on_seed(SeedHit {
                     query_start: q_pos,
                     target_id: TargetId(target_idx as u32),
                     target_start,
                     len: seed_len_typed,
                     strand,
-                });
+                }) {
+                    callback_err = Some(err);
+                    return;
+                }
             }
         }
     });
+    if let Some(err) = callback_err { Err(err) } else { Ok(()) }
 }
 
 #[cfg(test)]

@@ -241,13 +241,8 @@ where
     let mut local_hits = 0usize;
     let mut last_target_idx = None::<usize>;
     let mut cached_t_name = None;
-    let mut callback_err: Option<anyhow::Error> = None;
 
     for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
-        if callback_err.is_some() {
-            return;
-        }
-
         let target_idx = seed.target_id.0 as usize;
         let (t_fwd, t_rc, target_len) = ctx.target_slices(target_idx);
         let target_trans = match seed.strand {
@@ -266,7 +261,7 @@ where
             &seed,
             target_trans,
         ) else {
-            return;
+            return Ok(());
         };
 
         if last_target_idx != Some(target_idx) {
@@ -282,17 +277,11 @@ where
         };
 
         if let Some(chunk) = format.add_hit(&hit, hit_ctx) {
-            if let Err(err) = on_chunk(chunk) {
-                callback_err = Some(err);
-                return;
-            }
+            on_chunk(chunk)?;
         }
         local_hits += 1;
-    });
-
-    if let Some(err) = callback_err {
-        return Err(err);
-    }
+        Ok(())
+    })?;
 
     if let Some(chunk) = format.flush() {
         on_chunk(chunk)?;
