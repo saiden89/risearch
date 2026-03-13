@@ -26,9 +26,10 @@ pub struct OutputArgs {
         value_name = "MODE",
         num_args = 0..=1,
         default_missing_value = "1",
+        value_parser = parse_legacy_format,
         help_heading = "Deprecated"
     )]
-    pub report_legacy: Option<u8>,
+    pub report_legacy: Option<OutputFormat>,
 
     /// Output compression codec (overrides file extension inference; gzip/gz, zstd/zst accepted)
     #[arg(long = "compress", value_enum)]
@@ -69,21 +70,15 @@ impl OutputArgs {
         Ok(())
     }
 
-    #[inline]
-    fn resolved_format(&self) -> OutputFormat {
-        if let Some(f) = self.report_format {
-            f
-        } else if let Some(legacy_mode) = self.report_legacy {
-            match legacy_mode {
-                1 => config::OutputFormat::Detailed,
-                2 => config::OutputFormat::Cigar,
-                3 => config::OutputFormat::BindingSite,
-                4 => config::OutputFormat::Minimal,
-                _ => config::OutputFormat::Detailed,
-            }
-        } else {
-            config::OutputFormat::Minimal
-        }
+}
+
+fn parse_legacy_format(s: &str) -> Result<OutputFormat, String> {
+    match s.parse::<u8>().map_err(|e| e.to_string())? {
+        1 => Ok(OutputFormat::Detailed),
+        2 => Ok(OutputFormat::Cigar),
+        3 => Ok(OutputFormat::BindingSite),
+        4 => Ok(OutputFormat::Minimal),
+        n => Err(format!("unknown format mode {n}, expected 1–4")),
     }
 }
 
@@ -100,7 +95,7 @@ impl From<OutputArgs> for config::OutputConfig {
         };
 
         config::OutputConfig {
-            format: value.resolved_format(),
+            format: value.report_format.or(value.report_legacy).unwrap_or_default(),
             compress,
             multifile: value.output_multifile,
         }
