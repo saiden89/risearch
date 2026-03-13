@@ -25,7 +25,7 @@ pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * B
 pub use crate::types::GAP;
 
 // =============================================================================
-// SCORING TABLE - Direction-agnostic penalty-adjusted lookup table
+// SCORING MODEL - Direction-agnostic penalty-adjusted lookup table
 // =============================================================================
 
 /// Penalty-adjusted flat DSM table for one orientation.
@@ -33,12 +33,12 @@ pub use crate::types::GAP;
 /// Each instance is one canonical orientation (right or left).
 /// Use `transpose()` to create the other orientation.
 #[derive(Clone, Debug)]
-pub struct ScoringTable {
+pub struct ScoringModel {
     table: [i32; DSM_FLAT_SIZE],
     pair_mat: [[u8; 6]; 6],
 }
 
-impl ScoringTable {
+impl ScoringModel {
     /// Create a new scoring table from a base matrix, baking in the extension penalty.
     pub fn new(matrix: Matrix, penalty: i32, allow_wobble: bool) -> Self {
         let source_table = match matrix {
@@ -93,7 +93,7 @@ impl ScoringTable {
     }
 
     /// Produce a left-canonical (transposed) copy: `[q1][q2][t1][t2] → [q2][q1][t2][t1]`.
-    pub fn transpose(&self) -> Self {
+    pub fn transpose(&self) -> ScoringModel {
         let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {
             for q2 in 0..6 {
@@ -129,31 +129,31 @@ impl ScoringTable {
         // SAFETY: Base::idx() returns 0..6, matching the 6×6 pair_mat dimensions.
         unsafe { *self.pair_mat.get_unchecked(qi).get_unchecked(ti) != 0 }
     }
-}
 
-/// Seed energy calculation with antiparallel indexing.
-pub fn seed_energy(
-    model: &ScoringTable,
-    query: &[Base],
-    target: &[Base],
-    q_pos: usize,
-    t_pos: usize,
-    len: usize,
-) -> i32 {
-    if len <= 1 {
-        return 0;
+    /// Seed energy calculation with antiparallel indexing.
+    pub fn seed_energy(
+        &self,
+        query: &[Base],
+        target: &[Base],
+        q_pos: usize,
+        t_pos: usize,
+        len: usize,
+    ) -> i32 {
+        if len <= 1 {
+            return 0;
+        }
+        let mut score = 0;
+        let t_match_end = t_pos + len - 1;
+        for i in 0..(len - 1) {
+            score += self.lookup(
+                query[q_pos + i].idx(),
+                query[q_pos + i + 1].idx(),
+                target[t_match_end - i].idx(),
+                target[t_match_end - i - 1].idx(),
+            );
+        }
+        score
     }
-    let mut score = 0;
-    let t_match_end = t_pos + len - 1;
-    for i in 0..(len - 1) {
-        score += model.lookup(
-            query[q_pos + i].idx(),
-            query[q_pos + i + 1].idx(),
-            target[t_match_end - i].idx(),
-            target[t_match_end - i - 1].idx(),
-        );
-    }
-    score
 }
 
 /// Convert DSM units → kcal/mol. 559 = terminal penalty offset.
@@ -1095,8 +1095,8 @@ mod tests {
 
     #[test]
     fn test_pairing() {
-        let strict = ScoringTable::new(Matrix::T04, 0, false);
-        let wobble = ScoringTable::new(Matrix::T04, 0, true);
+        let strict = ScoringModel::new(Matrix::T04, 0, false);
+        let wobble = ScoringModel::new(Matrix::T04, 0, true);
 
         // G pairs with C (index space C is G)
         assert!(strict.is_pair(Base::G, Base::G));
@@ -1109,7 +1109,7 @@ mod tests {
 
     #[test]
     fn test_dsm_get() {
-        let model = ScoringTable::new(Matrix::T04, 0, true);
+        let model = ScoringModel::new(Matrix::T04, 0, true);
         // Original target was U-A, index space is A-U
         let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::A.idx(), Base::U.idx());
         let gap_energy = model.lookup(
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn test_dsm_known_values() {
-        let model = ScoringTable::new(Matrix::T04, 0, true);
+        let model = ScoringModel::new(Matrix::T04, 0, true);
         // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
         // Original target was CC, index space is GG
         let actual = model.lookup(Base::G.idx(), Base::G.idx(), Base::G.idx(), Base::G.idx());
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_transpose_symmetry() {
-        let right = ScoringTable::new(Matrix::T04, 50, true);
+        let right = ScoringModel::new(Matrix::T04, 50, true);
         let left = right.transpose();
         for q1 in 0..6 {
             for q2 in 0..6 {

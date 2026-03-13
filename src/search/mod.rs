@@ -20,7 +20,7 @@ use crate::alignment::{Alignment, PairClass};
 use crate::config::{FilterConfig, OutputFormat, SearchConfig};
 use crate::dp::gotoh::Gotoh;
 use crate::dp::{DpConfig, DpGrid, DpView};
-use crate::dsm::ScoringTable;
+use crate::dsm::ScoringModel;
 use crate::index::store::{GlobalView, TargetStore};
 use crate::output::format::HitCtx;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
@@ -116,7 +116,7 @@ impl<'a> SearchContext<'a> {
 struct ExtensionEngine {
     grid: DpGrid,
     dp_cfg: DpConfig,
-    model: ScoringTable,
+    model: ScoringModel,
     gotoh_left: Gotoh,
     gotoh_right: Gotoh,
 }
@@ -124,7 +124,7 @@ struct ExtensionEngine {
 impl ExtensionEngine {
     fn new(opts: &SearchConfig) -> Self {
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = ScoringTable::new(
+        let model = ScoringModel::new(
             opts.score.matrix,
             dp_cfg.penalty_raw(),
             opts.seed.allows_wobble(),
@@ -393,7 +393,7 @@ impl ExtensionEngine {
 
         let t_match_end = t_start + len - 1;
         let max_ext = self.dp_cfg.max_extension();
-        let seed_e = crate::dsm::seed_energy(&self.model, query_bases, target_trans, q_start, t_start, len);
+        let seed_e = self.model.seed_energy(query_bases, target_trans, q_start, t_start, len);
 
         let can_extend_left = q_start > 0 && t_start + len < target_trans.len();
         let can_extend_right = q_start + len < query_bases.len() && t_start > 0;

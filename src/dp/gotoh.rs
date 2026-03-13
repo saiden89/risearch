@@ -1,6 +1,6 @@
 //! Gotoh 3-state DP recurrence: precomputed transition tables.
 //!
-//! All 7 transitions are materialized at construction time from a `ScoringTable`.
+//! All 7 transitions are materialized at construction time from a `ScoringModel`.
 //! The inner DP loop uses zero-cost slice accesses into these tables instead of
 //! computing GAP-pattern lookups on the fly.
 //!
@@ -11,7 +11,7 @@
 //! `DpView::q()`/`DpView::t()`, which return `Base::idx()` on a `#[repr(u8)]`
 //! enum with variants 0–5.
 
-use crate::dsm::{ScoringTable, GAP};
+use crate::dsm::{ScoringModel, GAP};
 use crate::types::BASE_COUNT;
 use log::trace;
 
@@ -21,7 +21,7 @@ const BC: usize = BASE_COUNT; // 6
 
 /// Precomputed transition tables for the Gotoh 3-state DP.
 ///
-/// Direction-agnostic: each instance corresponds to one `ScoringTable` orientation.
+/// Direction-agnostic: each instance corresponds to one `ScoringModel` orientation.
 pub struct Gotoh {
     /// M ← M: `match_mm[qp][qc][tp][tc]` — full 4D stacking (1296 entries).
     ///
@@ -48,8 +48,8 @@ pub struct Gotoh {
 }
 
 impl Gotoh {
-    /// Materialize all transition tables from a `ScoringTable`.
-    pub fn new(table: &ScoringTable) -> Self {
+    /// Materialize all transition tables from a `ScoringModel`.
+    pub fn new(table: &ScoringModel) -> Self {
         let mut match_mm = [0i32; 1296];
         let mut m_from_bq = [0i32; 216];
         let mut m_from_bt = [0i32; 216];
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn gotoh_matches_scoring_table() {
-        let table = ScoringTable::new(Matrix::T04, 50, true);
+        let table = ScoringModel::new(Matrix::T04, 50, true);
         let gotoh = Gotoh::new(&table);
 
         for q1 in 0..6 {
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn gotoh_transitions_match_gap_patterns() {
-        let table = ScoringTable::new(Matrix::T04, 50, true);
+        let table = ScoringModel::new(Matrix::T04, 50, true);
         let gotoh = Gotoh::new(&table);
 
         for qp in 0..6 {

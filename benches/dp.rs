@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use risearch::config::Matrix;
 use risearch::dp::gotoh::Gotoh;
 use risearch::dp::{DpGrid, DpView};
-use risearch::dsm::ScoringTable;
+use risearch::dsm::ScoringModel;
 use risearch::seq::Sequence;
 use risearch::types::Base;
 
@@ -59,7 +59,7 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
 
 fn bench_extend_left(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_left");
-    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let model = ScoringModel::new(Matrix::T04, 0, false);
     let left_model = model.transpose();
     let gotoh = Gotoh::new(&left_model);
 
@@ -90,7 +90,7 @@ fn bench_extend_left(c: &mut Criterion) {
 
 fn bench_extend_right(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_right");
-    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let model = ScoringModel::new(Matrix::T04, 0, false);
     let gotoh = Gotoh::new(&model);
 
     for len in [10, 20, 30, 50].iter() {
@@ -122,7 +122,7 @@ fn bench_extend_right(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("throughput");
     group.sample_size(10); // Smaller sample size for realistic wall-clock time
-    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let model = ScoringModel::new(Matrix::T04, 0, false);
     let left_model = model.transpose();
     let gotoh_right = Gotoh::new(&model);
     let gotoh_left = Gotoh::new(&left_model);
@@ -209,7 +209,7 @@ fn bench_throughput(c: &mut Criterion) {
 fn bench_many_extensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("many_extensions");
     group.sample_size(10);
-    let model = ScoringTable::new(Matrix::T04, 0, false);
+    let model = ScoringModel::new(Matrix::T04, 0, false);
     let left_model = model.transpose();
     let gotoh_right = Gotoh::new(&model);
     let gotoh_left = Gotoh::new(&left_model);
