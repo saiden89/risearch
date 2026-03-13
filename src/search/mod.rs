@@ -407,7 +407,6 @@ fn build_hit_from_seed(
         target_trans,
         seed,
         &extension,
-        include_alignment,
         target_len,
     ))
 }
@@ -416,14 +415,15 @@ fn build_hit_from_seed(
 // EXTENSION
 // =============================================================================
 
+type AlignmentPairs = (SmallVec<[PairClass; 64]>, SmallVec<[PairClass; 64]>);
+
 struct SeedExtension {
     score: f64,
     l_q: usize,
     l_t: usize,
     r_q: usize,
     r_t: usize,
-    left_pairs: SmallVec<[PairClass; 64]>,
-    right_pairs: SmallVec<[PairClass; 64]>,
+    pairs: Option<AlignmentPairs>,
 }
 
 /// Compute optional left/right DP extension around a seed and return extension metadata.
@@ -439,7 +439,7 @@ fn compute_seed_extension(
     seed: &SeedHit,
     seed_interval: Range<usize>,
     filter_cfg: &FilterConfig,
-    with_traceback: bool,
+    include_alignment: bool,
 ) -> Option<SeedExtension> {
     let penalty = dp_cfg.penalty_raw();
     let q_start = seed.query_start;
@@ -486,36 +486,21 @@ fn compute_seed_extension(
             l_t: 0,
             r_q: 0,
             r_t: 0,
-            left_pairs: SmallVec::new(),
-            right_pairs: SmallVec::new(),
+            pairs: None,
         });
     }
 
-    let (l_score, l_q, l_t, left_pairs) = {
+    let (l_score, l_q, l_t, l_pairs) = {
         let view = DpView::left(query_bases, target_trans, q_start, t_match_end, max_ext);
         let result = gotoh_left.extend(&view, grid);
-        let pairs = if with_traceback {
-            result.traceback(&view)
-        } else {
-            SmallVec::new()
-        };
+        let pairs = include_alignment.then(|| result.traceback(&view));
         (result.score, result.q_len, result.t_len, pairs)
     };
 
-    let (r_score, r_q, r_t, right_pairs) = {
-        let view = DpView::right(
-            query_bases,
-            target_trans,
-            q_start + len - 1,
-            t_start,
-            max_ext,
-        );
+    let (r_score, r_q, r_t, r_pairs) = {
+        let view = DpView::right(query_bases, target_trans, q_start + len - 1, t_start, max_ext);
         let result = gotoh_right.extend(&view, grid);
-        let pairs = if with_traceback {
-            result.traceback(&view)
-        } else {
-            SmallVec::new()
-        };
+        let pairs = include_alignment.then(|| result.traceback(&view));
         (result.score, result.q_len, result.t_len, pairs)
     };
 
@@ -526,8 +511,7 @@ fn compute_seed_extension(
         l_t,
         r_q,
         r_t,
-        left_pairs,
-        right_pairs,
+        pairs: l_pairs.zip(r_pairs),
     })
 }
 
@@ -543,7 +527,6 @@ impl SearchHit {
         target_trans: &[Base],
         seed: &SeedHit,
         ext: &SeedExtension,
-        include_alignment: bool,
         original_target_len: usize,
     ) -> Self {
         let q_start = seed.query_start;
@@ -564,7 +547,7 @@ impl SearchHit {
             }
         };
 
-        let alignment = if include_alignment {
+        let (alignment, seed_start, seed_end) = if let Some((left, right)) = &ext.pairs {
             let t_match_end = seed.target_start + len - 1;
             let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
             for i in 0..len {
@@ -573,20 +556,10 @@ impl SearchHit {
                     target_trans[t_match_end - i].complement(),
                 ));
             }
-            Some(Alignment::new(
-                &ext.left_pairs,
-                &seed_pairs,
-                &ext.right_pairs,
-            ))
+            let start = left.len();
+            (Some(Alignment::new(left, &seed_pairs, right)), Some(start), Some(start + len))
         } else {
-            None
-        };
-
-        let (seed_start, seed_end) = if include_alignment {
-            let start = ext.left_pairs.len();
-            (Some(start), Some(start + len))
-        } else {
-            (None, None)
+            (None, None, None)
         };
 
         Self {
