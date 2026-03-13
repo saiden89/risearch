@@ -1,4 +1,5 @@
 use crate::config::{self, OutputCompression, OutputFormat};
+use anyhow::{bail, Result};
 use std::path::PathBuf;
 
 /// Boundary CLI arguments for output destination, formatting, and compression.
@@ -43,6 +44,14 @@ pub struct OutputArgs {
 }
 
 impl OutputArgs {
+    pub fn validate(&self) -> Result<()> {
+        if self.output_multifile && self.path.as_os_str() == "-" {
+            bail!("--multifile requires -o/--output to be a directory path; '-' (stdout) is not allowed.");
+        }
+
+        Ok(())
+    }
+
     #[inline]
     fn resolved_format(&self) -> OutputFormat {
         if let Some(f) = self.report_format {

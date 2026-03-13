@@ -110,6 +110,44 @@ fn test_multifile_output_avoids_sanitized_name_collisions() -> Result<(), Box<dy
 }
 
 #[test]
+fn test_multifile_rejects_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
+    let mut query_file = NamedTempFile::new()?;
+    writeln!(query_file, ">q\nAAAA")?;
+
+    let mut target_file = NamedTempFile::new()?;
+    writeln!(target_file, ">t\nUUUUUUUU")?;
+
+    let index_file = NamedTempFile::new()?;
+    build_index(target_file.path(), index_file.path());
+
+    let mut cmd_search = cargo_bin_cmd!("risearch");
+    cmd_search
+        .arg("search")
+        .arg("-q")
+        .arg(query_file.path())
+        .arg("-t")
+        .arg(index_file.path())
+        .arg("-o")
+        .arg("-")
+        .arg("--multifile")
+        .arg("--seed-length")
+        .arg("1")
+        .arg("-l")
+        .arg("0")
+        .arg("-e")
+        .arg("10000.0")
+        .arg("--format")
+        .arg("minimal")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--multifile requires -o/--output to be a directory path",
+        ));
+
+    Ok(())
+}
+
+#[test]
 fn test_bindingsite_output_includes_non_empty_flanks() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAA")?;

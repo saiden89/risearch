@@ -9,6 +9,7 @@ use log::{debug, info, trace};
 use risearch::{search, QueryRegistry, TargetStore};
 
 use crate::cli::legacy::emit_legacy_warnings;
+use crate::cli::validate::validate_search_command;
 use crate::cli::{Cli, Commands};
 
 pub(crate) fn run(cli: Cli) -> Result<()> {
@@ -42,6 +43,12 @@ fn cmd_search(
     target_path: &Path,
     cli_opts: &risearch::cli::args::SearchArgs,
 ) -> Result<()> {
+    validate_search_command(&crate::cli::SearchCommand {
+        query: query_path.to_path_buf(),
+        target: target_path.to_path_buf(),
+        opts: cli_opts.clone(),
+    })?;
+
     let output_path = &cli_opts.output.path;
     let raw_args: Vec<String> = std::env::args().collect();
 
