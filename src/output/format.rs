@@ -158,7 +158,7 @@ fn push_alignment_target_seq_bindingsite(buf: &mut Vec<u8>, alignment: &Alignmen
     for &step in alignment.steps().iter().rev() {
         if step.consumes_target() {
             t_idx = t_idx.saturating_sub(1);
-            push_base_as_rna_lower_complement(buf, t_bases.get(t_idx).copied().unwrap_or(Base::Gap));
+            buf.push(t_bases.get(t_idx).copied().unwrap_or(Base::Gap).complement().to_byte());
         } else {
             buf.push(b'-');
         }
@@ -175,26 +175,6 @@ fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
     push_alignment_mapped(buf, alignment, |p| p.symbol() as u8);
 }
 
-#[inline]
-fn push_base_as_rna_lower_complement(buf: &mut Vec<u8>, b: Base) {
-    buf.push(match b {
-        Base::A => b'u',
-        Base::G => b'c',
-        Base::C => b'g',
-        Base::U => b'a',
-        Base::N => b'n',
-        Base::Gap => b'-',
-    });
-}
-
-#[inline]
-fn push_bases_as_rna_lower_complement(buf: &mut Vec<u8>, s: &[Base], reverse: bool) {
-    if reverse {
-        for &b in s.iter().rev() { push_base_as_rna_lower_complement(buf, b); }
-    } else {
-        for &b in s { push_base_as_rna_lower_complement(buf, b); }
-    }
-}
 
 fn hit_query_bases<'a>(hit: &SearchHit, q_seq: &'a [Base]) -> &'a [Base] {
     let start = hit.q_start.min(q_seq.len());
@@ -335,12 +315,20 @@ pub fn format_hit_into(
             // C `-p3` semantics: output `flank5` = our `flank_3` complemented, and vice-versa.
             FieldKind::Flank5 => {
                 if let Some((_, _, flank_3, flank_3_rev)) = flanks {
-                    push_bases_as_rna_lower_complement(out, flank_3, flank_3_rev);
+                    if flank_3_rev {
+                        for &b in flank_3.iter().rev() { out.push(b.complement().to_byte()); }
+                    } else {
+                        for &b in flank_3 { out.push(b.complement().to_byte()); }
+                    }
                 }
             }
             FieldKind::Flank3 => {
                 if let Some((flank_5, flank_5_rev, _, _)) = flanks {
-                    push_bases_as_rna_lower_complement(out, flank_5, flank_5_rev);
+                    if flank_5_rev {
+                        for &b in flank_5.iter().rev() { out.push(b.complement().to_byte()); }
+                    } else {
+                        for &b in flank_5 { out.push(b.complement().to_byte()); }
+                    }
                 }
             }
         }

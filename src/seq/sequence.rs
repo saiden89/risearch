@@ -64,41 +64,6 @@ impl Sequence {
         Self(rc_bases)
     }
 
-    /// Convert to bytes for suffix array construction.
-    ///
-    /// This returns C-aligned lowercase symbols used for lexicographic sorting:
-    /// `0, a, c, g, n, u`. We keep `u` for RNA order compatibility with
-    /// RIsearch2's `sa_search_interval("acgnu")`.
-    ///
-    /// # Performance
-    /// O(n) operation, should only be called once per sequence during index building.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        #[inline(always)]
-        fn sa_sort_byte(b: Base) -> u8 {
-            match b {
-                Base::Gap => 0,
-                Base::A => b'a',
-                Base::C => b'c',
-                Base::G => b'g',
-                Base::N => b'n',
-                Base::U => b'u',
-            }
-        }
-
-        self.0.iter().map(|&b| sa_sort_byte(b)).collect()
-    }
-
-    /// Convert to ASCII bytes for backward compatibility.
-    ///
-    /// Returns lowercase ASCII representation (a, g, c, t, n, -).
-    /// This is a temporary method for Phase 3 compatibility.
-    /// Will be removed once all code is updated to work with &[Base].
-    ///
-    /// # Performance
-    /// O(n) operation, allocates a new Vec.
-    pub fn to_ascii_bytes(&self) -> Vec<u8> {
-        self.0.iter().map(|&b| b.to_byte()).collect()
-    }
 
     /// Iterator over bases
     pub fn iter(&self) -> impl Iterator<Item = &Base> {
@@ -225,13 +190,6 @@ mod tests {
         assert_eq!(rc[3], Base::U); // A -> U
     }
 
-    #[test]
-    fn test_to_bytes() {
-        let (seq, _) = Sequence::normalize("test", b"ACGU").unwrap();
-        let bytes = seq.to_bytes();
-
-        assert_eq!(bytes, vec![b'a', b'c', b'g', b'u']);
-    }
 
     #[test]
     fn test_deref() {
