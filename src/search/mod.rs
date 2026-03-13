@@ -88,9 +88,6 @@ struct SearchContext<'a> {
     store: &'a TargetStore,
     global: GlobalView<'a>,
     opts: &'a SearchArgs,
-    model: ScoringTable,
-    gotoh_left: Gotoh,
-    gotoh_right: Gotoh,
 }
 
 impl<'a> SearchContext<'a> {
@@ -103,17 +100,6 @@ impl<'a> SearchContext<'a> {
             return None;
         }
 
-        let global = store.global_view();
-        let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = ScoringTable::new(
-            opts.score.matrix,
-            dp_cfg.penalty_raw(),
-            opts.seed.allows_wobble(),
-        );
-        let left_model = model.transpose();
-        let gotoh_right = Gotoh::new(&model);
-        let gotoh_left = Gotoh::new(&left_model);
-
         info!(
             "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
             queries.len(),
@@ -123,15 +109,7 @@ impl<'a> SearchContext<'a> {
             opts.filter.delta_g
         );
 
-        Some(Self {
-            queries,
-            store,
-            global,
-            opts,
-            model,
-            gotoh_left,
-            gotoh_right,
-        })
+        Some(Self { queries, store, global: store.global_view(), opts })
     }
 
     #[inline]
@@ -145,19 +123,28 @@ impl<'a> SearchContext<'a> {
     }
 }
 
-/// Reusable per-worker state.
-struct SearchState {
+/// Per-worker DP extension engine. Each worker owns one; `&mut` is safe because
+/// only `grid` is mutated — the rest is read-only configuration.
+struct ExtensionEngine {
     grid: DpGrid,
     dp_cfg: DpConfig,
+    model: ScoringTable,
+    gotoh_left: Gotoh,
+    gotoh_right: Gotoh,
 }
 
-impl SearchState {
-    fn new(score_cfg: &ScoreConfig, extend_cfg: &ExtendConfig) -> Self {
-        let dp_cfg = DpConfig::from((score_cfg, extend_cfg));
-        Self {
-            grid: DpGrid::new(dp_cfg.max_extension()),
-            dp_cfg,
-        }
+impl ExtensionEngine {
+    fn new(opts: &SearchArgs) -> Self {
+        let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
+        let model = ScoringTable::new(
+            opts.score.matrix,
+            dp_cfg.penalty_raw(),
+            opts.seed.allows_wobble(),
+        );
+        let left_model = model.transpose();
+        let gotoh_right = Gotoh::new(&model);
+        let gotoh_left = Gotoh::new(&left_model);
+        Self { grid: DpGrid::new(dp_cfg.max_extension()), dp_cfg, model, gotoh_left, gotoh_right }
     }
 }
 
@@ -169,13 +156,13 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
             (
-                SearchState::new(&ctx.opts.score, &ctx.opts.extend),
+                ExtensionEngine::new(ctx.opts),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
-        |(state, fmt), qi| -> Result<()> {
+        |(engine, fmt), qi| -> Result<()> {
             let emitted =
-                process_query(ctx, qi as u32, state, fmt, true, || false, &mut |chunk| {
+                process_query(ctx, qi as u32, engine, fmt, true, || false, &mut |chunk| {
                     writer.lock().unwrap().write_chunk(&chunk)
                 })?;
             total.fetch_add(emitted, Ordering::Relaxed);
@@ -196,11 +183,11 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
             (
-                SearchState::new(&ctx.opts.score, &ctx.opts.extend),
+                ExtensionEngine::new(ctx.opts),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
-        |(state, format), query_idx| -> Result<()> {
+        |(engine, format), query_idx| -> Result<()> {
             let file_path = &output_paths[query_idx];
             let mut writer: Option<Box<dyn Write>> = None;
 
@@ -223,7 +210,7 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
             let emitted = process_query(
                 ctx,
                 query_idx as u32,
-                state,
+                engine,
                 format,
                 true,
                 || false,
@@ -248,7 +235,7 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
 fn process_query<FC, FO>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
-    state: &mut SearchState,
+    engine: &mut ExtensionEngine,
     format: &mut HitFormatter,
     flush_after_query: bool,
     is_cancelled: FC,
@@ -269,7 +256,7 @@ where
     let mut last_target_idx = None;
     let mut cached_target = None;
 
-    search_query(ctx, query_idx, state, &mut |hit: SearchHit| -> Result<()> {
+    search_query(ctx, query_idx, engine, &mut |hit: SearchHit| -> Result<()> {
         if is_cancelled() {
             return Ok(());
         }
@@ -304,7 +291,7 @@ where
 fn search_query<F>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
-    state: &mut SearchState,
+    engine: &mut ExtensionEngine,
     on_hit: &mut F,
 ) -> Result<()>
 where
@@ -335,10 +322,7 @@ where
         };
 
         let Some(hit) = build_hit_from_seed(
-            state,
-            &ctx.model,
-            &ctx.gotoh_left,
-            &ctx.gotoh_right,
+            engine,
             query_idx,
             query_bases,
             seed_interval.clone(),
@@ -364,12 +348,8 @@ where
 }
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
-#[allow(clippy::too_many_arguments)]
 fn build_hit_from_seed(
-    state: &mut SearchState,
-    model: &ScoringTable,
-    gotoh_left: &Gotoh,
-    gotoh_right: &Gotoh,
+    engine: &mut ExtensionEngine,
     query_idx: u32,
     query_bases: &[Base],
     seed_interval: Range<usize>,
@@ -383,12 +363,7 @@ fn build_hit_from_seed(
         return None;
     }
 
-    let extension = compute_seed_extension(
-        &mut state.grid,
-        model,
-        gotoh_left,
-        gotoh_right,
-        state.dp_cfg,
+    let extension = engine.extend_seed(
         query_bases,
         target_trans,
         seed,
@@ -426,93 +401,89 @@ struct SeedExtension {
     pairs: Option<AlignmentPairs>,
 }
 
-/// Compute optional left/right DP extension around a seed and return extension metadata.
-#[allow(clippy::too_many_arguments)]
-fn compute_seed_extension(
-    grid: &mut DpGrid,
-    model: &ScoringTable,
-    gotoh_left: &Gotoh,
-    gotoh_right: &Gotoh,
-    dp_cfg: DpConfig,
-    query_bases: &[Base],
-    target_trans: &[Base],
-    seed: &SeedHit,
-    seed_interval: Range<usize>,
-    filter_cfg: &FilterConfig,
-    include_alignment: bool,
-) -> Option<SeedExtension> {
-    let penalty = dp_cfg.penalty_raw();
-    let q_start = seed.query_start;
-    let t_start = seed.target_start;
-    let len = seed.len.get();
+impl ExtensionEngine {
+    fn extend_seed(
+        &mut self,
+        query_bases: &[Base],
+        target_trans: &[Base],
+        seed: &SeedHit,
+        seed_interval: Range<usize>,
+        filter_cfg: &FilterConfig,
+        include_alignment: bool,
+    ) -> Option<SeedExtension> {
+        let penalty = self.dp_cfg.penalty_raw();
+        let q_start = seed.query_start;
+        let t_start = seed.target_start;
+        let len = seed.len.get();
 
-    // Maximality check in scoring/raw coordinate space.
-    if q_start > seed_interval.start && t_start + len < target_trans.len() {
-        let q_base = query_bases[q_start - 1];
-        let t_base = target_trans[t_start + len];
-        if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
-            return None;
+        // Maximality check in scoring/raw coordinate space.
+        if q_start > seed_interval.start && t_start + len < target_trans.len() {
+            let q_base = query_bases[q_start - 1];
+            let t_base = target_trans[t_start + len];
+            if self.model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
+                return None;
+            }
         }
-    }
 
-    if q_start + len < seed_interval.end && t_start > 0 {
-        let q_base = query_bases[q_start + len];
-        let t_base = target_trans[t_start - 1];
-        if model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
-            return None;
+        if q_start + len < seed_interval.end && t_start > 0 {
+            let q_base = query_bases[q_start + len];
+            let t_base = target_trans[t_start - 1];
+            if self.model.is_pair(q_base, t_base) && !filter_cfg.no_max_prune {
+                return None;
+            }
         }
+
+        let t_match_end = t_start + len - 1;
+        let max_ext = self.dp_cfg.max_extension();
+        let seed_e = crate::dsm::seed_energy(&self.model, query_bases, target_trans, q_start, t_start, len);
+
+        let can_extend_left = q_start > 0 && t_start + len < target_trans.len();
+        let can_extend_right = q_start + len < query_bases.len() && t_start > 0;
+
+        if max_ext == 0 || (!can_extend_left && !can_extend_right) {
+            let term_5p = self.gotoh_left.terminal(
+                query_bases[q_start].idx(),
+                target_trans[t_match_end].idx(),
+            );
+            let term_3p = self.gotoh_right.terminal(
+                query_bases[q_start + len - 1].idx(),
+                target_trans[t_start].idx(),
+            );
+            let nt_count = (2 * len) as i32;
+            return Some(SeedExtension {
+                score: crate::dsm::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
+                l_q: 0,
+                l_t: 0,
+                r_q: 0,
+                r_t: 0,
+                pairs: None,
+            });
+        }
+
+        let (l_score, l_q, l_t, l_pairs) = {
+            let view = DpView::left(query_bases, target_trans, q_start, t_match_end, max_ext);
+            let result = self.gotoh_left.extend(&view, &mut self.grid);
+            let pairs = include_alignment.then(|| result.traceback(&view));
+            (result.score, result.q_len, result.t_len, pairs)
+        };
+
+        let (r_score, r_q, r_t, r_pairs) = {
+            let view = DpView::right(query_bases, target_trans, q_start + len - 1, t_start, max_ext);
+            let result = self.gotoh_right.extend(&view, &mut self.grid);
+            let pairs = include_alignment.then(|| result.traceback(&view));
+            (result.score, result.q_len, result.t_len, pairs)
+        };
+
+        let nt_count = (l_q + l_t + r_q + r_t + 2 * len) as i32;
+        Some(SeedExtension {
+            score: crate::dsm::to_kcal(seed_e + l_score + r_score + nt_count * penalty),
+            l_q,
+            l_t,
+            r_q,
+            r_t,
+            pairs: l_pairs.zip(r_pairs),
+        })
     }
-
-    let t_match_end = t_start + len - 1;
-    let max_ext = dp_cfg.max_extension();
-    let seed_e = crate::dsm::seed_energy(model, query_bases, target_trans, q_start, t_start, len);
-
-    let can_extend_left = q_start > 0 && t_start + len < target_trans.len();
-    let can_extend_right = q_start + len < query_bases.len() && t_start > 0;
-
-    if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-        let term_5p = gotoh_left.terminal(
-            query_bases[q_start].idx(),
-            target_trans[t_match_end].idx(),
-        );
-        let term_3p = gotoh_right.terminal(
-            query_bases[q_start + len - 1].idx(),
-            target_trans[t_start].idx(),
-        );
-        let nt_count = (2 * len) as i32;
-        return Some(SeedExtension {
-            score: crate::dsm::to_kcal(seed_e + term_5p + term_3p + nt_count * penalty),
-            l_q: 0,
-            l_t: 0,
-            r_q: 0,
-            r_t: 0,
-            pairs: None,
-        });
-    }
-
-    let (l_score, l_q, l_t, l_pairs) = {
-        let view = DpView::left(query_bases, target_trans, q_start, t_match_end, max_ext);
-        let result = gotoh_left.extend(&view, grid);
-        let pairs = include_alignment.then(|| result.traceback(&view));
-        (result.score, result.q_len, result.t_len, pairs)
-    };
-
-    let (r_score, r_q, r_t, r_pairs) = {
-        let view = DpView::right(query_bases, target_trans, q_start + len - 1, t_start, max_ext);
-        let result = gotoh_right.extend(&view, grid);
-        let pairs = include_alignment.then(|| result.traceback(&view));
-        (result.score, result.q_len, result.t_len, pairs)
-    };
-
-    let nt_count = (l_q + l_t + r_q + r_t + 2 * len) as i32;
-    Some(SeedExtension {
-        score: crate::dsm::to_kcal(seed_e + l_score + r_score + nt_count * penalty),
-        l_q,
-        l_t,
-        r_q,
-        r_t,
-        pairs: l_pairs.zip(r_pairs),
-    })
 }
 
 // =============================================================================
