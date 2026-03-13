@@ -88,6 +88,7 @@ impl ParityResult {
     }
 
     /// Log detailed comparison results for all hit types.
+    #[allow(dead_code)] // Used in parity_support; not every binary calls it.
     pub(crate) fn log_details(&self, test_name: &str) {
         self.log_details_with_context(test_name, None, None);
     }

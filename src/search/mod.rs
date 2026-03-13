@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{ExtendConfig, FilterConfig, OutputFormat, ScoreConfig, SearchArgs};
+use crate::config::{FilterConfig, OutputFormat, SearchArgs};
 use crate::dp::gotoh::Gotoh;
 use crate::dp::{DpConfig, DpGrid, DpView};
 use crate::dsm::ScoringTable;
@@ -456,7 +456,7 @@ impl ExtensionEngine {
                 l_t: 0,
                 r_q: 0,
                 r_t: 0,
-                pairs: None,
+                pairs: include_alignment.then(|| (SmallVec::new(), SmallVec::new())),
             });
         }
 

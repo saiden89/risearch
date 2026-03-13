@@ -23,6 +23,7 @@ pub(crate) enum HitStatus {
     #[allow(dead_code)] // Part of complete status enum
     Extra, // Only in RustC output
     /// Only in C output
+    #[allow(dead_code)]
     Missing,
 }
 
@@ -98,6 +99,7 @@ pub(crate) enum ParityMode {
     /// 100% identical to C - no differences at all
     Absolute,
     /// Allow co-optimal alignments (same energy, different trace)
+    #[allow(dead_code)]
     Strict,
     /// Allow co-optimal and extras, but no missing or rust-better
     #[default]

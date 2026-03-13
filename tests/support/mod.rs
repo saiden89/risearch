@@ -29,7 +29,7 @@ pub(crate) mod table;
 
 // Used by c_parity.rs (not necessarily used in every test crate)
 #[allow(unused_imports)]
-pub(crate) use runner::{ParityRunner, RustOnlyRunner, SingleSeqRunner, SingleSeqRustRunner};
+pub(crate) use runner::{ParityRunner, SingleSeqRunner};
 
 // Re-export test extensions for SearchHit
 pub(crate) use search_hit::{parse_bindingsite_output, SearchHitExt};
