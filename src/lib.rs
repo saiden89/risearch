@@ -24,6 +24,9 @@ pub use seq::{AlignedSeq, SeqView, Sequence};
 pub use types::{Base, Energy, SeedPairingMode, Strand, BASE_COUNT, GAP};
 
 // Search API re-exports for library usage
-pub use config::{MismatchSpec, SeedSpec};
-pub use search::SearchHit;
+pub use config::{
+    ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
+    OutputFormat, ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
+};
+pub use search::{run_search_in_memory, run_search, SearchHit};
 pub use seed::SeedHit;

@@ -51,6 +51,61 @@ pub struct SearchHit {
 // ORCHESTRATION
 // =============================================================================
 
+/// Run search against mmap-backed target store, collecting all hits into memory.
+///
+/// Alignment data is always included. Returns hits in an unspecified order
+/// (parallel workers process queries independently).
+pub fn run_search_in_memory(
+    queries: &QueryRegistry,
+    store: &TargetStore,
+    opts: &SearchConfig,
+) -> Result<Vec<SearchHit>> {
+    if store.is_empty() || queries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ctx = SearchContext::new(queries, store, opts);
+    let hits: Mutex<Vec<SearchHit>> = Mutex::new(Vec::new());
+
+    (0..ctx.queries.len()).into_par_iter().try_for_each_init(
+        || ExtensionEngine::new(ctx.opts),
+        |engine, qi| -> Result<()> {
+            let mut local = Vec::new();
+            let query = &ctx.queries.entries()[qi];
+            let query_seq = query.sequence().as_slice();
+            let seed_interval = query.seed_interval.clone();
+
+            for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
+                let target_idx = seed.target_id.0 as usize;
+                let (t_fwd, t_rc, target_len) = ctx.global.target_slices(target_idx);
+                let target_trans = match seed.strand {
+                    Strand::Forward => t_fwd,
+                    Strand::Reverse => t_rc,
+                };
+
+                if let Some(hit) = build_hit_from_seed(
+                    engine,
+                    qi as u32,
+                    query_seq,
+                    seed_interval.clone(),
+                    true,
+                    &ctx.opts.filter,
+                    target_len,
+                    &seed,
+                    target_trans,
+                ) {
+                    local.push(hit);
+                }
+                Ok(())
+            })?;
+
+            hits.lock().unwrap().extend(local);
+            Ok(())
+        },
+    )?;
+
+    Ok(hits.into_inner().unwrap())
+}
+
 /// Run search against mmap-backed target store and write hits to `output_path`.
 ///
 /// In multifile mode, `output_path` is the directory where per-query files are
@@ -524,5 +579,118 @@ impl SearchHit {
             seed_end,
             alignment,
         }
+    }
+}
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::config::{
+        ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
+        OutputFormat, ScoreConfig, SeedConfig, SeedSpec,
+    };
+    use crate::index::store::TargetStore;
+    use crate::registry::QueryRegistry;
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn test_config() -> SearchConfig {
+        SearchConfig {
+            seed: SeedConfig::with_wobble(SeedSpec::LengthOnly(8), MismatchSpec::exact(), true),
+            score: ScoreConfig {
+                matrix: Matrix::T04,
+                penalty: 3.5,
+                matrix2: None,
+                matpath: None,
+                temperature: None,
+                weights: None,
+            },
+            extend: ExtendConfig { max_extension: 10, band: None },
+            filter: FilterConfig { delta_g: -10.0, seed_energy: 0.0, no_max_prune: false },
+            output: OutputConfig {
+                format: OutputFormat::Detailed,
+                compress: OutputCompression::None,
+                multifile: false,
+            },
+            one_vs_one: false,
+            three_prime_match: None,
+            five_prime_match: None,
+        }
+    }
+
+    fn build_store(target_fa: &std::path::Path) -> (TargetStore, tempfile::TempDir) {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let idx = tmpdir.path().join("target.idx");
+        TargetStore::build_from_fasta(target_fa, &idx).unwrap();
+        let store = TargetStore::open(&idx).unwrap();
+        (store, tmpdir)
+    }
+
+    #[test]
+    fn in_memory_matches_file_hit_count() {
+        let root = workspace_root();
+        let query_path = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+        let target_path = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+
+        let (store, _tmp) = build_store(&target_path);
+        let config = test_config();
+        let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
+
+        let hits = run_search_in_memory(&queries, &store, &config).unwrap();
+
+        let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
+        let n = run_search(&queries, &store, &config, out.path()).unwrap();
+
+        assert_eq!(
+            hits.len(),
+            n,
+            "run_search_in_memory and run_search must report the same hit count"
+        );
+    }
+
+    #[test]
+    fn in_memory_empty_for_non_matching_target() {
+        let root = workspace_root();
+        let query_path = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+
+        let mut target_file = tempfile::NamedTempFile::new().unwrap();
+        write!(target_file, ">dummy\nAAAAAAAAAAAAAAAA\n").unwrap();
+        let (store, _tmp) = build_store(target_file.path());
+
+        let config = SearchConfig {
+            filter: FilterConfig { delta_g: -100.0, ..test_config().filter },
+            ..test_config()
+        };
+        let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
+        let hits = run_search_in_memory(&queries, &store, &config).unwrap();
+
+        assert!(hits.is_empty(), "no hits expected against a non-matching target");
+    }
+
+    #[test]
+    fn from_fastas_same_result_as_from_fasta() {
+        let root = workspace_root();
+        let query_path = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+        let target_path = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+
+        let (store, _tmp) = build_store(&target_path);
+        let config = test_config();
+
+        let all = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
+        let single = QueryRegistry::from_fastas(&[query_path.as_path()], &config.seed).unwrap();
+        assert_eq!(single.len(), all.len());
+
+        let hits_single = run_search_in_memory(&single, &store, &config).unwrap();
+        let hits_all = run_search_in_memory(&all, &store, &config).unwrap();
+        assert_eq!(hits_single.len(), hits_all.len());
     }
 }

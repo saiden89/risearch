@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+
+[project]
+name = "risearch"
+version = "0.0.0-alpha.1"
+requires-python = ">=3.10"
+description = "Python bindings for risearch RNA-RNA interaction search"
+dependencies = ["polars>=1.0"]
+
+[tool.maturin]
+module-name = "risearch._risearch"
+features = ["pyo3/extension-module", "pyo3/abi3-py310"]

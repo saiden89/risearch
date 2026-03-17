@@ -1,0 +1,15 @@
+[package]
+name = "risearch-python"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "risearch"
+crate-type = ["cdylib"]
+
+[dependencies]
+risearch = { path = ".." }
+pyo3 = { version = "0.23", features = ["extension-module", "anyhow", "abi3-py310"] }
+clap = { workspace = true }
+arrow-array = { version = "58", features = ["ffi"] }
+arrow-schema = "58"

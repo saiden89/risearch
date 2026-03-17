@@ -1,4 +1,7 @@
 target/
+*.so
+*.pyd
+uv.lock
 *.log
 *.fa
 *.fasta
