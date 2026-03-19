@@ -123,7 +123,7 @@ fn test_legacy_no_guseed_warning_points_to_no_seed_wobble() -> Result<(), Box<dy
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "Legacy --noGUseed is deprecated; use --no-seed-wobble.",
+            "'--noGUseed' is deprecated; use --no-seed-wobble instead.",
         ));
 
     Ok(())

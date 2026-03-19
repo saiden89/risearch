@@ -1,5 +1,4 @@
 pub(crate) mod legacy;
-pub(crate) mod validate;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

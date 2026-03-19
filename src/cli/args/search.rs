@@ -1,3 +1,4 @@
+use anyhow::Error;
 use crate::config;
 
 use super::{ExtendArgs, FilterArgs, OutputArgs, ScoreArgs, SeedConfig};
@@ -53,17 +54,19 @@ pub struct SearchArgs {
     pub five_prime_match: Option<String>,
 }
 
-impl From<SearchArgs> for config::SearchConfig {
-    fn from(value: SearchArgs) -> Self {
-        config::SearchConfig {
+impl TryFrom<SearchArgs> for config::SearchConfig {
+    type Error = Error;
+
+    fn try_from(value: SearchArgs) -> Result<Self, Self::Error> {
+        Ok(config::SearchConfig {
             seed: value.seed.into(),
             score: value.score.into(),
             extend: value.extend.into(),
             filter: value.filter.into(),
-            output: value.output.into(),
+            output: value.output.try_into()?,
             one_vs_one: value.one_vs_one,
             three_prime_match: value.three_prime_match,
             five_prime_match: value.five_prime_match,
-        }
+        })
     }
 }

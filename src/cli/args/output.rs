@@ -1,5 +1,5 @@
 use crate::config::{self, OutputCodec, OutputCompression, OutputFormat};
-use anyhow::{bail, Result};
+use anyhow::{bail, Error};
 use std::path::PathBuf;
 
 /// Boundary CLI arguments for output destination, formatting, and compression.
@@ -44,17 +44,29 @@ pub struct OutputArgs {
     pub output_multifile: bool,
 }
 
-impl OutputArgs {
-    pub fn validate(&self) -> Result<()> {
-        if self.output_multifile && self.path.as_os_str() == "-" {
+fn parse_legacy_format(s: &str) -> Result<OutputFormat, String> {
+    match s.parse::<u8>().map_err(|e| e.to_string())? {
+        1 => Ok(OutputFormat::Detailed),
+        2 => Ok(OutputFormat::Cigar),
+        3 => Ok(OutputFormat::BindingSite),
+        4 => Ok(OutputFormat::Minimal),
+        n => Err(format!("unknown format mode {n}, expected 1–4")),
+    }
+}
+
+impl TryFrom<OutputArgs> for config::OutputConfig {
+    type Error = Error;
+
+    fn try_from(value: OutputArgs) -> Result<Self, Self::Error> {
+        if value.output_multifile && value.path.as_os_str() == "-" {
             bail!("--multifile requires -o/--output to be a directory path; '-' (stdout) is not allowed.");
         }
 
-        let codec = self
+        let codec = value
             .output_compress
-            .unwrap_or_else(|| OutputCodec::from(self.path.as_path()));
+            .unwrap_or_else(|| OutputCodec::from(value.path.as_path()));
 
-        if let Some(level) = self.output_level {
+        if let Some(level) = value.output_level {
             match codec {
                 OutputCodec::None => bail!("--compress-level requires compressed output"),
                 OutputCodec::Gzip if !(0..=9).contains(&level) => {
@@ -67,39 +79,16 @@ impl OutputArgs {
             }
         }
 
-        Ok(())
-    }
-}
-
-fn parse_legacy_format(s: &str) -> Result<OutputFormat, String> {
-    match s.parse::<u8>().map_err(|e| e.to_string())? {
-        1 => Ok(OutputFormat::Detailed),
-        2 => Ok(OutputFormat::Cigar),
-        3 => Ok(OutputFormat::BindingSite),
-        4 => Ok(OutputFormat::Minimal),
-        n => Err(format!("unknown format mode {n}, expected 1–4")),
-    }
-}
-
-impl From<OutputArgs> for config::OutputConfig {
-    fn from(value: OutputArgs) -> Self {
-        let codec = value
-            .output_compress
-            .unwrap_or_else(|| OutputCodec::from(value.path.as_path()));
-
         let compress = match (codec, value.output_level) {
             (OutputCodec::None, _) => OutputCompression::None,
             (OutputCodec::Gzip, lvl) => OutputCompression::Gzip(lvl.unwrap_or(6) as u8),
             (OutputCodec::Zstd, lvl) => OutputCompression::Zstd(lvl.unwrap_or(3)),
         };
 
-        config::OutputConfig {
-            format: value
-                .report_format
-                .or(value.report_legacy)
-                .unwrap_or_default(),
+        Ok(config::OutputConfig {
+            format: value.report_format.or(value.report_legacy).unwrap_or_default(),
             compress,
             multifile: value.output_multifile,
-        }
+        })
     }
 }

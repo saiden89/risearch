@@ -35,7 +35,7 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "Legacy report syntax '-p2' is deprecated; use --format cigar.",
+            "Legacy -p/--report-alignment is deprecated; use --format cigar.",
         ));
 
     // 4. Test -p (Detailed) warning
@@ -51,7 +51,7 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "Legacy report syntax '-p' is deprecated; use --format detailed.",
+            "Legacy -p/--report-alignment is deprecated; use --format detailed.",
         ));
 
     Ok(())
@@ -91,7 +91,7 @@ fn test_legacy_i_flag_warning() -> Result<(), Box<dyn std::error::Error>> {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "Legacy target flag '-i' is deprecated; use -t/--target.",
+            "'-i' is deprecated; use -t/--target instead.",
         ));
 
     Ok(())

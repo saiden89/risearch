@@ -377,5 +377,5 @@ fn parse_search_args(args: &[&str]) -> risearch::config::SearchConfig {
     }
 
     let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
-    parsed.search.into()
+    parsed.search.try_into().expect("valid search args")
 }
