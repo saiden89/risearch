@@ -226,8 +226,7 @@ fn normalize_record(id: String, seq: Vec<u8>) -> Result<Option<(String, Sequence
 
 impl QueryRegistry {
     pub fn from_fasta(path: &Path, config: &SeedConfig) -> Result<Self> {
-        Self::from_fastas(&[path], config)
-            .with_context(|| format!("in {}", path.display()))
+        Self::from_fastas(&[path], config).with_context(|| format!("in {}", path.display()))
     }
 
     /// Load queries from one or more FASTA files.
@@ -341,7 +340,10 @@ mod tests {
         let result = QueryRegistry::from_fastas(&[f1.path(), f2.path()], &cfg);
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
-        assert!(msg.contains("Duplicate"), "expected duplicate error, got: {msg}");
+        assert!(
+            msg.contains("Duplicate"),
+            "expected duplicate error, got: {msg}"
+        );
     }
 
     #[test]
@@ -358,10 +360,10 @@ mod tests {
     #[test]
     fn seed_sa_is_built_on_interval_slice() {
         let sequence = Sequence::from(vec![Base::A, Base::U, Base::G, Base::C, Base::A, Base::U]);
-        let seed = SeedSpec::IntervalWithLength {
+        let seed = SeedSpec::Interval {
             start: 2,
             end: 5,
-            length: 2,
+            length: Some(2),
         };
         let query = make_query_data(sequence, seed.clone());
 

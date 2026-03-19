@@ -43,8 +43,8 @@ fn run_search_and_read(
 }
 
 #[test]
-fn test_default_seed_pairing_matches_allow_wobble() -> Result<(), Box<dyn std::error::Error>> {
-    // This fixture has only G-U seed matches, so strict mode should produce no hits.
+fn test_default_seed_wobble_matches_enabled_behavior() -> Result<(), Box<dyn std::error::Error>> {
+    // This fixture has only G-U seed matches, so disabling seed wobble should produce no hits.
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nGGGG")?;
 
@@ -55,7 +55,6 @@ fn test_default_seed_pairing_matches_allow_wobble() -> Result<(), Box<dyn std::e
     build_index(target_file.path(), index_file.path());
 
     let default_out = NamedTempFile::new()?;
-    let wobble_out = NamedTempFile::new()?;
     let strict_out = NamedTempFile::new()?;
 
     let default_content = run_search_and_read(
@@ -64,24 +63,14 @@ fn test_default_seed_pairing_matches_allow_wobble() -> Result<(), Box<dyn std::e
         default_out.path(),
         &[],
     )?;
-    let wobble_content = run_search_and_read(
-        query_file.path(),
-        index_file.path(),
-        wobble_out.path(),
-        &["--seed-pairing", "allow_wobble"],
-    )?;
     let strict_content = run_search_and_read(
         query_file.path(),
         index_file.path(),
         strict_out.path(),
-        &["--seed-pairing", "strict"],
+        &["--no-seed-wobble"],
     )?;
 
     let default_count = default_content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count();
-    let wobble_count = wobble_content
         .lines()
         .filter(|l| !l.trim().is_empty())
         .count();
@@ -90,7 +79,6 @@ fn test_default_seed_pairing_matches_allow_wobble() -> Result<(), Box<dyn std::e
         .filter(|l| !l.trim().is_empty())
         .count();
 
-    assert_eq!(default_count, wobble_count);
     assert!(
         default_count > 0,
         "default mode should permit wobble seed hits"
@@ -104,7 +92,8 @@ fn test_default_seed_pairing_matches_allow_wobble() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn test_legacy_no_guseed_warning_points_to_strict() -> Result<(), Box<dyn std::error::Error>> {
+fn test_legacy_no_guseed_warning_points_to_no_seed_wobble() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nGGGG")?;
 
@@ -130,11 +119,11 @@ fn test_legacy_no_guseed_warning_points_to_strict() -> Result<(), Box<dyn std::e
         .arg("10000.0")
         .arg("--format")
         .arg("minimal")
-        .arg("--no-guseed")
+        .arg("--noGUseed")
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "Legacy --no-guseed is deprecated; wobble is enabled by default. Use --seed-pairing strict.",
+            "Legacy --noGUseed is deprecated; use --no-seed-wobble.",
         ));
 
     Ok(())

@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn gotoh_matches_scoring_table() {
-        let table = ScoringModel::new(Matrix::T04, 50, true);
+        let table = ScoringModel::new(Matrix::T04, 50);
         let gotoh = Gotoh::new(&table);
 
         for q1 in 0..6 {
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn gotoh_transitions_match_gap_patterns() {
-        let table = ScoringModel::new(Matrix::T04, 50, true);
+        let table = ScoringModel::new(Matrix::T04, 50);
         let gotoh = Gotoh::new(&table);
 
         for qp in 0..6 {

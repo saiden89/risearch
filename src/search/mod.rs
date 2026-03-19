@@ -171,6 +171,7 @@ struct ExtensionEngine {
     grid: DpGrid,
     dp_cfg: DpConfig,
     model: ScoringModel,
+    seed_wobble: bool,
     gotoh_left: Gotoh,
     gotoh_right: Gotoh,
 }
@@ -178,11 +179,7 @@ struct ExtensionEngine {
 impl ExtensionEngine {
     fn new(opts: &SearchConfig) -> Self {
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let right_model = ScoringModel::new(
-            opts.score.matrix,
-            dp_cfg.penalty_raw(),
-            opts.seed.allows_wobble(),
-        );
+        let right_model = ScoringModel::new(opts.score.matrix, dp_cfg.penalty_raw());
         let left_model = right_model.transpose();
         let gotoh_right = Gotoh::new(&right_model);
         let gotoh_left = Gotoh::new(&left_model);
@@ -190,6 +187,7 @@ impl ExtensionEngine {
             grid: DpGrid::new(dp_cfg.max_extension()),
             dp_cfg,
             model: right_model,
+            seed_wobble: opts.seed.seed_wobble,
             gotoh_left,
             gotoh_right,
         }
@@ -426,19 +424,21 @@ impl ExtensionEngine {
         let len = seed.len.get();
 
         if q_start > seed_interval.start && t_start + len < target_trans.len() {
-            if self
-                .model
-                .is_pair(query_bases[q_start - 1], target_trans[t_start + len])
-            {
+            if ScoringModel::seed_pair(
+                query_bases[q_start - 1],
+                target_trans[t_start + len],
+                self.seed_wobble,
+            ) {
                 return false;
             }
         }
 
         if q_start + len < seed_interval.end && t_start > 0 {
-            if self
-                .model
-                .is_pair(query_bases[q_start + len], target_trans[t_start - 1])
-            {
+            if ScoringModel::seed_pair(
+                query_bases[q_start + len],
+                target_trans[t_start - 1],
+                self.seed_wobble,
+            ) {
                 return false;
             }
         }
@@ -614,8 +614,15 @@ mod tests {
                 temperature: None,
                 weights: None,
             },
-            extend: ExtendConfig { max_extension: 10, band: None },
-            filter: FilterConfig { delta_g: -10.0, seed_energy: 0.0, no_max_prune: false },
+            extend: ExtendConfig {
+                max_extension: 10,
+                band: None,
+            },
+            filter: FilterConfig {
+                delta_g: -10.0,
+                seed_energy: 0.0,
+                no_max_prune: false,
+            },
             output: OutputConfig {
                 format: OutputFormat::Detailed,
                 compress: OutputCompression::None,
@@ -667,13 +674,19 @@ mod tests {
         let (store, _tmp) = build_store(target_file.path());
 
         let config = SearchConfig {
-            filter: FilterConfig { delta_g: -100.0, ..test_config().filter },
+            filter: FilterConfig {
+                delta_g: -100.0,
+                ..test_config().filter
+            },
             ..test_config()
         };
         let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
         let hits = run_search_in_memory(&queries, &store, &config).unwrap();
 
-        assert!(hits.is_empty(), "no hits expected against a non-matching target");
+        assert!(
+            hits.is_empty(),
+            "no hits expected against a non-matching target"
+        );
     }
 
     #[test]

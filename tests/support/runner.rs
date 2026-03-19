@@ -261,7 +261,7 @@ impl SingleSeqRunner {
 /// Handles:
 /// - Rust-only flags (--no-max-prune, --experimental, --dp-band*)
 /// - New seed syntax (--seed-start/end/length) → legacy -s format
-/// - Flag name differences (--seed-pairing strict → --noGUseed)
+/// - Flag name differences (--no-seed-wobble → --noGUseed)
 fn translate_args_for_c(args: &[&str]) -> Vec<String> {
     let mut c_args: Vec<String> = Vec::new();
     let mut seed_start: Option<&str> = None;
@@ -306,13 +306,9 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
             }
 
             // Pairing flags - translate names
-            "-U" | "--no-guseed" | "--noGUseed" => c_args.push("--noGUseed".to_string()),
-            "--seed-pairing" => {
-                if iter.next_if(|v| *v == "strict").is_some() {
-                    c_args.push("--noGUseed".to_string());
-                }
+            "--no-seed-wobble" | "--noGUseed" => {
+                c_args.push("--noGUseed".to_string())
             }
-
             // Pass through everything else
             _ => c_args.push(arg.to_string()),
         }
@@ -374,16 +370,6 @@ fn parse_search_args(args: &[&str]) -> risearch::config::SearchConfig {
             cli_args.push(arg.to_string());
         }
     }
-    let has_pairing = args
-        .iter()
-        .any(|arg| *arg == "--seed-pairing" || arg.starts_with("--seed-pairing="));
-    let has_no_guseed = args
-        .iter()
-        .any(|arg| *arg == "-U" || *arg == "--no-guseed" || *arg == "--noGUseed");
-    if !has_pairing && !has_no_guseed {
-        cli_args.push("--seed-pairing".into());
-        cli_args.push("allow_wobble".into());
-    }
     #[derive(Parser)]
     struct FakeCmd {
         #[command(flatten)]
@@ -391,11 +377,5 @@ fn parse_search_args(args: &[&str]) -> risearch::config::SearchConfig {
     }
 
     let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
-    let mut search: risearch::config::SearchConfig = parsed.search.into();
-    let explicit_pairing = args
-        .iter()
-        .any(|arg| *arg == "--seed-pairing" || arg.starts_with("--seed-pairing="));
-    search.seed.apply_mismatch_overrides();
-    search.seed.apply_pairing_overrides(explicit_pairing);
-    search
+    parsed.search.into()
 }

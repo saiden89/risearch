@@ -57,7 +57,6 @@ pub(crate) struct SearchCommand {
         short = 't',
         long = "target",
         short_alias = 'i',
-        alias = "index",
         value_name = "TARGET"
     )]
     pub(crate) target: PathBuf,

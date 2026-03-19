@@ -114,7 +114,7 @@ impl<'a> SeedSearcher<'a> {
             on_match: &mut on_match,
         };
 
-        if self.cfg.allows_wobble() {
+        if self.cfg.seed_wobble {
             recurse::<_, true>(
                 &mut ctx,
                 self.q_sa_start,

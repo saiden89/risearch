@@ -51,10 +51,11 @@ fn cmd_search(
 
     let output_path = &cli_opts.output.path;
     let raw_args: Vec<String> = std::env::args().collect();
+    let legacy_target = raw_args.iter().skip(1).any(|a| a == "-i" || (a.starts_with("-i") && !a.starts_with("--")));
 
     // Convert CLI args to config (handles deprecated flag translation)
-    let mut opts: risearch::config::SearchConfig = cli_opts.clone().into();
-    emit_legacy_warnings(&raw_args, &mut opts)?;
+    let opts: risearch::config::SearchConfig = cli_opts.clone().into();
+    emit_legacy_warnings(cli_opts, legacy_target)?;
 
     debug!("Loading queries from {:?}", query_path);
     let queries =

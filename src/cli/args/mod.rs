@@ -10,4 +10,4 @@ pub use filter::FilterArgs;
 pub use output::OutputArgs;
 pub use score::ScoreArgs;
 pub use search::SearchArgs;
-pub use seed::{CliMismatchSpec, CliSeedSpec, SeedConfig};
+pub use seed::{seed_spec_from_args, LegacyMismatchSpec, LegacySeedSpec, SeedConfig};

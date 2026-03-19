@@ -86,7 +86,7 @@ def search(
     mismatch_suffix:
         Minimum consecutive matches required at the seed 3' end.
     seed_pairing:
-        Seed pairing mode: ``"wobble"`` (allows G-U pairs) or ``"strict"``.
+        Seed pairing mode: ``"allow_wobble"`` (default) or ``"strict"``.
     matrix:
         Energy parameter set: ``"t04"`` (Turner 2004) or ``"t99"`` (Turner 1999).
     penalty:

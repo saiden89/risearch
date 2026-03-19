@@ -47,21 +47,17 @@ impl MismatchSpec {
     }
 }
 
-/// Representation of the `-s` flag:
-/// - `-s l`              => SeedSpec::LengthOnly(l)
-/// - `-s m:n`            => SeedSpec::Interval { start: m, end: n }
-/// - `-s m:n/l`          => SeedSpec::IntervalWithLength { start: m, end: n, length: l }
+/// Representation of the seed specification:
+/// - length only         => SeedSpec::LengthOnly(l)
+/// - interval            => SeedSpec::Interval { start, end, length: None }
+/// - interval + length   => SeedSpec::Interval { start, end, length: Some(l) }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeedSpec {
     LengthOnly(i64),
     Interval {
         start: i64, // TODO: consider using RangeInclusive<i64>
         end: i64,
-    },
-    IntervalWithLength {
-        start: i64, // TODO: consider using RangeInclusive<i64>
-        end: i64,
-        length: i64, // TODO: enforce strictly positive via newtype
+        length: Option<i64>, // None = full interval; Some = constrained seed length
     },
 }
 
@@ -83,7 +79,7 @@ impl SeedSpec {
                 let length = l.min(n) as usize;
                 Ok((1, query_len, length))
             }
-            SeedSpec::Interval { start, end } | SeedSpec::IntervalWithLength { start, end, .. } => {
+            SeedSpec::Interval { start, end, length } => {
                 // Validate sign consistency
                 let (s_pos, e_pos) = match (start.signum(), end.signum()) {
                     // Both positive
@@ -115,14 +111,7 @@ impl SeedSpec {
                     return Err("Invalid seed interval: empty".into());
                 }
 
-                // Determine final length
-                let length_opt = match *self {
-                    SeedSpec::IntervalWithLength { length, .. } => Some(length),
-                    SeedSpec::Interval { .. } => None,
-                    SeedSpec::LengthOnly(_) => None,
-                };
-
-                let final_len = match length_opt {
+                let final_len = match length {
                     Some(length) if length <= 0 => {
                         return Err("Invalid seed length".into());
                     }
@@ -215,81 +204,26 @@ pub enum OutputCompression {
 // CONFIG TYPES
 // =============================================================================
 
-use crate::types::SeedPairingMode;
-
 /// Arguments for seed generation
 #[derive(Debug, Clone)]
 pub struct SeedConfig {
     /// Seed specification (length or interval)
     pub seed: SeedSpec,
 
-    // TODO: remove after legacy -U flag is dropped — redundant with `pairing`
-    /// DEPRECATED (will be removed in a future release): disable G-U wobble pairs within the seed
-    pub no_guseed: bool,
+    /// Allow G-U wobble pairs when locating and maximizing seeds.
+    pub seed_wobble: bool,
 
-    /// Seed pairing mode (allow_wobble or strict)
-    pub pairing: SeedPairingMode,
-
-    // TODO: collapse mismatch + mismatch_{max,prefix,suffix} into a single
-    // MismatchSpec after the legacy -m flag is removed
-    /// Mismatch specification (legacy -m or named overrides)
+    /// Mismatch specification used during seed search.
     pub mismatch: MismatchSpec,
-
-    /// Max number of mismatches allowed in the seed (preferred)
-    pub mismatch_max: Option<usize>,
-
-    /// Min consecutive matches at seed start (prefix / 5')
-    pub mismatch_prefix: Option<usize>,
-
-    /// Min consecutive matches at seed end (suffix / 3')
-    pub mismatch_suffix: Option<usize>,
 }
 
 impl SeedConfig {
-    pub fn with_wobble(seed: SeedSpec, mismatch: MismatchSpec, allow_wobble: bool) -> Self {
-        let pairing = if allow_wobble {
-            SeedPairingMode::AllowWobble
-        } else {
-            SeedPairingMode::Strict
-        };
+    pub fn with_wobble(seed: SeedSpec, mismatch: MismatchSpec, seed_wobble: bool) -> Self {
         Self {
             seed,
-            no_guseed: !allow_wobble,
-            pairing,
+            seed_wobble,
             mismatch,
-            mismatch_max: None,
-            mismatch_prefix: None,
-            mismatch_suffix: None,
         }
-    }
-
-    #[inline]
-    pub fn allows_wobble(&self) -> bool {
-        matches!(self.pairing, SeedPairingMode::AllowWobble)
-    }
-
-    pub fn apply_pairing_overrides(&mut self, explicit_pairing: bool) {
-        if self.no_guseed && !explicit_pairing {
-            self.pairing = SeedPairingMode::Strict;
-        }
-    }
-
-    pub fn apply_mismatch_overrides(&mut self) {
-        if let Some(max) = self.mismatch_max {
-            self.mismatch.max_mismatches = max;
-        }
-        if let Some(start) = self.mismatch_prefix {
-            self.mismatch.min_prefix_matches = start;
-        }
-        if let Some(end) = self.mismatch_suffix {
-            self.mismatch.min_suffix_matches = end;
-        }
-    }
-
-    pub fn has_named_mismatch(&self) -> bool {
-        self.mismatch_max.is_some()
-            || self.mismatch_prefix.is_some()
-            || self.mismatch_suffix.is_some()
     }
 }
 

@@ -7,16 +7,13 @@ use arrow_array::{
     ArrayRef, Float64Array, RecordBatch, RecordBatchIterator, StringArray, UInt32Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use clap::ValueEnum;
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
-use clap::ValueEnum;
 use risearch::{
-    cli::args::{
-        CliMismatchSpec, CliSeedSpec, ExtendArgs, FilterArgs, OutputArgs, ScoreArgs, SearchArgs,
-        SeedConfig as CliSeedConfig,
-    },
-    run_search_in_memory, Matrix, MismatchSpec, QueryRegistry, SearchHit, SeedPairingMode,
-    SeedSpec, TargetStore,
+    cli::args::seed_spec_from_args, run_search_in_memory, ExtendConfig, FilterConfig, Matrix,
+    MismatchSpec, OutputCompression, OutputConfig, OutputFormat, QueryRegistry, ScoreConfig,
+    SearchConfig, SearchHit, SeedConfig, SeedPairingMode, TargetStore,
 };
 
 // =============================================================================
@@ -114,12 +111,12 @@ impl PySearchResult {
         requested_schema: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyCapsule>> {
         let _ = requested_schema;
-        let batch = self.batch.take().ok_or_else(|| {
-            pyo3::exceptions::PyIOError::new_err("Arrow stream already consumed")
-        })?;
+        let batch = self
+            .batch
+            .take()
+            .ok_or_else(|| pyo3::exceptions::PyIOError::new_err("Arrow stream already consumed"))?;
 
-        let reader =
-            RecordBatchIterator::new(std::iter::once(Ok(batch)), self.schema.clone());
+        let reader = RecordBatchIterator::new(std::iter::once(Ok(batch)), self.schema.clone());
         let stream = FFI_ArrowArrayStream::new(Box::new(reader));
 
         let name = CString::new("arrow_array_stream").unwrap();
@@ -233,26 +230,24 @@ fn search(
     seed_energy: f64,
     no_max_prune: bool,
 ) -> PyResult<PySearchResult> {
-    let pairing = SeedPairingMode::from_str(seed_pairing, true)
+    let seed_wobble = matches!(
+        SeedPairingMode::from_str(seed_pairing, true)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?,
+        SeedPairingMode::AllowWobble
+    );
+
+    let mat = Matrix::from_str(matrix, true).map_err(pyo3::exceptions::PyValueError::new_err)?;
+
+    let seed = seed_spec_from_args(seed_start, seed_end, seed_length)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
-    let mat = Matrix::from_str(matrix, true)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
-
-    let config: risearch::SearchConfig = SearchArgs {
-        seed: CliSeedConfig {
-            seed_legacy: CliSeedSpec(SeedSpec::LengthOnly(6)),
-            seed_start,
-            seed_end,
-            seed_length,
-            no_guseed: pairing == SeedPairingMode::Strict,
-            pairing,
-            mismatch_legacy: CliMismatchSpec(MismatchSpec::new(mismatches, mismatch_prefix, mismatch_suffix)),
-            mismatch_max: None,
-            mismatch_prefix: None,
-            mismatch_suffix: None,
+    let config = SearchConfig {
+        seed: SeedConfig {
+            seed,
+            seed_wobble,
+            mismatch: MismatchSpec::new(mismatches, mismatch_prefix, mismatch_suffix),
         },
-        score: ScoreArgs {
+        score: ScoreConfig {
             matrix: mat,
             penalty,
             matrix2: None,
@@ -260,21 +255,24 @@ fn search(
             temperature: None,
             weights: None,
         },
-        extend: ExtendArgs { max_extension, band: None },
-        filter: FilterArgs { delta_g: energy_threshold, seed_energy, no_max_prune },
-        output: OutputArgs {
-            path: PathBuf::from("-"),
-            report_format: Some(risearch::OutputFormat::Detailed),
-            report_legacy: None,
-            output_compress: None,
-            output_level: None,
-            output_multifile: false,
+        extend: ExtendConfig {
+            max_extension,
+            band: None,
+        },
+        filter: FilterConfig {
+            delta_g: energy_threshold,
+            seed_energy,
+            no_max_prune,
+        },
+        output: OutputConfig {
+            format: OutputFormat::Detailed,
+            compress: OutputCompression::None,
+            multifile: false,
         },
         one_vs_one: false,
         three_prime_match: None,
         five_prime_match: None,
-    }
-    .into();
+    };
 
     let paths: Vec<&std::path::Path> = query_fasta.iter().map(|p| p.as_path()).collect();
     let queries = QueryRegistry::from_fastas(&paths, &config.seed)?;

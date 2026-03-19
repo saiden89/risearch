@@ -40,7 +40,7 @@ pub struct ScoringModel {
 
 impl ScoringModel {
     /// Create a new scoring table from a base matrix, baking in the extension penalty.
-    pub fn new(matrix: Matrix, penalty: i32, allow_wobble: bool) -> Self {
+    pub fn new(matrix: Matrix, penalty: i32) -> Self {
         let source_table = match matrix {
             Matrix::T04 => &T04,
             Matrix::T99 => &T99,
@@ -75,21 +75,28 @@ impl ScoringModel {
             }
         }
 
+        let mut pair_mat = [[0u8; 6]; 6];
+        for q in 0..6 {
+            for t in 0..6 {
+                let t_orig = Base::from_idx(t).complement().idx();
+                pair_mat[q][t] = PAIR_MAT[new_to_legacy[q]][new_to_legacy[t_orig]];
+            }
+        }
+
+        Self { table, pair_mat }
+    }
+
+    /// Check if two bases form a valid seed pair in transformed target space.
+    #[inline(always)]
+    pub fn seed_pair(q: Base, t: Base, allow_wobble: bool) -> bool {
         let source_pair_mat = if allow_wobble {
             &PAIR_MAT
         } else {
             &PAIR_MAT_NO_GU
         };
-
-        let mut pair_mat = [[0u8; 6]; 6];
-        for q in 0..6 {
-            for t in 0..6 {
-                let t_orig = Base::from_idx(t).complement().idx();
-                pair_mat[q][t] = source_pair_mat[new_to_legacy[q]][new_to_legacy[t_orig]];
-            }
-        }
-
-        Self { table, pair_mat }
+        let new_to_legacy = [0, 1, 3, 2, 5, 4];
+        let t_orig = t.complement().idx();
+        source_pair_mat[new_to_legacy[q.idx()]][new_to_legacy[t_orig]] != 0
     }
 
     /// Produce a left-canonical (transposed) copy: `[q1][q2][t1][t2] → [q2][q1][t2][t1]`.
@@ -1089,21 +1096,20 @@ mod tests {
 
     #[test]
     fn test_pairing() {
-        let strict = ScoringModel::new(Matrix::T04, 0, false);
-        let wobble = ScoringModel::new(Matrix::T04, 0, true);
+        let model = ScoringModel::new(Matrix::T04, 0);
 
-        // G pairs with C (index space C is G)
-        assert!(strict.is_pair(Base::G, Base::G));
-        assert!(wobble.is_pair(Base::G, Base::G));
+        // DP/display pairing follows the scoring matrix semantics.
+        assert!(model.is_pair(Base::G, Base::G));
+        assert!(model.is_pair(Base::G, Base::A));
 
-        // G pairs with wobble U (index space U is A)
-        assert!(!strict.is_pair(Base::G, Base::A));
-        assert!(wobble.is_pair(Base::G, Base::A));
+        // Seed pairing can be stricter than the extension model.
+        assert!(!ScoringModel::seed_pair(Base::G, Base::A, false));
+        assert!(ScoringModel::seed_pair(Base::G, Base::A, true));
     }
 
     #[test]
     fn test_dsm_get() {
-        let model = ScoringModel::new(Matrix::T04, 0, true);
+        let model = ScoringModel::new(Matrix::T04, 0);
         // Original target was U-A, index space is A-U
         let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::A.idx(), Base::U.idx());
         let gap_energy = model.lookup(
@@ -1120,7 +1126,7 @@ mod tests {
 
     #[test]
     fn test_dsm_known_values() {
-        let model = ScoringModel::new(Matrix::T04, 0, true);
+        let model = ScoringModel::new(Matrix::T04, 0);
         // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
         // Original target was CC, index space is GG
         let actual = model.lookup(Base::G.idx(), Base::G.idx(), Base::G.idx(), Base::G.idx());
@@ -1129,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_transpose_symmetry() {
-        let right = ScoringModel::new(Matrix::T04, 50, true);
+        let right = ScoringModel::new(Matrix::T04, 50);
         let left = right.transpose();
         for q1 in 0..6 {
             for q2 in 0..6 {

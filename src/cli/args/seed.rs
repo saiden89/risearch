@@ -1,14 +1,28 @@
 use crate::config::{self, MismatchSpec, SeedSpec};
-use crate::types::SeedPairingMode;
 use std::str::FromStr;
 
 const DEFAULT_SEED_LEN: i64 = 6;
 
+pub fn seed_spec_from_args(
+    seed_start: Option<i64>,
+    seed_end: Option<i64>,
+    seed_length: Option<i64>,
+) -> Result<SeedSpec, String> {
+    match (seed_start, seed_end, seed_length) {
+        (Some(start), Some(end), length) => Ok(SeedSpec::Interval { start, end, length }),
+        (None, None, Some(length)) => Ok(SeedSpec::LengthOnly(length)),
+        (None, None, None) => Ok(SeedSpec::LengthOnly(DEFAULT_SEED_LEN)),
+        _ => Err(
+            "use seed_length alone, or seed_start + seed_end (optionally with seed_length)".into(),
+        ),
+    }
+}
+
 /// Legacy CLI parser boundary for `-m/--mismatch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CliMismatchSpec(pub MismatchSpec);
+pub struct LegacyMismatchSpec(pub MismatchSpec);
 
-impl FromStr for CliMismatchSpec {
+impl FromStr for LegacyMismatchSpec {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -62,17 +76,11 @@ impl FromStr for CliMismatchSpec {
     }
 }
 
-impl From<CliMismatchSpec> for MismatchSpec {
-    fn from(value: CliMismatchSpec) -> Self {
-        value.0
-    }
-}
-
 /// Legacy CLI parser boundary for `-s/--seed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CliSeedSpec(pub SeedSpec);
+pub struct LegacySeedSpec(pub SeedSpec);
 
-impl FromStr for CliSeedSpec {
+impl FromStr for LegacySeedSpec {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -104,7 +112,7 @@ impl FromStr for CliSeedSpec {
                 match rest.find('/') {
                     None => {
                         let end = parse_i64(rest, "end")?;
-                        Ok(Self(SeedSpec::Interval { start, end }))
+                        Ok(Self(SeedSpec::Interval { start, end, length: None }))
                     }
                     Some(slash_idx) => {
                         let (end_str, len_part) = rest.split_at(slash_idx);
@@ -119,17 +127,11 @@ impl FromStr for CliSeedSpec {
 
                         let end = parse_i64(end_str, "end")?;
                         let length = parse_i64(len_str, "length")?;
-                        Ok(Self(SeedSpec::IntervalWithLength { start, end, length }))
+                        Ok(Self(SeedSpec::Interval { start, end, length: Some(length) }))
                     }
                 }
             }
         }
-    }
-}
-
-impl From<CliSeedSpec> for SeedSpec {
-    fn from(value: CliSeedSpec) -> Self {
-        value.0
     }
 }
 
@@ -142,10 +144,10 @@ pub struct SeedConfig {
         short = 's',
         long = "seed",
         value_name = "start:end/length",
-        default_value = "6",
+        conflicts_with_all = ["seed_start", "seed_end", "seed_length"],
         help_heading = "Deprecated"
     )]
-    pub seed_legacy: CliSeedSpec,
+    pub seed_legacy: Option<LegacySeedSpec>,
 
     /// Seed interval start (1-based, can be negative)
     /// TODO: Consider explicit one-sided bounds (e.g. --seed-to-end/--seed-from-start)
@@ -171,23 +173,13 @@ pub struct SeedConfig {
     #[arg(long = "seed-length", value_name = "LENGTH")]
     pub seed_length: Option<i64>,
 
-    /// DEPRECATED (will be removed in a future release): disable G-U wobble pairs within the seed
-    #[arg(
-        short = 'U',
-        long = "no-guseed",
-        alias = "noGUseed",
-        action = clap::ArgAction::SetTrue,
-        help_heading = "Deprecated"
-    )]
-    pub no_guseed: bool,
+    /// Disable G-U wobble pairs when locating and maximizing seeds
+    #[arg(long = "no-seed-wobble", action = clap::ArgAction::SetTrue)]
+    pub no_seed_wobble: bool,
 
-    /// Seed pairing mode (allow_wobble or strict)
-    #[arg(
-        long = "seed-pairing",
-        value_enum,
-        default_value_t = SeedPairingMode::AllowWobble
-    )]
-    pub pairing: SeedPairingMode,
+    /// DEPRECATED: legacy C flag for --no-seed-wobble
+    #[arg(long = "noGUseed", hide = true, action = clap::ArgAction::SetTrue)]
+    pub no_guseed_legacy: bool,
 
     /// DEPRECATED (will be removed in a future release): legacy mismatch shorthand
     /// Set max mismatches (c) and min consecutive matches at seed start/end (p)
@@ -197,10 +189,10 @@ pub struct SeedConfig {
         short = 'm',
         long = "mismatch",
         value_name = "c[:ps[:pe]]",
-        default_value = "0:0",
+        conflicts_with_all = ["mismatch_max", "mismatch_prefix", "mismatch_suffix"],
         help_heading = "Deprecated"
     )]
-    pub mismatch_legacy: CliMismatchSpec,
+    pub mismatch_legacy: Option<LegacyMismatchSpec>,
 
     /// Max number of mismatches allowed in the seed (preferred)
     #[arg(long = "mismatch-max", value_name = "C")]
@@ -217,80 +209,96 @@ pub struct SeedConfig {
 
 impl From<SeedConfig> for config::SeedConfig {
     fn from(value: SeedConfig) -> Self {
-        let legacy_seed: SeedSpec = value.seed_legacy.into();
-        let legacy_mismatch: MismatchSpec = value.mismatch_legacy.into();
         let seed = if value.seed_start.is_some()
             || value.seed_end.is_some()
             || value.seed_length.is_some()
         {
-            match (value.seed_start, value.seed_end) {
-                (Some(start), Some(end)) => {
-                    if let Some(length) = value.seed_length {
-                        SeedSpec::IntervalWithLength { start, end, length }
-                    } else {
-                        SeedSpec::Interval { start, end }
-                    }
-                }
-                (None, None) => SeedSpec::LengthOnly(value.seed_length.unwrap_or(DEFAULT_SEED_LEN)),
-                _ => legacy_seed,
-            }
+            seed_spec_from_args(value.seed_start, value.seed_end, value.seed_length)
+                .expect("seed arguments should be validated by clap")
         } else {
-            legacy_seed
+            value
+                .seed_legacy
+                .map(|s| s.0)
+                .unwrap_or(SeedSpec::LengthOnly(DEFAULT_SEED_LEN))
         };
+        let mismatch = value.mismatch_legacy.map_or_else(
+            || {
+                MismatchSpec::new(
+                    value.mismatch_max.unwrap_or(0),
+                    value.mismatch_prefix.unwrap_or(0),
+                    value.mismatch_suffix.unwrap_or(0),
+                )
+            },
+            |m| m.0,
+        );
 
         config::SeedConfig {
             seed,
-            no_guseed: value.no_guseed,
-            pairing: value.pairing,
-            mismatch: legacy_mismatch,
-            mismatch_max: value.mismatch_max,
-            mismatch_prefix: value.mismatch_prefix,
-            mismatch_suffix: value.mismatch_suffix,
+            seed_wobble: !(value.no_seed_wobble || value.no_guseed_legacy),
+            mismatch,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CliMismatchSpec, CliSeedSpec};
+    use super::{seed_spec_from_args, LegacyMismatchSpec, LegacySeedSpec};
     use crate::config::{MismatchSpec, SeedSpec};
     use std::str::FromStr;
 
     #[test]
     fn parses_seed_cli_specs() {
         assert_eq!(
-            CliSeedSpec::from_str("10").expect("parse").0,
+            LegacySeedSpec::from_str("10").expect("parse").0,
             SeedSpec::LengthOnly(10)
         );
         assert_eq!(
-            CliSeedSpec::from_str("10:20").expect("parse").0,
-            SeedSpec::Interval { start: 10, end: 20 }
+            LegacySeedSpec::from_str("10:20").expect("parse").0,
+            SeedSpec::Interval { start: 10, end: 20, length: None }
         );
         assert_eq!(
-            CliSeedSpec::from_str("10:20/5").expect("parse").0,
-            SeedSpec::IntervalWithLength {
-                start: 10,
-                end: 20,
-                length: 5
-            }
+            LegacySeedSpec::from_str("10:20/5").expect("parse").0,
+            SeedSpec::Interval { start: 10, end: 20, length: Some(5) }
         );
-        assert!(CliSeedSpec::from_str("abc").is_err());
+        assert!(LegacySeedSpec::from_str("abc").is_err());
     }
 
     #[test]
     fn parses_mismatch_cli_specs() {
         assert_eq!(
-            CliMismatchSpec::from_str("1").expect("parse").0,
+            LegacyMismatchSpec::from_str("1").expect("parse").0,
             MismatchSpec::new(1, 1, 1)
         );
         assert_eq!(
-            CliMismatchSpec::from_str("1:3").expect("parse").0,
+            LegacyMismatchSpec::from_str("1:3").expect("parse").0,
             MismatchSpec::new(1, 3, 3)
         );
         assert_eq!(
-            CliMismatchSpec::from_str("1:3:5").expect("parse").0,
+            LegacyMismatchSpec::from_str("1:3:5").expect("parse").0,
             MismatchSpec::new(1, 3, 5)
         );
-        assert!(CliMismatchSpec::from_str("1:2:3:4").is_err());
+        assert!(LegacyMismatchSpec::from_str("1:2:3:4").is_err());
+    }
+
+    #[test]
+    fn builds_seed_specs_from_named_args() {
+        assert_eq!(
+            seed_spec_from_args(None, None, None).expect("parse"),
+            SeedSpec::LengthOnly(6)
+        );
+        assert_eq!(
+            seed_spec_from_args(Some(3), Some(12), None).expect("parse"),
+            SeedSpec::Interval { start: 3, end: 12, length: None }
+        );
+        assert_eq!(
+            seed_spec_from_args(Some(3), Some(12), Some(7)).expect("parse"),
+            SeedSpec::Interval { start: 3, end: 12, length: Some(7) }
+        );
+    }
+
+    #[test]
+    fn rejects_partial_named_seed_args() {
+        assert!(seed_spec_from_args(Some(3), None, None).is_err());
+        assert!(seed_spec_from_args(None, Some(12), None).is_err());
     }
 }

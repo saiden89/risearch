@@ -63,8 +63,7 @@ fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn st
         .arg("0")
         .arg("--mismatch-suffix")
         .arg("0")
-        .arg("--seed-pairing")
-        .arg("strict")
+        .arg("--no-seed-wobble")
         .arg("-j")
         .arg("1")
         .arg("-e")
@@ -150,8 +149,7 @@ fn test_release_c_strict_m1_seed17_table_repro() {
         "17",
         "-m",
         "1:0",
-        "--seed-pairing",
-        "strict",
+        "--no-seed-wobble",
         "-p3",
     ];
     SingleSeqRunner::new(query, target).assert_pass("release_c_strict_m1_seed17_table", &args);

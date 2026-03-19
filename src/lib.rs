@@ -28,5 +28,5 @@ pub use config::{
     ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
     OutputFormat, ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
 };
-pub use search::{run_search_in_memory, run_search, SearchHit};
+pub use search::{run_search, run_search_in_memory, SearchHit};
 pub use seed::SeedHit;
