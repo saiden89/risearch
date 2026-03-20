@@ -4,15 +4,17 @@ Requires the extension to be built first:
     cd risearch-python && maturin develop
 """
 
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-try:
-    import polars as pl
-    import risearch
-except ImportError:
+import polars as pl
+
+if importlib.util.find_spec("risearch") is None:
     pytest.skip("risearch not installed — run `maturin develop` first", allow_module_level=True)
+
+import risearch
 
 # ---------------------------------------------------------------------------
 # Fixtures

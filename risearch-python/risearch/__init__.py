@@ -3,8 +3,12 @@ import os
 import polars as pl
 
 from risearch._risearch import (
-    PyTargetStore as TargetStore,
+    TargetStore,
+)
+from risearch._risearch import (
     build_index as index,
+)
+from risearch._risearch import (
     search as _search_impl,
 )
 
