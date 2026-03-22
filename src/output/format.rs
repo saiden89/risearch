@@ -32,7 +32,7 @@ enum FieldKind {
     TStart,
     TEnd,
     Strand,
-    Energy2dp,
+    Energy,
     Pairing,
     TargetSeq,
     Flank5,
@@ -58,7 +58,7 @@ const FIELDS_BASE: &[FieldKind] = &[
     FieldKind::TStart,
     FieldKind::TEnd,
     FieldKind::Strand,
-    FieldKind::Energy2dp,
+    FieldKind::Energy,
 ];
 
 const FIELDS_CIGAR: &[FieldKind] = &[
@@ -69,7 +69,7 @@ const FIELDS_CIGAR: &[FieldKind] = &[
     FieldKind::TStart,
     FieldKind::TEnd,
     FieldKind::Strand,
-    FieldKind::Energy2dp,
+    FieldKind::Energy,
     FieldKind::Pairing,
 ];
 
@@ -81,7 +81,7 @@ const FIELDS_BINDING_SITE: &[FieldKind] = &[
     FieldKind::TStart,
     FieldKind::TEnd,
     FieldKind::Strand,
-    FieldKind::Energy2dp,
+    FieldKind::Energy,
     FieldKind::Pairing,
     FieldKind::TargetSeq,
     FieldKind::Flank5,
@@ -385,7 +385,7 @@ pub fn format_hit_into(
             FieldKind::TStart => out.extend_from_slice(itoa.format(hit.t_start + 1).as_bytes()),
             FieldKind::TEnd => out.extend_from_slice(itoa.format(hit.t_end + 1).as_bytes()),
             FieldKind::Strand => out.push(char::from(hit.strand) as u8),
-            FieldKind::Energy2dp => append_score_2dp(out, itoa, hit.energy.as_f64()),
+            FieldKind::Energy => append_score_2dp(out, itoa, hit.energy.as_f64()),
             FieldKind::Pairing => {
                 if let Some(align) = alignment {
                     push_pairing_string(out, align);
