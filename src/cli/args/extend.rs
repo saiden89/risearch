@@ -1,4 +1,5 @@
 use crate::config;
+use config::ExtendConfig;
 
 /// Arguments for seed extension strategy
 #[derive(clap::Args, Debug, Clone)]
@@ -22,9 +23,9 @@ pub struct ExtendArgs {
     pub band: Option<u32>,
 }
 
-impl From<ExtendArgs> for config::ExtendConfig {
+impl From<ExtendArgs> for ExtendConfig {
     fn from(value: ExtendArgs) -> Self {
-        config::ExtendConfig {
+        ExtendConfig {
             max_extension: value.max_extension,
             band: value.band,
         }

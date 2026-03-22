@@ -1,5 +1,6 @@
 use crate::config;
 
+use config::FilterConfig;
 /// Arguments for filtering and pruning policies
 #[derive(clap::Args, Debug, Clone)]
 pub struct FilterArgs {
@@ -22,9 +23,9 @@ pub struct FilterArgs {
     pub no_max_prune: bool,
 }
 
-impl From<FilterArgs> for config::FilterConfig {
+impl From<FilterArgs> for FilterConfig {
     fn from(value: FilterArgs) -> Self {
-        config::FilterConfig {
+        FilterConfig {
             delta_g: value.delta_g,
             seed_energy: value.seed_energy,
             no_max_prune: value.no_max_prune,

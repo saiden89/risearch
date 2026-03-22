@@ -1,4 +1,6 @@
 use crate::config::{self, OutputCodec, OutputCompression, OutputFormat};
+use config::OutputConfig;
+
 use anyhow::{bail, Error};
 use std::path::PathBuf;
 
@@ -54,7 +56,7 @@ fn parse_legacy_format(s: &str) -> Result<OutputFormat, String> {
     }
 }
 
-impl TryFrom<OutputArgs> for config::OutputConfig {
+impl TryFrom<OutputArgs> for OutputConfig {
     type Error = Error;
 
     fn try_from(value: OutputArgs) -> Result<Self, Self::Error> {
@@ -85,8 +87,11 @@ impl TryFrom<OutputArgs> for config::OutputConfig {
             (OutputCodec::Zstd, lvl) => OutputCompression::Zstd(lvl.unwrap_or(3)),
         };
 
-        Ok(config::OutputConfig {
-            format: value.report_format.or(value.report_legacy).unwrap_or_default(),
+        Ok(OutputConfig {
+            format: value
+                .report_format
+                .or(value.report_legacy)
+                .unwrap_or_default(),
             compress,
             multifile: value.output_multifile,
         })
