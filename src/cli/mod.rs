@@ -12,6 +12,8 @@ use risearch::cli::args::SearchArgs;
     version = "3.alpha.1",
     about = "Energy based RNA-RNA interaction predictions",
     long_about = None,
+    subcommand_required = true,
+    arg_required_else_help = true,
     after_help = "Subcommand help:\n  risearch index --help\n  risearch search --help"
 )]
 pub(crate) struct Cli {
@@ -31,7 +33,7 @@ pub(crate) struct Cli {
     pub(crate) jobs: usize,
 
     #[command(subcommand)]
-    pub(crate) command: Option<Commands>,
+    pub(crate) command: Commands,
 }
 
 #[derive(clap::Args, Debug)]
@@ -45,26 +47,6 @@ pub(crate) struct IndexCommand {
     pub(crate) output: PathBuf,
 }
 
-#[derive(clap::Args, Debug)]
-pub(crate) struct SearchCommand {
-    /// FASTA file for query sequence(s) (.fa or .fa.gz) -- use '-' for stdin
-    #[arg(short = 'q', long = "query", value_name = "FILE")]
-    pub(crate) query: PathBuf,
-
-    /// Target index file (created by `index` command)
-    #[arg(
-        short = 't',
-        long = "target",
-        short_alias = 'i',
-        value_name = "TARGET"
-    )]
-    pub(crate) target: PathBuf,
-
-    /// Search-related options (seed, scoring, extension, filtering, output)
-    #[command(flatten)]
-    pub(crate) opts: SearchArgs,
-}
-
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)] // CLI parsing - allocation overhead is negligible
 pub(crate) enum Commands {
@@ -72,5 +54,5 @@ pub(crate) enum Commands {
     Index(IndexCommand),
 
     /// Search for interactions in the given sequence(s)
-    Search(SearchCommand),
+    Search(SearchArgs),
 }

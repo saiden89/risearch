@@ -1,4 +1,3 @@
-use anyhow::Result;
 use log::warn;
 
 use risearch::cli::args::SearchArgs;
@@ -10,7 +9,7 @@ fn warn_if(used: bool, flag: &str, replacement: &str) {
     }
 }
 
-pub(crate) fn emit_legacy_warnings(args: &SearchArgs, legacy_target: bool) -> Result<()> {
+pub(crate) fn emit_legacy_warnings(args: &SearchArgs, legacy_target: bool) {
     // Simple flag deprecations
     warn_if(args.seed.no_guseed_legacy, "--noGUseed", "--no-seed-wobble");
     warn_if(legacy_target, "-i", "-t/--target");
@@ -55,6 +54,4 @@ pub(crate) fn emit_legacy_warnings(args: &SearchArgs, legacy_target: bool) -> Re
         };
         warn!("Legacy -s/--seed is deprecated; use {}.", suggestion);
     }
-
-    Ok(())
 }

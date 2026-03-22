@@ -1,13 +1,16 @@
-use anyhow::Error;
 use crate::config;
+use anyhow::Error;
 
-use super::{ExtendArgs, FilterArgs, OutputArgs, ScoreArgs, SeedConfig};
+use super::{ExtendArgs, FilterArgs, InputArgs, OutputArgs, ScoreArgs, SeedArgs};
 
-/// Options that apply to the `search` subcommand
+/// Arguments that apply to the `search` subcommand
 #[derive(clap::Args, Debug, Clone)]
 pub struct SearchArgs {
     #[command(flatten)]
-    pub seed: SeedConfig,
+    pub input: InputArgs,
+
+    #[command(flatten)]
+    pub seed: SeedArgs,
 
     #[command(flatten)]
     pub score: ScoreArgs,
@@ -59,7 +62,7 @@ impl TryFrom<SearchArgs> for config::SearchConfig {
 
     fn try_from(value: SearchArgs) -> Result<Self, Self::Error> {
         Ok(config::SearchConfig {
-            seed: value.seed.into(),
+            seed: value.seed.try_into()?,
             score: value.score.into(),
             extend: value.extend.into(),
             filter: value.filter.into(),

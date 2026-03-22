@@ -334,7 +334,13 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
 fn parse_search_args(args: &[&str]) -> risearch::config::SearchConfig {
     use clap::Parser;
 
-    let mut cli_args: Vec<String> = vec!["risearch".into()];
+    let mut cli_args: Vec<String> = vec![
+        "risearch".into(),
+        "-q".into(),
+        "dummy.fa".into(),
+        "-t".into(),
+        "dummy.idx".into(),
+    ];
     let mut iter = args.iter().copied().peekable();
     while let Some(arg) = iter.next() {
         let mapped = match arg {

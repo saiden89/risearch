@@ -3,25 +3,23 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use clap::CommandFactory;
 use log::{debug, info, trace};
 
 use risearch::{search, QueryRegistry, TargetStore};
 
 use crate::cli::legacy::emit_legacy_warnings;
 use crate::cli::{Cli, Commands};
+use risearch::cli::args::SearchArgs;
 
 pub(crate) fn run(cli: Cli) -> Result<()> {
-    init_logging(cli.verbose);
-    init_thread_pool(cli.jobs)?;
-
     match &cli.command {
-        Some(Commands::Index(cmd)) => cmd_index(&cmd.input, &cmd.output),
-        Some(Commands::Search(cmd)) => cmd_search(&cmd.query, &cmd.target, &cmd.opts),
-        None => {
-            Cli::command().print_help()?;
-            println!();
-            Ok(())
+        Commands::Index(cmd) => {
+            init_runtime(cli.verbose, cli.jobs)?;
+            cmd_index(&cmd.input, &cmd.output)
+        }
+        Commands::Search(cmd) => {
+            init_runtime(cli.verbose, cli.jobs)?;
+            cmd_search(cmd)
         }
     }
 }
@@ -37,18 +35,14 @@ fn cmd_index(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_search(
-    query_path: &Path,
-    target_path: &Path,
-    cli_opts: &risearch::cli::args::SearchArgs,
-) -> Result<()> {
-    let output_path = &cli_opts.output.path;
-    let raw_args: Vec<String> = std::env::args().collect();
-    let legacy_target = raw_args.iter().skip(1).any(|a| a == "-i" || (a.starts_with("-i") && !a.starts_with("--")));
+fn cmd_search(cmd: &SearchArgs) -> Result<()> {
+    let query_path = &cmd.input.query;
+    let target_path = cmd.input.target_path();
+    let output_path = &cmd.output.path;
 
     // Convert CLI args to config (handles deprecated flag translation)
-    let opts: risearch::config::SearchConfig = cli_opts.clone().try_into()?;
-    emit_legacy_warnings(cli_opts, legacy_target)?;
+    let opts: risearch::config::SearchConfig = cmd.clone().try_into()?;
+    emit_legacy_warnings(cmd, cmd.input.uses_legacy_target());
 
     debug!("Loading queries from {:?}", query_path);
     let queries =
@@ -70,6 +64,11 @@ fn cmd_search(
 // =============================================================================
 // INITIALIZATION
 // =============================================================================
+
+fn init_runtime(verbosity: u8, threads: usize) -> Result<()> {
+    init_logging(verbosity);
+    init_thread_pool(threads)
+}
 
 fn init_thread_pool(threads: usize) -> Result<()> {
     rayon::ThreadPoolBuilder::new()
