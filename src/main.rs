@@ -6,8 +6,9 @@ mod cli;
 
 use anyhow::Result;
 use clap::Parser;
+use crate::cli::Cli;
 
 fn main() -> Result<()> {
-    let cli = cli::Cli::parse();
+    let cli = Cli::parse();
     app::run(cli)
 }

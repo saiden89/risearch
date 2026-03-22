@@ -1,7 +1,8 @@
 use log::warn;
 
-use risearch::cli::args::SearchArgs;
-use risearch::config::SeedSpec;
+use risearch::{OutputFormat, SeedSpec};
+
+use super::SearchArgs;
 
 fn warn_if(used: bool, flag: &str, replacement: &str) {
     if used {
@@ -21,14 +22,16 @@ pub(crate) fn emit_legacy_warnings(args: &SearchArgs, legacy_target: bool) {
                 "Both legacy -p/--report-alignment and --format were provided; --format takes precedence."
             );
         } else {
-            use risearch::config::OutputFormat;
             let replacement = match fmt {
                 OutputFormat::Cigar => "cigar",
                 OutputFormat::BindingSite => "bindingsite",
                 OutputFormat::Minimal => "minimal",
                 OutputFormat::Detailed => "detailed",
             };
-            warn!("Legacy -p/--report-alignment is deprecated; use --format {}.", replacement);
+            warn!(
+                "Legacy -p/--report-alignment is deprecated; use --format {}.",
+                replacement
+            );
         }
     }
 
@@ -45,11 +48,22 @@ pub(crate) fn emit_legacy_warnings(args: &SearchArgs, legacy_target: bool) {
     if let Some(spec) = &args.seed.seed_legacy {
         let suggestion = match spec.0 {
             SeedSpec::LengthOnly(len) => format!("--seed-length {}", len),
-            SeedSpec::Interval { start, end, length: None } => {
+            SeedSpec::Interval {
+                start,
+                end,
+                length: None,
+            } => {
                 format!("--seed-start {} --seed-end {}", start, end)
             }
-            SeedSpec::Interval { start, end, length: Some(length) } => {
-                format!("--seed-start {} --seed-end {} --seed-length {}", start, end, length)
+            SeedSpec::Interval {
+                start,
+                end,
+                length: Some(length),
+            } => {
+                format!(
+                    "--seed-start {} --seed-end {} --seed-length {}",
+                    start, end, length
+                )
             }
         };
         warn!("Legacy -s/--seed is deprecated; use {}.", suggestion);

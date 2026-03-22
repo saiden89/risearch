@@ -5,11 +5,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use log::{debug, info, trace};
 
-use risearch::{search, QueryRegistry, TargetStore};
+use risearch::{search, QueryRegistry, SearchConfig, TargetStore};
 
 use crate::cli::legacy::emit_legacy_warnings;
-use crate::cli::{Cli, Commands};
-use risearch::cli::args::SearchArgs;
+use crate::cli::{Cli, Commands, SearchArgs};
 
 pub(crate) fn run(cli: Cli) -> Result<()> {
     match &cli.command {
@@ -41,7 +40,7 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
     let output_path = &cmd.output.path;
 
     // Convert CLI args to config (handles deprecated flag translation)
-    let opts: risearch::config::SearchConfig = cmd.clone().try_into()?;
+    let opts: SearchConfig = cmd.clone().try_into()?;
     emit_legacy_warnings(cmd, cmd.input.uses_legacy_target());
 
     debug!("Loading queries from {:?}", query_path);

@@ -4,6 +4,8 @@
 //! parity tests between Rust and C implementations.
 
 use log::info;
+use risearch::cli::args::SearchArgs;
+use risearch::{run_search, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetStore};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,7 +24,7 @@ struct NoIndex;
 /// Marker for an indexed Rust runner.
 struct Indexed {
     index_path: PathBuf,
-    target_store: risearch::TargetStore,
+    target_store: TargetStore,
 }
 
 // =============================================================================
@@ -79,22 +81,28 @@ impl RustRunner<Indexed> {
     fn search(
         &self,
         query_path: &Path,
-        args: &risearch::config::SearchConfig,
-    ) -> (Vec<risearch::SearchHit>, risearch::QueryRegistry) {
+        args: &SearchConfig,
+    ) -> (Vec<SearchHit>, QueryRegistry) {
         let query_registry =
-            risearch::QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
+            QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let mut search_args = args.clone();
         // Parity parser expects binding-site columns (pairing + target sequence, optional flanks).
-        search_args.output.format = risearch::config::OutputFormat::BindingSite;
+        search_args.output.format = OutputFormat::BindingSite;
 
         let tmp = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
-        risearch::search::run_search(
+        run_search(
             &query_registry,
             &self.state.target_store,
             &search_args,
             tmp.path(),
         )
-        .expect("search");
+        .unwrap_or_else(|e| {
+            panic!(
+                "search failed for query {} against target {}: {e}",
+                query_path.display(),
+                self.target_path.display()
+            )
+        });
         let rust_out = fs::read_to_string(tmp.path()).expect("read output");
         let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_store);
         (hits, query_registry)
@@ -331,7 +339,7 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
 }
 
 /// Parse CLI-style args into SearchArgs using clap.
-fn parse_search_args(args: &[&str]) -> risearch::config::SearchConfig {
+fn parse_search_args(args: &[&str]) -> SearchConfig {
     use clap::Parser;
 
     let mut cli_args: Vec<String> = vec![
@@ -379,7 +387,7 @@ fn parse_search_args(args: &[&str]) -> risearch::config::SearchConfig {
     #[derive(Parser)]
     struct FakeCmd {
         #[command(flatten)]
-        search: risearch::cli::args::SearchArgs,
+        search: SearchArgs,
     }
 
     let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");

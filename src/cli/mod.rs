@@ -3,7 +3,7 @@ pub(crate) mod legacy;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use risearch::cli::args::SearchArgs;
+pub(crate) use risearch::cli::args::SearchArgs;
 
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]
