@@ -1095,7 +1095,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pairing() {
+    fn pairing_distinguishes_seed_and_extension_modes() {
         let model = ScoringModel::new(Matrix::T04, 0);
 
         // DP/display pairing follows the scoring matrix semantics.
@@ -1108,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dsm_get() {
+    fn lookup_returns_nonzero_for_valid_pairs() {
         let model = ScoringModel::new(Matrix::T04, 0);
         // Original target was U-A, index space is A-U
         let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::A.idx(), Base::U.idx());
@@ -1125,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dsm_known_values() {
+    fn gg_cc_stack_is_strongest_at_330() {
         let model = ScoringModel::new(Matrix::T04, 0);
         // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
         // Original target was CC, index space is GG
@@ -1134,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transpose_symmetry() {
+    fn transpose_swaps_both_pairs() {
         let right = ScoringModel::new(Matrix::T04, 50);
         let left = right.transpose();
         for q1 in 0..6 {

@@ -10,7 +10,7 @@ use support::{workspace_root, ParityRunner};
 
 #[rstest]
 #[ignore]
-fn test_parity_banded_soft(
+fn banded_soft(
     #[values(6, 8)] s: usize,
     #[values(10, 20)] l: usize,
     #[values(8, 12)] band: usize,
@@ -44,7 +44,7 @@ fn test_parity_banded_soft(
 
 #[rstest]
 #[ignore]
-fn test_parity_banded_hard(
+fn banded_hard(
     #[values(6, 8)] s: usize,
     #[values(10, 20)] l: usize,
     #[values(8, 12)] band: usize,

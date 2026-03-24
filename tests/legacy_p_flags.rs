@@ -4,7 +4,7 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 
 #[test]
-fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
+fn legacy_p_flags_emit_deprecation_warning() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAAUA")?;
@@ -58,7 +58,7 @@ fn test_legacy_p_flags() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_legacy_i_flag_warning() -> Result<(), Box<dyn std::error::Error>> {
+fn legacy_i_flag_emits_deprecation_warning() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAAUA")?;
 

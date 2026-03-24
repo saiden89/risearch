@@ -39,7 +39,7 @@ fn assert_minimal_hit_line(line: &str) {
 }
 
 #[test]
-fn test_search_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
+fn search_stdout_matches_file_output() -> Result<(), Box<dyn std::error::Error>> {
     // Deterministic fixture that yields non-empty minimal-format hits.
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAA")?;

@@ -5,7 +5,7 @@ mod support;
 use support::SingleSeqRunner;
 
 #[test]
-fn test_seed_only() {
+fn seed_only() {
     // No extension: -l 0
     let args = ["-l", "0", "-e", "100.0", "--seed-length", "5", "-p3"];
     let query = "UGCUGCUGCUGCUGCUGCUG";
@@ -14,7 +14,7 @@ fn test_seed_only() {
 }
 
 #[test]
-fn test_left_only() {
+fn left_only() {
     // Seed at 3' end forces left extension only
     let args = ["-l", "20", "-e", "100.0", "--seed-length", "5", "-p3"];
     let query = "AAAAAUGCUG";
@@ -23,7 +23,7 @@ fn test_left_only() {
 }
 
 #[test]
-fn test_right_only() {
+fn right_only() {
     // Seed at 5' end forces right extension only
     let args = ["-l", "20", "-e", "10.0", "--seed-length", "5", "-p3"];
     let query = "UGCUGAAAAA";
@@ -32,7 +32,7 @@ fn test_right_only() {
 }
 
 #[test]
-fn test_both_sides() {
+fn both_sides() {
     // Seed in middle, extension both sides
     let args = ["-l", "20", "-e", "100.0", "--seed-length", "5", "-p3"];
     let query = "AAAUGCUGAAA";
@@ -41,7 +41,7 @@ fn test_both_sides() {
 }
 
 #[test]
-fn test_internal_mismatch() {
+fn internal_mismatch() {
     let args = ["-l", "20", "-e", "100.0", "--seed-length", "5", "-p3"];
     let query = "UGCUGCUGCCGCUGCUGCUG";
     let target = "GCAGCAGCAGCAGCAGCAGC";

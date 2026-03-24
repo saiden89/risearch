@@ -18,7 +18,7 @@ fn build_padded_sa(seq: &Sequence) -> (Vec<u64>, Vec<Base>, usize) {
 }
 
 #[test]
-fn test_partition_basic() {
+fn partition_splits_by_base() {
     let seq_bases = vec![Base::A, Base::G, Base::C, Base::U];
     let seq = Sequence::from(seq_bases);
     let (padded_sa, padded_seq, real_len) = build_padded_sa(&seq);

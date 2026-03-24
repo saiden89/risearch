@@ -60,7 +60,7 @@ fn read_multifile_dir(dir: &Path) -> Result<BTreeMap<String, String>, Box<dyn st
 }
 
 #[test]
-fn test_multifile_output_consistent_across_jobs() -> Result<(), Box<dyn std::error::Error>> {
+fn multifile_output_consistent_across_jobs() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q1\nAAAA\n>q2\nCCCC")?;
 

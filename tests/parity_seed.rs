@@ -8,7 +8,7 @@ use support::{workspace_root, ParityRunner};
 /// Main seed length × extension limit matrix.
 /// Tests all combinations on mirnas.fa vs RHOC.fa.
 #[rstest]
-fn test_length(
+fn length(
     #[values(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)] s: usize,
     #[values(0, 5, 10, 15, 20, 25, 30, 35, 40)] l: usize,
     #[values(false, true)] strict: bool,
@@ -34,7 +34,7 @@ fn test_length(
 
 /// Seed interval: --seed-start/--seed-end
 #[rstest]
-fn test_interval(
+fn interval(
     #[values("1:8", "1:12", "2:10", "1:15")] spec: &str,
     #[values(0, 10, 20)] l: usize,
 ) {
@@ -62,7 +62,7 @@ fn test_interval(
 
 /// Seed interval with min length: --seed-start/--seed-end/--seed-length
 #[rstest]
-fn test_interval_with_length(
+fn interval_with_length(
     #[values("1:12/6", "2:10/5", "1:15/7")] spec: &str,
     #[values(0, 10, 20)] l: usize,
 ) {

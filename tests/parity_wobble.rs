@@ -5,7 +5,7 @@ mod support;
 use support::SingleSeqRunner;
 
 #[test]
-fn test_wobble_seed() {
+fn wobble_seed() {
     let args = ["-l", "0", "-e", "100.0", "--seed-length", "5", "-p3"];
     let query = "UGUGUGUGUG"; // alternating U-G
     let target = "CGCGCGCGCG"; // complement with wobble

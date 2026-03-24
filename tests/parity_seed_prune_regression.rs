@@ -9,7 +9,7 @@ mod support;
 use support::SingleSeqRunner;
 
 #[test]
-fn test_root_preprune_non_monotonic_validity() {
+fn root_preprune_non_monotonic_validity() {
     // Query "AC" has SA [0,1]. For min_len=2 (offset=1), suffix validity in SA
     // order is [true,false], which is not partitioned for binary-search-based
     // validity checks. Rust and C must still agree on hits.

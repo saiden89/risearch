@@ -55,7 +55,7 @@ fn assert_gzip_file(path: &std::path::Path) -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn test_search_gzip_output_by_extension() -> Result<(), Box<dyn std::error::Error>> {
+fn gzip_output_by_extension() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAAUA")?;
 
@@ -73,7 +73,7 @@ fn test_search_gzip_output_by_extension() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn test_search_gzip_output_by_flag() -> Result<(), Box<dyn std::error::Error>> {
+fn gzip_output_by_flag() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAAUA")?;
 

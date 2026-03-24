@@ -46,7 +46,7 @@ fn run_search(
 }
 
 #[test]
-fn test_jobs_flag_produces_consistent_streamed_output() -> Result<(), Box<dyn std::error::Error>> {
+fn jobs_flag_produces_consistent_streamed_output() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q1\nAAAA\n>q2\nCCCC")?;
 

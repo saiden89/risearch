@@ -143,7 +143,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_simple() {
+    fn normalize_simple_acgu() {
         let (seq, stats) = Sequence::normalize("test", b"ACGU").unwrap();
         assert_eq!(seq.len(), 4);
         assert_eq!(seq[0], Base::A);
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_with_gaps() {
+    fn normalize_strips_gaps() {
         let (seq, stats) = Sequence::normalize("test", b"AC-GU").unwrap();
         assert_eq!(seq.len(), 4); // Gap removed
         assert_eq!(seq[0], Base::A);
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_ambiguous() {
+    fn normalize_converts_ambiguous_to_n() {
         let (seq, stats) = Sequence::normalize("test", b"ACRGU").unwrap();
         assert_eq!(seq.len(), 5);
         assert_eq!(seq[0], Base::A);
@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reverse_complement() {
+    fn reverse_complement_acgu() {
         let (seq, _) = Sequence::normalize("test", b"ACGU").unwrap();
         let rc = seq.reverse_complement();
 
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deref() {
+    fn deref_coercion_to_slice() {
         let (seq, _) = Sequence::normalize("test", b"ACGU").unwrap();
         let slice: &[Base] = &seq; // Deref coercion
 
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn test_iter() {
+    fn iter_yields_all_bases() {
         let (seq, _) = Sequence::normalize("test", b"ACG").unwrap();
         let bases: Vec<Base> = seq.iter().copied().collect();
 

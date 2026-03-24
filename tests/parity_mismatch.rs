@@ -6,7 +6,7 @@ use rstest::rstest;
 use support::{workspace_root, ParityRunner};
 
 #[rstest]
-fn test_mismatch(
+fn mismatch(
     #[values("1:0", "1:3", "2:2")] spec: &str,
     #[values(6, 8, 10)] s: usize,
     #[values(0, 10)] l: usize,

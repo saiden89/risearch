@@ -20,7 +20,7 @@ fn wc_complement(seq: &str) -> String {
 
 /// All 16 dinucleotide stacks (one stacking interaction).
 #[rstest]
-fn test_dinucleotide(
+fn dinucleotide(
     #[values('A', 'C', 'G', 'U')] b1: char,
     #[values('A', 'C', 'G', 'U')] b2: char,
 ) {
@@ -32,7 +32,7 @@ fn test_dinucleotide(
 
 /// All 64 trinucleotide combinations (two stacking interactions).
 #[rstest]
-fn test_trinucleotide(
+fn trinucleotide(
     #[values('A', 'C', 'G', 'U')] b1: char,
     #[values('A', 'C', 'G', 'U')] b2: char,
     #[values('A', 'C', 'G', 'U')] b3: char,
@@ -45,7 +45,7 @@ fn test_trinucleotide(
 
 /// Minimal right extension: 2bp seed + 1bp extension.
 #[rstest]
-fn test_min_ext_right(
+fn min_ext_right(
     #[values('A', 'C', 'G', 'U')] s1: char,
     #[values('A', 'C', 'G', 'U')] s2: char,
     #[values('A', 'C', 'G', 'U')] e1: char,
@@ -58,7 +58,7 @@ fn test_min_ext_right(
 
 /// Minimal left extension: 1bp extension + 2bp seed.
 #[rstest]
-fn test_min_ext_left(
+fn min_ext_left(
     #[values('A', 'C', 'G', 'U')] e1: char,
     #[values('A', 'C', 'G', 'U')] s1: char,
     #[values('A', 'C', 'G', 'U')] s2: char,
@@ -71,7 +71,7 @@ fn test_min_ext_left(
 
 /// Both sides extension: 1bp left + 2bp seed + 1bp right.
 #[rstest]
-fn test_ext_both(
+fn ext_both(
     #[values('A', 'C', 'G', 'U')] el: char,
     #[values('A', 'C', 'G', 'U')] s1: char,
     #[values('A', 'C', 'G', 'U')] s2: char,

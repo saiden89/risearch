@@ -15,7 +15,7 @@ fn build_index(target_path: &Path, index_path: &Path) {
 }
 
 #[test]
-fn test_seed_length_zero_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+fn seed_length_zero_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAA")?;
 
@@ -55,7 +55,7 @@ fn test_seed_length_zero_is_rejected() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-fn test_multifile_output_avoids_sanitized_name_collisions() -> Result<(), Box<dyn std::error::Error>>
+fn multifile_output_avoids_sanitized_name_collisions() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">a/b\nAAAA\n>a:b\nCCCC")?;
@@ -110,7 +110,7 @@ fn test_multifile_output_avoids_sanitized_name_collisions() -> Result<(), Box<dy
 }
 
 #[test]
-fn test_multifile_rejects_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
+fn multifile_rejects_stdout_output() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAA")?;
 
@@ -148,7 +148,7 @@ fn test_multifile_rejects_stdout_output() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn test_bindingsite_output_includes_non_empty_flanks() -> Result<(), Box<dyn std::error::Error>> {
+fn bindingsite_output_includes_non_empty_flanks() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAA")?;
 

@@ -38,7 +38,7 @@ fn make_hit(
 }
 
 #[test]
-fn test_c_binary_path_structure() {
+fn c_binary_path_structure() {
     let root = PathBuf::from("/fake/root");
     let debug_path = root.join("legacy_c/RIsearch2/bin/risearch2.dbg.x");
     let release_path = root.join("legacy_c/RIsearch2/bin/risearch2.x");
@@ -48,7 +48,7 @@ fn test_c_binary_path_structure() {
 }
 
 #[test]
-fn test_ranges_overlap() {
+fn ranges_overlap_cases() {
     assert!(ranges_overlap(1, 10, 5, 15));
     assert!(ranges_overlap(1, 10, 1, 10));
     assert!(ranges_overlap(1, 10, 3, 7));
@@ -57,7 +57,7 @@ fn test_ranges_overlap() {
 }
 
 #[test]
-fn test_hits_overlap() {
+fn hits_overlap_checks_strand() {
     let a = make_hit(1, 10, 100, 110, Strand::Forward, -10.0);
     let b = make_hit(5, 15, 105, 115, Strand::Forward, -12.0);
     let c = make_hit(1, 10, 100, 110, Strand::Reverse, -10.0);
@@ -66,7 +66,7 @@ fn test_hits_overlap() {
 }
 
 #[test]
-fn test_classify_missing_better_energy() {
+fn classify_missing_better_energy() {
     let c_hit = make_hit(1, 10, 100, 110, Strand::Forward, -10.0);
     let rust_hits = [make_hit(1, 10, 100, 110, Strand::Forward, -15.0)];
     let refs: Vec<&SearchHit> = rust_hits.iter().collect();
@@ -75,7 +75,7 @@ fn test_classify_missing_better_energy() {
 }
 
 #[test]
-fn test_parity_comparator_exact_match() {
+fn comparator_exact_match() {
     let rust = vec![make_hit(1, 10, 100, 110, Strand::Forward, -10.0)];
     let c = vec![make_hit(1, 10, 100, 110, Strand::Forward, -10.0)];
     let result = ParityComparator::new(&rust, &c).compare();
@@ -84,7 +84,7 @@ fn test_parity_comparator_exact_match() {
 }
 
 #[test]
-fn test_parity_comparator_rust_better() {
+fn comparator_rust_better() {
     let rust = vec![make_hit(1, 10, 100, 110, Strand::Forward, -15.0)];
     let c = vec![make_hit(1, 10, 100, 110, Strand::Forward, -10.0)];
     let result = ParityComparator::new(&rust, &c).compare();
@@ -93,7 +93,7 @@ fn test_parity_comparator_rust_better() {
 }
 
 #[test]
-fn test_parity_comparator_rust_worse_fails() {
+fn comparator_rust_worse_fails() {
     let rust = vec![make_hit(1, 10, 100, 110, Strand::Forward, -5.0)];
     let c = vec![make_hit(1, 10, 100, 110, Strand::Forward, -10.0)];
     let result = ParityComparator::new(&rust, &c).compare();
@@ -102,7 +102,7 @@ fn test_parity_comparator_rust_worse_fails() {
 }
 
 #[test]
-fn test_log_details_covers_all_categories() {
+fn log_details_covers_all_categories() {
     let rust = vec![
         make_hit(1, 10, 100, 110, Strand::Forward, -10.0), // exact match
         make_hit(1, 10, 200, 210, Strand::Forward, -15.0), // rust_better
@@ -126,13 +126,13 @@ fn test_log_details_covers_all_categories() {
 }
 
 #[test]
-fn test_log_details_empty_result() {
+fn log_details_empty_result() {
     let result = ParityResult::default();
     result.log_details("empty_test");
 }
 
 #[test]
-fn test_log_details_co_optimal() {
+fn log_details_co_optimal() {
     let rust_hit = make_hit(1, 10, 100, 110, Strand::Forward, -10.0);
     let c_hit = make_hit(1, 10, 100, 110, Strand::Forward, -10.0);
     let result = ParityComparator::new(&[rust_hit], &[c_hit]).compare();
@@ -145,7 +145,7 @@ fn test_log_details_co_optimal() {
 #[case(ParityMode::Strict, false, false, false, false)]
 #[case(ParityMode::Balanced, false, false, false, false)]
 #[case(ParityMode::Relaxed, true, true, false, false)]
-fn test_missing_reason_acceptable(
+fn missing_reason_acceptable(
     #[case] mode: ParityMode,
     #[case] better_ok: bool,
     #[case] equal_ok: bool,
@@ -159,47 +159,47 @@ fn test_missing_reason_acceptable(
 }
 
 #[test]
-fn test_hit_status_display() {
+fn hit_status_display() {
     assert_eq!(format!("{}", HitStatus::RustBetter), "RUST BETTER");
     assert_eq!(format!("{}", HitStatus::Missing), "MISSING");
     assert_eq!(format!("{}", HitStatus::CoOptimal), "CO-OPTIMAL");
 }
 
 #[test]
-fn test_parity_mode_default() {
+fn parity_mode_default_is_balanced() {
     assert_eq!(ParityMode::default(), ParityMode::Balanced);
 }
 
 #[test]
-fn test_build_diff_identical() {
+fn build_diff_identical() {
     assert_eq!(build_diff("PPPP", "PPPP"), "    ");
 }
 
 #[test]
-fn test_build_diff_mismatch() {
+fn build_diff_mismatch() {
     assert_eq!(build_diff("PPUP", "PPPP"), "  X ");
 }
 
 #[test]
-fn test_build_diff_length_mismatch() {
+fn build_diff_length_mismatch() {
     let diff = build_diff("PPP", "PPPPP");
     assert_eq!(diff.len(), 5);
 }
 
 #[test]
-fn test_diff_char_conversion() {
+fn diff_char_conversion() {
     assert_eq!(DiffChar::from(('P', 'P')).as_char(), ' ');
     assert_eq!(DiffChar::from(('P', 'U')).as_char(), 'X');
 }
 
 #[test]
-fn test_column_kind_headers() {
+fn column_kind_headers() {
     assert_eq!(ColumnKind::Seed.header(), "SEED");
     assert_eq!(ColumnKind::Ext5.header(), "5' EXT");
 }
 
 #[test]
-fn test_row_label_display() {
+fn row_label_display() {
     assert_eq!(format!("{}", RowLabel::CompDiff), "DIFF");
     assert_eq!(format!("{}", RowLabel::SingleFP), "FP");
 }
