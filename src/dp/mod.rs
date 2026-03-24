@@ -112,33 +112,33 @@ impl<'a> DpView<'a> {
     /// Create a left extension view (query toward 5', target toward 3')
     pub fn left(
         query: &'a [Base],
-        target_transformed: &'a [Base],
+        target: &'a [Base],
         q_start: usize,
         t_start: usize,
         max_ext: usize,
     ) -> Self {
         Self {
             query,
-            target: target_transformed,
+            target,
             q_anchor: q_start,
             t_anchor: t_start,
             dir: ExtendDir::Left,
             q_len: (q_start + 1).min(max_ext),
-            t_len: (target_transformed.len() - t_start).min(max_ext),
+            t_len: (target.len() - t_start).min(max_ext),
         }
     }
 
     /// Create a right extension view (query toward 3', target toward 5')
     pub fn right(
         query: &'a [Base],
-        target_transformed: &'a [Base],
+        target: &'a [Base],
         q_end: usize,
         t_end: usize,
         max_ext: usize,
     ) -> Self {
         Self {
             query,
-            target: target_transformed,
+            target,
             q_anchor: q_end,
             t_anchor: t_end,
             dir: ExtendDir::Right,
