@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{FilterConfig, OutputFormat, SearchConfig};
 use crate::dp::gotoh::Gotoh;
-use crate::dp::{DpConfig, DpGrid, DpView};
+use crate::dp::{DpConfig, DpGrid, DpView, ExtendDir};
 use crate::dsm::ScoringModel;
 use crate::index::store::{GlobalView, TargetStore};
 use crate::output::format::HitCtx;
@@ -495,18 +495,26 @@ impl ExtensionEngine {
         }
 
         let (l_score, l_q, l_t, l_pairs) = {
-            let view = DpView::left(query_bases, target_trans, q_start, t_match_end, max_ext);
+            let view = DpView::new(
+                query_bases,
+                target_trans,
+                q_start,
+                t_match_end,
+                ExtendDir::Left,
+                max_ext,
+            );
             let result = self.gotoh_left.extend(&view, &mut self.grid);
             let pairs = include_alignment.then(|| result.traceback(&view));
             (result.score, result.q_len, result.t_len, pairs)
         };
 
         let (r_score, r_q, r_t, r_pairs) = {
-            let view = DpView::right(
+            let view = DpView::new(
                 query_bases,
                 target_trans,
                 q_start + len - 1,
                 t_start,
+                ExtendDir::Right,
                 max_ext,
             );
             let result = self.gotoh_right.extend(&view, &mut self.grid);

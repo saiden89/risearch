@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::Matrix;
 use risearch::dp::gotoh::Gotoh;
-use risearch::dp::{DpGrid, DpView};
+use risearch::dp::{DpGrid, DpView, ExtendDir};
 use risearch::dsm::ScoringModel;
 use risearch::seq::Sequence;
 use risearch::types::Base;
@@ -73,11 +73,12 @@ fn bench_extend_left(c: &mut Criterion) {
             let mut grid = DpGrid::new(200);
 
             b.iter(|| {
-                let view = DpView::left(
+                let view = DpView::new(
                     black_box(&query),
                     black_box(&target),
                     black_box(q_start),
                     black_box(t_start),
+                    ExtendDir::Left,
                     black_box(len),
                 );
                 let _ = gotoh.extend(black_box(&view), &mut grid);
@@ -103,11 +104,12 @@ fn bench_extend_right(c: &mut Criterion) {
             let mut grid = DpGrid::new(200);
 
             b.iter(|| {
-                let view = DpView::right(
+                let view = DpView::new(
                     black_box(&query),
                     black_box(&target),
                     black_box(q_end),
                     black_box(t_end),
+                    ExtendDir::Right,
                     black_box(len),
                 );
                 let _ = gotoh.extend(black_box(&view), &mut grid);
@@ -145,11 +147,12 @@ fn bench_throughput(c: &mut Criterion) {
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let view = DpView::left(
+                        let view = DpView::new(
                             black_box(&query),
                             black_box(&target),
                             black_box(q_start),
                             black_box(t_start),
+                            ExtendDir::Left,
                             black_box(len),
                         );
                         let result = gotoh_left.extend(black_box(&view), &mut grid);
@@ -181,11 +184,12 @@ fn bench_throughput(c: &mut Criterion) {
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let view = DpView::right(
+                        let view = DpView::new(
                             black_box(&query),
                             black_box(&target),
                             black_box(q_end),
                             black_box(t_end),
+                            ExtendDir::Right,
                             black_box(len),
                         );
                         let result = gotoh_right.extend(black_box(&view), &mut grid);
@@ -245,22 +249,24 @@ fn bench_many_extensions(c: &mut Criterion) {
                     };
 
                     // Left extension
-                    let left_view = DpView::left(
+                    let left_view = DpView::new(
                         black_box(query),
                         black_box(target),
                         black_box(q_start),
                         black_box(t_start),
+                        ExtendDir::Left,
                         black_box(30),
                     );
                     let left_result = gotoh_left.extend(black_box(&left_view), &mut grid);
                     total_score = total_score.wrapping_add(left_result.score);
 
                     // Right extension
-                    let right_view = DpView::right(
+                    let right_view = DpView::new(
                         black_box(query),
                         black_box(target),
                         black_box(q_end),
                         black_box(t_end),
+                        ExtendDir::Right,
                         black_box(30),
                     );
                     let right_result = gotoh_right.extend(black_box(&right_view), &mut grid);

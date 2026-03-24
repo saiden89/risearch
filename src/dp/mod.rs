@@ -47,7 +47,7 @@ impl From<(&ScoreConfig, &ExtendConfig)> for DpConfig {
 /// Extension direction — determines sequence indexing polarity.
 ///
 /// After scoring tables are built for each direction, extension direction
-/// only affects `q()`/`t()` index arithmetic. Stacking order is resolved
+/// only affects sequence coordinate arithmetic. Stacking order is resolved
 /// by the direction-canonical `Gotoh` tables.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExtendDir {
@@ -109,41 +109,29 @@ impl<'a> DpView<'a> {
         Self::base_or_gap(seq, anchor + offset)
     }
 
-    /// Create a left extension view (query toward 5', target toward 3')
-    pub fn left(
+    /// Create a directional extension view anchored at a seed boundary.
+    pub fn new(
         query: &'a [Base],
         target: &'a [Base],
-        q_start: usize,
-        t_start: usize,
+        q_anchor: usize,
+        t_anchor: usize,
+        dir: ExtendDir,
         max_ext: usize,
     ) -> Self {
         Self {
             query,
             target,
-            q_anchor: q_start,
-            t_anchor: t_start,
-            dir: ExtendDir::Left,
-            q_len: (q_start + 1).min(max_ext),
-            t_len: (target.len() - t_start).min(max_ext),
-        }
-    }
-
-    /// Create a right extension view (query toward 3', target toward 5')
-    pub fn right(
-        query: &'a [Base],
-        target: &'a [Base],
-        q_end: usize,
-        t_end: usize,
-        max_ext: usize,
-    ) -> Self {
-        Self {
-            query,
-            target,
-            q_anchor: q_end,
-            t_anchor: t_end,
-            dir: ExtendDir::Right,
-            q_len: (query.len() - q_end).min(max_ext),
-            t_len: (t_end + 1).min(max_ext),
+            q_anchor,
+            t_anchor,
+            dir,
+            q_len: match dir {
+                ExtendDir::Left => (q_anchor + 1).min(max_ext),
+                ExtendDir::Right => (query.len() - q_anchor).min(max_ext),
+            },
+            t_len: match dir {
+                ExtendDir::Left => (target.len() - t_anchor).min(max_ext),
+                ExtendDir::Right => (t_anchor + 1).min(max_ext),
+            },
         }
     }
 
