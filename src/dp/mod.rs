@@ -75,7 +75,7 @@ impl std::fmt::Display for ExtendDir {
 /// scoring is done via `Gotoh` transition tables.
 pub struct DpView<'a> {
     query: &'a [Base],
-    target_transformed: &'a [Base],
+    target: &'a [Base],
     q_anchor: usize,
     t_anchor: usize,
     pub(super) dir: ExtendDir,
@@ -119,7 +119,7 @@ impl<'a> DpView<'a> {
     ) -> Self {
         Self {
             query,
-            target_transformed,
+            target: target_transformed,
             q_anchor: q_start,
             t_anchor: t_start,
             dir: ExtendDir::Left,
@@ -138,7 +138,7 @@ impl<'a> DpView<'a> {
     ) -> Self {
         Self {
             query,
-            target_transformed,
+            target: target_transformed,
             q_anchor: q_end,
             t_anchor: t_end,
             dir: ExtendDir::Right,
@@ -161,8 +161,8 @@ impl<'a> DpView<'a> {
     #[inline(always)]
     pub fn t(&self, j: usize) -> usize {
         match self.dir {
-            ExtendDir::Left => Self::right_base(self.target_transformed, self.t_anchor, j).idx(),
-            ExtendDir::Right => Self::left_base(self.target_transformed, self.t_anchor, j).idx(),
+            ExtendDir::Left => Self::right_base(self.target, self.t_anchor, j).idx(),
+            ExtendDir::Right => Self::left_base(self.target, self.t_anchor, j).idx(),
         }
     }
 }
