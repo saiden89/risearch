@@ -30,25 +30,6 @@ pub enum Base {
     U = 5,
 }
 
-/// Static lookup table for byte-to-Base conversion (256 entries, O(1) access).
-/// Avoids branch prediction misses from match chain in hot paths.
-static BYTE_TO_BASE: [Base; 256] = {
-    let mut table = [Base::N; 256];
-    table[b'A' as usize] = Base::A;
-    table[b'a' as usize] = Base::A;
-    table[b'G' as usize] = Base::G;
-    table[b'g' as usize] = Base::G;
-    table[b'C' as usize] = Base::C;
-    table[b'c' as usize] = Base::C;
-    table[b'U' as usize] = Base::U;
-    table[b'u' as usize] = Base::U;
-    table[b'T' as usize] = Base::U;
-    table[b't' as usize] = Base::U;
-    table[b'-' as usize] = Base::Gap;
-    table[b'.' as usize] = Base::Gap;
-    table
-};
-
 // =============================================================================
 // BASE CONVERSION LUTS - Constant-time lookups for Base enum
 // =============================================================================
@@ -63,12 +44,6 @@ static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'c', b'g', b'n', b'u'];
 static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
 
 impl Base {
-    /// Convert ASCII nucleotide byte to Base enum via lookup table.
-    #[inline(always)]
-    pub fn from_byte(b: u8) -> Self {
-        BYTE_TO_BASE[b as usize]
-    }
-
     /// Convert to array index
     #[inline]
     pub const fn idx(self) -> usize {
@@ -115,15 +90,6 @@ impl Base {
             Base::U => Base::A,
             Base::N => Base::N,
         }
-    }
-
-    /// Convert from raw u8 discriminant without bounds check.
-    ///
-    /// # Safety
-    /// Caller must ensure i < 6.
-    #[inline(always)]
-    pub unsafe fn from_u8_unchecked(i: u8) -> Self {
-        std::mem::transmute(i)
     }
 }
 
