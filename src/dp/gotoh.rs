@@ -7,15 +7,15 @@
 //! # Index safety
 //!
 //! All index arguments to point-lookup and slice-accessor methods must be in
-//! `0..6` (valid `Base::idx()` values). Callers source indices from
-//! `DpView::q()`/`DpView::t()`, which return `Base::idx()` on a `#[repr(u8)]`
-//! enum with variants 0–5.
+//! `0..6` (valid DP lookup indices derived from the `#[repr(u8)]` `Base` enum).
+//! `Gotoh::extend()` materializes those dense indices once from the semantic
+//! `DpView` before entering the hot DP kernels.
 
 use crate::dsm::{ScoringModel, GAP};
-use crate::types::BASE_COUNT;
+use crate::types::{Base, BASE_COUNT};
 use log::trace;
 
-use super::{BestScore, DpGrid, DpView, ExtendResult, MAX_EXT};
+use super::{BestScore, DpGrid, DpView, ExtendDir, GotohResult, MAX_EXT};
 
 const BC: usize = BASE_COUNT; // 6
 
@@ -113,7 +113,7 @@ impl Gotoh {
     /// M ← M transition energy.
     #[inline(always)]
     pub fn match_energy(&self, qp: usize, qc: usize, tp: usize, tc: usize) -> i32 {
-        // SAFETY: All args are Base::idx() ∈ 0..6.
+        // SAFETY: All args are valid DP lookup indices ∈ 0..6.
         // Max index = 5*216 + 5*36 + 5*6 + 5 = 1295 < 1296.
         unsafe {
             *self
@@ -169,6 +169,12 @@ impl Gotoh {
     pub fn terminal(&self, qc: usize, tc: usize) -> i32 {
         // SAFETY: All args ∈ 0..6. Max index = 5*6 + 5 = 35 < 36.
         unsafe { *self.terminal.get_unchecked(qc * 6 + tc) }
+    }
+
+    /// Terminal (boundary) penalty for semantic bases.
+    #[inline(always)]
+    pub fn terminal_bases(&self, q: Base, t: Base) -> i32 {
+        self.terminal(q as usize, t as usize)
     }
 
     // =========================================================================
@@ -231,31 +237,17 @@ impl Gotoh {
 
     #[cfg_attr(feature = "prof", inline(never))]
     /// Run DP forward pass over `view`, reusing the caller-provided grid.
-    /// Call `.traceback()` on the result if alignment is needed.
-    pub fn extend<'a>(&'a self, view: &DpView<'_>, grid: &'a mut DpGrid) -> ExtendResult<'a> {
+    pub fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> GotohResult {
         let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
-
-        // Initial score: terminal penalty for seed boundary
-        let mut best = BestScore::new(self.terminal(view.q(0), view.t(0)));
-
-        // Early return
-        if q_len <= 1 || t_len <= 1 {
-            return ExtendResult {
-                grid,
-                gotoh: self,
-                score: best.score,
-                q_len: 0,
-                t_len: 0,
-            };
-        }
-
-        // Resize grid
-        grid.resize(t_len + 1, q_len + 1);
+        debug_assert!(
+            q_len > 0 && t_len > 0,
+            "DP view must define a non-empty window"
+        );
 
         // =====================================================================
-        // PRECOMPUTE Q/T BASE INDICES (used by init AND main loop)
+        // PRECOMPUTE Q/T LOOKUP INDICES (used by init AND main loop)
         // =====================================================================
 
         let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
@@ -264,16 +256,51 @@ impl Gotoh {
         let q_ptr = q_idx.as_mut_ptr() as *mut usize;
         let t_ptr = t_idx.as_mut_ptr() as *mut usize;
 
-        for i in 0..q_len {
-            // SAFETY: i < q_len ≤ MAX_EXT, so q_ptr.add(i) is within the
-            // MaybeUninit allocation. view.q(i) returns Base::idx() ∈ 0..6.
-            unsafe { *q_ptr.add(i) = view.q(i) };
+        match view.dir {
+            ExtendDir::Left => {
+                for i in 0..q_len {
+                    // SAFETY: q_len for Left is capped at q_anchor + 1, so q_anchor - i is in-bounds.
+                    unsafe {
+                        *q_ptr.add(i) = *view.query.get_unchecked(view.q_anchor - i) as usize
+                    };
+                }
+                for j in 0..t_len {
+                    // SAFETY: t_len for Left is capped at target.len() - t_anchor, so t_anchor + j is in-bounds.
+                    unsafe {
+                        *t_ptr.add(j) = *view.target.get_unchecked(view.t_anchor + j) as usize
+                    };
+                }
+            }
+            ExtendDir::Right => {
+                for i in 0..q_len {
+                    // SAFETY: q_len for Right is capped at query.len() - q_anchor, so q_anchor + i is in-bounds.
+                    unsafe {
+                        *q_ptr.add(i) = *view.query.get_unchecked(view.q_anchor + i) as usize
+                    };
+                }
+                for j in 0..t_len {
+                    // SAFETY: t_len for Right is capped at t_anchor + 1, so t_anchor - j is in-bounds.
+                    unsafe {
+                        *t_ptr.add(j) = *view.target.get_unchecked(view.t_anchor - j) as usize
+                    };
+                }
+            }
         }
-        for j in 0..t_len {
-            // SAFETY: j < t_len ≤ MAX_EXT, so t_ptr.add(j) is within the
-            // MaybeUninit allocation. view.t(j) returns Base::idx() ∈ 0..6.
-            unsafe { *t_ptr.add(j) = view.t(j) };
+
+        // Initial score: terminal penalty for seed boundary
+        let mut best = BestScore::new(unsafe { self.terminal(*q_ptr, *t_ptr) });
+
+        // Early return
+        if q_len <= 1 || t_len <= 1 {
+            return GotohResult {
+                score: best.score,
+                end_i: 0,
+                end_j: 0,
+            };
         }
+
+        // Resize grid
+        grid.resize(t_len + 1, q_len + 1);
 
         // =====================================================================
         // INITIALIZATION - Unconditional writes to avoid stale data
@@ -281,12 +308,10 @@ impl Gotoh {
 
         let has_main_region = self.init_frontier(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
         if !has_main_region {
-            return ExtendResult {
-                grid,
-                gotoh: self,
+            return GotohResult {
                 score: best.score,
-                q_len: best.i,
-                t_len: best.j,
+                end_i: best.i,
+                end_j: best.j,
             };
         }
 
@@ -297,19 +322,17 @@ impl Gotoh {
         self.dp_main_loop_generic(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
 
         trace!(
-            "{} result: score={} q_len={} t_len={}",
+            "{} result: score={} end_i={} end_j={}",
             view.dir,
             best.score,
             best.i,
             best.j,
         );
 
-        ExtendResult {
-            grid,
-            gotoh: self,
+        GotohResult {
             score: best.score,
-            q_len: best.i,
-            t_len: best.j,
+            end_i: best.i,
+            end_j: best.j,
         }
     }
 }

@@ -6,6 +6,8 @@
 //! 3) Optional extension of each seed
 //! 4) Materialize and emit final hits
 
+mod extension;
+
 use anyhow::{Context, Result};
 use log::info;
 use rayon::prelude::*;
@@ -15,10 +17,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{FilterConfig, OutputFormat, SearchConfig};
-use crate::dp::gotoh::Gotoh;
-use crate::dp::{DpConfig, DpGrid, DpView, ExtendDir};
+use crate::dp::{DpConfig, ExtendDir};
 use crate::dsm::ScoringModel;
 use crate::index::store::{GlobalView, TargetStore};
 use crate::output::format::HitCtx;
@@ -67,12 +69,18 @@ pub fn run_search_in_memory(
     let hits: Mutex<Vec<SearchHit>> = Mutex::new(Vec::new());
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
-        || ExtensionEngine::new(ctx.opts),
-        |engine, qi| -> Result<()> {
+        || {
+            let dp_cfg = DpConfig::from((&ctx.opts.score, &ctx.opts.extend));
+            let model = ScoringModel::new(ctx.opts.score.matrix, dp_cfg.penalty_raw());
+            (ExtensionEngine::new(dp_cfg.max_extension(), &model), model)
+        },
+        |(engine, model), qi| -> Result<()> {
             let mut local = Vec::new();
             let query = &ctx.queries.entries()[qi];
             let query_seq = query.sequence().as_slice();
             let seed_interval = query.seed_interval.clone();
+            let penalty = DpConfig::from((&ctx.opts.score, &ctx.opts.extend)).penalty_raw();
+            let seed_wobble = ctx.opts.seed.seed_wobble;
 
             for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
                 let target_idx = seed.target_id.0 as usize;
@@ -84,11 +92,14 @@ pub fn run_search_in_memory(
 
                 if let Some(hit) = build_hit_from_seed(
                     engine,
+                    model,
                     qi as u32,
                     query_seq,
                     seed_interval.clone(),
                     true,
                     &ctx.opts.filter,
+                    penalty,
+                    seed_wobble,
                     target_len,
                     &seed,
                     target_trans,
@@ -165,35 +176,6 @@ impl<'a> SearchContext<'a> {
     }
 }
 
-/// Per-worker DP extension engine. Each worker owns one; `&mut` is safe because
-/// only `grid` is mutated — the rest is read-only configuration.
-struct ExtensionEngine {
-    grid: DpGrid,
-    dp_cfg: DpConfig,
-    model: ScoringModel,
-    seed_wobble: bool,
-    gotoh_left: Gotoh,
-    gotoh_right: Gotoh,
-}
-
-impl ExtensionEngine {
-    fn new(opts: &SearchConfig) -> Self {
-        let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let right_model = ScoringModel::new(opts.score.matrix, dp_cfg.penalty_raw());
-        let left_model = right_model.transpose();
-        let gotoh_right = Gotoh::new(&right_model);
-        let gotoh_left = Gotoh::new(&left_model);
-        Self {
-            grid: DpGrid::new(dp_cfg.max_extension()),
-            dp_cfg,
-            model: right_model,
-            seed_wobble: opts.seed.seed_wobble,
-            gotoh_left,
-            gotoh_right,
-        }
-    }
-}
-
 /// Single-file backend: `Mutex<OutputWriter>` + rayon `par_iter`.
 fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
     let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
@@ -201,15 +183,27 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
+            let dp_cfg = DpConfig::from((&ctx.opts.score, &ctx.opts.extend));
+            let model = ScoringModel::new(ctx.opts.score.matrix, dp_cfg.penalty_raw());
             (
-                ExtensionEngine::new(ctx.opts),
+                ExtensionEngine::new(dp_cfg.max_extension(), &model),
+                model,
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
-        |(engine, fmt), qi| -> Result<()> {
-            let emitted = process_query(ctx, qi as u32, engine, fmt, &mut |chunk| {
-                writer.lock().unwrap().write_chunk(&chunk)
-            })?;
+        |(engine, model, fmt), qi| -> Result<()> {
+            let penalty = DpConfig::from((&ctx.opts.score, &ctx.opts.extend)).penalty_raw();
+            let seed_wobble = ctx.opts.seed.seed_wobble;
+            let emitted = process_query(
+                ctx,
+                qi as u32,
+                engine,
+                fmt,
+                &mut |chunk| writer.lock().unwrap().write_chunk(&chunk),
+                model,
+                penalty,
+                seed_wobble,
+            )?;
             total.fetch_add(emitted, Ordering::Relaxed);
             Ok(())
         },
@@ -227,14 +221,19 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
+            let dp_cfg = DpConfig::from((&ctx.opts.score, &ctx.opts.extend));
+            let model = ScoringModel::new(ctx.opts.score.matrix, dp_cfg.penalty_raw());
             (
-                ExtensionEngine::new(ctx.opts),
+                ExtensionEngine::new(dp_cfg.max_extension(), &model),
+                model,
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
-        |(engine, format), query_idx| -> Result<()> {
+        |(engine, model, format), query_idx| -> Result<()> {
             let file_path = &output_paths[query_idx];
             let mut writer: Option<OutputWriter> = None;
+            let penalty = DpConfig::from((&ctx.opts.score, &ctx.opts.extend)).penalty_raw();
+            let seed_wobble = ctx.opts.seed.seed_wobble;
 
             let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
                 if writer.is_none() {
@@ -243,8 +242,16 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
                 writer.as_mut().unwrap().write_chunk(&chunk)
             };
 
-            let emitted =
-                process_query(ctx, query_idx as u32, engine, format, &mut flush_to_writer)?;
+            let emitted = process_query(
+                ctx,
+                query_idx as u32,
+                engine,
+                format,
+                &mut flush_to_writer,
+                model,
+                penalty,
+                seed_wobble,
+            )?;
 
             if let Some(w) = writer.as_mut() {
                 w.flush_all()?;
@@ -266,6 +273,9 @@ fn process_query<FO>(
     engine: &mut ExtensionEngine,
     format: &mut HitFormatter,
     on_chunk: &mut FO,
+    model: &ScoringModel,
+    penalty: i32,
+    seed_wobble: bool,
 ) -> Result<usize>
 where
     FO: FnMut(OutputChunk) -> Result<()>,
@@ -291,11 +301,14 @@ where
 
         let Some(hit) = build_hit_from_seed(
             engine,
+            model,
             query_idx,
             query_seq,
             seed_interval.clone(),
             include_alignment,
             filter_cfg,
+            penalty,
+            seed_wobble,
             target_len,
             &seed,
             target_trans,
@@ -329,209 +342,108 @@ where
     Ok(local_hits)
 }
 
+/// One directional extension fact produced by `ExtensionEngine::extend`.
+struct ExtensionResult {
+    score: i32,
+    q_ext: usize,
+    t_ext: usize,
+    pairs: Option<SmallVec<[PairClass; 64]>>,
+}
+
+fn is_maximal(
+    seed: &SeedHit,
+    query_bases: &[Base],
+    target_trans: &[Base],
+    seed_interval: &Range<usize>,
+    seed_wobble: bool,
+) -> bool {
+    let q_start = seed.query_start;
+    let t_start = seed.target_start;
+    let len = seed.len.get();
+
+    if q_start > seed_interval.start && t_start + len < target_trans.len() {
+        if ScoringModel::seed_pair(
+            query_bases[q_start - 1],
+            target_trans[t_start + len],
+            seed_wobble,
+        ) {
+            return false;
+        }
+    }
+
+    if q_start + len < seed_interval.end && t_start > 0 {
+        if ScoringModel::seed_pair(
+            query_bases[q_start + len],
+            target_trans[t_start - 1],
+            seed_wobble,
+        ) {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 fn build_hit_from_seed(
     engine: &mut ExtensionEngine,
+    model: &ScoringModel,
     query_idx: u32,
     query_bases: &[Base],
     seed_interval: Range<usize>,
     include_alignment: bool,
     filter_cfg: &FilterConfig,
+    penalty: i32,
+    seed_wobble: bool,
     target_len: usize,
     seed: &SeedHit,
     target_trans: &[Base],
 ) -> Option<SearchHit> {
     debug_assert!(seed.target_start + seed.len.get() <= target_trans.len());
-    engine
-        .extend_seed(
+    let q_start = seed.query_start;
+    let t_start = seed.target_start;
+    let len = seed.len.get();
+    let t_match_end = t_start + len - 1;
+
+    if !filter_cfg.no_max_prune
+        && !is_maximal(seed, query_bases, target_trans, &seed_interval, seed_wobble)
+    {
+        return None;
+    }
+
+    let seed_e = model.energy(query_bases, target_trans, q_start, t_start, len);
+    let left = engine.extend(
+        query_bases,
+        target_trans,
+        q_start,
+        t_match_end,
+        ExtendDir::Left,
+        include_alignment,
+    );
+    let right = engine.extend(
+        query_bases,
+        target_trans,
+        q_start + len - 1,
+        t_start,
+        ExtendDir::Right,
+        include_alignment,
+    );
+    let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i32;
+    let energy = Energy::from(seed_e + left.score + right.score + nt_count * penalty);
+
+    (energy.as_f64() <= filter_cfg.delta_g).then(|| {
+        SearchHit::new(
+            query_idx,
             query_bases,
             target_trans,
             seed,
-            seed_interval,
-            filter_cfg,
+            &left,
+            &right,
+            energy,
             include_alignment,
+            target_len,
         )
-        .filter(|ext| ext.energy.as_f64() <= filter_cfg.delta_g)
-        .map(|ext| {
-            SearchHit::new(
-                query_idx,
-                query_bases,
-                target_trans,
-                seed,
-                &ext,
-                include_alignment,
-                target_len,
-            )
-        })
-}
-
-// =============================================================================
-// EXTENSION
-// =============================================================================
-
-type AlignmentPairs = (SmallVec<[PairClass; 64]>, SmallVec<[PairClass; 64]>);
-
-struct SeedExtension {
-    energy: Energy,
-    l_q: usize,
-    l_t: usize,
-    r_q: usize,
-    r_t: usize,
-    pairs: Option<AlignmentPairs>,
-}
-
-impl SeedExtension {
-    fn build_alignment(
-        &self,
-        seed: &SeedHit,
-        query_bases: &[Base],
-        target_trans: &[Base],
-    ) -> (Alignment, usize, usize) {
-        let q_start = seed.query_start;
-        let len = seed.len.get();
-        let t_match_end = seed.target_start + len - 1;
-
-        let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
-        for i in 0..len {
-            seed_pairs.push(PairClass::from_bases(
-                query_bases[q_start + i],
-                target_trans[t_match_end - i].complement(),
-            ));
-        }
-
-        let (left, right) = self
-            .pairs
-            .as_ref()
-            .map(|(l, r)| (l.as_slice(), r.as_slice()))
-            .unwrap_or((&[], &[]));
-        let start = left.len();
-        (Alignment::new(left, &seed_pairs, right), start, start + len)
-    }
-}
-
-impl ExtensionEngine {
-    /// Returns true if the seed can be extended by one base on either side to
-    /// form a valid pair — i.e. it is not maximal and should be pruned.
-    fn is_maximal(
-        &self,
-        seed: &SeedHit,
-        query_bases: &[Base],
-        target_trans: &[Base],
-        seed_interval: &Range<usize>,
-    ) -> bool {
-        let q_start = seed.query_start;
-        let t_start = seed.target_start;
-        let len = seed.len.get();
-
-        if q_start > seed_interval.start && t_start + len < target_trans.len() {
-            if ScoringModel::seed_pair(
-                query_bases[q_start - 1],
-                target_trans[t_start + len],
-                self.seed_wobble,
-            ) {
-                return false;
-            }
-        }
-
-        if q_start + len < seed_interval.end && t_start > 0 {
-            if ScoringModel::seed_pair(
-                query_bases[q_start + len],
-                target_trans[t_start - 1],
-                self.seed_wobble,
-            ) {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn extend_seed(
-        &mut self,
-        query_bases: &[Base],
-        target_trans: &[Base],
-        seed: &SeedHit,
-        seed_interval: Range<usize>,
-        filter_cfg: &FilterConfig,
-        include_alignment: bool,
-    ) -> Option<SeedExtension> {
-        let penalty = self.dp_cfg.penalty_raw();
-        let q_start = seed.query_start;
-        let t_start = seed.target_start;
-        let len = seed.len.get();
-
-        if !filter_cfg.no_max_prune
-            && !self.is_maximal(seed, query_bases, target_trans, &seed_interval)
-        {
-            return None;
-        }
-
-        let t_match_end = t_start + len - 1;
-        let max_ext = self.dp_cfg.max_extension();
-        let seed_e = self
-            .model
-            .seed_energy(query_bases, target_trans, q_start, t_start, len);
-
-        let can_extend_left = q_start > 0 && t_start + len < target_trans.len();
-        let can_extend_right = q_start + len < query_bases.len() && t_start > 0;
-
-        if max_ext == 0 || (!can_extend_left && !can_extend_right) {
-            let term_5p = self
-                .gotoh_left
-                .terminal(query_bases[q_start].idx(), target_trans[t_match_end].idx());
-            let term_3p = self.gotoh_right.terminal(
-                query_bases[q_start + len - 1].idx(),
-                target_trans[t_start].idx(),
-            );
-            let nt_count = (2 * len) as i32;
-            return Some(SeedExtension {
-                energy: Energy::from(seed_e + term_5p + term_3p + nt_count * penalty),
-                l_q: 0,
-                l_t: 0,
-                r_q: 0,
-                r_t: 0,
-                pairs: None,
-            });
-        }
-
-        let (l_score, l_q, l_t, l_pairs) = {
-            let view = DpView::new(
-                query_bases,
-                target_trans,
-                q_start,
-                t_match_end,
-                ExtendDir::Left,
-                max_ext,
-            );
-            let result = self.gotoh_left.extend(&view, &mut self.grid);
-            let pairs = include_alignment.then(|| result.traceback(&view));
-            (result.score, result.q_len, result.t_len, pairs)
-        };
-
-        let (r_score, r_q, r_t, r_pairs) = {
-            let view = DpView::new(
-                query_bases,
-                target_trans,
-                q_start + len - 1,
-                t_start,
-                ExtendDir::Right,
-                max_ext,
-            );
-            let result = self.gotoh_right.extend(&view, &mut self.grid);
-            let pairs = include_alignment.then(|| result.traceback(&view));
-            (result.score, result.q_len, result.t_len, pairs)
-        };
-
-        let nt_count = (l_q + l_t + r_q + r_t + 2 * len) as i32;
-        Some(SeedExtension {
-            energy: Energy::from(seed_e + l_score + r_score + nt_count * penalty),
-            l_q,
-            l_t,
-            r_q,
-            r_t,
-            pairs: l_pairs.zip(r_pairs),
-        })
-    }
+    })
 }
 
 // =============================================================================
@@ -545,18 +457,21 @@ impl SearchHit {
         query_bases: &[Base],
         target_trans: &[Base],
         seed: &SeedHit,
-        ext: &SeedExtension,
+        left: &ExtensionResult,
+        right: &ExtensionResult,
+        energy: Energy,
         include_alignment: bool,
         original_target_len: usize,
     ) -> Self {
         let q_start = seed.query_start;
         let t_start = seed.target_start;
         let len = seed.len.get();
+        let t_match_end = t_start + len - 1;
 
-        let final_q_start = q_start.saturating_sub(ext.l_q);
-        let final_q_end = (q_start + len - 1) + ext.r_q;
-        let final_t_start = t_start.saturating_sub(ext.r_t);
-        let final_t_end = (t_start + len - 1) + ext.l_t;
+        let final_q_start = q_start.saturating_sub(left.q_ext);
+        let final_q_end = (q_start + len - 1) + right.q_ext;
+        let final_t_start = t_start.saturating_sub(right.t_ext);
+        let final_t_end = (t_start + len - 1) + left.t_ext;
 
         let (final_t_start, final_t_end, strand) = match seed.strand {
             Strand::Forward => (final_t_start, final_t_end, Strand::Forward),
@@ -568,8 +483,21 @@ impl SearchHit {
         };
 
         let (alignment, seed_start, seed_end) = if include_alignment {
-            let (aln, start, end) = ext.build_alignment(seed, query_bases, target_trans);
-            (Some(aln), Some(start), Some(end))
+            let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
+            for i in 0..len {
+                seed_pairs.push(PairClass::from_bases(
+                    query_bases[q_start + i],
+                    target_trans[t_match_end - i].complement(),
+                ));
+            }
+            let left_pairs = left.pairs.as_deref().unwrap_or(&[]);
+            let right_pairs = right.pairs.as_deref().unwrap_or(&[]);
+            let start = left_pairs.len();
+            (
+                Some(Alignment::new(left_pairs, &seed_pairs, right_pairs)),
+                Some(start),
+                Some(start + len),
+            )
         } else {
             (None, None, None)
         };
@@ -582,7 +510,7 @@ impl SearchHit {
             t_start: final_t_start,
             t_end: final_t_end,
             strand,
-            energy: ext.energy,
+            energy,
             seed_start,
             seed_end,
             alignment,

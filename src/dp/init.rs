@@ -47,7 +47,7 @@ impl Gotoh {
         // SAFETY: q_ptr valid for [0, q_len), t_ptr valid for [0, t_len), values ∈ 0..6.
         // Grid allocated as (q_len+1) × (t_len+1) by Gotoh::extend().
         // All cell() calls address (i, j) with i < q_len, j < t_len, within the grid.
-        // All Gotoh calls receive Base::idx() values ∈ 0..6.
+        // All Gotoh calls receive valid DP lookup indices ∈ 0..6.
         unsafe {
             let q0 = *q_ptr.add(0);
             let q1 = *q_ptr.add(1);

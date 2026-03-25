@@ -1,18 +1,12 @@
-use crate::alignment::PairClass;
 use crate::config::{ExtendConfig, ScoreConfig};
-use crate::dp::gotoh::Gotoh;
 use crate::types::Base;
-use smallvec::SmallVec;
 
 mod core;
 pub mod gotoh;
 mod init;
-mod traceback;
 use std::cmp::max;
 
-use self::traceback::traceback;
-
-/// Maximum extension length for precomputed index arrays.
+/// Maximum extension length for precomputed DP lookup arrays.
 /// Matches the typical max_ext parameter (100-200 bases).
 const MAX_EXT: usize = 256;
 
@@ -70,9 +64,10 @@ impl std::fmt::Display for ExtendDir {
 
 /// View into sequences for DP extension.
 ///
-/// Pure sequence access — knows nothing about scoring or energy.
-/// Direction-dependent base indexing is resolved here;
-/// scoring is done via `Gotoh` transition tables.
+/// Pure sequence/coordinate view — knows nothing about scoring or energy.
+/// It defines the extension window and how DP offsets map back to semantic
+/// query/target bases. Scoring-specific lookup indices are materialized once
+/// in `Gotoh::extend`.
 pub struct DpView<'a> {
     query: &'a [Base],
     target: &'a [Base],
@@ -84,31 +79,6 @@ pub struct DpView<'a> {
 }
 
 impl<'a> DpView<'a> {
-    #[inline(always)]
-    fn base_or_gap(seq: &[Base], pos: usize) -> Base {
-        if pos >= seq.len() {
-            Base::Gap
-        } else {
-            // SAFETY: bounds checked above
-            unsafe { *seq.get_unchecked(pos) }
-        }
-    }
-
-    #[inline(always)]
-    fn left_base(seq: &[Base], anchor: usize, offset: usize) -> Base {
-        if offset > anchor {
-            Base::Gap
-        } else {
-            // SAFETY: offset <= anchor, and anchor < seq.len() by construction
-            unsafe { *seq.get_unchecked(anchor - offset) }
-        }
-    }
-
-    #[inline(always)]
-    fn right_base(seq: &[Base], anchor: usize, offset: usize) -> Base {
-        Self::base_or_gap(seq, anchor + offset)
-    }
-
     /// Create a directional extension view anchored at a seed boundary.
     pub fn new(
         query: &'a [Base],
@@ -135,23 +105,30 @@ impl<'a> DpView<'a> {
         }
     }
 
-    /// Get query base index at DP position i (0 = anchor)
+    /// Get query base at DP position i (0 = anchor).
     #[inline(always)]
-    pub fn q(&self, i: usize) -> usize {
-        match self.dir {
-            ExtendDir::Left => Self::left_base(self.query, self.q_anchor, i).idx(),
-            ExtendDir::Right => Self::right_base(self.query, self.q_anchor, i).idx(),
-        }
+    pub(crate) fn q_base(&self, i: usize) -> Base {
+        debug_assert!(i < self.q_len);
+        let pos = match self.dir {
+            ExtendDir::Left => self.q_anchor - i,
+            ExtendDir::Right => self.q_anchor + i,
+        };
+        // SAFETY: q_len is derived from q_anchor/query.len() for the chosen dir,
+        // so any i < q_len maps to an in-bounds query position.
+        unsafe { *self.query.get_unchecked(pos) }
     }
 
-    /// Get target base index at DP position j (0 = anchor).
-    /// Bases are passed straight from the transformed index.
+    /// Get target base at DP position j (0 = anchor).
     #[inline(always)]
-    pub fn t(&self, j: usize) -> usize {
-        match self.dir {
-            ExtendDir::Left => Self::right_base(self.target, self.t_anchor, j).idx(),
-            ExtendDir::Right => Self::left_base(self.target, self.t_anchor, j).idx(),
-        }
+    pub(crate) fn t_base(&self, j: usize) -> Base {
+        debug_assert!(j < self.t_len);
+        let pos = match self.dir {
+            ExtendDir::Left => self.t_anchor + j,
+            ExtendDir::Right => self.t_anchor - j,
+        };
+        // SAFETY: t_len is derived from t_anchor/target.len() for the chosen dir,
+        // so any j < t_len maps to an in-bounds target position.
+        unsafe { *self.target.get_unchecked(pos) }
     }
 }
 
@@ -160,7 +137,7 @@ impl<'a> DpView<'a> {
 /// Must satisfy two invariants (enforced by compile-time assert below):
 /// 1. Invalid scores can never drift into valid range through accumulated adds
 /// 2. No i32 underflow from accumulated negative energy
-pub(super) const NEG_INF: i32 = -1_000_000_000;
+pub(crate) const NEG_INF: i32 = -1_000_000_000;
 
 /// Conservative upper bound on |energy| from a single scoring table lookup.
 /// Source tables are i16 (max 32767); penalty adds modest overhead.
@@ -228,10 +205,10 @@ pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
 /// so interleaving them maximizes cache line utilization.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(super) struct DpCell {
-    pub(super) m: i32,  // Match/mismatch state
-    pub(super) bq: i32, // Query bulge (gap in target)
-    pub(super) bt: i32, // Target bulge (gap in query)
+pub(crate) struct DpCell {
+    pub(crate) m: i32,  // Match/mismatch state
+    pub(crate) bq: i32, // Query bulge (gap in target)
+    pub(crate) bt: i32, // Target bulge (gap in query)
 }
 
 impl DpCell {
@@ -272,7 +249,7 @@ impl DpGrid {
     }
 
     #[inline(always)]
-    pub(super) fn get(&self, i: usize, j: usize) -> DpCell {
+    pub(crate) fn get(&self, i: usize, j: usize) -> DpCell {
         let idx = i * self.width + j;
         debug_assert!(
             idx < self.data.len(),
@@ -299,27 +276,13 @@ impl DpGrid {
     }
 }
 
-/// Guard holding a reference to the DP grid after forward pass.
-/// While this exists, the grid cannot be reused for another extension
-/// (borrow checker enforces this via the lifetime on `grid`).
-/// Stores the `Gotoh` reference used during the forward pass so that
-/// `traceback()` is guaranteed to use the same scoring tables.
-pub struct ExtendResult<'a> {
-    grid: &'a DpGrid,
-    gotoh: &'a Gotoh,
+/// Summary of one forward DP extension pass.
+///
+/// `end_i`/`end_j` are the local DP coordinates of the best-scoring endpoint,
+/// not the input window dimensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GotohResult {
     pub score: i32,
-    pub q_len: usize,
-    pub t_len: usize,
-}
-
-impl<'a> ExtendResult<'a> {
-    /// Run traceback to reconstruct alignment as Pairings.
-    /// Only call when alignment output is needed (skip for Minimal format).
-    pub fn traceback(&self, view: &DpView<'_>) -> SmallVec<[PairClass; 64]> {
-        let mut out = SmallVec::new();
-        traceback(
-            view, self.gotoh, self.grid, self.q_len, self.t_len, &mut out,
-        );
-        out
-    }
+    pub end_i: usize,
+    pub end_j: usize,
 }

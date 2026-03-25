@@ -128,6 +128,12 @@ impl ScoringModel {
         unsafe { *self.table.get_unchecked(idx) }
     }
 
+    /// Point query for dinucleotide stacking energy using semantic bases.
+    #[inline(always)]
+    pub fn lookup_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
+        self.lookup(q1 as usize, q2 as usize, t1 as usize, t2 as usize)
+    }
+
     /// Check if two bases form a valid pair.
     #[inline(always)]
     pub fn is_pair(&self, q: Base, t: Base) -> bool {
@@ -138,7 +144,7 @@ impl ScoringModel {
     }
 
     /// Seed energy calculation with antiparallel indexing.
-    pub fn seed_energy(
+    pub fn energy(
         &self,
         query: &[Base],
         target: &[Base],
@@ -152,11 +158,11 @@ impl ScoringModel {
         let mut score = 0;
         let t_match_end = t_pos + len - 1;
         for i in 0..(len - 1) {
-            score += self.lookup(
-                query[q_pos + i].idx(),
-                query[q_pos + i + 1].idx(),
-                target[t_match_end - i].idx(),
-                target[t_match_end - i - 1].idx(),
+            score += self.lookup_bases(
+                query[q_pos + i],
+                query[q_pos + i + 1],
+                target[t_match_end - i],
+                target[t_match_end - i - 1],
             );
         }
         score
@@ -1111,12 +1117,12 @@ mod tests {
     fn lookup_returns_nonzero_for_valid_pairs() {
         let model = ScoringModel::new(Matrix::T04, 0);
         // Original target was U-A, index space is A-U
-        let energy = model.lookup(Base::A.idx(), Base::U.idx(), Base::A.idx(), Base::U.idx());
-        let gap_energy = model.lookup(
-            Base::Gap.idx(),
-            Base::A.idx(),
-            Base::Gap.idx(),
-            Base::A.idx(), // original was U, index is A
+        let energy = model.lookup_bases(Base::A, Base::U, Base::A, Base::U);
+        let gap_energy = model.lookup_bases(
+            Base::Gap,
+            Base::A,
+            Base::Gap,
+            Base::A, // original was U, index is A
         );
         assert!(
             gap_energy != 0 || energy != 0,
@@ -1129,7 +1135,7 @@ mod tests {
         let model = ScoringModel::new(Matrix::T04, 0);
         // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
         // Original target was CC, index space is GG
-        let actual = model.lookup(Base::G.idx(), Base::G.idx(), Base::G.idx(), Base::G.idx());
+        let actual = model.lookup_bases(Base::G, Base::G, Base::G, Base::G);
         assert_eq!(actual, 330);
     }
 

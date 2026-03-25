@@ -39,8 +39,8 @@ impl Gotoh {
     ) {
         // SAFETY: The entire block relies on these invariants established by
         // Gotoh::extend():
-        // - q_ptr valid for reads [0, q_len), values ∈ 0..6 (Base::idx())
-        // - t_ptr valid for reads [0, t_len), values ∈ 0..6 (Base::idx())
+        // - q_ptr valid for reads [0, q_len), values ∈ 0..6
+        // - t_ptr valid for reads [0, t_len), values ∈ 0..6
         // - grid allocated as (q_len+1) × (t_len+1), so all (i,j) with
         //   i ∈ 0..q_len, j ∈ 0..t_len are in-bounds
         // - All Gotoh lookups receive args ∈ 0..6, satisfying their contracts
