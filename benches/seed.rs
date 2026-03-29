@@ -3,8 +3,8 @@ use std::path::Path;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::{
-    ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputConfig, OutputFormat, ScoreConfig,
-    SearchArgs, SeedConfig, SeedSpec,
+    ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
+    OutputFormat, ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
 };
 use risearch::index::sa::SuffixArray;
 use risearch::index::store::SA_CHAR_PADDING;
@@ -199,8 +199,8 @@ fn prepare_query_for_seed_search(query: &Query, seed_config: &SeedConfig) -> Opt
     })
 }
 
-fn make_search_args(seed_config: &SeedConfig) -> SearchArgs {
-    SearchArgs {
+fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
+    SearchConfig {
         seed: seed_config.clone(),
         score: ScoreConfig {
             matrix: Matrix::T04,
@@ -221,8 +221,7 @@ fn make_search_args(seed_config: &SeedConfig) -> SearchArgs {
         },
         output: OutputConfig {
             format: OutputFormat::Minimal,
-            compress: None,
-            level: None,
+            compress: OutputCompression::None,
             multifile: false,
         },
         one_vs_one: false,
@@ -433,7 +432,7 @@ fn bench_seed_prod_shaped_pipeline(c: &mut Criterion) {
     let seed_config =
         SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
     let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
-    let args = make_search_args(&seed_config);
+    let args = make_search_config(&seed_config);
     let output_path = dataset._tmpdir.path().join("search.out");
 
     group.bench_function("run_search_10q_x_100k", |b| {

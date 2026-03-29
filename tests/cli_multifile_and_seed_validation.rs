@@ -55,8 +55,7 @@ fn seed_length_zero_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn multifile_output_avoids_sanitized_name_collisions() -> Result<(), Box<dyn std::error::Error>>
-{
+fn multifile_output_avoids_sanitized_name_collisions() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">a/b\nAAAA\n>a:b\nCCCC")?;
 

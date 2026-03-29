@@ -244,6 +244,14 @@ pub struct ScoreConfig {
     pub weights: Option<String>,
 }
 
+impl ScoreConfig {
+    /// Penalty converted to the raw integer representation used by DP tables.
+    /// Converts from kcal/mol (f64) to centcal (i32).
+    pub fn penalty_raw(&self) -> i32 {
+        (self.penalty * 100.0).round() as i32
+    }
+}
+
 /// Arguments for extension strategy.
 #[derive(Debug, Clone)]
 pub struct ExtendConfig {

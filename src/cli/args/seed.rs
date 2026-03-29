@@ -1,5 +1,5 @@
-use anyhow::Error;
 use crate::config::{self, MismatchSpec, SeedSpec};
+use anyhow::Error;
 use std::str::FromStr;
 
 const DEFAULT_SEED_LEN: i64 = 6;
@@ -78,12 +78,10 @@ impl FromStr for LegacyMismatchSpec {
                     .map_err(|e| format!("invalid min suffix matches: {}", e))?;
                 mismatch_spec_from_args(Some(max), Some(min_prefix), Some(min_suffix)).map(Self)
             }
-            _ => {
-                Err(format!(
-                    "invalid mismatch spec '{}': expected 'c', 'c:p', or 'c:ps:pe' format",
-                    s
-                ))
-            }
+            _ => Err(format!(
+                "invalid mismatch spec '{}': expected 'c', 'c:p', or 'c:ps:pe' format",
+                s
+            )),
         }
     }
 }
@@ -247,17 +245,19 @@ impl TryFrom<SeedArgs> for config::SeedConfig {
                 .map(|s| s.0)
                 .unwrap_or(SeedSpec::LengthOnly(DEFAULT_SEED_LEN))
         };
-        let mismatch = value.mismatch_legacy.map_or_else(
-            || {
-                mismatch_spec_from_args(
-                    value.mismatch_max,
-                    value.mismatch_prefix,
-                    value.mismatch_suffix,
-                )
-            },
-            |m| Ok(m.0),
-        )
-        .map_err(Error::msg)?;
+        let mismatch = value
+            .mismatch_legacy
+            .map_or_else(
+                || {
+                    mismatch_spec_from_args(
+                        value.mismatch_max,
+                        value.mismatch_prefix,
+                        value.mismatch_suffix,
+                    )
+                },
+                |m| Ok(m.0),
+            )
+            .map_err(Error::msg)?;
 
         Ok(config::SeedConfig {
             seed,
@@ -270,8 +270,7 @@ impl TryFrom<SeedArgs> for config::SeedConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        mismatch_spec_from_args, seed_spec_from_args, LegacyMismatchSpec, LegacySeedSpec,
-        SeedArgs,
+        mismatch_spec_from_args, seed_spec_from_args, LegacyMismatchSpec, LegacySeedSpec, SeedArgs,
     };
     use crate::config::{MismatchSpec, SeedSpec};
     use std::str::FromStr;

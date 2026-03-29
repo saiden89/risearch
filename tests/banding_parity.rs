@@ -10,11 +10,7 @@ use support::{workspace_root, ParityRunner};
 
 #[rstest]
 #[ignore]
-fn banded_soft(
-    #[values(6, 8)] s: usize,
-    #[values(10, 20)] l: usize,
-    #[values(8, 12)] band: usize,
-) {
+fn banded_soft(#[values(6, 8)] s: usize, #[values(10, 20)] l: usize, #[values(8, 12)] band: usize) {
     let root = workspace_root();
     let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
     let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
@@ -44,11 +40,7 @@ fn banded_soft(
 
 #[rstest]
 #[ignore]
-fn banded_hard(
-    #[values(6, 8)] s: usize,
-    #[values(10, 20)] l: usize,
-    #[values(8, 12)] band: usize,
-) {
+fn banded_hard(#[values(6, 8)] s: usize, #[values(10, 20)] l: usize, #[values(8, 12)] band: usize) {
     let root = workspace_root();
     let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
     let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");

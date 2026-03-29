@@ -92,8 +92,7 @@ fn default_seed_wobble_matches_enabled_behavior() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn legacy_no_guseed_warning_points_to_no_seed_wobble() -> Result<(), Box<dyn std::error::Error>>
-{
+fn legacy_no_guseed_warning_points_to_no_seed_wobble() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nGGGG")?;
 

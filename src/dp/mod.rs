@@ -33,7 +33,7 @@ impl From<(&ScoreConfig, &ExtendConfig)> for DpConfig {
     fn from((score, extend): (&ScoreConfig, &ExtendConfig)) -> Self {
         Self {
             max_extension: usize::from(extend.max_extension).min(MAX_EXT),
-            penalty_raw: (score.penalty * 100.0).round() as i32,
+            penalty_raw: score.penalty_raw(),
         }
     }
 }

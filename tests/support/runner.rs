@@ -78,11 +78,7 @@ impl RustRunner<NoIndex> {
 
 impl RustRunner<Indexed> {
     /// Search using risearch as a library.
-    fn search(
-        &self,
-        query_path: &Path,
-        args: &SearchConfig,
-    ) -> (Vec<SearchHit>, QueryRegistry) {
+    fn search(&self, query_path: &Path, args: &SearchConfig) -> (Vec<SearchHit>, QueryRegistry) {
         let query_registry =
             QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let mut search_args = args.clone();
@@ -314,9 +310,7 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
             }
 
             // Pairing flags - translate names
-            "--no-seed-wobble" | "--noGUseed" => {
-                c_args.push("--noGUseed".to_string())
-            }
+            "--no-seed-wobble" | "--noGUseed" => c_args.push("--noGUseed".to_string()),
             // Pass through everything else
             _ => c_args.push(arg.to_string()),
         }

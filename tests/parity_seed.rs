@@ -34,10 +34,7 @@ fn length(
 
 /// Seed interval: --seed-start/--seed-end
 #[rstest]
-fn interval(
-    #[values("1:8", "1:12", "2:10", "1:15")] spec: &str,
-    #[values(0, 10, 20)] l: usize,
-) {
+fn interval(#[values("1:8", "1:12", "2:10", "1:15")] spec: &str, #[values(0, 10, 20)] l: usize) {
     let root = workspace_root();
     let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
     let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");

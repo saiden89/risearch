@@ -20,10 +20,7 @@ fn wc_complement(seq: &str) -> String {
 
 /// All 16 dinucleotide stacks (one stacking interaction).
 #[rstest]
-fn dinucleotide(
-    #[values('A', 'C', 'G', 'U')] b1: char,
-    #[values('A', 'C', 'G', 'U')] b2: char,
-) {
+fn dinucleotide(#[values('A', 'C', 'G', 'U')] b1: char, #[values('A', 'C', 'G', 'U')] b2: char) {
     let args = ["-l", "0", "-e", "10000.0", "--seed-length", "2", "-p3"];
     let query = format!("{}{}", b1, b2);
     let target = wc_complement(&query);

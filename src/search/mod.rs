@@ -19,7 +19,7 @@ use std::sync::Mutex;
 
 use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{FilterConfig, OutputFormat, SearchConfig};
+use crate::config::{OutputFormat, SearchConfig};
 use crate::dp::{DpConfig, ExtendDir};
 use crate::dsm::ScoringModel;
 use crate::index::store::{GlobalView, TargetStore};
@@ -69,18 +69,12 @@ pub fn run_search_in_memory(
     let hits: Mutex<Vec<SearchHit>> = Mutex::new(Vec::new());
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
-        || {
-            let dp_cfg = DpConfig::from((&ctx.opts.score, &ctx.opts.extend));
-            let model = ScoringModel::new(ctx.opts.score.matrix, dp_cfg.penalty_raw());
-            (ExtensionEngine::new(dp_cfg.max_extension(), &model), model)
-        },
-        |(engine, model), qi| -> Result<()> {
+        || SearchWorker::new(ctx.opts),
+        |worker, qi| -> Result<()> {
             let mut local = Vec::new();
             let query = &ctx.queries.entries()[qi];
             let query_seq = query.sequence().as_slice();
             let seed_interval = query.seed_interval.clone();
-            let penalty = DpConfig::from((&ctx.opts.score, &ctx.opts.extend)).penalty_raw();
-            let seed_wobble = ctx.opts.seed.seed_wobble;
 
             for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
                 let target_idx = seed.target_id.0 as usize;
@@ -91,15 +85,12 @@ pub fn run_search_in_memory(
                 };
 
                 if let Some(hit) = build_hit_from_seed(
-                    engine,
-                    model,
+                    worker,
+                    ctx.opts,
                     qi as u32,
                     query_seq,
                     seed_interval.clone(),
                     true,
-                    &ctx.opts.filter,
-                    penalty,
-                    seed_wobble,
                     target_len,
                     &seed,
                     target_trans,
@@ -176,6 +167,24 @@ impl<'a> SearchContext<'a> {
     }
 }
 
+/// Per-worker resources: reused across all queries processed by one rayon thread.
+/// Config is accessed from `SearchContext` at the call site, not cached here.
+struct SearchWorker {
+    extension: ExtensionEngine,
+    model: ScoringModel,
+}
+
+impl SearchWorker {
+    fn new(opts: &SearchConfig) -> Self {
+        let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
+        let model = ScoringModel::new(opts.score.matrix, dp_cfg.penalty_raw());
+        Self {
+            extension: ExtensionEngine::new(dp_cfg.max_extension(), &model),
+            model,
+        }
+    }
+}
+
 /// Single-file backend: `Mutex<OutputWriter>` + rayon `par_iter`.
 fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
     let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
@@ -183,27 +192,15 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
-            let dp_cfg = DpConfig::from((&ctx.opts.score, &ctx.opts.extend));
-            let model = ScoringModel::new(ctx.opts.score.matrix, dp_cfg.penalty_raw());
             (
-                ExtensionEngine::new(dp_cfg.max_extension(), &model),
-                model,
+                SearchWorker::new(ctx.opts),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
-        |(engine, model, fmt), qi| -> Result<()> {
-            let penalty = DpConfig::from((&ctx.opts.score, &ctx.opts.extend)).penalty_raw();
-            let seed_wobble = ctx.opts.seed.seed_wobble;
-            let emitted = process_query(
-                ctx,
-                qi as u32,
-                engine,
-                fmt,
-                &mut |chunk| writer.lock().unwrap().write_chunk(&chunk),
-                model,
-                penalty,
-                seed_wobble,
-            )?;
+        |(worker, fmt), qi| -> Result<()> {
+            let emitted = process_query(ctx, qi as u32, worker, fmt, &mut |chunk| {
+                writer.lock().unwrap().write_chunk(&chunk)
+            })?;
             total.fetch_add(emitted, Ordering::Relaxed);
             Ok(())
         },
@@ -221,19 +218,14 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
 
     (0..ctx.queries.len()).into_par_iter().try_for_each_init(
         || {
-            let dp_cfg = DpConfig::from((&ctx.opts.score, &ctx.opts.extend));
-            let model = ScoringModel::new(ctx.opts.score.matrix, dp_cfg.penalty_raw());
             (
-                ExtensionEngine::new(dp_cfg.max_extension(), &model),
-                model,
+                SearchWorker::new(ctx.opts),
                 HitFormatter::new(ctx.opts.output.format),
             )
         },
-        |(engine, model, format), query_idx| -> Result<()> {
+        |(worker, format), query_idx| -> Result<()> {
             let file_path = &output_paths[query_idx];
             let mut writer: Option<OutputWriter> = None;
-            let penalty = DpConfig::from((&ctx.opts.score, &ctx.opts.extend)).penalty_raw();
-            let seed_wobble = ctx.opts.seed.seed_wobble;
 
             let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
                 if writer.is_none() {
@@ -242,16 +234,8 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
                 writer.as_mut().unwrap().write_chunk(&chunk)
             };
 
-            let emitted = process_query(
-                ctx,
-                query_idx as u32,
-                engine,
-                format,
-                &mut flush_to_writer,
-                model,
-                penalty,
-                seed_wobble,
-            )?;
+            let emitted =
+                process_query(ctx, query_idx as u32, worker, format, &mut flush_to_writer)?;
 
             if let Some(w) = writer.as_mut() {
                 w.flush_all()?;
@@ -270,12 +254,9 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
 fn process_query<FO>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
-    engine: &mut ExtensionEngine,
+    worker: &mut SearchWorker,
     format: &mut HitFormatter,
     on_chunk: &mut FO,
-    model: &ScoringModel,
-    penalty: i32,
-    seed_wobble: bool,
 ) -> Result<usize>
 where
     FO: FnMut(OutputChunk) -> Result<()>,
@@ -285,8 +266,6 @@ where
     let query_seq = query.sequence().as_slice();
     let seed_interval = query.seed_interval.clone();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
-    let filter_cfg = &ctx.opts.filter;
-
     let mut local_hits = 0usize;
     let mut last_target_idx = None::<usize>;
     let mut cached_t_name = None;
@@ -300,15 +279,12 @@ where
         };
 
         let Some(hit) = build_hit_from_seed(
-            engine,
-            model,
+            worker,
+            ctx.opts,
             query_idx,
             query_seq,
             seed_interval.clone(),
             include_alignment,
-            filter_cfg,
-            penalty,
-            seed_wobble,
             target_len,
             &seed,
             target_trans,
@@ -361,24 +337,26 @@ fn is_maximal(
     let t_start = seed.target_start;
     let len = seed.len.get();
 
-    if q_start > seed_interval.start && t_start + len < target_trans.len() {
-        if ScoringModel::seed_pair(
+    if q_start > seed_interval.start
+        && t_start + len < target_trans.len()
+        && ScoringModel::seed_pair(
             query_bases[q_start - 1],
             target_trans[t_start + len],
             seed_wobble,
-        ) {
-            return false;
-        }
+        )
+    {
+        return false;
     }
 
-    if q_start + len < seed_interval.end && t_start > 0 {
-        if ScoringModel::seed_pair(
+    if q_start + len < seed_interval.end
+        && t_start > 0
+        && ScoringModel::seed_pair(
             query_bases[q_start + len],
             target_trans[t_start - 1],
             seed_wobble,
-        ) {
-            return false;
-        }
+        )
+    {
+        return false;
     }
 
     true
@@ -386,15 +364,12 @@ fn is_maximal(
 
 /// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 fn build_hit_from_seed(
-    engine: &mut ExtensionEngine,
-    model: &ScoringModel,
+    worker: &mut SearchWorker,
+    opts: &SearchConfig,
     query_idx: u32,
     query_bases: &[Base],
     seed_interval: Range<usize>,
     include_alignment: bool,
-    filter_cfg: &FilterConfig,
-    penalty: i32,
-    seed_wobble: bool,
     target_len: usize,
     seed: &SeedHit,
     target_trans: &[Base],
@@ -405,14 +380,22 @@ fn build_hit_from_seed(
     let len = seed.len.get();
     let t_match_end = t_start + len - 1;
 
-    if !filter_cfg.no_max_prune
-        && !is_maximal(seed, query_bases, target_trans, &seed_interval, seed_wobble)
+    if !opts.filter.no_max_prune
+        && !is_maximal(
+            seed,
+            query_bases,
+            target_trans,
+            &seed_interval,
+            opts.seed.seed_wobble,
+        )
     {
         return None;
     }
 
-    let seed_e = model.energy(query_bases, target_trans, q_start, t_start, len);
-    let left = engine.extend(
+    let seed_e = worker
+        .model
+        .energy(query_bases, target_trans, q_start, t_start, len);
+    let left = worker.extension.extend(
         query_bases,
         target_trans,
         q_start,
@@ -420,7 +403,7 @@ fn build_hit_from_seed(
         ExtendDir::Left,
         include_alignment,
     );
-    let right = engine.extend(
+    let right = worker.extension.extend(
         query_bases,
         target_trans,
         q_start + len - 1,
@@ -428,10 +411,11 @@ fn build_hit_from_seed(
         ExtendDir::Right,
         include_alignment,
     );
+    let penalty = opts.score.penalty_raw();
     let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i32;
     let energy = Energy::from(seed_e + left.score + right.score + nt_count * penalty);
 
-    (energy.as_f64() <= filter_cfg.delta_g).then(|| {
+    (energy.as_f64() <= opts.filter.delta_g).then(|| {
         SearchHit::new(
             query_idx,
             query_bases,
