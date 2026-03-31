@@ -22,28 +22,6 @@ const BASE_C: u8 = Base::C as u8; // 2
 const BASE_G: u8 = Base::G as u8; // 3
 const BASE_U: u8 = Base::U as u8; // 5
 
-/// Map a raw base u8 to its partition slot index. Returns None for N and Gap.
-///
-/// Partition layout: A=0, C=1, G=2, N=3 (unused), U=4
-/// Slot i spans `int[i]..int[i+1]` in the partition output array.
-#[inline(always)]
-fn base_to_slot(base: u8) -> Option<usize> {
-    match base {
-        b if b == BASE_A => Some(0),
-        b if b == BASE_C => Some(1),
-        b if b == BASE_G => Some(2),
-        b if b == BASE_U => Some(4),
-        _ => None,
-    }
-}
-
-/// Returns true if (q_slot, t_slot) is a valid RNA match pair.
-#[inline(always)]
-fn is_match_slot<const WOBBLE: bool>(q_slot: usize, t_slot: usize) -> bool {
-    matches!((q_slot, t_slot), (0, 4) | (1, 2) | (2, 1) | (4, 0))
-        || (WOBBLE && matches!((q_slot, t_slot), (2, 4) | (4, 2)))
-}
-
 /// Read the base discriminant at `sa[sa_idx].pos + offset` from the sequence.
 ///
 /// # Safety
