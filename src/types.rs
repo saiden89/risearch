@@ -91,6 +91,49 @@ impl Base {
             Base::N => Base::N,
         }
     }
+
+    /// True for the four matchable bases (A, C, G, U); false for N and Gap.
+    #[inline(always)]
+    pub const fn is_matchable(self) -> bool {
+        matches!(self, Base::A | Base::C | Base::G | Base::U)
+    }
+
+    /// Classify pairing between two bases (in complement-transformed target space).
+    ///
+    /// Watson-Crick: A↔U, C↔G.  Wobble: G↔U.  Everything else: mismatch.
+    #[inline(always)]
+    pub const fn pair_type(self, other: Base) -> PairType {
+        match (self, other) {
+            (Base::A, Base::U) | (Base::U, Base::A) | (Base::C, Base::G) | (Base::G, Base::C) => {
+                PairType::Canonical
+            }
+            (Base::G, Base::U) | (Base::U, Base::G) => PairType::Wobble,
+            _ => PairType::Mismatch,
+        }
+    }
+}
+
+/// Classification of a base pair in complement-transformed target space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairType {
+    /// Watson-Crick: A↔U, C↔G
+    Canonical,
+    /// G↔U wobble
+    Wobble,
+    /// Non-pairing
+    Mismatch,
+}
+
+impl PairType {
+    /// Whether this pair type counts as a match under the given wobble mode.
+    #[inline(always)]
+    pub const fn is_match(self, wobble: bool) -> bool {
+        match self {
+            PairType::Canonical => true,
+            PairType::Wobble => wobble,
+            PairType::Mismatch => false,
+        }
+    }
 }
 
 /// Number of nucleotide types (Gap, A, G, C, U, N)

@@ -1,22 +1,11 @@
 use std::ops::Range;
 
-use super::{
-    partition_interval_into, recurse_if_nonempty, sa_char, sa_suffix_pos, SeedMatch,
-    SeedingContext, BASE_A, BASE_C, BASE_G, BASE_U,
-};
+use crate::types::Base;
 
-/// Check if a query base pairs with a target base (in complement-transformed space).
-#[inline(always)]
-fn is_match_pair<const WOBBLE: bool>(q_char: u8, s_char: u8) -> bool {
-    match q_char {
-        BASE_A => s_char == BASE_U,
-        BASE_C => s_char == BASE_G,
-        BASE_G => s_char == BASE_C || (WOBBLE && s_char == BASE_U),
-        BASE_U => s_char == BASE_A || (WOBBLE && s_char == BASE_G),
-        _ => false,
-    }
-}
+use super::{is_valid_base, partition_interval_into, recurse, sa_char, sa_suffix_pos, SeedMatch,
+    SeedingContext, BASES, SLOTS};
 
+/// Q-singleton: one query SA entry, multiple target SA entries (partitioned).
 #[inline(always)]
 pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut SeedingContext<'_, F>,
@@ -27,7 +16,7 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     mm_count: usize,
 ) {
     let q_char = sa_char(ctx.q_sa, ctx.q_seq, q_idx, depth);
-    if !(BASE_A..=BASE_U).contains(&q_char) {
+    if !is_valid_base(q_char) {
         return;
     }
 
@@ -40,73 +29,25 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
         && d1 > ctx.min_prefix
         && match_streak < ctx.min_len
         && ctx.max_len - d1 >= ctx.min_suffix;
-
+    let q_base = Base::from_idx(q_char as usize);
     let q1 = q_idx..q_idx + 1;
     let ms = match_streak + 1;
-
-    // Match branches — direct dispatch on q_char.
-    match q_char {
-        BASE_A => recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[4]..sint[5], d1, ms, mm_count),
-        BASE_C => recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[2]..sint[3], d1, ms, mm_count),
-        BASE_G => {
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[1]..sint[2], d1, ms, mm_count);
-            if WOBBLE {
-                recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[4]..sint[5], d1, ms, mm_count);
-            }
-        }
-        BASE_U => {
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[0]..sint[1], d1, ms, mm_count);
-            if WOBBLE {
-                recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[2]..sint[3], d1, ms, mm_count);
-            }
-        }
-        _ => {} // N: no matches
-    }
-
-    if !can_mm {
-        return;
-    }
-
     let mm1 = mm_count + 1;
 
-    // Mismatch branches — all target slots not paired with q_char.
-    match q_char {
-        BASE_A => {
-            // A matches U: mismatches A, C, G
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[0]..sint[1], d1, 0, mm1);
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[1]..sint[2], d1, 0, mm1);
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1, sint[2]..sint[3], d1, 0, mm1);
+    for j in 0..4 {
+        let ts = SLOTS[j];
+        if sint[ts] >= sint[ts + 1] {
+            continue;
         }
-        BASE_C => {
-            // C matches G: mismatches A, C, U
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[0]..sint[1], d1, 0, mm1);
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[1]..sint[2], d1, 0, mm1);
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1, sint[4]..sint[5], d1, 0, mm1);
+        if q_base.pair_type(BASES[j]).is_match(WOBBLE) {
+            recurse::<F, WOBBLE>(ctx, q1.clone(), sint[ts]..sint[ts + 1], d1, ms, mm_count);
+        } else if can_mm {
+            recurse::<F, WOBBLE>(ctx, q1.clone(), sint[ts]..sint[ts + 1], d1, 0, mm1);
         }
-        BASE_G => {
-            // G matches C (+ wobble U): mismatches A, G, and U when no wobble
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[0]..sint[1], d1, 0, mm1);
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[2]..sint[3], d1, 0, mm1);
-            if !WOBBLE {
-                recurse_if_nonempty::<F, WOBBLE>(ctx, q1, sint[4]..sint[5], d1, 0, mm1);
-            }
-        }
-        BASE_U => {
-            // U matches A (+ wobble G): mismatches G when no wobble, C, U
-            if !WOBBLE {
-                recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[2]..sint[3], d1, 0, mm1);
-            }
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1.clone(), sint[1]..sint[2], d1, 0, mm1);
-            recurse_if_nonempty::<F, WOBBLE>(ctx, q1, sint[4]..sint[5], d1, 0, mm1);
-        }
-        _ => {} // N: no mismatch handling
     }
 }
 
 /// S-singleton: one target SA entry, multiple query SA entries (partitioned).
-///
-/// When the target base is N, it cannot match any query base but still counts
-/// as a mismatch opportunity for all non-empty query slots.
 #[inline(always)]
 pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut SeedingContext<'_, F>,
@@ -117,7 +58,7 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     mm_count: usize,
 ) {
     let s_char = sa_char(ctx.t_sa, ctx.t_seq, s_idx, depth);
-    if !(BASE_A..=BASE_U).contains(&s_char) {
+    if !is_valid_base(s_char) {
         return;
     }
 
@@ -130,45 +71,27 @@ pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
         && d1 > ctx.min_prefix
         && match_streak < ctx.min_len
         && ctx.max_len - d1 >= ctx.min_suffix;
-
+    let s_base = Base::from_idx(s_char as usize);
     let s1 = s_idx..s_idx + 1;
     let ms = match_streak + 1;
-
-    // Match branches — dispatch on s_char to select the matching query slot(s).
-    if qint[0] < qint[1] && is_match_pair::<WOBBLE>(BASE_A, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[0]..qint[1], s1.clone(), d1, ms, mm_count);
-    }
-    if qint[1] < qint[2] && is_match_pair::<WOBBLE>(BASE_C, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[1]..qint[2], s1.clone(), d1, ms, mm_count);
-    }
-    if qint[2] < qint[3] && is_match_pair::<WOBBLE>(BASE_G, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[2]..qint[3], s1.clone(), d1, ms, mm_count);
-    }
-    if qint[4] < qint[5] && is_match_pair::<WOBBLE>(BASE_U, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[4]..qint[5], s1.clone(), d1, ms, mm_count);
-    }
-
-    if !can_mm {
-        return;
-    }
-
     let mm1 = mm_count + 1;
 
-    // Mismatch branches.
-    if qint[0] < qint[1] && !is_match_pair::<WOBBLE>(BASE_A, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[0]..qint[1], s1.clone(), d1, 0, mm1);
-    }
-    if qint[1] < qint[2] && !is_match_pair::<WOBBLE>(BASE_C, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[1]..qint[2], s1.clone(), d1, 0, mm1);
-    }
-    if qint[2] < qint[3] && !is_match_pair::<WOBBLE>(BASE_G, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[2]..qint[3], s1.clone(), d1, 0, mm1);
-    }
-    if qint[4] < qint[5] && !is_match_pair::<WOBBLE>(BASE_U, s_char) {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qint[4]..qint[5], s1.clone(), d1, 0, mm1);
+    for i in 0..4 {
+        let qs = SLOTS[i];
+        if qint[qs] >= qint[qs + 1] {
+            continue;
+        }
+        if BASES[i].pair_type(s_base).is_match(WOBBLE) {
+            recurse::<F, WOBBLE>(ctx, qint[qs]..qint[qs + 1], s1.clone(), d1, ms, mm_count);
+        } else if can_mm {
+            recurse::<F, WOBBLE>(ctx, qint[qs]..qint[qs + 1], s1.clone(), d1, 0, mm1);
+        }
     }
 }
 
+/// Both-singleton fast path: tight linear scan when both SA intervals have one entry.
+///
+/// Avoids all partition overhead — reads characters directly and advances in a loop.
 #[inline(always)]
 pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut SeedingContext<'_, F>,
@@ -214,14 +137,15 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
             && match_streak < ctx.min_len
             && ctx.max_len - d1 >= ctx.min_suffix;
 
-        // SAFETY: SA_CHAR_PADDING sentinels guarantee in-bounds access
-        let q_char = unsafe { *ctx.q_seq.get_unchecked(q_suffix_pos + depth) as u8 };
-        let s_char = unsafe { *ctx.t_seq.get_unchecked(s_suffix_pos + depth) as u8 };
-        if !(BASE_A..=BASE_U).contains(&q_char) || !(BASE_A..=BASE_U).contains(&s_char) {
+        // SAFETY: SA_CHAR_PADDING sentinels guarantee in-bounds access.
+        // Read Base directly — #[repr(u8)] means same layout, zero-cost.
+        let q_base = unsafe { *ctx.q_seq.get_unchecked(q_suffix_pos + depth) };
+        let s_base = unsafe { *ctx.t_seq.get_unchecked(s_suffix_pos + depth) };
+        if !q_base.is_matchable() || !s_base.is_matchable() {
             return;
         }
 
-        if is_match_pair::<WOBBLE>(q_char, s_char) {
+        if q_base.pair_type(s_base).is_match(WOBBLE) {
             depth = d1;
             match_streak += 1;
             continue;

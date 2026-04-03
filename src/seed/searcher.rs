@@ -1,9 +1,8 @@
-//! Parallel Suffix Array seed search — direct port of C's sa_parallel_match_neg.
+//! Parallel Suffix Array seed search.
 //!
-//! Three functions mirroring C exactly:
-//! - `sa_search_left`: binary search for base boundary in SA
-//! - `partition_interval`: partition SA interval into [A, C, G, N, U] ranges
-//! - `recurse`: recursive parallel SA traversal with inline match/mismatch
+//! Recursive traversal of two suffix arrays with base-pairing constraints.
+//! Singleton fast-paths avoid partition overhead when one or both SA intervals
+//! have a single entry.
 
 use crate::config::SeedConfig;
 use crate::types::Base;
@@ -16,11 +15,18 @@ use partition::partition_interval_into;
 use singleton::{recurse_q_singleton, recurse_s_singleton, recurse_singleton};
 
 // Raw Base discriminant values (from #[repr(u8)] Base enum).
-// Since the enum order is Gap < A < C < G < N < U, these also act as the SA sort ranks.
+// Enum order: Gap(0) < A(1) < C(2) < G(3) < N(4) < U(5).
 const BASE_A: u8 = Base::A as u8; // 1
 const BASE_C: u8 = Base::C as u8; // 2
 const BASE_G: u8 = Base::G as u8; // 3
 const BASE_U: u8 = Base::U as u8; // 5
+
+/// The four matchable RNA bases indexed alongside SLOTS.
+const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
+
+/// Partition slot for each base in BASES.
+/// Partition layout: `[A=0, C=1, G=2, N=3, U=4]`; slot range = `p[slot]..p[slot+1]`.
+const SLOTS: [usize; 4] = [0, 1, 2, 4];
 
 /// Read the base discriminant at `sa[sa_idx].pos + offset` from the sequence.
 ///
@@ -37,6 +43,12 @@ fn sa_char(sa: &[u64], seq: &[Base], sa_idx: usize, offset: usize) -> u8 {
 #[inline(always)]
 fn sa_suffix_pos(sa: &[u64], sa_idx: usize) -> usize {
     unsafe { *sa.get_unchecked(sa_idx) as usize }
+}
+
+/// True for the four matchable bases (A, C, G, U); false for N and Gap.
+#[inline(always)]
+fn is_valid_base(c: u8) -> bool {
+    matches!(c, BASE_A | BASE_C | BASE_G | BASE_U)
 }
 
 // =============================================================================
@@ -59,8 +71,7 @@ pub struct SeedMatch {
 ///
 /// Query SA is built on the query as-is.
 /// Target SA is built on the COMPLEMENT of the target.
-/// To mirror C parity, seed matching uses RNA pairing classes against this
-/// complemented target alphabet.
+/// Seed matching uses RNA pairing classes against this complemented target alphabet.
 pub struct SeedSearcher<'a> {
     q_sa: &'a [u64],
     q_seq: &'a [Base],
@@ -135,12 +146,12 @@ impl<'a> SeedSearcher<'a> {
 }
 
 // =============================================================================
-// RECURSIVE SEARCH — mirrors C's sa_parallel_match_neg
+// RECURSIVE SEARCH
 // =============================================================================
 
-/// Recursive parallel SA search.
+/// Shared context threaded through the recursive search.
 ///
-/// In complement-transformed target space, C-equivalent seed matches are:
+/// In complement-transformed target space, canonical seed matches are:
 /// - canonical: A↔U, G↔C, C↔G, U↔A
 /// - wobble (optional): G↔U, U↔G
 /// - everything else is mismatch
@@ -169,9 +180,6 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (sl, sr) = (s.start, s.end);
 
     // Emit match if within valid length range.
-    // When mm_count > 0, mirror C's `last_match_count < depth` where `depth`
-    // is the minimum seed length (not current recursion depth). This keeps
-    // mismatch seeds non-overlapping with pure-match seeds.
     if depth >= ctx.min_len
         && depth <= ctx.max_len
         && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < ctx.min_len))
@@ -187,7 +195,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         return;
     }
 
-    // Prune: can't accumulate enough suffix matches in remaining depth
+    // Prune: can't accumulate enough suffix matches in remaining depth.
     if mm_count > 0 && ctx.min_suffix > 0 {
         let max_possible = match_streak + (ctx.max_len - depth);
         if max_possible < ctx.min_suffix {
@@ -195,10 +203,9 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         }
     }
 
-    // Singleton fast paths: when one or both SA intervals have a single entry,
-    // skip partition overhead and compare characters directly.
+    // Singleton fast paths: skip partition overhead when one or both intervals
+    // have a single entry. Emission at this depth was already handled above.
     if qr - ql == 1 && sr - sl == 1 {
-        // Emission at this depth was already handled above; singleton continues from here.
         recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, match_streak, mm_count, false);
         return;
     }
@@ -212,95 +219,51 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     }
 
     // Partition both SA intervals by base at current depth.
-    // C-style layout from `sa_search_interval("acgnu")`:
-    // [A_start, C_start, G_start, N_start, U_start, end]
-    // Slot i spans int[i]..int[i+1]; N slot (3) is never matched.
     let mut qi = [0usize; 6];
     let mut si = [0usize; 6];
     partition_interval_into(ctx.q_sa, ctx.q_seq, ql, qr, depth, &mut qi);
     partition_interval_into(ctx.t_sa, ctx.t_seq, sl, sr, depth, &mut si);
 
-    // Match C's `sa_search_interval` early return: no acgnu class in either side.
+    // No ACGU bases on either side — nothing to pair.
     if qi[0] == qr || si[0] == sr {
         return;
     }
 
     let d1 = depth + 1;
-
-    // Can we introduce a mismatch at this position?
+    let ms = match_streak + 1;
     let can_mm = ctx.max_mm > 0
         && mm_count < ctx.max_mm
         && d1 > ctx.min_prefix
         && match_streak < ctx.min_len
         && ctx.max_len - d1 >= ctx.min_suffix;
 
-    let ms = match_streak + 1;
-
-    // Match branches in C query-class order: A-U, C-G, G-C, U-A (+ wobble G-U, U-G).
-    // G and U are outer-guarded to skip both canonical + wobble calls when the slot is empty.
-    recurse_if_nonempty::<F, WOBBLE>(ctx, qi[0]..qi[1], si[4]..si[5], d1, ms, mm_count); // A-U
-    recurse_if_nonempty::<F, WOBBLE>(ctx, qi[1]..qi[2], si[2]..si[3], d1, ms, mm_count); // C-G
-    if qi[2] < qi[3] {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[2]..qi[3], si[1]..si[2], d1, ms, mm_count); // G-C
-        if WOBBLE {
-            recurse_if_nonempty::<F, WOBBLE>(ctx, qi[2]..qi[3], si[4]..si[5], d1, ms, mm_count); // G-U
+    // Pair dispatch: iterate all (query_base, target_base) combinations.
+    // LLVM unrolls and constant-folds pair_type().is_match() for each (i,j).
+    for i in 0..4 {
+        let qs = SLOTS[i];
+        if qi[qs] >= qi[qs + 1] {
+            continue;
         }
-    }
-    if qi[4] < qi[5] {
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[4]..qi[5], si[0]..si[1], d1, ms, mm_count); // U-A
-        if WOBBLE {
-            recurse_if_nonempty::<F, WOBBLE>(ctx, qi[4]..qi[5], si[2]..si[3], d1, ms, mm_count); // U-G
+
+        for j in 0..4 {
+            let ts = SLOTS[j];
+            if si[ts] >= si[ts + 1] {
+                continue;
+            }
+
+            if BASES[i].pair_type(BASES[j]).is_match(WOBBLE) {
+                recurse::<F, WOBBLE>(ctx, qi[qs]..qi[qs + 1], si[ts]..si[ts + 1], d1, ms, mm_count);
+            } else if can_mm {
+                recurse::<F, WOBBLE>(
+                    ctx,
+                    qi[qs]..qi[qs + 1],
+                    si[ts]..si[ts + 1],
+                    d1,
+                    0,
+                    mm_count + 1,
+                );
+            }
         }
-    }
-
-    if !can_mm {
-        return;
-    }
-
-    let mm1 = mm_count + 1;
-
-    // Mismatch branches: all (q_slot, t_slot) pairs that are not canonical/wobble matches.
-    if qi[0] < qi[1] {
-        // q=A (matches U): mismatches A, C, G
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[0]..qi[1], si[0]..si[1], d1, 0, mm1);
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[0]..qi[1], si[1]..si[2], d1, 0, mm1);
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[0]..qi[1], si[2]..si[3], d1, 0, mm1);
-    }
-    if qi[1] < qi[2] {
-        // q=C (matches G): mismatches A, C, U
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[1]..qi[2], si[0]..si[1], d1, 0, mm1);
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[1]..qi[2], si[1]..si[2], d1, 0, mm1);
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[1]..qi[2], si[4]..si[5], d1, 0, mm1);
-    }
-    if qi[2] < qi[3] {
-        // q=G (matches C, wobble U): mismatches A, G, and U when no wobble
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[2]..qi[3], si[0]..si[1], d1, 0, mm1);
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[2]..qi[3], si[2]..si[3], d1, 0, mm1);
-        if !WOBBLE {
-            recurse_if_nonempty::<F, WOBBLE>(ctx, qi[2]..qi[3], si[4]..si[5], d1, 0, mm1);
-        }
-    }
-    if qi[4] < qi[5] {
-        // q=U (matches A, wobble G): mismatches C, U, and G when no wobble
-        if !WOBBLE {
-            recurse_if_nonempty::<F, WOBBLE>(ctx, qi[4]..qi[5], si[2]..si[3], d1, 0, mm1);
-        }
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[4]..qi[5], si[1]..si[2], d1, 0, mm1);
-        recurse_if_nonempty::<F, WOBBLE>(ctx, qi[4]..qi[5], si[4]..si[5], d1, 0, mm1);
-    }
-}
-
-#[inline(always)]
-fn recurse_if_nonempty<F: FnMut(SeedMatch), const WOBBLE: bool>(
-    ctx: &mut SeedingContext<'_, F>,
-    q: Range<usize>,
-    s: Range<usize>,
-    depth: usize,
-    match_streak: usize,
-    mm_count: usize,
-) {
-    if q.start < q.end && s.start < s.end {
-        recurse::<F, WOBBLE>(ctx, q, s, depth, match_streak, mm_count);
     }
 }
 

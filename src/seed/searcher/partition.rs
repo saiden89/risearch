@@ -1,15 +1,21 @@
 use crate::types::Base;
 
-use super::{sa_char, BASE_A, BASE_C, BASE_G, BASE_U};
-
-const BASE_N: u8 = Base::N as u8;
+use super::sa_char;
 
 const LINEAR_PARTITION_CUTOFF: usize = 1024;
 
+/// Base discriminants that mark partition boundaries (sorted by SA order).
+const BOUNDARIES: [u8; 5] = [
+    Base::A as u8,
+    Base::C as u8,
+    Base::G as u8,
+    Base::N as u8,
+    Base::U as u8,
+];
+
 /// Partition an SA interval by base at given offset.
 ///
-/// Returns C-style boundaries:
-/// `[A_start, C_start, G_start, N_start, U_start, end]`.
+/// Returns boundaries: `[A_start, C_start, G_start, N_start, U_start, end]`.
 #[inline(always)]
 pub(super) fn partition_interval_into(
     sa: &[u64],
@@ -24,39 +30,19 @@ pub(super) fn partition_interval_into(
         return;
     }
 
-    // Tiny intervals dominate deeper recursion; linear partition wins there.
     if end - start <= LINEAR_PARTITION_CUTOFF {
         let mut i = start;
-
-        while i < end && sa_char(sa, seq, i, offset) < BASE_A {
-            i += 1;
+        for (slot, &target) in BOUNDARIES.iter().enumerate() {
+            while i < end && sa_char(sa, seq, i, offset) < target {
+                i += 1;
+            }
+            out[slot] = i;
         }
-        out[0] = i;
-        while i < end && sa_char(sa, seq, i, offset) < BASE_C {
-            i += 1;
+    } else {
+        for (slot, &target) in BOUNDARIES.iter().enumerate() {
+            out[slot] = sa_search_left(sa, seq, start, end, offset, target);
         }
-        out[1] = i;
-        while i < end && sa_char(sa, seq, i, offset) < BASE_G {
-            i += 1;
-        }
-        out[2] = i;
-        while i < end && sa_char(sa, seq, i, offset) < BASE_N {
-            i += 1;
-        }
-        out[3] = i;
-        while i < end && sa_char(sa, seq, i, offset) < BASE_U {
-            i += 1;
-        }
-        out[4] = i;
-        out[5] = end;
-        return;
     }
-
-    out[0] = sa_search_left(sa, seq, start, end, offset, BASE_A);
-    out[1] = sa_search_left(sa, seq, start, end, offset, BASE_C);
-    out[2] = sa_search_left(sa, seq, start, end, offset, BASE_G);
-    out[3] = sa_search_left(sa, seq, start, end, offset, BASE_N);
-    out[4] = sa_search_left(sa, seq, start, end, offset, BASE_U);
     out[5] = end;
 }
 
