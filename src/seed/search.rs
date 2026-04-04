@@ -29,12 +29,12 @@ struct QuerySeedBounds {
 
 /// Find all seeds across all queries × all targets in a single SA traversal.
 ///
-/// Returns seeds sorted by `query_idx` for efficient per-query bucketing.
+/// Returns non-empty per-query seed buckets ready for parallel extension.
 pub(crate) fn collect_seeds(
     queries: &QueryRegistry,
     target: &TargetView<'_>,
     config: &SeedConfig,
-) -> Vec<SeedHit> {
+) -> Vec<(u32, Vec<SeedHit>)> {
     let qv = queries.query_view();
     if qv.sa_real_len == 0 {
         return Vec::new();
@@ -63,7 +63,8 @@ pub(crate) fn collect_seeds(
         config,
     );
 
-    let mut seeds = Vec::new();
+    let mut seeds_by_query: Vec<Vec<SeedHit>> =
+        (0..queries.len()).map(|_| Vec::new()).collect();
     searcher.for_each_length_range(global_min, global_max, |m| {
         let seed_len = m.seed_len;
         let Some(seed_len_typed) = SeedLen::new(seed_len) else {
@@ -98,7 +99,7 @@ pub(crate) fn collect_seeds(
                     continue;
                 };
 
-                seeds.push(SeedHit {
+                seeds_by_query[qi].push(SeedHit {
                     query_idx: qi as u32,
                     query_start: q_pos,
                     target_id: TargetId(ti as u32),
@@ -109,7 +110,11 @@ pub(crate) fn collect_seeds(
             }
         }
     });
-    seeds.sort_unstable_by_key(|s| s.query_idx);
-    seeds
+
+    seeds_by_query
+        .into_iter()
+        .enumerate()
+        .filter_map(|(qi, seeds)| (!seeds.is_empty()).then_some((qi as u32, seeds)))
+        .collect()
 }
 

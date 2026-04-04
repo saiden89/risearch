@@ -9,7 +9,7 @@ use risearch::config::{
 use risearch::index::sa::SuffixArray;
 use risearch::index::store::SA_CHAR_PADDING;
 use risearch::registry::{Query, QueryRegistry};
-use risearch::search::run_search;
+use risearch::search::{run_search, run_search_in_memory};
 use risearch::seed::searcher::{SeedMatch, SeedSearcher};
 use risearch::seq::Sequence;
 use risearch::types::Base;
@@ -559,6 +559,18 @@ fn bench_seed_prod_shaped_pipeline(c: &mut Criterion) {
     let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
     let args = make_search_config(&seed_config);
     let output_path = dataset._tmpdir.path().join("search.out");
+
+    group.bench_function("run_search_in_memory_10q_x_100k", |b| {
+        b.iter(|| {
+            let hits = run_search_in_memory(
+                black_box(&dataset.queries),
+                black_box(&dataset.store),
+                black_box(&args),
+            )
+            .expect("run search in memory");
+            black_box(hits.len());
+        });
+    });
 
     group.bench_function("run_search_10q_x_100k", |b| {
         b.iter(|| {

@@ -65,8 +65,7 @@ pub fn run_search_in_memory(
         return Ok(Vec::new());
     }
     let ctx = SearchContext::new(queries, store, opts);
-    let all_seeds = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
-    let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
+    let seed_groups = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
 
     let hits: Vec<SearchHit> = seed_groups
         .into_par_iter()
@@ -76,7 +75,7 @@ pub fn run_search_in_memory(
             let query_seq = query.sequence().as_slice();
             let seed_interval = query.seed_interval.clone();
 
-            seeds.iter().filter_map(move |seed| {
+            seeds.into_iter().filter_map(move |seed| {
                 let target_idx = seed.target_id.0 as usize;
                 let (t_fwd, t_rc, target_len) = ctx.target.target_slices(target_idx);
                 let target_trans = match seed.strand {
@@ -92,7 +91,7 @@ pub fn run_search_in_memory(
                     seed_interval.clone(),
                     true,
                     target_len,
-                    seed,
+                    &seed,
                     target_trans,
                 )
             })
@@ -179,25 +178,9 @@ impl SearchWorker {
     }
 }
 
-/// Group sorted seeds into per-query slices. Returns (query_idx, seed_slice) pairs.
-fn group_by_query(seeds: &[SeedHit], query_count: usize) -> Vec<(u32, &[SeedHit])> {
-    let mut groups = Vec::with_capacity(query_count);
-    let mut i = 0;
-    while i < seeds.len() {
-        let qi = seeds[i].query_idx;
-        let start = i;
-        while i < seeds.len() && seeds[i].query_idx == qi {
-            i += 1;
-        }
-        groups.push((qi, &seeds[start..i]));
-    }
-    groups
-}
-
 /// Single-file backend: collect seeds, then extend + format per query in parallel.
 fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
-    let all_seeds = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
-    let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
+    let seed_groups = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
 
     let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
     let total = AtomicUsize::new(0);
@@ -212,7 +195,7 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
                 )
             },
             |(worker, fmt), (qi, seeds)| -> Result<()> {
-                let emitted = process_query_seeds(ctx, qi, seeds, worker, fmt, &mut |chunk| {
+                let emitted = process_query_seeds(ctx, qi, &seeds, worker, fmt, &mut |chunk| {
                     writer.lock().unwrap().write_chunk(&chunk)
                 })?;
                 total.fetch_add(emitted, Ordering::Relaxed);
@@ -226,8 +209,7 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
 
 /// Multifile backend: collect seeds, then extend + write per query in parallel.
 fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
-    let all_seeds = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
-    let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
+    let seed_groups = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
 
     let total = AtomicUsize::new(0);
     let ext = crate::output::output_extension(&ctx.opts.output);
@@ -256,7 +238,7 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
                 let emitted = process_query_seeds(
                     ctx,
                     qi,
-                    seeds,
+                    &seeds,
                     worker,
                     format,
                     &mut flush_to_writer,
