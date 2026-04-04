@@ -11,8 +11,8 @@ use std::ops::Range;
 mod partition;
 mod singleton;
 
-use partition::partition_interval_into;
-use singleton::{recurse_q_singleton, recurse_s_singleton, recurse_singleton};
+use partition::partition;
+use singleton::{recurse_half_singleton, recurse_singleton};
 
 // Raw Base discriminant values (from #[repr(u8)] Base enum).
 // Enum order: Gap(0) < A(1) < C(2) < G(3) < N(4) < U(5).
@@ -210,19 +210,17 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         return;
     }
     if qr - ql == 1 {
-        recurse_q_singleton::<F, WOBBLE>(ctx, ql, sl..sr, depth, match_streak, mm_count);
+        recurse_half_singleton::<F, WOBBLE, true>(ctx, ql, sl..sr, depth, match_streak, mm_count);
         return;
     }
     if sr - sl == 1 {
-        recurse_s_singleton::<F, WOBBLE>(ctx, ql..qr, sl, depth, match_streak, mm_count);
+        recurse_half_singleton::<F, WOBBLE, false>(ctx, sl, ql..qr, depth, match_streak, mm_count);
         return;
     }
 
     // Partition both SA intervals by base at current depth.
-    let mut qi = [0usize; 6];
-    let mut si = [0usize; 6];
-    partition_interval_into(ctx.q_sa, ctx.q_seq, ql, qr, depth, &mut qi);
-    partition_interval_into(ctx.t_sa, ctx.t_seq, sl, sr, depth, &mut si);
+    let qi = partition(ctx.q_sa, ctx.q_seq, ql, qr, depth);
+    let si = partition(ctx.t_sa, ctx.t_seq, sl, sr, depth);
 
     // No ACGU bases on either side — nothing to pair.
     if qi[0] == qr || si[0] == sr {
@@ -267,16 +265,6 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     }
 }
 
-#[cfg(test)]
-fn partition_interval(
-    sa: &[u64],
-    seq: &[Base],
-    start: usize,
-    end: usize,
-    offset: usize,
-) -> [usize; 6] {
-    partition::partition_interval(sa, seq, start, end, offset)
-}
 
 // =============================================================================
 // TESTS

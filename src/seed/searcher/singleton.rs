@@ -2,26 +2,37 @@ use std::ops::Range;
 
 use crate::types::Base;
 
-use super::{is_valid_base, partition_interval_into, recurse, sa_char, sa_suffix_pos, SeedMatch,
-    SeedingContext, BASES, SLOTS};
+use super::{is_valid_base, partition, recurse, sa_char, sa_suffix_pos, SeedMatch, SeedingContext,
+    BASES, SLOTS};
 
-/// Q-singleton: one query SA entry, multiple target SA entries (partitioned).
+/// Half-singleton: one SA interval has a single entry, the other has multiple.
+/// `Q_SINGLETON=true` → query is the single entry, partition target.
+/// `Q_SINGLETON=false` → target is the single entry, partition query.
 #[inline(always)]
-pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
+pub(super) fn recurse_half_singleton<
+    F: FnMut(SeedMatch),
+    const WOBBLE: bool,
+    const Q_SINGLETON: bool,
+>(
     ctx: &mut SeedingContext<'_, F>,
-    q_idx: usize,
-    s: Range<usize>,
+    singleton_idx: usize,
+    multi: Range<usize>,
     depth: usize,
     match_streak: usize,
     mm_count: usize,
 ) {
-    let q_char = sa_char(ctx.q_sa, ctx.q_seq, q_idx, depth);
-    if !is_valid_base(q_char) {
+    let (single_sa, single_seq, multi_sa, multi_seq) = if Q_SINGLETON {
+        (ctx.q_sa, ctx.q_seq, ctx.t_sa, ctx.t_seq)
+    } else {
+        (ctx.t_sa, ctx.t_seq, ctx.q_sa, ctx.q_seq)
+    };
+
+    let single_char = sa_char(single_sa, single_seq, singleton_idx, depth);
+    if !is_valid_base(single_char) {
         return;
     }
 
-    let mut sint = [0usize; 6];
-    partition_interval_into(ctx.t_sa, ctx.t_seq, s.start, s.end, depth, &mut sint);
+    let part = partition(multi_sa, multi_seq, multi.start, multi.end, depth);
 
     let d1 = depth + 1;
     let can_mm = ctx.max_mm > 0
@@ -29,62 +40,27 @@ pub(super) fn recurse_q_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
         && d1 > ctx.min_prefix
         && match_streak < ctx.min_len
         && ctx.max_len - d1 >= ctx.min_suffix;
-    let q_base = Base::from_idx(q_char as usize);
-    let q1 = q_idx..q_idx + 1;
+    let single_base = Base::from_idx(single_char as usize);
+    let single_range = singleton_idx..singleton_idx + 1;
     let ms = match_streak + 1;
     let mm1 = mm_count + 1;
 
-    for j in 0..4 {
-        let ts = SLOTS[j];
-        if sint[ts] >= sint[ts + 1] {
+    for k in 0..4 {
+        let ps = SLOTS[k];
+        if part[ps] >= part[ps + 1] {
             continue;
         }
-        if q_base.pair_type(BASES[j]).is_match(WOBBLE) {
-            recurse::<F, WOBBLE>(ctx, q1.clone(), sint[ts]..sint[ts + 1], d1, ms, mm_count);
+        let part_range = part[ps]..part[ps + 1];
+        // pair_type is symmetric — argument order doesn't affect result.
+        let (q, s) = if Q_SINGLETON {
+            (single_range.clone(), part_range)
+        } else {
+            (part_range, single_range.clone())
+        };
+        if single_base.pair_type(BASES[k]).is_match(WOBBLE) {
+            recurse::<F, WOBBLE>(ctx, q, s, d1, ms, mm_count);
         } else if can_mm {
-            recurse::<F, WOBBLE>(ctx, q1.clone(), sint[ts]..sint[ts + 1], d1, 0, mm1);
-        }
-    }
-}
-
-/// S-singleton: one target SA entry, multiple query SA entries (partitioned).
-#[inline(always)]
-pub(super) fn recurse_s_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
-    ctx: &mut SeedingContext<'_, F>,
-    q: Range<usize>,
-    s_idx: usize,
-    depth: usize,
-    match_streak: usize,
-    mm_count: usize,
-) {
-    let s_char = sa_char(ctx.t_sa, ctx.t_seq, s_idx, depth);
-    if !is_valid_base(s_char) {
-        return;
-    }
-
-    let mut qint = [0usize; 6];
-    partition_interval_into(ctx.q_sa, ctx.q_seq, q.start, q.end, depth, &mut qint);
-
-    let d1 = depth + 1;
-    let can_mm = ctx.max_mm > 0
-        && mm_count < ctx.max_mm
-        && d1 > ctx.min_prefix
-        && match_streak < ctx.min_len
-        && ctx.max_len - d1 >= ctx.min_suffix;
-    let s_base = Base::from_idx(s_char as usize);
-    let s1 = s_idx..s_idx + 1;
-    let ms = match_streak + 1;
-    let mm1 = mm_count + 1;
-
-    for i in 0..4 {
-        let qs = SLOTS[i];
-        if qint[qs] >= qint[qs + 1] {
-            continue;
-        }
-        if BASES[i].pair_type(s_base).is_match(WOBBLE) {
-            recurse::<F, WOBBLE>(ctx, qint[qs]..qint[qs + 1], s1.clone(), d1, ms, mm_count);
-        } else if can_mm {
-            recurse::<F, WOBBLE>(ctx, qint[qs]..qint[qs + 1], s1.clone(), d1, 0, mm1);
+            recurse::<F, WOBBLE>(ctx, q, s, d1, 0, mm1);
         }
     }
 }
