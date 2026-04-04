@@ -24,8 +24,9 @@ const BASE_U: u8 = Base::U as u8; // 5
 /// The four matchable RNA bases indexed alongside SLOTS.
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
 
-/// Partition slot for each base in BASES.
-/// Partition layout: `[A=0, C=1, G=2, N=3, U=4]`; slot range = `p[slot]..p[slot+1]`.
+/// Partition slot for each matchable base in BASES.
+/// `partition()` returns `[A=0, C=1, G=2, N=3, U=4, end]`; this mapping
+/// intentionally skips the `N` bucket and addresses only searchable A/C/G/U slots.
 const SLOTS: [usize; 4] = [0, 1, 2, 4];
 
 /// Read the base discriminant at `sa[sa_idx].pos + offset` from the sequence.
@@ -168,6 +169,32 @@ struct SeedingContext<'a, F: FnMut(SeedMatch)> {
     on_match: &'a mut F,
 }
 
+impl<F: FnMut(SeedMatch)> SeedingContext<'_, F> {
+    #[inline(always)]
+    fn should_emit(&self, depth: usize, match_streak: usize, mm_count: usize) -> bool {
+        depth >= self.min_len
+            && depth <= self.max_len
+            && (mm_count == 0 || (match_streak >= self.min_suffix && match_streak < self.min_len))
+    }
+
+    #[inline(always)]
+    fn can_reach_suffix(&self, depth: usize, match_streak: usize, mm_count: usize) -> bool {
+        mm_count == 0
+            || self.min_suffix == 0
+            || match_streak + (self.max_len - depth) >= self.min_suffix
+    }
+
+    #[inline(always)]
+    fn can_mismatch_next(&self, depth: usize, match_streak: usize, mm_count: usize) -> bool {
+        let next_depth = depth + 1;
+        self.max_mm > 0
+            && mm_count < self.max_mm
+            && next_depth > self.min_prefix
+            && match_streak < self.min_len
+            && self.max_len - next_depth >= self.min_suffix
+    }
+}
+
 fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut SeedingContext<'_, F>,
     q: Range<usize>,
@@ -180,10 +207,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (sl, sr) = (s.start, s.end);
 
     // Emit match if within valid length range.
-    if depth >= ctx.min_len
-        && depth <= ctx.max_len
-        && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < ctx.min_len))
-    {
+    if ctx.should_emit(depth, match_streak, mm_count) {
         (ctx.on_match)(SeedMatch {
             query_interval: ql..qr,
             target_interval: sl..sr,
@@ -196,17 +220,14 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     }
 
     // Prune: can't accumulate enough suffix matches in remaining depth.
-    if mm_count > 0 && ctx.min_suffix > 0 {
-        let max_possible = match_streak + (ctx.max_len - depth);
-        if max_possible < ctx.min_suffix {
-            return;
-        }
+    if !ctx.can_reach_suffix(depth, match_streak, mm_count) {
+        return;
     }
 
     // Singleton fast paths: skip partition overhead when one or both intervals
     // have a single entry. Emission at this depth was already handled above.
     if qr - ql == 1 && sr - sl == 1 {
-        recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, match_streak, mm_count, false);
+        recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, match_streak, mm_count);
         return;
     }
     if qr - ql == 1 {
@@ -229,11 +250,7 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
     let d1 = depth + 1;
     let ms = match_streak + 1;
-    let can_mm = ctx.max_mm > 0
-        && mm_count < ctx.max_mm
-        && d1 > ctx.min_prefix
-        && match_streak < ctx.min_len
-        && ctx.max_len - d1 >= ctx.min_suffix;
+    let can_mm = ctx.can_mismatch_next(depth, match_streak, mm_count);
 
     // Pair dispatch: iterate all (query_base, target_base) combinations.
     // LLVM unrolls and constant-folds pair_type().is_match() for each (i,j).

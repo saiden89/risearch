@@ -15,8 +15,9 @@ const BOUNDARIES: [u8; 5] = [
 
 /// Partition a sorted SA interval by base character at `depth`.
 ///
-/// Returns 6 boundary positions `[A, C, G, N, U, end]`.
+/// Returns 6 boundary positions `[A, C, G, N, U, end]` in suffix-array order.
 /// Sub-interval for slot `k` is `bounds[k]..bounds[k+1]`.
+/// Callers that search only matchable RNA bases should skip the `N` bucket.
 #[inline(always)]
 pub(super) fn partition(
     sa: &[u64],

@@ -35,11 +35,7 @@ pub(super) fn recurse_half_singleton<
     let part = partition(multi_sa, multi_seq, multi.start, multi.end, depth);
 
     let d1 = depth + 1;
-    let can_mm = ctx.max_mm > 0
-        && mm_count < ctx.max_mm
-        && d1 > ctx.min_prefix
-        && match_streak < ctx.min_len
-        && ctx.max_len - d1 >= ctx.min_suffix;
+    let can_mm = ctx.can_mismatch_next(depth, match_streak, mm_count);
     let single_base = Base::from_idx(single_char as usize);
     let single_range = singleton_idx..singleton_idx + 1;
     let ms = match_streak + 1;
@@ -67,7 +63,8 @@ pub(super) fn recurse_half_singleton<
 
 /// Both-singleton fast path: tight linear scan when both SA intervals have one entry.
 ///
-/// Avoids all partition overhead — reads characters directly and advances in a loop.
+/// Assumes the caller already handled emission at the current depth, then advances
+/// linearly and emits only for newly reached depths.
 #[inline(always)]
 pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     ctx: &mut SeedingContext<'_, F>,
@@ -76,42 +73,21 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     mut depth: usize,
     mut match_streak: usize,
     mut mm_count: usize,
-    mut emit_current: bool,
 ) {
     let q_suffix_pos = sa_suffix_pos(ctx.q_sa, q_idx);
     let s_suffix_pos = sa_suffix_pos(ctx.t_sa, s_idx);
 
     loop {
-        if emit_current
-            && depth >= ctx.min_len
-            && depth <= ctx.max_len
-            && (mm_count == 0 || (match_streak >= ctx.min_suffix && match_streak < ctx.min_len))
-        {
-            (ctx.on_match)(SeedMatch {
-                query_interval: q_idx..q_idx + 1,
-                target_interval: s_idx..s_idx + 1,
-                seed_len: depth,
-            });
-        }
-        emit_current = true;
-
         if depth >= ctx.max_len {
             return;
         }
 
-        if mm_count > 0 && ctx.min_suffix > 0 {
-            let max_possible = match_streak + (ctx.max_len - depth);
-            if max_possible < ctx.min_suffix {
-                return;
-            }
+        if !ctx.can_reach_suffix(depth, match_streak, mm_count) {
+            return;
         }
 
         let d1 = depth + 1;
-        let can_mm = ctx.max_mm > 0
-            && mm_count < ctx.max_mm
-            && d1 > ctx.min_prefix
-            && match_streak < ctx.min_len
-            && ctx.max_len - d1 >= ctx.min_suffix;
+        let can_mm = ctx.can_mismatch_next(depth, match_streak, mm_count);
 
         // SAFETY: SA_CHAR_PADDING sentinels guarantee in-bounds access.
         // Read Base directly — #[repr(u8)] means same layout, zero-cost.
@@ -124,14 +100,20 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
         if q_base.pair_type(s_base).is_match(WOBBLE) {
             depth = d1;
             match_streak += 1;
-            continue;
-        }
-        if can_mm {
+        } else if can_mm {
             depth = d1;
             mm_count += 1;
             match_streak = 0;
-            continue;
+        } else {
+            return;
         }
-        return;
+
+        if ctx.should_emit(depth, match_streak, mm_count) {
+            (ctx.on_match)(SeedMatch {
+                query_interval: q_idx..q_idx + 1,
+                target_interval: s_idx..s_idx + 1,
+                seed_len: depth,
+            });
+        }
     }
 }
