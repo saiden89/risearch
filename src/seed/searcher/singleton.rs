@@ -1,19 +1,12 @@
 use std::ops::Range;
 
-use crate::types::Base;
-
-use super::{is_valid_base, partition, recurse, sa_char, sa_suffix_pos, SeedMatch, SeedingContext,
-    BASES, SLOTS};
+use super::{partition, recurse, SeedMatch, SeedSaView, SeedingContext, BASES, SLOTS};
 
 /// Half-singleton: one SA interval has a single entry, the other has multiple.
 /// `Q_SINGLETON=true` → query is the single entry, partition target.
 /// `Q_SINGLETON=false` → target is the single entry, partition query.
 #[inline(always)]
-pub(super) fn recurse_half_singleton<
-    F: FnMut(SeedMatch),
-    const WOBBLE: bool,
-    const Q_SINGLETON: bool,
->(
+pub(super) fn recurse_half_singleton<F: FnMut(SeedMatch), const WOBBLE: bool, const Q_SINGLETON: bool>(
     ctx: &mut SeedingContext<'_, F>,
     singleton_idx: usize,
     multi: Range<usize>,
@@ -21,22 +14,17 @@ pub(super) fn recurse_half_singleton<
     match_streak: usize,
     mm_count: usize,
 ) {
-    let (single_sa, single_seq, multi_sa, multi_seq) = if Q_SINGLETON {
-        (ctx.q_sa, ctx.q_seq, ctx.t_sa, ctx.t_seq)
-    } else {
-        (ctx.t_sa, ctx.t_seq, ctx.q_sa, ctx.q_seq)
-    };
+    let (single, multi_view) = if Q_SINGLETON { (ctx.q, ctx.t) } else { (ctx.t, ctx.q) };
 
-    let single_char = sa_char(single_sa, single_seq, singleton_idx, depth);
-    if !is_valid_base(single_char) {
+    let single_base = single.sa_base(singleton_idx, depth);
+    if !single_base.is_matchable() {
         return;
     }
 
-    let part = partition(multi_sa, multi_seq, multi.start, multi.end, depth);
+    let part = partition(multi_view, multi.start, multi.end, depth);
 
     let d1 = depth + 1;
     let can_mm = ctx.can_mismatch_next(depth, match_streak, mm_count);
-    let single_base = Base::from_idx(single_char as usize);
     let single_range = singleton_idx..singleton_idx + 1;
     let ms = match_streak + 1;
     let mm1 = mm_count + 1;
@@ -47,7 +35,6 @@ pub(super) fn recurse_half_singleton<
             continue;
         }
         let part_range = part[ps]..part[ps + 1];
-        // pair_type is symmetric — argument order doesn't affect result.
         let (q, s) = if Q_SINGLETON {
             (single_range.clone(), part_range)
         } else {
@@ -74,9 +61,6 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
     mut match_streak: usize,
     mut mm_count: usize,
 ) {
-    let q_suffix_pos = sa_suffix_pos(ctx.q_sa, q_idx);
-    let s_suffix_pos = sa_suffix_pos(ctx.t_sa, s_idx);
-
     loop {
         if depth >= ctx.max_len {
             return;
@@ -89,10 +73,8 @@ pub(super) fn recurse_singleton<F: FnMut(SeedMatch), const WOBBLE: bool>(
         let d1 = depth + 1;
         let can_mm = ctx.can_mismatch_next(depth, match_streak, mm_count);
 
-        // SAFETY: SA_CHAR_PADDING sentinels guarantee in-bounds access.
-        // Read Base directly — #[repr(u8)] means same layout, zero-cost.
-        let q_base = unsafe { *ctx.q_seq.get_unchecked(q_suffix_pos + depth) };
-        let s_base = unsafe { *ctx.t_seq.get_unchecked(s_suffix_pos + depth) };
+        let q_base = ctx.q.sa_base(q_idx, depth);
+        let s_base = ctx.t.sa_base(s_idx, depth);
         if !q_base.is_matchable() || !s_base.is_matchable() {
             return;
         }

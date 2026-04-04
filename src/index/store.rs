@@ -56,9 +56,9 @@ pub struct TargetStore {
     sa_real_len: usize,
 }
 
-/// Global suffix array view for seed search — zero-copy from mmap.
+/// Target-side combined suffix-array view for seed search — zero-copy from mmap.
 #[derive(Clone, Copy)]
-pub struct GlobalView<'a> {
+pub struct TargetView<'a> {
     pub combined_seq: &'a [Base],
     pub combined_sa: &'a [u64],
     pub sa_real_len: usize,
@@ -70,7 +70,7 @@ pub struct GlobalView<'a> {
     pub seq_lens: &'a [u32],
 }
 
-impl<'a> GlobalView<'a> {
+impl<'a> TargetView<'a> {
     /// Return the forward and reverse-complement slices for a target, plus its length.
     ///
     /// Layout within global: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap.
@@ -347,9 +347,9 @@ impl TargetStore {
         self.names.iter().position(|n| n == name).map(|i| i as u32)
     }
 
-    /// Get a global view of the combined SA and sequence for seed search.
-    pub fn global_view(&self) -> GlobalView<'_> {
-        GlobalView {
+    /// Get a target-side view of the combined SA and sequence for seed search.
+    pub fn target_view(&self) -> TargetView<'_> {
+        TargetView {
             combined_seq: self.combined_seq(),
             combined_sa: self.combined_sa(),
             sa_real_len: self.sa_real_len,
@@ -523,7 +523,7 @@ mod tests {
     use super::TargetStore;
 
     #[test]
-    fn roundtrip_build_open_global_view() {
+    fn roundtrip_build_open_target_view() {
         let dir = tempdir().unwrap();
         let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
@@ -538,11 +538,11 @@ mod tests {
         let expected = [("chrA", 6usize), ("chrB", 6usize)];
         assert_eq!(store.len(), expected.len());
 
-        // Verify global view is accessible
-        let global = store.global_view();
-        assert_eq!(global.offsets.len(), store.len());
-        assert_eq!(global.seq_lens.len(), store.len());
-        assert!(global.sa_real_len > 0);
+        // Verify target view is accessible
+        let target = store.target_view();
+        assert_eq!(target.offsets.len(), store.len());
+        assert_eq!(target.seq_lens.len(), store.len());
+        assert!(target.sa_real_len > 0);
 
         // Verify target_seqs for each target
         for (i, (expected_name, expected_seq_len)) in expected.iter().enumerate().take(store.len())
@@ -569,23 +569,23 @@ mod tests {
 
     #[test]
     fn map_target_pos_normalizes_into_strand_view() {
-        use super::GlobalView;
+        use super::TargetView;
         use crate::types::Strand;
 
         let seq_len = 5;
         let seed_len = 2;
 
         assert_eq!(
-            GlobalView::map_target_pos(1, seq_len, seed_len),
+            TargetView::map_target_pos(1, seq_len, seed_len),
             Some((Strand::Reverse, 2))
         );
         assert_eq!(
-            GlobalView::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
+            TargetView::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
             Some((Strand::Forward, 1))
         );
-        assert_eq!(GlobalView::map_target_pos(seq_len, seq_len, seed_len), None);
+        assert_eq!(TargetView::map_target_pos(seq_len, seq_len, seed_len), None);
         assert_eq!(
-            GlobalView::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
+            TargetView::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
             None
         );
     }
@@ -604,13 +604,13 @@ mod tests {
 
         TargetStore::build_from_fasta(&fasta_path, &index_path).unwrap();
         let store = TargetStore::open(&index_path).unwrap();
-        let global = store.global_view();
+        let target = store.target_view();
 
         // Verify offsets are contiguous: offset[i+1] = offset[i] + 2*seq_len[i] + 2
         for i in 0..store.len() - 1 {
-            let expected_next = global.offsets[i] + 2 * global.seq_lens[i] as u64 + 2;
+            let expected_next = target.offsets[i] + 2 * target.seq_lens[i] as u64 + 2;
             assert_eq!(
-                global.offsets[i + 1],
+                target.offsets[i + 1],
                 expected_next,
                 "Offset mismatch at target {}",
                 i

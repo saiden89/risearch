@@ -22,7 +22,7 @@ fn partition_splits_by_base() {
     let seq_bases = vec![Base::A, Base::G, Base::C, Base::U];
     let seq = Sequence::from(seq_bases);
     let (padded_sa, padded_seq, real_len) = build_padded_sa(&seq);
-    let parts = partition(&padded_sa, &padded_seq, 0, real_len, 0);
+    let parts = partition((padded_sa.as_slice(), padded_seq.as_slice(), real_len), 0, real_len, 0);
 
     assert_eq!(parts[1] - parts[0], 1); // A
     assert_eq!(parts[2] - parts[1], 1); // C
@@ -42,13 +42,9 @@ fn singleton_handoff_does_not_double_emit() {
 
     let cfg = SeedConfig::with_wobble(SeedSpec::LengthOnly(1), MismatchSpec::exact(), false);
     let searcher = SeedSearcher::new(
-        &q_sa,
-        &q_seq_padded,
+        (q_sa.as_slice(), q_seq_padded.as_slice(), q_sa_len),
         0,
-        q_sa_len,
-        &t_sa,
-        &t_seq_padded,
-        t_sa_len,
+        (t_sa.as_slice(), t_seq_padded.as_slice(), t_sa_len),
         &cfg,
     );
 

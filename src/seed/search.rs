@@ -1,5 +1,5 @@
 use crate::config::SeedConfig;
-use crate::index::store::GlobalView;
+use crate::index::store::TargetView;
 use crate::registry::QueryRegistry;
 use crate::types::{SeedLen, TargetId};
 
@@ -32,7 +32,7 @@ struct QuerySeedBounds {
 /// Returns seeds sorted by `query_idx` for efficient per-query bucketing.
 pub(crate) fn collect_seeds(
     queries: &QueryRegistry,
-    global: &GlobalView<'_>,
+    target: &TargetView<'_>,
     config: &SeedConfig,
 ) -> Vec<SeedHit> {
     let qv = queries.query_view();
@@ -57,13 +57,9 @@ pub(crate) fn collect_seeds(
     }
 
     let searcher = SeedSearcher::new(
-        qv.combined_sa,
-        qv.combined_seed_seq,
+        (qv.combined_sa, qv.combined_seed_seq, qv.sa_real_len),
         0,
-        qv.sa_real_len,
-        global.combined_sa,
-        global.combined_seq,
-        global.sa_real_len,
+        (target.combined_sa, target.combined_seq, target.sa_real_len),
         config,
     );
 
@@ -92,12 +88,12 @@ pub(crate) fn collect_seeds(
                 continue;
             }
 
-            for &t_sa_pos in &global.combined_sa[m.target_interval.start..m.target_interval.end] {
-                let Some((ti, t_local_pos)) = remap(global.offsets, t_sa_pos as usize) else {
+            for &t_sa_pos in &target.combined_sa[m.target_interval.start..m.target_interval.end] {
+                let Some((ti, t_local_pos)) = remap(target.offsets, t_sa_pos as usize) else {
                     continue;
                 };
                 let Some((strand, target_start)) =
-                    GlobalView::map_target_pos(t_local_pos, global.seq_lens[ti] as usize, seed_len)
+                    TargetView::map_target_pos(t_local_pos, target.seq_lens[ti] as usize, seed_len)
                 else {
                     continue;
                 };

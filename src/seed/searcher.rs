@@ -14,13 +14,6 @@ mod singleton;
 use partition::partition;
 use singleton::{recurse_half_singleton, recurse_singleton};
 
-// Raw Base discriminant values (from #[repr(u8)] Base enum).
-// Enum order: Gap(0) < A(1) < C(2) < G(3) < N(4) < U(5).
-const BASE_A: u8 = Base::A as u8; // 1
-const BASE_C: u8 = Base::C as u8; // 2
-const BASE_G: u8 = Base::G as u8; // 3
-const BASE_U: u8 = Base::U as u8; // 5
-
 /// The four matchable RNA bases indexed alongside SLOTS.
 const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
 
@@ -29,32 +22,29 @@ const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
 /// intentionally skips the `N` bucket and addresses only searchable A/C/G/U slots.
 const SLOTS: [usize; 4] = [0, 1, 2, 4];
 
-/// Read the base discriminant at `sa[sa_idx].pos + offset` from the sequence.
-///
-/// # Safety
-/// SA_CHAR_PADDING sentinel entries guarantee `suffix_pos + offset` is within
-/// bounds for any valid SA index and depth up to max_len.
-#[inline(always)]
-fn sa_char(sa: &[u64], seq: &[Base], sa_idx: usize, offset: usize) -> u8 {
-    let suffix_pos = sa_suffix_pos(sa, sa_idx);
-    unsafe { *seq.get_unchecked(suffix_pos + offset) as u8 }
+pub(crate) trait SeedSaView: Copy {
+    fn sa_real_len(&self) -> usize;
+    fn sa_suffix_pos(&self, sa_idx: usize) -> usize;
+    fn sa_base(&self, sa_idx: usize, offset: usize) -> Base;
 }
 
-/// Extract the suffix position from a position-only SA entry.
-#[inline(always)]
-fn sa_suffix_pos(sa: &[u64], sa_idx: usize) -> usize {
-    unsafe { *sa.get_unchecked(sa_idx) as usize }
-}
+impl SeedSaView for (&[u64], &[Base], usize) {
+    #[inline(always)]
+    fn sa_real_len(&self) -> usize {
+        self.2
+    }
 
-/// True for the four matchable bases (A, C, G, U); false for N and Gap.
-#[inline(always)]
-fn is_valid_base(c: u8) -> bool {
-    matches!(c, BASE_A | BASE_C | BASE_G | BASE_U)
-}
+    #[inline(always)]
+    fn sa_suffix_pos(&self, sa_idx: usize) -> usize {
+        unsafe { *self.0.get_unchecked(sa_idx) as usize }
+    }
 
-// =============================================================================
-// SEED MATCH
-// =============================================================================
+    #[inline(always)]
+    fn sa_base(&self, sa_idx: usize, offset: usize) -> Base {
+        let suffix_pos = self.sa_suffix_pos(sa_idx);
+        unsafe { *self.1.get_unchecked(suffix_pos + offset) }
+    }
+}
 
 /// A seed match found by parallel SA search.
 #[derive(Debug, Clone)]
@@ -64,60 +54,40 @@ pub struct SeedMatch {
     pub(crate) seed_len: usize,
 }
 
-// =============================================================================
-// SEED SEARCHER
-// =============================================================================
-
 /// Parallel SA searcher.
 ///
 /// Query SA is built on the query as-is.
 /// Target SA is built on the COMPLEMENT of the target.
 /// Seed matching uses RNA pairing classes against this complemented target alphabet.
 pub struct SeedSearcher<'a> {
-    q_sa: &'a [u64],
-    q_seq: &'a [Base],
+    q: (&'a [u64], &'a [Base], usize),
     q_sa_start: usize,
-    q_sa_len: usize,
-    t_sa: &'a [u64],
-    t_seq: &'a [Base],
-    t_sa_len: usize,
+    t: (&'a [u64], &'a [Base], usize),
     cfg: &'a SeedConfig,
 }
 
 impl<'a> SeedSearcher<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        q_sa: &'a [u64],
-        q_seq: &'a [Base],
+        q: (&'a [u64], &'a [Base], usize),
         q_sa_start: usize,
-        q_sa_len: usize,
-        t_sa: &'a [u64],
-        t_seq: &'a [Base],
-        t_sa_len: usize,
+        t: (&'a [u64], &'a [Base], usize),
         cfg: &'a SeedConfig,
     ) -> Self {
         Self {
-            q_sa,
-            q_seq,
+            q,
             q_sa_start,
-            q_sa_len,
-            t_sa,
-            t_seq,
-            t_sa_len,
+            t,
             cfg,
         }
     }
 
-    /// Stream seed matches for a length range.
     pub fn for_each_length_range<F>(&self, min_len: usize, max_len: usize, mut on_match: F)
     where
         F: FnMut(SeedMatch),
     {
         let mut ctx = SeedingContext {
-            q_sa: self.q_sa,
-            q_seq: self.q_seq,
-            t_sa: self.t_sa,
-            t_seq: self.t_seq,
+            q: self.q,
+            t: self.t,
             min_len,
             max_len,
             max_mm: self.cfg.mismatch.max_mismatches,
@@ -126,8 +96,8 @@ impl<'a> SeedSearcher<'a> {
             on_match: &mut on_match,
         };
 
-        let q = self.q_sa_start..self.q_sa_len;
-        let s = 0..self.t_sa_len;
+        let q = self.q_sa_start..self.q.sa_real_len();
+        let s = 0..self.t.sa_real_len();
         if self.cfg.seed_wobble {
             recurse::<_, true>(&mut ctx, q, s, 0, 0, 0);
         } else {
@@ -135,7 +105,6 @@ impl<'a> SeedSearcher<'a> {
         }
     }
 
-    /// Collect all matches into a Vec.
     pub fn search_length_range(
         &self,
         min_len: usize,
@@ -146,27 +115,15 @@ impl<'a> SeedSearcher<'a> {
     }
 }
 
-// =============================================================================
-// RECURSIVE SEARCH
-// =============================================================================
-
-/// Shared context threaded through the recursive search.
-///
-/// In complement-transformed target space, canonical seed matches are:
-/// - canonical: A↔U, G↔C, C↔G, U↔A
-/// - wobble (optional): G↔U, U↔G
-/// - everything else is mismatch
-struct SeedingContext<'a, F: FnMut(SeedMatch)> {
-    q_sa: &'a [u64],
-    q_seq: &'a [Base],
-    t_sa: &'a [u64],
-    t_seq: &'a [Base],
+pub(super) struct SeedingContext<'a, F: FnMut(SeedMatch)> {
+    pub(super) q: (&'a [u64], &'a [Base], usize),
+    pub(super) t: (&'a [u64], &'a [Base], usize),
     min_len: usize,
     max_len: usize,
     max_mm: usize,
     min_prefix: usize,
     min_suffix: usize,
-    on_match: &'a mut F,
+    pub(super) on_match: &'a mut F,
 }
 
 impl<F: FnMut(SeedMatch)> SeedingContext<'_, F> {
@@ -206,7 +163,6 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let (ql, qr) = (q.start, q.end);
     let (sl, sr) = (s.start, s.end);
 
-    // Emit match if within valid length range.
     if ctx.should_emit(depth, match_streak, mm_count) {
         (ctx.on_match)(SeedMatch {
             query_interval: ql..qr,
@@ -219,13 +175,10 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         return;
     }
 
-    // Prune: can't accumulate enough suffix matches in remaining depth.
     if !ctx.can_reach_suffix(depth, match_streak, mm_count) {
         return;
     }
 
-    // Singleton fast paths: skip partition overhead when one or both intervals
-    // have a single entry. Emission at this depth was already handled above.
     if qr - ql == 1 && sr - sl == 1 {
         recurse_singleton::<F, WOBBLE>(ctx, ql, sl, depth, match_streak, mm_count);
         return;
@@ -239,11 +192,9 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         return;
     }
 
-    // Partition both SA intervals by base at current depth.
-    let qi = partition(ctx.q_sa, ctx.q_seq, ql, qr, depth);
-    let si = partition(ctx.t_sa, ctx.t_seq, sl, sr, depth);
+    let qi = partition(ctx.q, ql, qr, depth);
+    let si = partition(ctx.t, sl, sr, depth);
 
-    // No ACGU bases on either side — nothing to pair.
     if qi[0] == qr || si[0] == sr {
         return;
     }
@@ -252,8 +203,6 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let ms = match_streak + 1;
     let can_mm = ctx.can_mismatch_next(depth, match_streak, mm_count);
 
-    // Pair dispatch: iterate all (query_base, target_base) combinations.
-    // LLVM unrolls and constant-folds pair_type().is_match() for each (i,j).
     for i in 0..4 {
         let qs = SLOTS[i];
         if qi[qs] >= qi[qs + 1] {
@@ -281,11 +230,6 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
         }
     }
 }
-
-
-// =============================================================================
-// TESTS
-// =============================================================================
 
 #[cfg(test)]
 mod tests;

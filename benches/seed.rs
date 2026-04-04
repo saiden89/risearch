@@ -246,13 +246,17 @@ fn bench_seed_exact(c: &mut Criterion) {
             b.iter(|| {
                 results.clear();
                 let searcher = SeedSearcher::new(
-                    black_box(q_sa.as_slice()),
-                    black_box(q_seq.as_slice()),
+                    (
+                        black_box(q_sa.as_slice()),
+                        black_box(q_seq.as_slice()),
+                        black_box(q_sa_len),
+                    ),
                     black_box(q_sa_start),
-                    black_box(q_sa_len),
-                    black_box(t_sa.as_slice()),
-                    black_box(t_seq.as_slice()),
-                    black_box(t_sa_len),
+                    (
+                        black_box(t_sa.as_slice()),
+                        black_box(t_seq.as_slice()),
+                        black_box(t_sa_len),
+                    ),
                     black_box(&seed_config),
                 );
                 searcher.search_length_range(7, 22, &mut results);
@@ -282,13 +286,17 @@ fn bench_seed_mismatch(c: &mut Criterion) {
             b.iter(|| {
                 results.clear();
                 let searcher = SeedSearcher::new(
-                    black_box(q_sa.as_slice()),
-                    black_box(q_seq.as_slice()),
+                    (
+                        black_box(q_sa.as_slice()),
+                        black_box(q_seq.as_slice()),
+                        black_box(q_sa_len),
+                    ),
                     black_box(q_sa_start),
-                    black_box(q_sa_len),
-                    black_box(t_sa.as_slice()),
-                    black_box(t_seq.as_slice()),
-                    black_box(t_sa_len),
+                    (
+                        black_box(t_sa.as_slice()),
+                        black_box(t_seq.as_slice()),
+                        black_box(t_sa_len),
+                    ),
                     black_box(&seed_config),
                 );
                 searcher.search_length_range(7, 22, &mut results);
@@ -311,7 +319,7 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
             true,
         );
         let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
-        let global = dataset.store.global_view();
+        let global = dataset.store.target_view();
         let prepared_queries: Vec<_> = dataset
             .queries
             .entries()
@@ -328,13 +336,17 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
                     for prepared in &prepared_queries {
                         results.clear();
                         let searcher = SeedSearcher::new(
-                            black_box(prepared.padded_q_sa.as_slice()),
-                            black_box(prepared.padded_q_seq.as_slice()),
+                            (
+                                black_box(prepared.padded_q_sa.as_slice()),
+                                black_box(prepared.padded_q_seq.as_slice()),
+                                black_box(prepared.q_sa_len),
+                            ),
                             black_box(prepared.q_sa_start),
-                            black_box(prepared.q_sa_len),
-                            black_box(global.combined_sa),
-                            black_box(global.combined_seq),
-                            black_box(global.sa_real_len),
+                            (
+                                black_box(global.combined_sa),
+                                black_box(global.combined_seq),
+                                black_box(global.sa_real_len),
+                            ),
                             black_box(&seed_config),
                         );
                         searcher.search_length_range(
@@ -370,13 +382,17 @@ fn bench_seed_realistic(c: &mut Criterion) {
             for (q_sa, q_seq, q_sa_start, q_sa_len) in &queries {
                 results.clear();
                 let searcher = SeedSearcher::new(
-                    black_box(q_sa.as_slice()),
-                    black_box(q_seq.as_slice()),
+                    (
+                        black_box(q_sa.as_slice()),
+                        black_box(q_seq.as_slice()),
+                        black_box(*q_sa_len),
+                    ),
                     black_box(*q_sa_start),
-                    black_box(*q_sa_len),
-                    black_box(t_sa.as_slice()),
-                    black_box(t_seq.as_slice()),
-                    black_box(t_sa_len),
+                    (
+                        black_box(t_sa.as_slice()),
+                        black_box(t_seq.as_slice()),
+                        black_box(t_sa_len),
+                    ),
                     black_box(&seed_config),
                 );
                 searcher.search_length_range(7, 22, &mut results);
@@ -395,7 +411,7 @@ fn bench_seed_prod_shaped_searcher(c: &mut Criterion) {
     let seed_config =
         SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
     let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
-    let global = dataset.store.global_view();
+    let global = dataset.store.target_view();
     let prepared_queries: Vec<_> = dataset
         .queries
         .entries()
@@ -409,13 +425,17 @@ fn bench_seed_prod_shaped_searcher(c: &mut Criterion) {
             for prepared in &prepared_queries {
                 results.clear();
                 let searcher = SeedSearcher::new(
-                    black_box(prepared.padded_q_sa.as_slice()),
-                    black_box(prepared.padded_q_seq.as_slice()),
+                    (
+                        black_box(prepared.padded_q_sa.as_slice()),
+                        black_box(prepared.padded_q_seq.as_slice()),
+                        black_box(prepared.q_sa_len),
+                    ),
                     black_box(prepared.q_sa_start),
-                    black_box(prepared.q_sa_len),
-                    black_box(global.combined_sa),
-                    black_box(global.combined_seq),
-                    black_box(global.sa_real_len),
+                    (
+                        black_box(global.combined_sa),
+                        black_box(global.combined_seq),
+                        black_box(global.sa_real_len),
+                    ),
                     black_box(&seed_config),
                 );
                 searcher.search_length_range(prepared.min_len, prepared.max_len, &mut results);
@@ -436,7 +456,10 @@ fn combined_query_seed_bounds(queries: &QueryRegistry, seed_config: &SeedConfig)
             .normalize(query.sequence().len())
             .expect("seed config")
             .2;
-        let max_len = query.seed_interval().end.saturating_sub(query.seed_interval().start);
+        let max_len = query
+            .seed_interval()
+            .end
+            .saturating_sub(query.seed_interval().start);
         global_min_len = global_min_len.min(min_len);
         global_max_len = global_max_len.max(max_len);
     }
@@ -447,15 +470,12 @@ fn bench_combined_vs_per_query(c: &mut Criterion) {
     let mut group = c.benchmark_group("combined_vs_per_query");
     group.sample_size(10);
 
-    let seed_config = SeedConfig::with_wobble(
-        SeedSpec::LengthOnly(7),
-        MismatchSpec::new(1, 2, 2),
-        true,
-    );
+    let seed_config =
+        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
 
     for query_count in [1, 10, 50, 100] {
         let dataset = build_production_dataset(query_count, 22, 100_000, &seed_config);
-        let global = dataset.store.global_view();
+        let global = dataset.store.target_view();
 
         // Approach A: per-query loop (pre-padded, no alloc in hot path)
         let prepared: Vec<PreparedQuery> = dataset
@@ -474,13 +494,17 @@ fn bench_combined_vs_per_query(c: &mut Criterion) {
                     for p in &prepared {
                         results.clear();
                         let searcher = SeedSearcher::new(
-                            black_box(p.padded_q_sa.as_slice()),
-                            black_box(p.padded_q_seq.as_slice()),
+                            (
+                                black_box(p.padded_q_sa.as_slice()),
+                                black_box(p.padded_q_seq.as_slice()),
+                                black_box(p.q_sa_len),
+                            ),
                             black_box(p.q_sa_start),
-                            black_box(p.q_sa_len),
-                            black_box(global.combined_sa),
-                            black_box(global.combined_seq),
-                            black_box(global.sa_real_len),
+                            (
+                                black_box(global.combined_sa),
+                                black_box(global.combined_seq),
+                                black_box(global.sa_real_len),
+                            ),
                             black_box(&seed_config),
                         );
                         searcher.search_length_range(p.min_len, p.max_len, &mut results);
@@ -503,13 +527,17 @@ fn bench_combined_vs_per_query(c: &mut Criterion) {
                 b.iter(|| {
                     results.clear();
                     let searcher = SeedSearcher::new(
-                        black_box(qv.combined_sa),
-                        black_box(qv.combined_seed_seq),
+                        (
+                            black_box(qv.combined_sa),
+                            black_box(qv.combined_seed_seq),
+                            black_box(qv.sa_real_len),
+                        ),
                         black_box(0),
-                        black_box(qv.sa_real_len),
-                        black_box(global.combined_sa),
-                        black_box(global.combined_seq),
-                        black_box(global.sa_real_len),
+                        (
+                            black_box(global.combined_sa),
+                            black_box(global.combined_seq),
+                            black_box(global.sa_real_len),
+                        ),
                         black_box(&seed_config),
                     );
                     searcher.search_length_range(global_min_len, global_max_len, &mut results);

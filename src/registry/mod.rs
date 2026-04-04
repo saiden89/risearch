@@ -166,7 +166,8 @@ impl RegistryEntry for Query {
     }
 }
 
-/// Combined query data for seed search — mirrors `GlobalView` on the target side.
+/// Combined query data for seed search — mirrors `TargetView` on the target side.
+#[derive(Clone, Copy)]
 pub struct QueryView<'a> {
     pub combined_seed_seq: &'a [Base],
     pub combined_sa: &'a [u64],
@@ -174,6 +175,7 @@ pub struct QueryView<'a> {
     pub offsets: &'a [u64],
     pub seed_seq_lens: &'a [u32],
 }
+
 
 /// Registry of queries with a combined suffix array for efficient seed search.
 ///

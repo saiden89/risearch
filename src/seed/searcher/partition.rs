@@ -1,6 +1,6 @@
 use crate::types::Base;
 
-use super::sa_char;
+use super::SeedSaView;
 
 const LINEAR_PARTITION_CUTOFF: usize = 1024;
 
@@ -19,9 +19,8 @@ const BOUNDARIES: [u8; 5] = [
 /// Sub-interval for slot `k` is `bounds[k]..bounds[k+1]`.
 /// Callers that search only matchable RNA bases should skip the `N` bucket.
 #[inline(always)]
-pub(super) fn partition(
-    sa: &[u64],
-    seq: &[Base],
+pub(super) fn partition<V: SeedSaView>(
+    view: V,
     start: usize,
     end: usize,
     depth: usize,
@@ -34,14 +33,14 @@ pub(super) fn partition(
     if end - start <= LINEAR_PARTITION_CUTOFF {
         let mut i = start;
         for (slot, &target) in BOUNDARIES.iter().enumerate() {
-            while i < end && sa_char(sa, seq, i, depth) < target {
+            while i < end && (view.sa_base(i, depth) as u8) < target {
                 i += 1;
             }
             out[slot] = i;
         }
     } else {
         for (slot, &target) in BOUNDARIES.iter().enumerate() {
-            out[slot] = binary_search(sa, seq, start, end, depth, target);
+            out[slot] = binary_search(view, start, end, depth, target);
         }
     }
     out[5] = end;
@@ -50,9 +49,8 @@ pub(super) fn partition(
 
 /// Binary search for leftmost position where character at `depth` >= `target`.
 #[inline(always)]
-fn binary_search(
-    sa: &[u64],
-    seq: &[Base],
+fn binary_search<V: SeedSaView>(
+    view: V,
     mut start: usize,
     mut end: usize,
     depth: usize,
@@ -61,7 +59,7 @@ fn binary_search(
     let mut half = (end - start) >> 1;
     while start < end {
         let mid = start + half;
-        if sa_char(sa, seq, mid, depth) >= target {
+        if (view.sa_base(mid, depth) as u8) >= target {
             end = start + half;
         } else {
             start += if half != 0 { half } else { 1 };

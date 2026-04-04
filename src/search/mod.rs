@@ -22,7 +22,7 @@ use crate::alignment::{Alignment, PairClass};
 use crate::config::{OutputFormat, SearchConfig};
 use crate::dp::{DpConfig, ExtendDir};
 use crate::dsm::ScoringModel;
-use crate::index::store::{GlobalView, TargetStore};
+use crate::index::store::{TargetStore, TargetView};
 use crate::output::format::HitCtx;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
@@ -65,7 +65,7 @@ pub fn run_search_in_memory(
         return Ok(Vec::new());
     }
     let ctx = SearchContext::new(queries, store, opts);
-    let all_seeds = collect_seeds(ctx.queries, &ctx.global, &ctx.opts.seed);
+    let all_seeds = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
     let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
 
     let hits: Vec<SearchHit> = seed_groups
@@ -78,7 +78,7 @@ pub fn run_search_in_memory(
 
             seeds.iter().filter_map(move |seed| {
                 let target_idx = seed.target_id.0 as usize;
-                let (t_fwd, t_rc, target_len) = ctx.global.target_slices(target_idx);
+                let (t_fwd, t_rc, target_len) = ctx.target.target_slices(target_idx);
                 let target_trans = match seed.strand {
                     Strand::Forward => t_fwd,
                     Strand::Reverse => t_rc,
@@ -145,17 +145,17 @@ pub fn run_search(
 struct SearchContext<'a> {
     queries: &'a QueryRegistry,
     store: &'a TargetStore,
-    global: GlobalView<'a>,
+    target: TargetView<'a>,
     opts: &'a SearchConfig,
 }
 
 impl<'a> SearchContext<'a> {
     fn new(queries: &'a QueryRegistry, store: &'a TargetStore, opts: &'a SearchConfig) -> Self {
-        let global = store.global_view();
+        let target = store.target_view();
         Self {
             queries,
             store,
-            global,
+            target,
             opts,
         }
     }
@@ -196,7 +196,7 @@ fn group_by_query(seeds: &[SeedHit], query_count: usize) -> Vec<(u32, &[SeedHit]
 
 /// Single-file backend: collect seeds, then extend + format per query in parallel.
 fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
-    let all_seeds = collect_seeds(ctx.queries, &ctx.global, &ctx.opts.seed);
+    let all_seeds = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
     let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
 
     let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
@@ -226,7 +226,7 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
 
 /// Multifile backend: collect seeds, then extend + write per query in parallel.
 fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
-    let all_seeds = collect_seeds(ctx.queries, &ctx.global, &ctx.opts.seed);
+    let all_seeds = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
     let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
 
     let total = AtomicUsize::new(0);
@@ -298,7 +298,7 @@ where
 
     for seed in seeds {
         let target_idx = seed.target_id.0 as usize;
-        let (t_fwd, t_rc, target_len) = ctx.global.target_slices(target_idx);
+        let (t_fwd, t_rc, target_len) = ctx.target.target_slices(target_idx);
         let target_trans = match seed.strand {
             Strand::Forward => t_fwd,
             Strand::Reverse => t_rc,
