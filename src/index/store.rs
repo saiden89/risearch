@@ -10,7 +10,7 @@ use needletail::parse_fastx_file;
 use crate::index::io::validate_output_path;
 use crate::index::sa::SuffixArray;
 use crate::seq::Sequence;
-use crate::types::Base;
+use crate::types::{Base, Strand};
 
 // =============================================================================
 // FORMAT CONSTANTS
@@ -57,6 +57,7 @@ pub struct TargetStore {
 }
 
 /// Global suffix array view for seed search — zero-copy from mmap.
+#[derive(Clone, Copy)]
 pub struct GlobalView<'a> {
     pub combined_seq: &'a [Base],
     pub combined_sa: &'a [u64],
@@ -80,6 +81,36 @@ impl<'a> GlobalView<'a> {
         let t_fwd = &self.combined_seq[offset..offset + seq_len];
         let t_rc = &self.combined_seq[offset + seq_len + 1..offset + 2 * seq_len + 1];
         (t_fwd, t_rc, seq_len)
+    }
+
+    /// Map a local position within a target block to strand and view-normalized start.
+    ///
+    /// Block layout: `fwd_comp[seq_len] + Gap + rc[seq_len] + Gap`.
+    /// Returns `None` if the position falls on a Gap or the seed overflows the block.
+    #[inline]
+    pub fn map_target_pos(
+        local_pos: usize,
+        seq_len: usize,
+        seed_len: usize,
+    ) -> Option<(Strand, usize)> {
+        if local_pos < seq_len {
+            if local_pos + seed_len > seq_len {
+                return None;
+            }
+            return Some((Strand::Reverse, seq_len - (local_pos + seed_len)));
+        }
+
+        let rc_start = seq_len + 1;
+        let rc_end = rc_start + seq_len;
+        if local_pos >= rc_start && local_pos < rc_end {
+            let rc_pos = local_pos - rc_start;
+            if rc_pos + seed_len > seq_len {
+                return None;
+            }
+            return Some((Strand::Forward, seq_len - (rc_pos + seed_len)));
+        }
+
+        None
     }
 }
 
@@ -534,6 +565,29 @@ mod tests {
             Ok(_) => panic!("Expected invalid magic error"),
             Err(err) => assert!(err.to_string().contains("Invalid index magic")),
         }
+    }
+
+    #[test]
+    fn map_target_pos_normalizes_into_strand_view() {
+        use super::GlobalView;
+        use crate::types::Strand;
+
+        let seq_len = 5;
+        let seed_len = 2;
+
+        assert_eq!(
+            GlobalView::map_target_pos(1, seq_len, seed_len),
+            Some((Strand::Reverse, 2))
+        );
+        assert_eq!(
+            GlobalView::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
+            Some((Strand::Forward, 1))
+        );
+        assert_eq!(GlobalView::map_target_pos(seq_len, seq_len, seed_len), None);
+        assert_eq!(
+            GlobalView::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
+            None
+        );
     }
 
     #[test]

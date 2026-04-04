@@ -179,12 +179,14 @@ fn prepare_query_for_seed_search(query: &Query, seed_config: &SeedConfig) -> Opt
         .expect("prepared query must be used with a compatible seed config")
         .2;
     let max_len = interval.end.saturating_sub(interval.start);
-    let q_sa_len = query.sa().len();
+
+    let sa = SuffixArray::try_from(query.seed_sequence().as_slice()).expect("per-query SA");
+    let q_sa_len = sa.len();
     if q_sa_len == 0 {
         return None;
     }
 
-    let mut padded_q_sa = query.sa().to_vec();
+    let mut padded_q_sa = sa.into_inner();
     padded_q_sa.resize(q_sa_len + SA_CHAR_PADDING, 0u64);
     let mut padded_q_seq = query.seed_sequence().as_slice().to_vec();
     padded_q_seq.resize(query.seed_sequence().len() + SA_CHAR_PADDING, Base::Gap);
@@ -425,6 +427,101 @@ fn bench_seed_prod_shaped_searcher(c: &mut Criterion) {
     group.finish();
 }
 
+fn combined_query_seed_bounds(queries: &QueryRegistry, seed_config: &SeedConfig) -> (usize, usize) {
+    let mut global_min_len = usize::MAX;
+    let mut global_max_len = 0usize;
+    for query in queries.entries() {
+        let min_len = seed_config
+            .seed
+            .normalize(query.sequence().len())
+            .expect("seed config")
+            .2;
+        let max_len = query.seed_interval().end.saturating_sub(query.seed_interval().start);
+        global_min_len = global_min_len.min(min_len);
+        global_max_len = global_max_len.max(max_len);
+    }
+    (global_min_len, global_max_len)
+}
+
+fn bench_combined_vs_per_query(c: &mut Criterion) {
+    let mut group = c.benchmark_group("combined_vs_per_query");
+    group.sample_size(10);
+
+    let seed_config = SeedConfig::with_wobble(
+        SeedSpec::LengthOnly(7),
+        MismatchSpec::new(1, 2, 2),
+        true,
+    );
+
+    for query_count in [1, 10, 50, 100] {
+        let dataset = build_production_dataset(query_count, 22, 100_000, &seed_config);
+        let global = dataset.store.global_view();
+
+        // Approach A: per-query loop (pre-padded, no alloc in hot path)
+        let prepared: Vec<PreparedQuery> = dataset
+            .queries
+            .entries()
+            .iter()
+            .filter_map(|q| prepare_query_for_seed_search(q, &seed_config))
+            .collect();
+
+        group.bench_with_input(
+            BenchmarkId::new("per_query", query_count),
+            &query_count,
+            |b, _| {
+                let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
+                b.iter(|| {
+                    for p in &prepared {
+                        results.clear();
+                        let searcher = SeedSearcher::new(
+                            black_box(p.padded_q_sa.as_slice()),
+                            black_box(p.padded_q_seq.as_slice()),
+                            black_box(p.q_sa_start),
+                            black_box(p.q_sa_len),
+                            black_box(global.combined_sa),
+                            black_box(global.combined_seq),
+                            black_box(global.sa_real_len),
+                            black_box(&seed_config),
+                        );
+                        searcher.search_length_range(p.min_len, p.max_len, &mut results);
+                        black_box(results.len());
+                    }
+                });
+            },
+        );
+
+        // Approach B: combined query SA, single traversal (uses production QueryView)
+        let qv = dataset.queries.query_view();
+        let (global_min_len, global_max_len) =
+            combined_query_seed_bounds(&dataset.queries, &seed_config);
+
+        group.bench_with_input(
+            BenchmarkId::new("combined", query_count),
+            &query_count,
+            |b, _| {
+                let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
+                b.iter(|| {
+                    results.clear();
+                    let searcher = SeedSearcher::new(
+                        black_box(qv.combined_sa),
+                        black_box(qv.combined_seed_seq),
+                        black_box(0),
+                        black_box(qv.sa_real_len),
+                        black_box(global.combined_sa),
+                        black_box(global.combined_seq),
+                        black_box(global.sa_real_len),
+                        black_box(&seed_config),
+                    );
+                    searcher.search_length_range(global_min_len, global_max_len, &mut results);
+                    black_box(results.len());
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_seed_prod_shaped_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("seed_prod_shaped_search");
     group.sample_size(10);
@@ -458,6 +555,7 @@ criterion_group!(
     bench_seed_prod_shaped_mismatch,
     bench_seed_realistic,
     bench_seed_prod_shaped_searcher,
-    bench_seed_prod_shaped_pipeline
+    bench_seed_prod_shaped_pipeline,
+    bench_combined_vs_per_query
 );
 criterion_main!(benches);

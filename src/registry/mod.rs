@@ -9,6 +9,7 @@ use crate::config::SeedConfig;
 use crate::fastx::read_fasta_sequences;
 use crate::index::io::validate_readable_file;
 use crate::index::sa::SuffixArray;
+use crate::index::store::SA_CHAR_PADDING;
 use crate::seq::{SeqView, Sequence};
 use crate::types::Base;
 
@@ -83,10 +84,8 @@ pub struct Query {
     name: String,
     /// Full forward sequence used for extension and output
     sequence: Sequence,
-    /// Seed-interval slice used by the seeding suffix array
+    /// Seed-interval slice used by the combined seeding suffix array
     seed_sequence: Sequence,
-    /// Suffix array built over `seed_sequence`
-    sa: SuffixArray,
     /// Pre-computed normalized seed interval bounds on the full query
     pub(crate) seed_interval: Range<usize>,
     /// Prefix sum of N positions for O(1) N-checking
@@ -119,14 +118,11 @@ impl Query {
         let seed_interval = (start1 - 1)..end1;
         let seed_sequence =
             Sequence::from(sequence[seed_interval.start..seed_interval.end].to_vec());
-        let sa = SuffixArray::try_from(&seed_sequence[..])
-            .map_err(|err| anyhow!("Failed to build seed SA for query '{}': {}", name, err))?;
 
         Ok(Self {
             name,
             sequence,
             seed_sequence,
-            sa,
             seed_interval,
             n_prefix,
             has_n_any,
@@ -141,11 +137,6 @@ impl Query {
     #[inline(always)]
     pub fn sequence(&self) -> SeqView<'_> {
         self.sequence.as_view()
-    }
-
-    #[inline(always)]
-    pub fn sa(&self) -> &[u64] {
-        self.sa.as_ref()
     }
 
     #[inline]
@@ -175,7 +166,73 @@ impl RegistryEntry for Query {
     }
 }
 
-pub type QueryRegistry = Registry<Query>;
+/// Combined query data for seed search — mirrors `GlobalView` on the target side.
+pub struct QueryView<'a> {
+    pub combined_seed_seq: &'a [Base],
+    pub combined_sa: &'a [u64],
+    pub sa_real_len: usize,
+    pub offsets: &'a [u64],
+    pub seed_seq_lens: &'a [u32],
+}
+
+/// Registry of queries with a combined suffix array for efficient seed search.
+///
+/// Individual `Query` entries hold per-query metadata (sequence, seed interval,
+/// N-prefix). The combined SA/sequence enables a single recursive traversal
+/// across all queries × all targets, avoiding redundant target-side partitioning.
+pub struct QueryRegistry {
+    inner: Registry<Query>,
+    /// Concatenated seed sequences with Gap separators + SA_CHAR_PADDING sentinels.
+    combined_seed_seq: Vec<Base>,
+    /// Global SA over combined_seed_seq + SA_CHAR_PADDING sentinel zeros.
+    combined_sa: Vec<u64>,
+    /// Number of real SA entries (excluding padding).
+    sa_real_len: usize,
+    /// Start offset of each query's seed sequence in combined_seed_seq.
+    offsets: Vec<u64>,
+    /// Length of each query's seed sequence.
+    seed_seq_lens: Vec<u32>,
+}
+
+impl QueryRegistry {
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn get(&self, idx: u32) -> &Query {
+        self.inner.get(idx)
+    }
+
+    pub fn entries(&self) -> &[Query] {
+        self.inner.entries()
+    }
+
+    pub fn get_name(&self, idx: u32) -> &str {
+        self.inner.get_name(idx)
+    }
+
+    pub fn index_of(&self, name: &str) -> Option<u32> {
+        self.inner.index_of(name)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &Query)> {
+        self.inner.iter()
+    }
+
+    pub fn query_view(&self) -> QueryView<'_> {
+        QueryView {
+            combined_seed_seq: &self.combined_seed_seq,
+            combined_sa: &self.combined_sa,
+            sa_real_len: self.sa_real_len,
+            offsets: &self.offsets,
+            seed_seq_lens: &self.seed_seq_lens,
+        }
+    }
+}
 
 fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     validate_readable_file(path)?;
@@ -270,7 +327,35 @@ impl QueryRegistry {
             bail!("All sequences were empty after normalization");
         }
 
-        Ok(Self::new(entries))
+        // Build combined seed sequence and SA (mirrors TargetStore::build_from_fasta).
+        let mut combined_seed_seq: Vec<Base> = Vec::new();
+        let mut offsets: Vec<u64> = Vec::with_capacity(entries.len());
+        let mut seed_seq_lens: Vec<u32> = Vec::with_capacity(entries.len());
+
+        for query in &entries {
+            offsets.push(combined_seed_seq.len() as u64);
+            seed_seq_lens.push(query.seed_sequence().len() as u32);
+            combined_seed_seq.extend_from_slice(query.seed_sequence().as_slice());
+            combined_seed_seq.push(Base::Gap);
+        }
+
+        let combined_sa_raw = SuffixArray::try_from(combined_seed_seq.as_slice())
+            .context("Failed to build combined query SA")?;
+        let sa_real_len = combined_sa_raw.len();
+
+        // Pad both for branchless SA character lookup.
+        combined_seed_seq.resize(combined_seed_seq.len() + SA_CHAR_PADDING, Base::Gap);
+        let mut combined_sa = combined_sa_raw.into_inner();
+        combined_sa.resize(combined_sa.len() + SA_CHAR_PADDING, 0u64);
+
+        Ok(Self {
+            inner: Registry::new(entries),
+            combined_seed_seq,
+            combined_sa,
+            sa_real_len,
+            offsets,
+            seed_seq_lens,
+        })
     }
 }
 
@@ -358,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_sa_is_built_on_interval_slice() {
+    fn seed_sequence_matches_interval_slice() {
         let sequence = Sequence::from(vec![Base::A, Base::U, Base::G, Base::C, Base::A, Base::U]);
         let seed = SeedSpec::Interval {
             start: 2,
@@ -372,10 +457,6 @@ mod tests {
             query.seed_sequence().as_slice(),
             &query.sequence().as_slice()[1..5]
         );
-
-        let expected_sa =
-            SuffixArray::try_from(query.seed_sequence().as_slice()).expect("slice SA");
-        assert_eq!(query.sa(), expected_sa.as_ref());
     }
 
     #[test]

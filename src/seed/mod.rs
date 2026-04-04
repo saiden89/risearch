@@ -1,13 +1,15 @@
 pub(crate) mod search;
 pub mod searcher;
 
-pub(crate) use search::for_each_seed;
+pub(crate) use search::collect_seeds;
 
 use crate::types::{SeedLen, Strand, TargetId};
 
 /// A candidate seed match found during suffix array search.
 #[derive(Debug, Clone)]
 pub struct SeedHit {
+    /// Index of query in the registry
+    pub query_idx: u32,
     /// Start position in query sequence (0-based)
     pub query_start: usize,
     /// Index of target sequence in the index

@@ -26,7 +26,7 @@ use crate::index::store::{GlobalView, TargetStore};
 use crate::output::format::HitCtx;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
-use crate::seed::{for_each_seed, SeedHit};
+use crate::seed::{collect_seeds, SeedHit};
 use crate::types::{Base, Energy, Strand};
 
 // =============================================================================
@@ -55,8 +55,7 @@ pub struct SearchHit {
 
 /// Run search against mmap-backed target store, collecting all hits into memory.
 ///
-/// Alignment data is always included. Returns hits in an unspecified order
-/// (parallel workers process queries independently).
+/// Alignment data is always included. Returns hits in an unspecified order.
 pub fn run_search_in_memory(
     queries: &QueryRegistry,
     store: &TargetStore,
@@ -66,17 +65,18 @@ pub fn run_search_in_memory(
         return Ok(Vec::new());
     }
     let ctx = SearchContext::new(queries, store, opts);
-    let hits: Mutex<Vec<SearchHit>> = Mutex::new(Vec::new());
+    let all_seeds = collect_seeds(ctx.queries, &ctx.global, &ctx.opts.seed);
+    let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
 
-    (0..ctx.queries.len()).into_par_iter().try_for_each_init(
-        || SearchWorker::new(ctx.opts),
-        |worker, qi| -> Result<()> {
-            let mut local = Vec::new();
-            let query = &ctx.queries.entries()[qi];
+    let hits: Vec<SearchHit> = seed_groups
+        .into_par_iter()
+        .flat_map_iter(|(qi, seeds)| {
+            let mut worker = SearchWorker::new(ctx.opts);
+            let query = &ctx.queries.entries()[qi as usize];
             let query_seq = query.sequence().as_slice();
             let seed_interval = query.seed_interval.clone();
 
-            for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
+            seeds.iter().filter_map(move |seed| {
                 let target_idx = seed.target_id.0 as usize;
                 let (t_fwd, t_rc, target_len) = ctx.global.target_slices(target_idx);
                 let target_trans = match seed.strand {
@@ -84,28 +84,22 @@ pub fn run_search_in_memory(
                     Strand::Reverse => t_rc,
                 };
 
-                if let Some(hit) = build_hit_from_seed(
-                    worker,
+                build_hit_from_seed(
+                    &mut worker,
                     ctx.opts,
-                    qi as u32,
+                    qi,
                     query_seq,
                     seed_interval.clone(),
                     true,
                     target_len,
-                    &seed,
+                    seed,
                     target_trans,
-                ) {
-                    local.push(hit);
-                }
-                Ok(())
-            })?;
+                )
+            })
+        })
+        .collect();
 
-            hits.lock().unwrap().extend(local);
-            Ok(())
-        },
-    )?;
-
-    Ok(hits.into_inner().unwrap())
+    Ok(hits)
 }
 
 /// Run search against mmap-backed target store and write hits to `output_path`.
@@ -185,75 +179,107 @@ impl SearchWorker {
     }
 }
 
-/// Single-file backend: `Mutex<OutputWriter>` + rayon `par_iter`.
+/// Group sorted seeds into per-query slices. Returns (query_idx, seed_slice) pairs.
+fn group_by_query(seeds: &[SeedHit], query_count: usize) -> Vec<(u32, &[SeedHit])> {
+    let mut groups = Vec::with_capacity(query_count);
+    let mut i = 0;
+    while i < seeds.len() {
+        let qi = seeds[i].query_idx;
+        let start = i;
+        while i < seeds.len() && seeds[i].query_idx == qi {
+            i += 1;
+        }
+        groups.push((qi, &seeds[start..i]));
+    }
+    groups
+}
+
+/// Single-file backend: collect seeds, then extend + format per query in parallel.
 fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
+    let all_seeds = collect_seeds(ctx.queries, &ctx.global, &ctx.opts.seed);
+    let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
+
     let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
     let total = AtomicUsize::new(0);
 
-    (0..ctx.queries.len()).into_par_iter().try_for_each_init(
-        || {
-            (
-                SearchWorker::new(ctx.opts),
-                HitFormatter::new(ctx.opts.output.format),
-            )
-        },
-        |(worker, fmt), qi| -> Result<()> {
-            let emitted = process_query(ctx, qi as u32, worker, fmt, &mut |chunk| {
-                writer.lock().unwrap().write_chunk(&chunk)
-            })?;
-            total.fetch_add(emitted, Ordering::Relaxed);
-            Ok(())
-        },
-    )?;
+    seed_groups
+        .into_par_iter()
+        .try_for_each_init(
+            || {
+                (
+                    SearchWorker::new(ctx.opts),
+                    HitFormatter::new(ctx.opts.output.format),
+                )
+            },
+            |(worker, fmt), (qi, seeds)| -> Result<()> {
+                let emitted = process_query_seeds(ctx, qi, seeds, worker, fmt, &mut |chunk| {
+                    writer.lock().unwrap().write_chunk(&chunk)
+                })?;
+                total.fetch_add(emitted, Ordering::Relaxed);
+                Ok(())
+            },
+        )?;
 
     writer.into_inner().unwrap().flush_all()?;
     Ok(total.load(Ordering::Relaxed))
 }
 
-/// Multifile backend: per-worker lazy file writers + rayon `par_iter`.
+/// Multifile backend: collect seeds, then extend + write per query in parallel.
 fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
+    let all_seeds = collect_seeds(ctx.queries, &ctx.global, &ctx.opts.seed);
+    let seed_groups = group_by_query(&all_seeds, ctx.queries.len());
+
     let total = AtomicUsize::new(0);
     let ext = crate::output::output_extension(&ctx.opts.output);
     let output_paths = crate::output::writer::build_multifile_paths(ctx.queries, output_dir, ext);
 
-    (0..ctx.queries.len()).into_par_iter().try_for_each_init(
-        || {
-            (
-                SearchWorker::new(ctx.opts),
-                HitFormatter::new(ctx.opts.output.format),
-            )
-        },
-        |(worker, format), query_idx| -> Result<()> {
-            let file_path = &output_paths[query_idx];
-            let mut writer: Option<OutputWriter> = None;
+    seed_groups
+        .into_par_iter()
+        .try_for_each_init(
+            || {
+                (
+                    SearchWorker::new(ctx.opts),
+                    HitFormatter::new(ctx.opts.output.format),
+                )
+            },
+            |(worker, format), (qi, seeds)| -> Result<()> {
+                let file_path = &output_paths[qi as usize];
+                let mut writer: Option<OutputWriter> = None;
 
-            let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
-                if writer.is_none() {
-                    writer = Some(OutputWriter::new(&ctx.opts.output, file_path)?);
+                let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
+                    if writer.is_none() {
+                        writer = Some(OutputWriter::new(&ctx.opts.output, file_path)?);
+                    }
+                    writer.as_mut().unwrap().write_chunk(&chunk)
+                };
+
+                let emitted = process_query_seeds(
+                    ctx,
+                    qi,
+                    seeds,
+                    worker,
+                    format,
+                    &mut flush_to_writer,
+                )?;
+
+                if let Some(w) = writer.as_mut() {
+                    w.flush_all()?;
                 }
-                writer.as_mut().unwrap().write_chunk(&chunk)
-            };
 
-            let emitted =
-                process_query(ctx, query_idx as u32, worker, format, &mut flush_to_writer)?;
-
-            if let Some(w) = writer.as_mut() {
-                w.flush_all()?;
-            }
-
-            total.fetch_add(emitted, Ordering::Relaxed);
-            Ok(())
-        },
-    )?;
+                total.fetch_add(emitted, Ordering::Relaxed);
+                Ok(())
+            },
+        )?;
 
     Ok(total.load(Ordering::Relaxed))
 }
 
-/// Process one query end-to-end: enumerate seeds, extend, filter, format, and
-/// stream chunks via `on_chunk`.
-fn process_query<FO>(
+/// Process pre-collected seeds for a single query: extend, filter, format,
+/// and stream chunks via `on_chunk`.
+fn process_query_seeds<FO>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
+    seeds: &[SeedHit],
     worker: &mut SearchWorker,
     format: &mut HitFormatter,
     on_chunk: &mut FO,
@@ -270,7 +296,7 @@ where
     let mut last_target_idx = None::<usize>;
     let mut cached_t_name = None;
 
-    for_each_seed(query, &ctx.global, &ctx.opts.seed, |seed| {
+    for seed in seeds {
         let target_idx = seed.target_id.0 as usize;
         let (t_fwd, t_rc, target_len) = ctx.global.target_slices(target_idx);
         let target_trans = match seed.strand {
@@ -286,10 +312,10 @@ where
             seed_interval.clone(),
             include_alignment,
             target_len,
-            &seed,
+            seed,
             target_trans,
         ) else {
-            return Ok(());
+            continue;
         };
 
         if last_target_idx != Some(target_idx) {
@@ -308,8 +334,7 @@ where
             on_chunk(chunk)?;
         }
         local_hits += 1;
-        Ok(())
-    })?;
+    }
 
     if let Some(chunk) = format.flush() {
         on_chunk(chunk)?;
