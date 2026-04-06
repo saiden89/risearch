@@ -87,14 +87,13 @@ impl ExtensionEngine {
         let mut state = State::Match;
 
         while i > 0 || j > 0 {
-            match state {
+            let next = match state {
                 State::Match if i > 0 && j > 0 => {
                     let q_base = view.q_base(i);
                     let t_base = view.t_base(j).complement();
                     out.push(PairClass::from_bases(q_base, t_base));
 
                     let c = self.grid.get(i, j);
-                    let m_val = c.m;
                     let diag = self.grid.get(i - 1, j - 1);
 
                     let qi_prev = view.q_base(i - 1) as usize;
@@ -106,20 +105,15 @@ impl ExtensionEngine {
                     let m_from_bq = gotoh.m_from_bq(qi_prev, qi, tj);
                     let m_from_bt = gotoh.m_from_bt(qi, tj_prev, tj);
 
-                    let next = if is_transition(m_val, diag.m, match_e) {
-                        Some(State::Match)
-                    } else if is_transition(m_val, diag.bq, m_from_bq) {
-                        Some(State::GapQ)
-                    } else if is_transition(m_val, diag.bt, m_from_bt) {
-                        Some(State::GapT)
-                    } else {
-                        None
-                    };
-
                     i -= 1;
                     j -= 1;
-                    if let Some(next_state) = next {
-                        state = next_state;
+
+                    if is_transition(c.m, diag.m, match_e) {
+                        State::Match
+                    } else if is_transition(c.m, diag.bq, m_from_bq) {
+                        State::GapQ
+                    } else if is_transition(c.m, diag.bt, m_from_bt) {
+                        State::GapT
                     } else {
                         break;
                     }
@@ -128,7 +122,6 @@ impl ExtensionEngine {
                     out.push(PairClass::QueryBulge);
 
                     let c = self.grid.get(i, j);
-                    let bq_val = c.bq;
                     let up = self.grid.get(i - 1, j);
 
                     let qi_prev = view.q_base(i - 1) as usize;
@@ -138,17 +131,12 @@ impl ExtensionEngine {
                     let bq_open = gotoh.bq_open(qi_prev, qi, tj);
                     let bq_ext = gotoh.bq_extend(qi_prev, qi);
 
-                    let next = if is_transition(bq_val, up.m, bq_open) {
-                        Some(State::Match)
-                    } else if is_transition(bq_val, up.bq, bq_ext) {
-                        Some(State::GapQ)
-                    } else {
-                        None
-                    };
-
                     i -= 1;
-                    if let Some(next_state) = next {
-                        state = next_state;
+
+                    if is_transition(c.bq, up.m, bq_open) {
+                        State::Match
+                    } else if is_transition(c.bq, up.bq, bq_ext) {
+                        State::GapQ
                     } else {
                         break;
                     }
@@ -157,7 +145,6 @@ impl ExtensionEngine {
                     out.push(PairClass::TargetBulge);
 
                     let c = self.grid.get(i, j);
-                    let bt_val = c.bt;
                     let left = self.grid.get(i, j - 1);
 
                     let qi = view.q_base(i) as usize;
@@ -167,23 +154,19 @@ impl ExtensionEngine {
                     let bt_open = gotoh.bt_open(qi, tj_prev, tj);
                     let bt_ext = gotoh.bt_extend_e(tj_prev, tj);
 
-                    let next = if is_transition(bt_val, left.m, bt_open) {
-                        Some(State::Match)
-                    } else if is_transition(bt_val, left.bt, bt_ext) {
-                        Some(State::GapT)
-                    } else {
-                        None
-                    };
-
                     j -= 1;
-                    if let Some(next_state) = next {
-                        state = next_state;
+
+                    if is_transition(c.bt, left.m, bt_open) {
+                        State::Match
+                    } else if is_transition(c.bt, left.bt, bt_ext) {
+                        State::GapT
                     } else {
                         break;
                     }
                 }
                 _ => break,
-            }
+            };
+            state = next;
         }
 
         out
