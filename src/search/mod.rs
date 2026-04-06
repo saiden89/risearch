@@ -22,7 +22,7 @@ use crate::alignment::{Alignment, PairClass};
 use crate::config::{OutputFormat, SearchConfig};
 use crate::dp::{DpConfig, ExtendDir};
 use crate::dsm::ScoringModel;
-use crate::index::store::{TargetStore, TargetView};
+use crate::index::store::TargetStore;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
 use crate::seed::{collect_seeds, SeedHit};
@@ -62,10 +62,11 @@ pub fn run_search_in_memory(
             let query = &ctx.queries.entries()[qi as usize];
             let query_seq = query.sequence().as_slice();
             let seed_interval = query.seed_interval.clone();
+            let target = ctx.store.target_view();
 
             seeds.into_iter().filter_map(move |seed| {
                 let target_idx = seed.target_id.0 as usize;
-                let (t_fwd, t_rc, target_len) = ctx.target.target_slices(target_idx);
+                let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
                 let target_trans = match seed.strand {
                     Strand::Forward => t_fwd,
                     Strand::Reverse => t_rc,
@@ -168,17 +169,14 @@ pub fn run_search(
 struct SearchContext<'a> {
     queries: &'a QueryRegistry,
     store: &'a TargetStore,
-    target: TargetView<'a>,
     opts: &'a SearchConfig,
 }
 
 impl<'a> SearchContext<'a> {
     fn new(queries: &'a QueryRegistry, store: &'a TargetStore, opts: &'a SearchConfig) -> Self {
-        let target = store.target_view();
         Self {
             queries,
             store,
-            target,
             opts,
         }
     }
@@ -218,6 +216,7 @@ fn process_query_seeds(
     let query_name = ctx.queries.get_name(query_idx);
     let query_seq = query.sequence().as_slice();
     let seed_interval = query.seed_interval.clone();
+    let target = ctx.store.target_view();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
     let mut chunks = Vec::new();
     let mut local_hits = 0usize;
@@ -226,7 +225,7 @@ fn process_query_seeds(
 
     for seed in seeds {
         let target_idx = seed.target_id.0 as usize;
-        let (t_fwd, t_rc, target_len) = ctx.target.target_slices(target_idx);
+        let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
         let target_trans = match seed.strand {
             Strand::Forward => t_fwd,
             Strand::Reverse => t_rc,
