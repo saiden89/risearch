@@ -11,7 +11,7 @@ use crate::config::{OutputCompression, OutputConfig, OutputFormat};
 use crate::registry::QueryRegistry;
 use crate::search::SearchHit;
 
-use super::format::{format_hit_into, HitCtx};
+use super::format::format_hit_into;
 
 const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
 
@@ -40,12 +40,25 @@ impl HitFormatter {
     }
 
     #[inline]
-    pub fn add_hit(&mut self, hit: &SearchHit, ctx: HitCtx<'_>) -> Option<OutputChunk> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_hit(
+        &mut self,
+        hit: &SearchHit,
+        q_name: &str,
+        q_seq: &[crate::types::Base],
+        t_name: &str,
+        t_fwd: &[crate::types::Base],
+        t_rc: &[crate::types::Base],
+    ) -> Option<OutputChunk> {
         format_hit_into(
             &mut self.chunk_data,
             &mut self.itoa,
             hit,
-            ctx,
+            q_name,
+            q_seq,
+            t_name,
+            t_fwd,
+            t_rc,
             self.output_format,
         );
         self.chunk_hits += 1;

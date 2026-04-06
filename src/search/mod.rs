@@ -23,17 +23,11 @@ use crate::config::{OutputFormat, SearchConfig};
 use crate::dp::{DpConfig, ExtendDir};
 use crate::dsm::ScoringModel;
 use crate::index::store::{TargetStore, TargetView};
-use crate::output::format::HitCtx;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
 use crate::seed::{collect_seeds, SeedHit};
 use crate::types::{Base, Energy, Strand};
 
-// =============================================================================
-// PUBLIC API
-// =============================================================================
-
-/// A search hit representing a miRNA-target interaction.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub query_idx: u32,
@@ -49,13 +43,7 @@ pub struct SearchHit {
     pub alignment: Option<Alignment>,
 }
 
-// =============================================================================
-// ORCHESTRATION
-// =============================================================================
-
-/// Run search against mmap-backed target store, collecting all hits into memory.
-///
-/// Alignment data is always included. Returns hits in an unspecified order.
+/// Run search collecting all hits into memory. Alignment data is always included.
 pub fn run_search_in_memory(
     queries: &QueryRegistry,
     store: &TargetStore,
@@ -101,10 +89,7 @@ pub fn run_search_in_memory(
     Ok(hits)
 }
 
-/// Run search against mmap-backed target store and write hits to `output_path`.
-///
-/// In multifile mode, `output_path` is the directory where per-query files are
-/// created. Otherwise it is the single output file path.
+/// Run search and write hits to `output_path` (or directory in multifile mode).
 pub fn run_search(
     queries: &QueryRegistry,
     store: &TargetStore,
@@ -140,7 +125,6 @@ pub fn run_search(
     Ok(total)
 }
 
-/// Shared context for all search backends.
 struct SearchContext<'a> {
     queries: &'a QueryRegistry,
     store: &'a TargetStore,
@@ -160,8 +144,6 @@ impl<'a> SearchContext<'a> {
     }
 }
 
-/// Per-worker resources: reused across all queries processed by one rayon thread.
-/// Config is accessed from `SearchContext` at the call site, not cached here.
 struct SearchWorker {
     extension: ExtensionEngine,
     model: ScoringModel,
@@ -178,7 +160,6 @@ impl SearchWorker {
     }
 }
 
-/// Single-file backend: collect seeds, then extend + format per query in parallel.
 fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
     let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
 
@@ -207,7 +188,6 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
     Ok(total.load(Ordering::Relaxed))
 }
 
-/// Multifile backend: collect seeds, then extend + write per query in parallel.
 fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
     let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
 
@@ -256,8 +236,6 @@ fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
     Ok(total.load(Ordering::Relaxed))
 }
 
-/// Process pre-collected seeds for a single query: extend, filter, format,
-/// and stream chunks via `on_chunk`.
 fn process_query_seeds<FO>(
     ctx: &SearchContext<'_>,
     query_idx: u32,
@@ -304,15 +282,15 @@ where
             cached_t_name = Some(ctx.store.get_name(hit.target_idx));
             last_target_idx = Some(target_idx);
         }
-        let hit_ctx = HitCtx {
-            q_name: query_name,
-            q_seq: query_seq,
-            t_name: cached_t_name.unwrap(),
+
+        if let Some(chunk) = format.add_hit(
+            &hit,
+            query_name,
+            query_seq,
+            cached_t_name.unwrap(),
             t_fwd,
             t_rc,
-        };
-
-        if let Some(chunk) = format.add_hit(&hit, hit_ctx) {
+        ) {
             on_chunk(chunk)?;
         }
         local_hits += 1;
@@ -325,7 +303,6 @@ where
     Ok(local_hits)
 }
 
-/// One directional extension fact produced by `ExtensionEngine::extend`.
 struct ExtensionResult {
     score: i32,
     q_ext: usize,
@@ -369,7 +346,6 @@ fn is_maximal(
     true
 }
 
-/// Build a finalized `SearchHit` from a seed if extension and energy filters pass.
 fn build_hit_from_seed(
     worker: &mut SearchWorker,
     opts: &SearchConfig,
@@ -437,12 +413,44 @@ fn build_hit_from_seed(
     })
 }
 
-// =============================================================================
-// HIT MATERIALIZATION
-// =============================================================================
+const BINDING_SITE_FLANK_LEN: usize = 20;
 
 impl SearchHit {
-    /// Materialize a public `SearchHit` from canonical internal inputs.
+    pub(crate) fn query_bases<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
+        &q_seq[self.q_start..self.q_end + 1]
+    }
+
+    pub(crate) fn target_bases<'a>(&self, t_fwd: &'a [Base], t_rc: &'a [Base]) -> &'a [Base] {
+        match self.strand {
+            Strand::Forward => &t_fwd[self.t_start..self.t_end + 1],
+            Strand::Reverse => {
+                let len = t_fwd.len();
+                &t_rc[len - 1 - self.t_end..len - self.t_start]
+            }
+        }
+    }
+
+    pub(crate) fn target_flanks<'a>(
+        &self,
+        t_fwd: &'a [Base],
+        t_rc: &'a [Base],
+    ) -> (&'a [Base], &'a [Base]) {
+        let len = t_fwd.len();
+        let (oriented, start, end) = match self.strand {
+            Strand::Forward => (t_fwd, self.t_start, self.t_end),
+            Strand::Reverse => (t_rc, len - 1 - self.t_end, len - 1 - self.t_start),
+        };
+
+        let right_start = end + 1;
+        let right_end = (right_start + BINDING_SITE_FLANK_LEN).min(oriented.len());
+        let left_start = start.saturating_sub(BINDING_SITE_FLANK_LEN);
+
+        (
+            &oriented[right_start..right_end],
+            &oriented[left_start..start],
+        )
+    }
+
     fn new(
         query_idx: u32,
         query_bases: &[Base],
@@ -457,23 +465,20 @@ impl SearchHit {
         let q_start = seed.query_start;
         let t_start = seed.target_start;
         let len = seed.len.get();
-        let t_match_end = t_start + len - 1;
 
-        let final_q_start = q_start.saturating_sub(left.q_ext);
-        let final_q_end = (q_start + len - 1) + right.q_ext;
-        let final_t_start = t_start.saturating_sub(right.t_ext);
-        let final_t_end = (t_start + len - 1) + left.t_ext;
+        let final_q_start = q_start - left.q_ext;
+        let final_q_end = q_start + len - 1 + right.q_ext;
+        let mut final_t_start = t_start - right.t_ext;
+        let mut final_t_end = t_start + len - 1 + left.t_ext;
 
-        let (final_t_start, final_t_end, strand) = match seed.strand {
-            Strand::Forward => (final_t_start, final_t_end, Strand::Forward),
-            Strand::Reverse => {
-                let fwd_start = original_target_len - 1 - final_t_end;
-                let fwd_end = original_target_len - 1 - final_t_start;
-                (fwd_start, fwd_end, Strand::Reverse)
-            }
-        };
+        if seed.strand == Strand::Reverse {
+            let tmp = original_target_len - 1 - final_t_end;
+            final_t_end = original_target_len - 1 - final_t_start;
+            final_t_start = tmp;
+        }
 
         let (alignment, seed_start, seed_end) = if include_alignment {
+            let t_match_end = t_start + len - 1;
             let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
             for i in 0..len {
                 seed_pairs.push(PairClass::from_bases(
@@ -500,7 +505,7 @@ impl SearchHit {
             q_end: final_q_end,
             t_start: final_t_start,
             t_end: final_t_end,
-            strand,
+            strand: seed.strand,
             energy,
             seed_start,
             seed_end,
@@ -508,10 +513,6 @@ impl SearchHit {
         }
     }
 }
-
-// =============================================================================
-// TESTS
-// =============================================================================
 
 #[cfg(test)]
 mod tests {
