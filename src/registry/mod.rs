@@ -88,6 +88,10 @@ pub struct Query {
     seed_sequence: Sequence,
     /// Pre-computed normalized seed interval bounds on the full query
     pub(crate) seed_interval: Range<usize>,
+    /// Minimum admissible seed length for this query after normalization.
+    pub(crate) min_seed_len: usize,
+    /// Maximum admissible seed length for this query after normalization.
+    pub(crate) max_seed_len: usize,
     /// Prefix sum of N positions for O(1) N-checking
     n_prefix: Vec<u32>,
     /// Fast path when query has no Ns
@@ -111,11 +115,12 @@ impl Query {
         let has_n_any = n_total != 0;
 
         // Compute seed interval once and fail early at boundary if invalid.
-        let (start1, end1, _min_seed_len) = config
+        let (start1, end1, min_seed_len) = config
             .seed
             .normalize(q_len)
             .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
         let seed_interval = (start1 - 1)..end1;
+        let max_seed_len = seed_interval.end.saturating_sub(seed_interval.start);
         let seed_sequence =
             Sequence::from(sequence[seed_interval.start..seed_interval.end].to_vec());
 
@@ -124,6 +129,8 @@ impl Query {
             sequence,
             seed_sequence,
             seed_interval,
+            min_seed_len,
+            max_seed_len,
             n_prefix,
             has_n_any,
         })
@@ -454,6 +461,8 @@ mod tests {
         let query = make_query_data(sequence, seed.clone());
 
         assert_eq!(query.seed_interval, 1..5);
+        assert_eq!(query.min_seed_len, 2);
+        assert_eq!(query.max_seed_len, 4);
         assert_eq!(
             query.seed_sequence().as_slice(),
             &query.sequence().as_slice()[1..5]
@@ -467,6 +476,8 @@ mod tests {
         let query = make_query_data(sequence, seed.clone());
 
         assert_eq!(query.seed_interval, 0..5);
+        assert_eq!(query.min_seed_len, 3);
+        assert_eq!(query.max_seed_len, 5);
         assert_eq!(query.seed_sequence().len(), 5);
         assert_eq!(
             query.seed_sequence().as_slice(),

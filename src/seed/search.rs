@@ -22,12 +22,6 @@ fn remap(offsets: &[u64], global_pos: usize) -> Option<(usize, usize)> {
     Some((idx, global_pos - offsets[idx] as usize))
 }
 
-/// Pre-computed per-query seed length bounds, avoiding repeated `normalize()` calls.
-struct QuerySeedBounds {
-    min_len: usize,
-    max_len: usize,
-}
-
 /// Find all seeds across all queries × all targets in a single SA traversal.
 ///
 /// Returns non-empty per-query seed buckets ready for parallel extension.
@@ -36,29 +30,17 @@ pub(crate) fn collect_seeds(
     targets: &TargetStore,
     config: &SeedConfig,
 ) -> Vec<(u32, Vec<SeedHit>)> {
-    let query = queries.view();
+    let qview = queries.view();
     let target = targets.target_view();
-    if query.len == 0 {
+    if qview.len == 0 {
         return Vec::new();
     }
 
-    // Pre-compute per-query seed bounds once.
     let mut global_min = usize::MAX;
     let mut global_max = 0usize;
-    let mut bounds = Vec::with_capacity(queries.len());
     for q in queries.entries() {
-        let min_len = config
-            .seed
-            .normalize(q.sequence().len())
-            .expect("prepared query")
-            .2;
-        let max_len = q
-            .seed_interval()
-            .end
-            .saturating_sub(q.seed_interval().start);
-        global_min = global_min.min(min_len);
-        global_max = global_max.max(max_len);
-        bounds.push(QuerySeedBounds { min_len, max_len });
+        global_min = global_min.min(q.min_seed_len);
+        global_max = global_max.max(q.max_seed_len);
     }
 
     if global_min > global_max {
@@ -66,7 +48,7 @@ pub(crate) fn collect_seeds(
     }
 
     let searcher = SeedSearcher::new(
-        (query.combined_sa, query.combined_seed_seq, query.len),
+        (qview.combined_sa, qview.combined_seed_seq, qview.len),
         0,
         (target.combined_sa, target.combined_seq, target.sa_real_len),
         config,
@@ -79,19 +61,18 @@ pub(crate) fn collect_seeds(
             return;
         };
 
-        for &q_sa_pos in &query.combined_sa[m.query_interval.start..m.query_interval.end] {
-            let Some((qi, q_local_pos)) = remap(query.offsets, q_sa_pos as usize) else {
+        for &q_sa_pos in &qview.combined_sa[m.query_interval.start..m.query_interval.end] {
+            let Some((qi, q_local_pos)) = remap(qview.offsets, q_sa_pos as usize) else {
                 continue;
             };
-            if q_local_pos + seed_len > query.seed_seq_lens[qi] as usize {
-                continue;
-            }
-            let qb = &bounds[qi];
-            if seed_len < qb.min_len || seed_len > qb.max_len {
+            if q_local_pos + seed_len > qview.seed_seq_lens[qi] as usize {
                 continue;
             }
 
             let query = queries.get(qi as u32);
+            if seed_len < query.min_seed_len || seed_len > query.max_seed_len {
+                continue;
+            }
             let q_pos = query.seed_interval.start + q_local_pos;
             if query.has_n_any() && has_n_in_range(query.n_prefix(), q_pos, seed_len) {
                 continue;

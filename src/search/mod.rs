@@ -52,9 +52,9 @@ pub fn run_search_in_memory(
     let Some(ctx) = init_search(queries, store, opts) else {
         return Ok(Vec::new());
     };
-    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
+    let seeds = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
 
-    let hits: Vec<SearchHit> = seed_groups
+    let hits: Vec<SearchHit> = seeds
         .into_par_iter()
         .flat_map_iter(|(qi, seeds)| {
             let mut worker = SearchWorker::new(ctx.opts);
