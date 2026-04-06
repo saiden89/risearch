@@ -1,15 +1,9 @@
-use std::io::Write;
-
 use crate::alignment::{Alignment, PairClass};
 use crate::config::OutputFormat;
-use crate::index::store::TargetStore;
-use crate::registry::QueryRegistry;
 use crate::search::SearchHit;
 use crate::types::{Base, Strand};
 
 /// Resolved context for formatting a single hit: names and raw sequences.
-///
-/// All fields are borrows, so `HitCtx` is `Copy` and free to pass by value.
 #[derive(Clone, Copy)]
 pub struct HitCtx<'a> {
     pub q_name: &'a str,
@@ -19,197 +13,166 @@ pub struct HitCtx<'a> {
     pub t_rc: &'a [Base],
 }
 
-// =============================================================================
-// FORMAT SCHEMA
-// =============================================================================
-
-#[derive(Clone, Copy)]
-enum FieldKind {
-    QueryId,
-    QStart,
-    QEnd,
-    TargetId,
-    TStart,
-    TEnd,
-    Strand,
-    Energy,
-    Pairing,
-    TargetSeq,
-    Flank5,
-    Flank3,
+/// Zero-cost TSV line builder. Auto-inserts tab separators between fields.
+struct TsvLine<'a> {
+    buf: &'a mut Vec<u8>,
+    needs_sep: bool,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum PreludeKind {
-    None,
-    DetailedAlignment,
-}
+impl<'a> TsvLine<'a> {
+    #[inline(always)]
+    fn new(buf: &'a mut Vec<u8>) -> Self {
+        Self {
+            buf,
+            needs_sep: false,
+        }
+    }
 
-struct FormatSpec {
-    prelude: PreludeKind,
-    fields: &'static [FieldKind],
-}
+    #[inline(always)]
+    fn field(&mut self, bytes: &[u8]) {
+        if self.needs_sep {
+            self.buf.push(b'\t');
+        }
+        self.needs_sep = true;
+        self.buf.extend_from_slice(bytes);
+    }
 
-const FIELDS_BASE: &[FieldKind] = &[
-    FieldKind::QueryId,
-    FieldKind::QStart,
-    FieldKind::QEnd,
-    FieldKind::TargetId,
-    FieldKind::TStart,
-    FieldKind::TEnd,
-    FieldKind::Strand,
-    FieldKind::Energy,
-];
+    #[inline(always)]
+    fn field_with(&mut self, f: impl FnOnce(&mut Vec<u8>)) {
+        if self.needs_sep {
+            self.buf.push(b'\t');
+        }
+        self.needs_sep = true;
+        f(self.buf);
+    }
 
-const FIELDS_CIGAR: &[FieldKind] = &[
-    FieldKind::QueryId,
-    FieldKind::QStart,
-    FieldKind::QEnd,
-    FieldKind::TargetId,
-    FieldKind::TStart,
-    FieldKind::TEnd,
-    FieldKind::Strand,
-    FieldKind::Energy,
-    FieldKind::Pairing,
-];
-
-const FIELDS_BINDING_SITE: &[FieldKind] = &[
-    FieldKind::QueryId,
-    FieldKind::QStart,
-    FieldKind::QEnd,
-    FieldKind::TargetId,
-    FieldKind::TStart,
-    FieldKind::TEnd,
-    FieldKind::Strand,
-    FieldKind::Energy,
-    FieldKind::Pairing,
-    FieldKind::TargetSeq,
-    FieldKind::Flank5,
-    FieldKind::Flank3,
-];
-
-fn format_spec(format: OutputFormat) -> FormatSpec {
-    match format {
-        OutputFormat::Minimal => FormatSpec {
-            prelude: PreludeKind::None,
-            fields: FIELDS_BASE,
-        },
-        OutputFormat::Detailed => FormatSpec {
-            prelude: PreludeKind::DetailedAlignment,
-            fields: FIELDS_BASE,
-        },
-        OutputFormat::Cigar => FormatSpec {
-            prelude: PreludeKind::None,
-            fields: FIELDS_CIGAR,
-        },
-        OutputFormat::BindingSite => FormatSpec {
-            prelude: PreludeKind::None,
-            fields: FIELDS_BINDING_SITE,
-        },
+    #[inline(always)]
+    fn finish(self) {
+        self.buf.push(b'\n');
     }
 }
 
-// =============================================================================
-// HELPERS
-// =============================================================================
-
+/// Format a hit as a TSV line and append it to `out`.
 #[inline]
-fn append_score_2dp(buf: &mut Vec<u8>, itoa: &mut itoa::Buffer, score: f64) {
-    let scaled = (score * 100.0).round_ties_even() as i64;
-    if scaled < 0 {
-        buf.push(b'-');
+pub fn format_hit_into(
+    out: &mut Vec<u8>,
+    itoa: &mut itoa::Buffer,
+    hit: &SearchHit,
+    ctx: HitCtx<'_>,
+    format: OutputFormat,
+) {
+    let alignment = hit.alignment.as_ref();
+    let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
+    out.reserve(ctx.q_name.len() + ctx.t_name.len() + (steps_len * 2) + 96);
+
+    if format == OutputFormat::Detailed {
+        write_alignment_prelude(out, hit, ctx);
     }
-    let v = scaled.unsigned_abs();
-    buf.extend_from_slice(itoa.format(v / 100).as_bytes());
-    buf.push(b'.');
-    let frac = (v % 100) as u8;
-    buf.push(b'0' + (frac / 10));
-    buf.push(b'0' + (frac % 10));
+
+    let mut row = TsvLine::new(out);
+    write_base_fields(&mut row, itoa, hit, ctx);
+    write_extended_fields(&mut row, itoa, hit, ctx, format);
+    row.finish();
 }
 
-#[inline]
-fn push_alignment_mapped(buf: &mut Vec<u8>, alignment: &Alignment, map: fn(PairClass) -> u8) {
-    for &p in alignment.steps() {
-        buf.push(map(p));
+/// The 8 fields shared by every output format.
+#[inline(always)]
+fn write_base_fields(row: &mut TsvLine<'_>, itoa: &mut itoa::Buffer, hit: &SearchHit, ctx: HitCtx<'_>) {
+    row.field(ctx.q_name.as_bytes());
+    row.field(itoa.format(hit.q_start + 1).as_bytes());
+    row.field(itoa.format(hit.q_end + 1).as_bytes());
+    row.field(ctx.t_name.as_bytes());
+    row.field(itoa.format(hit.t_start + 1).as_bytes());
+    row.field(itoa.format(hit.t_end + 1).as_bytes());
+    row.field(&[char::from(hit.strand) as u8]);
+    row.field_with(|buf| append_score_2dp(buf, itoa, hit.energy.as_f64()));
+}
+
+/// Format-specific fields beyond the base 8.
+#[inline(always)]
+fn write_extended_fields(
+    row: &mut TsvLine<'_>,
+    _itoa: &mut itoa::Buffer,
+    hit: &SearchHit,
+    ctx: HitCtx<'_>,
+    format: OutputFormat,
+) {
+    let alignment = hit.alignment.as_ref();
+
+    if matches!(format, OutputFormat::Cigar | OutputFormat::BindingSite) {
+        row.field_with(|buf| {
+            if let Some(align) = alignment {
+                push_pairing_string(buf, align);
+            }
+        });
+    }
+
+    if format == OutputFormat::BindingSite {
+        row.field_with(|buf| {
+            if let Some(align) = alignment {
+                push_alignment_target_seq_bindingsite(
+                    buf,
+                    align,
+                    hit_target_bases(hit, ctx.t_fwd, ctx.t_rc),
+                );
+            }
+        });
+
+        // C `-p3` semantics: output `flank5` = our `flank_3` complemented, and vice-versa.
+        let (flank_5, flank_5_rev, flank_3, flank_3_rev) =
+            hit_target_flanks(hit, ctx.t_fwd, ctx.t_rc);
+        row.field_with(|buf| push_flank(buf, flank_3, flank_3_rev));
+        row.field_with(|buf| push_flank(buf, flank_5, flank_5_rev));
     }
 }
 
-#[inline]
-fn push_alignment_query_seq(buf: &mut Vec<u8>, alignment: &Alignment, q_bases: &[Base]) {
+/// 3-line alignment visualization (Detailed format only).
+fn write_alignment_prelude(out: &mut Vec<u8>, hit: &SearchHit, ctx: HitCtx<'_>) {
+    let Some(align) = hit.alignment.as_ref() else {
+        return;
+    };
+    let q_bases = hit_query_bases(hit, ctx.q_seq);
+    let t_bases = hit_target_bases(hit, ctx.t_fwd, ctx.t_rc);
+
+    // Query track
     let mut q_idx = 0usize;
-    for &step in alignment.steps() {
+    for &step in align.steps() {
         if step.consumes_query() {
-            buf.push(q_bases.get(q_idx).copied().unwrap_or(Base::Gap).to_byte());
+            out.push(q_bases.get(q_idx).copied().unwrap_or(Base::Gap).to_byte());
             q_idx += 1;
         } else {
-            buf.push(Base::Gap.to_byte());
+            out.push(Base::Gap.to_byte());
         }
     }
-}
+    out.push(b'\n');
 
-#[inline]
-fn push_alignment_target_seq(buf: &mut Vec<u8>, alignment: &Alignment, t_bases: &[Base]) {
+    // Alignment symbols
+    for &p in align.steps() {
+        out.push(p.alignment_symbol() as u8);
+    }
+    out.push(b'\n');
+
+    // Target track
     let mut t_idx = 0usize;
-    for &step in alignment.steps() {
+    for &step in align.steps() {
         if step.consumes_target() {
-            buf.push(t_bases.get(t_idx).copied().unwrap_or(Base::Gap).to_byte());
+            out.push(t_bases.get(t_idx).copied().unwrap_or(Base::Gap).to_byte());
             t_idx += 1;
         } else {
-            buf.push(Base::Gap.to_byte());
+            out.push(Base::Gap.to_byte());
         }
     }
+    out.push(b'\n');
 }
 
-/// Emit the target track in C `-p3` orientation (reverse walk, RNA lowercase complement).
-///
-/// The internal target track is in opposite-orientation transformed space.
-/// C expects the reverse-complemented track (RNA lowercase).
-#[inline]
-fn push_alignment_target_seq_bindingsite(
-    buf: &mut Vec<u8>,
-    alignment: &Alignment,
-    t_bases: &[Base],
-) {
-    let mut t_idx = alignment
-        .steps()
-        .iter()
-        .filter(|s| s.consumes_target())
-        .count();
-    for &step in alignment.steps().iter().rev() {
-        if step.consumes_target() {
-            t_idx = t_idx.saturating_sub(1);
-            buf.push(
-                t_bases
-                    .get(t_idx)
-                    .copied()
-                    .unwrap_or(Base::Gap)
-                    .complement()
-                    .to_byte(),
-            );
-        } else {
-            buf.push(b'-');
-        }
-    }
-}
-
-#[inline]
-fn push_alignment_line(buf: &mut Vec<u8>, alignment: &Alignment) {
-    push_alignment_mapped(buf, alignment, |p| p.alignment_symbol() as u8);
-}
-
-#[inline]
-fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
-    push_alignment_mapped(buf, alignment, |p| p.symbol() as u8);
-}
+// ---------------------------------------------------------------------------
+// Helpers: sequence slicing, flanks, score formatting
+// ---------------------------------------------------------------------------
 
 fn hit_query_bases<'a>(hit: &SearchHit, q_seq: &'a [Base]) -> &'a [Base] {
     let start = hit.q_start.min(q_seq.len());
     let end = hit.q_end.saturating_add(1).min(q_seq.len());
-    if end < start {
-        &q_seq[0..0]
-    } else {
-        &q_seq[start..end]
-    }
+    if end < start { &q_seq[0..0] } else { &q_seq[start..end] }
 }
 
 fn hit_target_bases<'a>(hit: &SearchHit, t_fwd: &'a [Base], t_rc: &'a [Base]) -> &'a [Base] {
@@ -217,29 +180,19 @@ fn hit_target_bases<'a>(hit: &SearchHit, t_fwd: &'a [Base], t_rc: &'a [Base]) ->
         Strand::Forward => {
             let start = hit.t_start.min(t_fwd.len());
             let end = hit.t_end.saturating_add(1).min(t_fwd.len());
-            if end < start {
-                &t_fwd[0..0]
-            } else {
-                &t_fwd[start..end]
-            }
+            if end < start { &t_fwd[0..0] } else { &t_fwd[start..end] }
         }
         Strand::Reverse => {
             let len = t_fwd.len();
             if len == 0 {
                 return &t_rc[0..0];
             }
-            let start = len
-                .saturating_sub(hit.t_end.saturating_add(1))
-                .min(t_rc.len());
+            let start = len.saturating_sub(hit.t_end.saturating_add(1)).min(t_rc.len());
             let end = len
                 .saturating_sub(hit.t_start.saturating_add(1))
                 .saturating_add(1)
                 .min(t_rc.len());
-            if end < start {
-                &t_rc[0..0]
-            } else {
-                &t_rc[start..end]
-            }
+            if end < start { &t_rc[0..0] } else { &t_rc[start..end] }
         }
     }
 }
@@ -269,9 +222,7 @@ fn hit_target_flanks<'a>(
             if t_rc.is_empty() {
                 return (&t_fwd[0..0], false, &t_fwd[0..0], false);
             }
-            let start = len
-                .saturating_sub(hit.t_end.saturating_add(1))
-                .min(t_rc.len());
+            let start = len.saturating_sub(hit.t_end.saturating_add(1)).min(t_rc.len());
             let end = len
                 .saturating_sub(hit.t_start.saturating_add(1))
                 .min(t_rc.len().saturating_sub(1));
@@ -284,9 +235,7 @@ fn hit_target_flanks<'a>(
     }
 
     let right_start = end.saturating_add(1).min(oriented.len());
-    let right_end = right_start
-        .saturating_add(BINDING_SITE_FLANK_LEN)
-        .min(oriented.len());
+    let right_end = right_start.saturating_add(BINDING_SITE_FLANK_LEN).min(oriented.len());
     let left_end = start;
     let left_start = left_end.saturating_sub(BINDING_SITE_FLANK_LEN);
 
@@ -298,176 +247,58 @@ fn hit_target_flanks<'a>(
     )
 }
 
-// =============================================================================
-// CORE FORMATTER
-// =============================================================================
-
-/// Format a hit line and append it directly to `out`.
-///
-/// Writes directly into the caller's buffer with no intermediate copy.
-/// Flanks are computed only for `OutputFormat::BindingSite`.
 #[inline]
-pub fn format_hit_into(
-    out: &mut Vec<u8>,
-    itoa: &mut itoa::Buffer,
-    hit: &SearchHit,
-    ctx: HitCtx<'_>,
-    format: OutputFormat,
+fn append_score_2dp(buf: &mut Vec<u8>, itoa: &mut itoa::Buffer, score: f64) {
+    let scaled = (score * 100.0).round_ties_even() as i64;
+    if scaled < 0 {
+        buf.push(b'-');
+    }
+    let v = scaled.unsigned_abs();
+    buf.extend_from_slice(itoa.format(v / 100).as_bytes());
+    buf.push(b'.');
+    let frac = (v % 100) as u8;
+    buf.push(b'0' + (frac / 10));
+    buf.push(b'0' + (frac % 10));
+}
+
+fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
+    for &p in alignment.steps() {
+        buf.push(p.symbol() as u8);
+    }
+}
+
+/// Target track in C `-p3` orientation (reverse walk, RNA lowercase complement).
+fn push_alignment_target_seq_bindingsite(
+    buf: &mut Vec<u8>,
+    alignment: &Alignment,
+    t_bases: &[Base],
 ) {
-    let HitCtx {
-        q_name,
-        q_seq,
-        t_name,
-        t_fwd,
-        t_rc,
-    } = ctx;
-
-    // Minimal fast path: 8 direct writes, no field loop or match dispatch.
-    if format == OutputFormat::Minimal {
-        out.reserve(q_name.len() + t_name.len() + 72);
-        out.extend_from_slice(q_name.as_bytes());
-        out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.q_start + 1).as_bytes());
-        out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.q_end + 1).as_bytes());
-        out.push(b'\t');
-        out.extend_from_slice(t_name.as_bytes());
-        out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.t_start + 1).as_bytes());
-        out.push(b'\t');
-        out.extend_from_slice(itoa.format(hit.t_end + 1).as_bytes());
-        out.push(b'\t');
-        out.push(char::from(hit.strand) as u8);
-        out.push(b'\t');
-        append_score_2dp(out, itoa, hit.energy.as_f64());
-        out.push(b'\n');
-        return;
+    let mut t_idx = alignment.steps().iter().filter(|s| s.consumes_target()).count();
+    for &step in alignment.steps().iter().rev() {
+        if step.consumes_target() {
+            t_idx = t_idx.saturating_sub(1);
+            buf.push(
+                t_bases
+                    .get(t_idx)
+                    .copied()
+                    .unwrap_or(Base::Gap)
+                    .complement()
+                    .to_byte(),
+            );
+        } else {
+            buf.push(b'-');
+        }
     }
+}
 
-    let spec = format_spec(format);
-    let alignment = hit.alignment.as_ref();
-    let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
-
-    // Flanks are only needed (and only computed) for BindingSite format.
-    let flanks = if format == OutputFormat::BindingSite {
-        Some(hit_target_flanks(hit, t_fwd, t_rc))
+fn push_flank(buf: &mut Vec<u8>, bases: &[Base], rev: bool) {
+    if rev {
+        for &b in bases.iter().rev() {
+            buf.push(b.complement().to_byte());
+        }
     } else {
-        None
-    };
-
-    let flank_len = flanks
-        .map(|(f5, _, f3, _)| f5.len() + f3.len())
-        .unwrap_or(0);
-    out.reserve(q_name.len() + t_name.len() + (steps_len * 2) + flank_len + 96);
-
-    if spec.prelude == PreludeKind::DetailedAlignment {
-        if let Some(align) = alignment {
-            let q_bases = hit_query_bases(hit, q_seq);
-            let t_bases = hit_target_bases(hit, t_fwd, t_rc);
-            push_alignment_query_seq(out, align, q_bases);
-            out.push(b'\n');
-            push_alignment_line(out, align);
-            out.push(b'\n');
-            push_alignment_target_seq(out, align, t_bases);
-            out.push(b'\n');
+        for &b in bases {
+            buf.push(b.complement().to_byte());
         }
-    }
-
-    for (idx, field) in spec.fields.iter().enumerate() {
-        if idx > 0 {
-            out.push(b'\t');
-        }
-        match field {
-            FieldKind::QueryId => out.extend_from_slice(q_name.as_bytes()),
-            FieldKind::QStart => out.extend_from_slice(itoa.format(hit.q_start + 1).as_bytes()),
-            FieldKind::QEnd => out.extend_from_slice(itoa.format(hit.q_end + 1).as_bytes()),
-            FieldKind::TargetId => out.extend_from_slice(t_name.as_bytes()),
-            FieldKind::TStart => out.extend_from_slice(itoa.format(hit.t_start + 1).as_bytes()),
-            FieldKind::TEnd => out.extend_from_slice(itoa.format(hit.t_end + 1).as_bytes()),
-            FieldKind::Strand => out.push(char::from(hit.strand) as u8),
-            FieldKind::Energy => append_score_2dp(out, itoa, hit.energy.as_f64()),
-            FieldKind::Pairing => {
-                if let Some(align) = alignment {
-                    push_pairing_string(out, align);
-                }
-            }
-            FieldKind::TargetSeq => {
-                if let Some(align) = alignment {
-                    push_alignment_target_seq_bindingsite(
-                        out,
-                        align,
-                        hit_target_bases(hit, t_fwd, t_rc),
-                    );
-                }
-            }
-            // C `-p3` semantics: output `flank5` = our `flank_3` complemented, and vice-versa.
-            FieldKind::Flank5 => {
-                if let Some((_, _, flank_3, flank_3_rev)) = flanks {
-                    if flank_3_rev {
-                        for &b in flank_3.iter().rev() {
-                            out.push(b.complement().to_byte());
-                        }
-                    } else {
-                        for &b in flank_3 {
-                            out.push(b.complement().to_byte());
-                        }
-                    }
-                }
-            }
-            FieldKind::Flank3 => {
-                if let Some((flank_5, flank_5_rev, _, _)) = flanks {
-                    if flank_5_rev {
-                        for &b in flank_5.iter().rev() {
-                            out.push(b.complement().to_byte());
-                        }
-                    } else {
-                        for &b in flank_5 {
-                            out.push(b.complement().to_byte());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    out.push(b'\n');
-}
-
-// =============================================================================
-// WRITE HELPER
-// =============================================================================
-
-/// Write a hit to a `Write` impl, resolving names and sequences from the registries.
-pub fn write_hit<W: Write + ?Sized>(
-    hit: &SearchHit,
-    format: OutputFormat,
-    writer: &mut W,
-    query_registry: &QueryRegistry,
-    target_store: &TargetStore,
-) -> std::io::Result<()> {
-    let t_idx = hit.target_idx as usize;
-    let (_, t_fwd, t_rc, _) = target_store
-        .target_seqs(t_idx)
-        .map_err(std::io::Error::other)?;
-    let ctx = HitCtx {
-        q_name: query_registry.get_name(hit.query_idx),
-        q_seq: query_registry.get(hit.query_idx).sequence().as_slice(),
-        t_name: target_store.get_name(hit.target_idx),
-        t_fwd,
-        t_rc,
-    };
-    let mut line = Vec::new();
-    format_hit_into(&mut line, &mut itoa::Buffer::new(), hit, ctx, format);
-    writer.write_all(&line)
-}
-
-impl SearchHit {
-    pub fn write(
-        &self,
-        w: &mut dyn Write,
-        format: OutputFormat,
-        query_registry: &QueryRegistry,
-        target_store: &TargetStore,
-    ) -> std::io::Result<()> {
-        write_hit(self, format, w, query_registry, target_store)
     }
 }
