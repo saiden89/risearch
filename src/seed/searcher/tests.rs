@@ -22,7 +22,12 @@ fn partition_splits_by_base() {
     let seq_bases = vec![Base::A, Base::G, Base::C, Base::U];
     let seq = Sequence::from(seq_bases);
     let (padded_sa, padded_seq, real_len) = build_padded_sa(&seq);
-    let parts = partition((padded_sa.as_slice(), padded_seq.as_slice(), real_len), 0, real_len, 0);
+    let parts = partition(
+        (padded_sa.as_slice(), padded_seq.as_slice(), real_len),
+        0,
+        real_len,
+        0,
+    );
 
     assert_eq!(parts[1] - parts[0], 1); // A
     assert_eq!(parts[2] - parts[1], 1); // C

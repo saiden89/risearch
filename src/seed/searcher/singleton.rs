@@ -6,7 +6,11 @@ use super::{partition, recurse, SeedMatch, SeedSaView, SeedingContext, BASES, SL
 /// `Q_SINGLETON=true` → query is the single entry, partition target.
 /// `Q_SINGLETON=false` → target is the single entry, partition query.
 #[inline(always)]
-pub(super) fn recurse_half_singleton<F: FnMut(SeedMatch), const WOBBLE: bool, const Q_SINGLETON: bool>(
+pub(super) fn recurse_half_singleton<
+    F: FnMut(SeedMatch),
+    const WOBBLE: bool,
+    const Q_SINGLETON: bool,
+>(
     ctx: &mut SeedingContext<'_, F>,
     singleton_idx: usize,
     multi: Range<usize>,
@@ -14,7 +18,11 @@ pub(super) fn recurse_half_singleton<F: FnMut(SeedMatch), const WOBBLE: bool, co
     match_streak: usize,
     mm_count: usize,
 ) {
-    let (single, multi_view) = if Q_SINGLETON { (ctx.q, ctx.t) } else { (ctx.t, ctx.q) };
+    let (single, multi_view) = if Q_SINGLETON {
+        (ctx.q, ctx.t)
+    } else {
+        (ctx.t, ctx.q)
+    };
 
     let single_base = single.sa_base(singleton_idx, depth);
     if !single_base.is_matchable() {

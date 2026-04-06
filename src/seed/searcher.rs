@@ -216,7 +216,14 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
             }
 
             if BASES[i].pair_type(BASES[j]).is_match(WOBBLE) {
-                recurse::<F, WOBBLE>(ctx, qi[qs]..qi[qs + 1], si[ts]..si[ts + 1], d1, ms, mm_count);
+                recurse::<F, WOBBLE>(
+                    ctx,
+                    qi[qs]..qi[qs + 1],
+                    si[ts]..si[ts + 1],
+                    d1,
+                    ms,
+                    mm_count,
+                );
             } else if can_mm {
                 recurse::<F, WOBBLE>(
                     ctx,

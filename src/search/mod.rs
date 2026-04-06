@@ -95,9 +95,9 @@ pub fn run_search(
     store: &TargetStore,
     opts: &SearchConfig,
     output_path: &Path,
-) -> Result<usize> {
+) -> Result<()> {
     if store.is_empty() || queries.is_empty() {
-        return Ok(0);
+        return Ok(());
     }
     info!(
         "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
@@ -108,21 +108,61 @@ pub fn run_search(
         opts.filter.delta_g
     );
     let ctx = SearchContext::new(queries, store, opts);
+    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
+    let total = AtomicUsize::new(0);
 
-    let total = if opts.output.multifile {
+    if opts.output.multifile {
         std::fs::create_dir_all(output_path).with_context(|| {
             format!(
                 "Failed to create output directory {:?} for --multifile",
                 output_path
             )
         })?;
-        run_multifile(&ctx, output_path)
-    } else {
-        run_single_file(&ctx, output_path)
-    }?;
+        let ext = crate::output::output_extension(&opts.output);
+        let paths = crate::output::writer::build_multifile_paths(queries, output_path, ext);
 
+        seed_groups.into_par_iter().try_for_each_init(
+            || {
+                (
+                    SearchWorker::new(ctx.opts),
+                    HitFormatter::new(ctx.opts.output.format),
+                )
+            },
+            |(worker, fmt), (qi, seeds)| -> Result<()> {
+                let (emitted, chunks) = process_query_seeds(&ctx, qi, &seeds, worker, fmt)?;
+                if !chunks.is_empty() {
+                    let mut w = OutputWriter::new(&ctx.opts.output, &paths[qi as usize])?;
+                    write_chunks(&mut w, &chunks)?;
+                    w.flush_all()?;
+                }
+                total.fetch_add(emitted, Ordering::Relaxed);
+                Ok(())
+            },
+        )?;
+    } else {
+        let writer = Mutex::new(OutputWriter::new(&opts.output, output_path)?);
+
+        seed_groups.into_par_iter().try_for_each_init(
+            || {
+                (
+                    SearchWorker::new(ctx.opts),
+                    HitFormatter::new(ctx.opts.output.format),
+                )
+            },
+            |(worker, fmt), (qi, seeds)| -> Result<()> {
+                let (emitted, chunks) = process_query_seeds(&ctx, qi, &seeds, worker, fmt)?;
+                write_chunks(&mut *writer.lock().unwrap(), &chunks)?;
+                total.fetch_add(emitted, Ordering::Relaxed);
+                Ok(())
+            },
+        )?;
+
+        writer.into_inner().unwrap().flush_all()?;
+    }
+
+    let total = total.load(Ordering::Relaxed);
     info!("Search complete: {} hits", total);
-    Ok(total)
+    Ok(())
 }
 
 struct SearchContext<'a> {
@@ -160,98 +200,26 @@ impl SearchWorker {
     }
 }
 
-fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
-    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
-
-    let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
-    let total = AtomicUsize::new(0);
-
-    seed_groups
-        .into_par_iter()
-        .try_for_each_init(
-            || {
-                (
-                    SearchWorker::new(ctx.opts),
-                    HitFormatter::new(ctx.opts.output.format),
-                )
-            },
-            |(worker, fmt), (qi, seeds)| -> Result<()> {
-                let emitted = process_query_seeds(ctx, qi, &seeds, worker, fmt, &mut |chunk| {
-                    writer.lock().unwrap().write_chunk(&chunk)
-                })?;
-                total.fetch_add(emitted, Ordering::Relaxed);
-                Ok(())
-            },
-        )?;
-
-    writer.into_inner().unwrap().flush_all()?;
-    Ok(total.load(Ordering::Relaxed))
+fn write_chunks(writer: &mut OutputWriter, chunks: &[OutputChunk]) -> Result<()> {
+    for chunk in chunks {
+        writer.write_chunk(chunk)?;
+    }
+    Ok(())
 }
 
-fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
-    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
-
-    let total = AtomicUsize::new(0);
-    let ext = crate::output::output_extension(&ctx.opts.output);
-    let output_paths = crate::output::writer::build_multifile_paths(ctx.queries, output_dir, ext);
-
-    seed_groups
-        .into_par_iter()
-        .try_for_each_init(
-            || {
-                (
-                    SearchWorker::new(ctx.opts),
-                    HitFormatter::new(ctx.opts.output.format),
-                )
-            },
-            |(worker, format), (qi, seeds)| -> Result<()> {
-                let file_path = &output_paths[qi as usize];
-                let mut writer: Option<OutputWriter> = None;
-
-                let mut flush_to_writer = |chunk: OutputChunk| -> Result<()> {
-                    if writer.is_none() {
-                        writer = Some(OutputWriter::new(&ctx.opts.output, file_path)?);
-                    }
-                    writer.as_mut().unwrap().write_chunk(&chunk)
-                };
-
-                let emitted = process_query_seeds(
-                    ctx,
-                    qi,
-                    &seeds,
-                    worker,
-                    format,
-                    &mut flush_to_writer,
-                )?;
-
-                if let Some(w) = writer.as_mut() {
-                    w.flush_all()?;
-                }
-
-                total.fetch_add(emitted, Ordering::Relaxed);
-                Ok(())
-            },
-        )?;
-
-    Ok(total.load(Ordering::Relaxed))
-}
-
-fn process_query_seeds<FO>(
+fn process_query_seeds(
     ctx: &SearchContext<'_>,
     query_idx: u32,
     seeds: &[SeedHit],
     worker: &mut SearchWorker,
     format: &mut HitFormatter,
-    on_chunk: &mut FO,
-) -> Result<usize>
-where
-    FO: FnMut(OutputChunk) -> Result<()>,
-{
+) -> Result<(usize, Vec<OutputChunk>)> {
     let query = &ctx.queries.entries()[query_idx as usize];
     let query_name = ctx.queries.get_name(query_idx);
     let query_seq = query.sequence().as_slice();
     let seed_interval = query.seed_interval.clone();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
+    let mut chunks = Vec::new();
     let mut local_hits = 0usize;
     let mut last_target_idx = None::<usize>;
     let mut cached_t_name = None;
@@ -291,16 +259,16 @@ where
             t_fwd,
             t_rc,
         ) {
-            on_chunk(chunk)?;
+            chunks.push(chunk);
         }
         local_hits += 1;
     }
 
     if let Some(chunk) = format.flush() {
-        on_chunk(chunk)?;
+        chunks.push(chunk);
     }
 
-    Ok(local_hits)
+    Ok((local_hits, chunks))
 }
 
 struct ExtensionResult {
@@ -577,18 +545,24 @@ mod tests {
         let target_path = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
 
         let (store, _tmp) = build_store(&target_path);
-        let config = test_config();
+        let mut config = test_config();
+        config.output.format = OutputFormat::Minimal;
         let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
 
         let hits = run_search_in_memory(&queries, &store, &config).unwrap();
 
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
-        let n = run_search(&queries, &store, &config, out.path()).unwrap();
+        run_search(&queries, &store, &config, out.path()).unwrap();
+        let file_hit_count = std::fs::read_to_string(out.path())
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
 
         assert_eq!(
             hits.len(),
-            n,
-            "run_search_in_memory and run_search must report the same hit count"
+            file_hit_count,
+            "run_search_in_memory and file output must report the same hit count"
         );
     }
 

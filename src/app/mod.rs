@@ -54,9 +54,8 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
 
     debug!("Starting search...");
 
-    let hits = search::run_search(&queries, &targets, &opts, output_path)?;
-
-    info!("Done: {} hits", hits);
+    search::run_search(&queries, &targets, &opts, output_path)?;
+    info!("Done");
     Ok(())
 }
 
