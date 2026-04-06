@@ -171,11 +171,10 @@ impl RegistryEntry for Query {
 pub struct QueryView<'a> {
     pub combined_seed_seq: &'a [Base],
     pub combined_sa: &'a [u64],
-    pub sa_real_len: usize,
+    pub len: usize,
     pub offsets: &'a [u64],
     pub seed_seq_lens: &'a [u32],
 }
-
 
 /// Registry of queries with a combined suffix array for efficient seed search.
 ///
@@ -189,7 +188,7 @@ pub struct QueryRegistry {
     /// Global SA over combined_seed_seq + SA_CHAR_PADDING sentinel zeros.
     combined_sa: Vec<u64>,
     /// Number of real SA entries (excluding padding).
-    sa_real_len: usize,
+    len: usize,
     /// Start offset of each query's seed sequence in combined_seed_seq.
     offsets: Vec<u64>,
     /// Length of each query's seed sequence.
@@ -225,11 +224,11 @@ impl QueryRegistry {
         self.inner.iter()
     }
 
-    pub fn query_view(&self) -> QueryView<'_> {
+    pub fn view(&self) -> QueryView<'_> {
         QueryView {
             combined_seed_seq: &self.combined_seed_seq,
             combined_sa: &self.combined_sa,
-            sa_real_len: self.sa_real_len,
+            len: self.len,
             offsets: &self.offsets,
             seed_seq_lens: &self.seed_seq_lens,
         }
@@ -354,7 +353,7 @@ impl QueryRegistry {
             inner: Registry::new(entries),
             combined_seed_seq,
             combined_sa,
-            sa_real_len,
+            len: sa_real_len,
             offsets,
             seed_seq_lens,
         })

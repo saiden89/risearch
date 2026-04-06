@@ -515,7 +515,7 @@ fn bench_combined_vs_per_query(c: &mut Criterion) {
         );
 
         // Approach B: combined query SA, single traversal (uses production QueryView)
-        let qv = dataset.queries.query_view();
+        let qv = dataset.queries.view();
         let (global_min_len, global_max_len) =
             combined_query_seed_bounds(&dataset.queries, &seed_config);
 
@@ -530,7 +530,7 @@ fn bench_combined_vs_per_query(c: &mut Criterion) {
                         (
                             black_box(qv.combined_sa),
                             black_box(qv.combined_seed_seq),
-                            black_box(qv.sa_real_len),
+                            black_box(qv.len),
                         ),
                         black_box(0),
                         (

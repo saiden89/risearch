@@ -65,7 +65,7 @@ pub fn run_search_in_memory(
         return Ok(Vec::new());
     }
     let ctx = SearchContext::new(queries, store, opts);
-    let seed_groups = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
+    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
 
     let hits: Vec<SearchHit> = seed_groups
         .into_par_iter()
@@ -180,7 +180,7 @@ impl SearchWorker {
 
 /// Single-file backend: collect seeds, then extend + format per query in parallel.
 fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize> {
-    let seed_groups = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
+    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
 
     let writer = Mutex::new(OutputWriter::new(&ctx.opts.output, output_path)?);
     let total = AtomicUsize::new(0);
@@ -209,7 +209,7 @@ fn run_single_file(ctx: &SearchContext<'_>, output_path: &Path) -> Result<usize>
 
 /// Multifile backend: collect seeds, then extend + write per query in parallel.
 fn run_multifile(ctx: &SearchContext<'_>, output_dir: &Path) -> Result<usize> {
-    let seed_groups = collect_seeds(ctx.queries, &ctx.target, &ctx.opts.seed);
+    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
 
     let total = AtomicUsize::new(0);
     let ext = crate::output::output_extension(&ctx.opts.output);

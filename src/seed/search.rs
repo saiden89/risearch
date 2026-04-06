@@ -1,5 +1,5 @@
 use crate::config::SeedConfig;
-use crate::index::store::TargetView;
+use crate::index::store::{TargetStore, TargetView};
 use crate::registry::QueryRegistry;
 use crate::types::{SeedLen, TargetId};
 
@@ -16,10 +16,11 @@ fn has_n_in_range(n_prefix: &[u32], start: usize, len: usize) -> bool {
 /// Returns `None` if the position falls before the first entry.
 #[inline]
 fn remap(offsets: &[u64], global_pos: usize) -> Option<(usize, usize)> {
-    let idx = offsets.partition_point(|&o| o <= global_pos as u64).checked_sub(1)?;
+    let idx = offsets
+        .partition_point(|&o| o <= global_pos as u64)
+        .checked_sub(1)?;
     Some((idx, global_pos - offsets[idx] as usize))
 }
-
 
 /// Pre-computed per-query seed length bounds, avoiding repeated `normalize()` calls.
 struct QuerySeedBounds {
@@ -32,11 +33,12 @@ struct QuerySeedBounds {
 /// Returns non-empty per-query seed buckets ready for parallel extension.
 pub(crate) fn collect_seeds(
     queries: &QueryRegistry,
-    target: &TargetView<'_>,
+    targets: &TargetStore,
     config: &SeedConfig,
 ) -> Vec<(u32, Vec<SeedHit>)> {
-    let qv = queries.query_view();
-    if qv.sa_real_len == 0 {
+    let query = queries.view();
+    let target = targets.target_view();
+    if query.len == 0 {
         return Vec::new();
     }
 
@@ -45,8 +47,15 @@ pub(crate) fn collect_seeds(
     let mut global_max = 0usize;
     let mut bounds = Vec::with_capacity(queries.len());
     for q in queries.entries() {
-        let min_len = config.seed.normalize(q.sequence().len()).expect("prepared query").2;
-        let max_len = q.seed_interval().end.saturating_sub(q.seed_interval().start);
+        let min_len = config
+            .seed
+            .normalize(q.sequence().len())
+            .expect("prepared query")
+            .2;
+        let max_len = q
+            .seed_interval()
+            .end
+            .saturating_sub(q.seed_interval().start);
         global_min = global_min.min(min_len);
         global_max = global_max.max(max_len);
         bounds.push(QuerySeedBounds { min_len, max_len });
@@ -57,25 +66,24 @@ pub(crate) fn collect_seeds(
     }
 
     let searcher = SeedSearcher::new(
-        (qv.combined_sa, qv.combined_seed_seq, qv.sa_real_len),
+        (query.combined_sa, query.combined_seed_seq, query.len),
         0,
         (target.combined_sa, target.combined_seq, target.sa_real_len),
         config,
     );
 
-    let mut seeds_by_query: Vec<Vec<SeedHit>> =
-        (0..queries.len()).map(|_| Vec::new()).collect();
+    let mut seeds_by_query: Vec<Vec<SeedHit>> = (0..queries.len()).map(|_| Vec::new()).collect();
     searcher.for_each_length_range(global_min, global_max, |m| {
         let seed_len = m.seed_len;
         let Some(seed_len_typed) = SeedLen::new(seed_len) else {
             return;
         };
 
-        for &q_sa_pos in &qv.combined_sa[m.query_interval.start..m.query_interval.end] {
-            let Some((qi, q_local_pos)) = remap(qv.offsets, q_sa_pos as usize) else {
+        for &q_sa_pos in &query.combined_sa[m.query_interval.start..m.query_interval.end] {
+            let Some((qi, q_local_pos)) = remap(query.offsets, q_sa_pos as usize) else {
                 continue;
             };
-            if q_local_pos + seed_len > qv.seed_seq_lens[qi] as usize {
+            if q_local_pos + seed_len > query.seed_seq_lens[qi] as usize {
                 continue;
             }
             let qb = &bounds[qi];
@@ -117,4 +125,3 @@ pub(crate) fn collect_seeds(
         .filter_map(|(qi, seeds)| (!seeds.is_empty()).then_some((qi as u32, seeds)))
         .collect()
 }
-
