@@ -49,10 +49,9 @@ pub fn run_search_in_memory(
     store: &TargetStore,
     opts: &SearchConfig,
 ) -> Result<Vec<SearchHit>> {
-    if store.is_empty() || queries.is_empty() {
+    let Some(ctx) = init_search(queries, store, opts) else {
         return Ok(Vec::new());
-    }
-    let ctx = SearchContext::new(queries, store, opts);
+    };
     let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
 
     let hits: Vec<SearchHit> = seed_groups
@@ -97,18 +96,9 @@ pub fn run_search(
     opts: &SearchConfig,
     output_path: &Path,
 ) -> Result<()> {
-    if store.is_empty() || queries.is_empty() {
+    let Some(ctx) = init_search(queries, store, opts) else {
         return Ok(());
-    }
-    info!(
-        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
-        queries.len(),
-        store.len(),
-        opts.seed.seed,
-        opts.extend.max_extension,
-        opts.filter.delta_g
-    );
-    let ctx = SearchContext::new(queries, store, opts);
+    };
     let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
     let total = AtomicUsize::new(0);
 
@@ -180,6 +170,27 @@ impl<'a> SearchContext<'a> {
             opts,
         }
     }
+}
+
+fn init_search<'a>(
+    queries: &'a QueryRegistry,
+    store: &'a TargetStore,
+    opts: &'a SearchConfig,
+) -> Option<SearchContext<'a>> {
+    if store.is_empty() || queries.is_empty() {
+        return None;
+    }
+
+    info!(
+        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
+        queries.len(),
+        store.len(),
+        opts.seed.seed,
+        opts.extend.max_extension,
+        opts.filter.delta_g
+    );
+
+    Some(SearchContext::new(queries, store, opts))
 }
 
 struct SearchWorker {
