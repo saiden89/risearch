@@ -6,11 +6,9 @@ use risearch::config::{
     ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
     OutputFormat, ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
 };
-use risearch::index::sa::SuffixArray;
-use risearch::index::store::SA_CHAR_PADDING;
-use risearch::registry::{Query, QueryRegistry};
+use risearch::registry::QueryRegistry;
 use risearch::search::{run_search, run_search_in_memory};
-use risearch::seed::searcher::{SeedMatch, SeedSearcher};
+use risearch::seed::{collect, SeedHit};
 use risearch::seq::Sequence;
 use risearch::types::Base;
 use risearch::TargetStore;
@@ -43,15 +41,6 @@ impl SimpleLcg {
     }
 }
 
-struct PreparedQuery {
-    padded_q_sa: Vec<u64>,
-    padded_q_seq: Vec<Base>,
-    q_sa_start: usize,
-    q_sa_len: usize,
-    min_len: usize,
-    max_len: usize,
-}
-
 struct ProductionSeedDataset {
     _tmpdir: TempDir,
     queries: QueryRegistry,
@@ -62,60 +51,6 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
     let mut rng = SimpleLcg::new(seed);
     let bases: Vec<Base> = (0..len).map(|_| rng.next_base()).collect();
     Sequence::from(bases)
-}
-
-fn build_padded_query(q_len: usize, rng_seed: u64) -> (Vec<u64>, Vec<Base>, usize, usize) {
-    let query = generate_sequence(q_len, rng_seed);
-    let query_sa = SuffixArray::try_from(&query[..]).expect("query SA");
-
-    let q_sa_len = query_sa.len();
-    let mut padded_sa = query_sa.into_inner();
-    padded_sa.resize(q_sa_len + SA_CHAR_PADDING, 0u64);
-
-    let mut padded_seq: Vec<Base> = query.iter().copied().collect();
-    padded_seq.resize(padded_seq.len() + SA_CHAR_PADDING, Base::Gap);
-
-    (padded_sa, padded_seq, 0, q_sa_len)
-}
-
-fn build_padded_target(t_len: usize, rng_seed: u64) -> (Vec<u64>, Vec<Base>, usize) {
-    let target = generate_sequence(t_len, rng_seed);
-
-    // Mirror TargetStore layout:
-    // fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
-    let mut combined_bases: Vec<Base> = Vec::with_capacity(2 * t_len + 2 + SA_CHAR_PADDING);
-    combined_bases.extend(target.iter().copied().map(Base::complement));
-    combined_bases.push(Base::Gap);
-    combined_bases.extend(target[..].iter().rev().copied());
-    combined_bases.push(Base::Gap);
-
-    let combined_sa = SuffixArray::try_from(combined_bases.as_slice()).expect("target SA");
-
-    let t_sa_len = combined_sa.len();
-    let mut padded_sa = combined_sa.into_inner();
-    padded_sa.resize(t_sa_len + SA_CHAR_PADDING, 0u64);
-
-    combined_bases.resize(combined_bases.len() + SA_CHAR_PADDING, Base::Gap);
-    (padded_sa, combined_bases, t_sa_len)
-}
-
-#[allow(clippy::type_complexity)]
-fn build_search_pair(
-    q_len: usize,
-    t_len: usize,
-    rng_seed: u64,
-) -> (
-    Vec<u64>,
-    Vec<Base>,
-    usize,
-    usize,
-    Vec<u64>,
-    Vec<Base>,
-    usize,
-) {
-    let (q_sa, q_seq, q_sa_start, q_sa_len) = build_padded_query(q_len, rng_seed);
-    let (t_sa, t_seq, t_sa_len) = build_padded_target(t_len, rng_seed.wrapping_add(1));
-    (q_sa, q_seq, q_sa_start, q_sa_len, t_sa, t_seq, t_sa_len)
 }
 
 fn base_to_byte(base: Base) -> u8 {
@@ -171,36 +106,6 @@ fn build_production_dataset(
     }
 }
 
-fn prepare_query_for_seed_search(query: &Query, seed_config: &SeedConfig) -> Option<PreparedQuery> {
-    let interval = query.seed_interval();
-    let min_len = seed_config
-        .seed
-        .normalize(query.sequence().len())
-        .expect("prepared query must be used with a compatible seed config")
-        .2;
-    let max_len = interval.end.saturating_sub(interval.start);
-
-    let sa = SuffixArray::try_from(query.seed_sequence().as_slice()).expect("per-query SA");
-    let q_sa_len = sa.len();
-    if q_sa_len == 0 {
-        return None;
-    }
-
-    let mut padded_q_sa = sa.into_inner();
-    padded_q_sa.resize(q_sa_len + SA_CHAR_PADDING, 0u64);
-    let mut padded_q_seq = query.seed_sequence().as_slice().to_vec();
-    padded_q_seq.resize(query.seed_sequence().len() + SA_CHAR_PADDING, Base::Gap);
-
-    Some(PreparedQuery {
-        padded_q_sa,
-        padded_q_seq,
-        q_sa_start: 0,
-        q_sa_len,
-        min_len,
-        max_len,
-    })
-}
-
 fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
     SearchConfig {
         seed: seed_config.clone(),
@@ -232,35 +137,25 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
     }
 }
 
+fn seed_count(groups: &[(u32, Vec<SeedHit>)]) -> usize {
+    groups.iter().map(|(_, seeds)| seeds.len()).sum()
+}
+
 fn bench_seed_exact(c: &mut Criterion) {
     let mut group = c.benchmark_group("seed_exact");
     let seed_config =
         SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::exact(), false);
 
-    for t_len in [1_000, 10_000, 100_000] {
-        group.bench_with_input(BenchmarkId::from_parameter(t_len), &t_len, |b, &t_len| {
-            let (q_sa, q_seq, q_sa_start, q_sa_len, t_sa, t_seq, t_sa_len) =
-                build_search_pair(22, t_len, 42);
-            let mut results: Vec<SeedMatch> = Vec::with_capacity(4096);
-
+    for target_len in [1_000, 10_000, 100_000] {
+        let dataset = build_production_dataset(1, 22, target_len, &seed_config);
+        group.bench_with_input(BenchmarkId::from_parameter(target_len), &target_len, |b, _| {
             b.iter(|| {
-                results.clear();
-                let searcher = SeedSearcher::new(
-                    (
-                        black_box(q_sa.as_slice()),
-                        black_box(q_seq.as_slice()),
-                        black_box(q_sa_len),
-                    ),
-                    black_box(q_sa_start),
-                    (
-                        black_box(t_sa.as_slice()),
-                        black_box(t_seq.as_slice()),
-                        black_box(t_sa_len),
-                    ),
+                let seeds = collect(
+                    black_box(&dataset.queries),
+                    black_box(&dataset.store),
                     black_box(&seed_config),
                 );
-                searcher.search_length_range(7, 22, &mut results);
-                black_box(results.len());
+                black_box(seed_count(&seeds));
             });
         });
     }
@@ -277,30 +172,16 @@ fn bench_seed_mismatch(c: &mut Criterion) {
             MismatchSpec::new(max_mm, 2, 2),
             false,
         );
+        let dataset = build_production_dataset(1, 22, 10_000, &seed_config);
 
         group.bench_with_input(BenchmarkId::new("max_mm", max_mm), &max_mm, |b, _| {
-            let (q_sa, q_seq, q_sa_start, q_sa_len, t_sa, t_seq, t_sa_len) =
-                build_search_pair(22, 10_000, 42);
-            let mut results: Vec<SeedMatch> = Vec::with_capacity(4096);
-
             b.iter(|| {
-                results.clear();
-                let searcher = SeedSearcher::new(
-                    (
-                        black_box(q_sa.as_slice()),
-                        black_box(q_seq.as_slice()),
-                        black_box(q_sa_len),
-                    ),
-                    black_box(q_sa_start),
-                    (
-                        black_box(t_sa.as_slice()),
-                        black_box(t_seq.as_slice()),
-                        black_box(t_sa_len),
-                    ),
+                let seeds = collect(
+                    black_box(&dataset.queries),
+                    black_box(&dataset.store),
                     black_box(&seed_config),
                 );
-                searcher.search_length_range(7, 22, &mut results);
-                black_box(results.len());
+                black_box(seed_count(&seeds));
             });
         });
     }
@@ -319,43 +200,18 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
             true,
         );
         let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
-        let global = dataset.store.target_view();
-        let prepared_queries: Vec<_> = dataset
-            .queries
-            .entries()
-            .iter()
-            .filter_map(|query| prepare_query_for_seed_search(query, &seed_config))
-            .collect();
-        let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
 
         group.bench_with_input(
-            BenchmarkId::new("prepared_queries_10q_x_100k", max_mm),
+            BenchmarkId::new("10q_x_100k", max_mm),
             &max_mm,
             |b, _| {
                 b.iter(|| {
-                    for prepared in &prepared_queries {
-                        results.clear();
-                        let searcher = SeedSearcher::new(
-                            (
-                                black_box(prepared.padded_q_sa.as_slice()),
-                                black_box(prepared.padded_q_seq.as_slice()),
-                                black_box(prepared.q_sa_len),
-                            ),
-                            black_box(prepared.q_sa_start),
-                            (
-                                black_box(global.combined_sa),
-                                black_box(global.combined_seq),
-                                black_box(global.sa_real_len),
-                            ),
-                            black_box(&seed_config),
-                        );
-                        searcher.search_length_range(
-                            prepared.min_len,
-                            prepared.max_len,
-                            &mut results,
-                        );
-                        black_box(results.len());
-                    }
+                    let seeds = collect(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.store),
+                        black_box(&seed_config),
+                    );
+                    black_box(seed_count(&seeds));
                 });
             },
         );
@@ -364,110 +220,8 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_seed_realistic(c: &mut Criterion) {
-    let mut group = c.benchmark_group("seed_realistic");
-    group.sample_size(10);
-
-    let seed_config =
-        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
-
-    group.bench_function("synthetic_searcher_10q_x_100k", |b| {
-        let (t_sa, t_seq, t_sa_len) = build_padded_target(100_000, 99);
-        let queries: Vec<_> = (0..10)
-            .map(|i| build_padded_query(22, 100 + i as u64))
-            .collect();
-        let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
-
-        b.iter(|| {
-            for (q_sa, q_seq, q_sa_start, q_sa_len) in &queries {
-                results.clear();
-                let searcher = SeedSearcher::new(
-                    (
-                        black_box(q_sa.as_slice()),
-                        black_box(q_seq.as_slice()),
-                        black_box(*q_sa_len),
-                    ),
-                    black_box(*q_sa_start),
-                    (
-                        black_box(t_sa.as_slice()),
-                        black_box(t_seq.as_slice()),
-                        black_box(t_sa_len),
-                    ),
-                    black_box(&seed_config),
-                );
-                searcher.search_length_range(7, 22, &mut results);
-                black_box(results.len());
-            }
-        });
-    });
-
-    group.finish();
-}
-
-fn bench_seed_prod_shaped_searcher(c: &mut Criterion) {
-    let mut group = c.benchmark_group("seed_prod_shaped_searcher");
-    group.sample_size(10);
-
-    let seed_config =
-        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
-    let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
-    let global = dataset.store.target_view();
-    let prepared_queries: Vec<_> = dataset
-        .queries
-        .entries()
-        .iter()
-        .filter_map(|query| prepare_query_for_seed_search(query, &seed_config))
-        .collect();
-    let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
-
-    group.bench_function("prepared_queries_10q_x_100k", |b| {
-        b.iter(|| {
-            for prepared in &prepared_queries {
-                results.clear();
-                let searcher = SeedSearcher::new(
-                    (
-                        black_box(prepared.padded_q_sa.as_slice()),
-                        black_box(prepared.padded_q_seq.as_slice()),
-                        black_box(prepared.q_sa_len),
-                    ),
-                    black_box(prepared.q_sa_start),
-                    (
-                        black_box(global.combined_sa),
-                        black_box(global.combined_seq),
-                        black_box(global.sa_real_len),
-                    ),
-                    black_box(&seed_config),
-                );
-                searcher.search_length_range(prepared.min_len, prepared.max_len, &mut results);
-                black_box(results.len());
-            }
-        });
-    });
-
-    group.finish();
-}
-
-fn combined_query_seed_bounds(queries: &QueryRegistry, seed_config: &SeedConfig) -> (usize, usize) {
-    let mut global_min_len = usize::MAX;
-    let mut global_max_len = 0usize;
-    for query in queries.entries() {
-        let min_len = seed_config
-            .seed
-            .normalize(query.sequence().len())
-            .expect("seed config")
-            .2;
-        let max_len = query
-            .seed_interval()
-            .end
-            .saturating_sub(query.seed_interval().start);
-        global_min_len = global_min_len.min(min_len);
-        global_max_len = global_max_len.max(max_len);
-    }
-    (global_min_len, global_max_len)
-}
-
-fn bench_combined_vs_per_query(c: &mut Criterion) {
-    let mut group = c.benchmark_group("combined_vs_per_query");
+fn bench_seed_query_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("seed_query_scaling");
     group.sample_size(10);
 
     let seed_config =
@@ -475,76 +229,16 @@ fn bench_combined_vs_per_query(c: &mut Criterion) {
 
     for query_count in [1, 10, 50, 100] {
         let dataset = build_production_dataset(query_count, 22, 100_000, &seed_config);
-        let global = dataset.store.target_view();
-
-        // Approach A: per-query loop (pre-padded, no alloc in hot path)
-        let prepared: Vec<PreparedQuery> = dataset
-            .queries
-            .entries()
-            .iter()
-            .filter_map(|q| prepare_query_for_seed_search(q, &seed_config))
-            .collect();
-
-        group.bench_with_input(
-            BenchmarkId::new("per_query", query_count),
-            &query_count,
-            |b, _| {
-                let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
-                b.iter(|| {
-                    for p in &prepared {
-                        results.clear();
-                        let searcher = SeedSearcher::new(
-                            (
-                                black_box(p.padded_q_sa.as_slice()),
-                                black_box(p.padded_q_seq.as_slice()),
-                                black_box(p.q_sa_len),
-                            ),
-                            black_box(p.q_sa_start),
-                            (
-                                black_box(global.combined_sa),
-                                black_box(global.combined_seq),
-                                black_box(global.sa_real_len),
-                            ),
-                            black_box(&seed_config),
-                        );
-                        searcher.search_length_range(p.min_len, p.max_len, &mut results);
-                        black_box(results.len());
-                    }
-                });
-            },
-        );
-
-        // Approach B: combined query SA, single traversal (uses production QueryView)
-        let qv = dataset.queries.view();
-        let (global_min_len, global_max_len) =
-            combined_query_seed_bounds(&dataset.queries, &seed_config);
-
-        group.bench_with_input(
-            BenchmarkId::new("combined", query_count),
-            &query_count,
-            |b, _| {
-                let mut results: Vec<SeedMatch> = Vec::with_capacity(16_384);
-                b.iter(|| {
-                    results.clear();
-                    let searcher = SeedSearcher::new(
-                        (
-                            black_box(qv.combined_sa),
-                            black_box(qv.combined_seed_seq),
-                            black_box(qv.len),
-                        ),
-                        black_box(0),
-                        (
-                            black_box(global.combined_sa),
-                            black_box(global.combined_seq),
-                            black_box(global.sa_real_len),
-                        ),
-                        black_box(&seed_config),
-                    );
-                    searcher.search_length_range(global_min_len, global_max_len, &mut results);
-                    black_box(results.len());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(query_count), &query_count, |b, _| {
+            b.iter(|| {
+                let seeds = collect(
+                    black_box(&dataset.queries),
+                    black_box(&dataset.store),
+                    black_box(&seed_config),
+                );
+                black_box(seed_count(&seeds));
+            });
+        });
     }
 
     group.finish();
@@ -560,6 +254,17 @@ fn bench_seed_prod_shaped_pipeline(c: &mut Criterion) {
     let args = make_search_config(&seed_config);
     let output_path = dataset._tmpdir.path().join("search.out");
 
+    group.bench_function("collect_10q_x_100k", |b| {
+        b.iter(|| {
+            let seeds = collect(
+                black_box(&dataset.queries),
+                black_box(&dataset.store),
+                black_box(&seed_config),
+            );
+            black_box(seed_count(&seeds));
+        });
+    });
+
     group.bench_function("run_search_in_memory_10q_x_100k", |b| {
         b.iter(|| {
             let hits = run_search_in_memory(
@@ -574,14 +279,13 @@ fn bench_seed_prod_shaped_pipeline(c: &mut Criterion) {
 
     group.bench_function("run_search_10q_x_100k", |b| {
         b.iter(|| {
-            let emitted = run_search(
+            run_search(
                 black_box(&dataset.queries),
                 black_box(&dataset.store),
                 black_box(&args),
                 black_box(output_path.as_path()),
             )
             .expect("run search");
-            black_box(emitted);
         });
     });
 
@@ -593,9 +297,7 @@ criterion_group!(
     bench_seed_exact,
     bench_seed_mismatch,
     bench_seed_prod_shaped_mismatch,
-    bench_seed_realistic,
-    bench_seed_prod_shaped_searcher,
-    bench_seed_prod_shaped_pipeline,
-    bench_combined_vs_per_query
+    bench_seed_query_scaling,
+    bench_seed_prod_shaped_pipeline
 );
 criterion_main!(benches);

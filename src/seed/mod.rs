@@ -1,7 +1,6 @@
-pub(crate) mod search;
-pub mod searcher;
+mod searcher;
 
-pub(crate) use search::collect_seeds;
+pub use searcher::collect;
 
 use crate::types::{SeedLen, Strand, TargetId};
 

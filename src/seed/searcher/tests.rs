@@ -46,28 +46,31 @@ fn singleton_handoff_does_not_double_emit() {
     let (t_sa, t_seq_padded, t_sa_len) = build_padded_sa(&t_seq);
 
     let cfg = SeedConfig::with_wobble(SeedSpec::LengthOnly(1), MismatchSpec::exact(), false);
-    let searcher = SeedSearcher::new(
-        (q_sa.as_slice(), q_seq_padded.as_slice(), q_sa_len),
-        0,
-        (t_sa.as_slice(), t_seq_padded.as_slice(), t_sa_len),
-        &cfg,
-    );
-
-    let mut results = Vec::new();
-    searcher.search_length_range(1, 2, &mut results);
-
     let mut seen = std::collections::HashSet::new();
-    for m in &results {
-        assert!(
-            seen.insert((
-                m.query_interval.start,
-                m.query_interval.end,
-                m.target_interval.start,
-                m.target_interval.end,
-                m.seed_len
-            )),
-            "duplicate seed match emitted: {:?}",
-            m
-        );
-    }
+    let mut ctx = SeedingContext {
+        q: (q_sa.as_slice(), q_seq_padded.as_slice(), q_sa_len),
+        t: (t_sa.as_slice(), t_seq_padded.as_slice(), t_sa_len),
+        min_len: 1,
+        max_len: 2,
+        max_mm: cfg.mismatch.max_mismatches,
+        min_prefix: cfg.mismatch.min_prefix_matches,
+        min_suffix: cfg.mismatch.min_suffix_matches,
+        on_match: &mut |m| {
+            assert!(
+                seen.insert((
+                    m.query_interval.start,
+                    m.query_interval.end,
+                    m.target_interval.start,
+                    m.target_interval.end,
+                    m.seed_len
+                )),
+                "duplicate seed match emitted: {:?}",
+                m
+            );
+        },
+    };
+
+    let q_range = 0..ctx.q.sa_real_len();
+    let t_range = 0..ctx.t.sa_real_len();
+    recurse::<_, false>(&mut ctx, q_range, t_range, 0, 0, 0);
 }

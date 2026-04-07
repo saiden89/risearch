@@ -25,7 +25,7 @@ use crate::dsm::ScoringModel;
 use crate::index::store::TargetStore;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
-use crate::seed::{collect_seeds, SeedHit};
+use crate::seed::{collect, SeedHit};
 use crate::types::{Base, Energy, Strand};
 
 #[derive(Debug, Clone)]
@@ -52,7 +52,7 @@ pub fn run_search_in_memory(
     let Some(ctx) = init_search(queries, store, opts) else {
         return Ok(Vec::new());
     };
-    let seeds = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
+    let seeds = collect(ctx.queries, ctx.store, &ctx.opts.seed);
 
     let hits: Vec<SearchHit> = seeds
         .into_par_iter()
@@ -99,7 +99,7 @@ pub fn run_search(
     let Some(ctx) = init_search(queries, store, opts) else {
         return Ok(());
     };
-    let seed_groups = collect_seeds(ctx.queries, ctx.store, &ctx.opts.seed);
+    let seed_groups = collect(ctx.queries, ctx.store, &ctx.opts.seed);
     let total = AtomicUsize::new(0);
 
     if opts.output.multifile {
