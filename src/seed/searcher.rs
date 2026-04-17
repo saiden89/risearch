@@ -61,7 +61,7 @@ pub fn collect(
     config: &SeedConfig,
 ) -> Vec<(u32, Vec<SeedHit>)> {
     let qview = queries.view();
-    let target = targets.target_view();
+    let target = targets.view();
     if qview.len == 0 {
         return Vec::new();
     }
