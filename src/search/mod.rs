@@ -61,7 +61,7 @@ pub fn run_search_in_memory(
             let query = &ctx.queries.entries()[qi as usize];
             let query_seq = query.sequence().as_slice();
             let seed_interval = query.seed_interval.clone();
-            let target = ctx.store.target_view();
+            let target = ctx.store.view();
 
             seeds.into_iter().filter_map(move |seed| {
                 let target_idx = seed.target_id.0 as usize;
@@ -227,7 +227,7 @@ fn process_query_seeds(
     let query_name = ctx.queries.get_name(query_idx);
     let query_seq = query.sequence().as_slice();
     let seed_interval = query.seed_interval.clone();
-    let target = ctx.store.target_view();
+    let target = ctx.store.view();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
     let mut chunks = Vec::new();
     let mut local_hits = 0usize;

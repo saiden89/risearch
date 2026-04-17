@@ -348,7 +348,7 @@ impl TargetStore {
     }
 
     /// Get a target-side view of the combined SA and sequence for seed search.
-    pub fn target_view(&self) -> TargetView<'_> {
+    pub fn view(&self) -> TargetView<'_> {
         TargetView {
             combined_seq: self.combined_seq(),
             combined_sa: self.combined_sa(),
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(store.len(), expected.len());
 
         // Verify target view is accessible
-        let target = store.target_view();
+        let target = store.view();
         assert_eq!(target.offsets.len(), store.len());
         assert_eq!(target.seq_lens.len(), store.len());
         assert!(target.sa_real_len > 0);
@@ -604,7 +604,7 @@ mod tests {
 
         TargetStore::build_from_fasta(&fasta_path, &index_path).unwrap();
         let store = TargetStore::open(&index_path).unwrap();
-        let target = store.target_view();
+        let target = store.view();
 
         // Verify offsets are contiguous: offset[i+1] = offset[i] + 2*seq_len[i] + 2
         for i in 0..store.len() - 1 {
