@@ -1,8 +1,15 @@
 //! Gotoh 3-state DP recurrence: precomputed transition tables.
 //!
-//! All 7 transitions are materialized at construction time from a `ScoringModel`.
-//! The inner DP loop uses zero-cost slice accesses into these tables instead of
-//! computing GAP-pattern lookups on the fly.
+//! All transitions are materialized at construction time from a `ScoringModel`.
+//! The DP core asks semantic transition questions, not arbitrary 4-base tensor
+//! lookups:
+//!
+//! - `M`: continue the paired stack, close a query gap, or close a target gap
+//! - `Bq`: open or extend a query gap
+//! - `Bt`: open or extend a target gap
+//!
+//! A mismatch is not its own transition family; it is simply an unfavorable
+//! `stack` score.
 //!
 //! # Index safety
 //!
@@ -23,26 +30,24 @@ const BC: usize = BASE_COUNT; // 6
 ///
 /// Direction-agnostic: each instance corresponds to one `ScoringModel` orientation.
 pub struct Gotoh {
-    /// M ← M: `match_mm[qp][qc][tp][tc]` — full 4D stacking (1296 entries).
+    /// M ← M: `stack[qp][qc][tp][tc]` — full 4D paired-stack continuation.
     ///
     /// Sized as 6⁴ rather than 5⁴ so that all 36-entry profile slices share the
     /// uniform stride `tp*6 + tc`. This lets the inner loop compute one index
-    /// (`t_stack_idx`) and reuse it across match_mm, m_from_bt, bt_open, and
-    /// bt_extend lookups. GAP-indexed entries (where any index is 0) are never
-    /// accessed in the M←M path — they exist solely to preserve stride uniformity.
-    match_mm: [i32; 1296],
-    /// M ← Bq: `m_from_bq[qp][qc][tc]` — re-entry from query bulge (216 entries)
-    m_from_bq: [i32; 216],
-    /// M ← Bt: `m_from_bt[qc][tp][tc]` — re-entry from target bulge (216 entries)
-    m_from_bt: [i32; 216],
-    /// Bq ← M: `bq_open[qp][qc][tc]` — open query bulge (216 entries)
-    bq_open: [i32; 216],
-    /// Bq ← Bq: `bq_extend[qp][qc]` — extend query bulge (36 entries)
-    bq_extend: [i32; 36],
-    /// Bt ← M: `bt_open[qc][tp][tc]` — open target bulge (216 entries)
-    bt_open: [i32; 216],
-    /// Bt ← Bt: `bt_extend[tp][tc]` — extend target bulge (36 entries)
-    bt_extend: [i32; 36],
+    /// and reuse it across all target-pair-dependent transitions.
+    stack: [i32; 1296],
+    /// M ← Bq: `close_query_gap[qp][qc][tc]` — re-entry from a query gap.
+    close_query_gap: [i32; 216],
+    /// M ← Bt: `close_target_gap[qc][tp][tc]` — re-entry from a target gap.
+    close_target_gap: [i32; 216],
+    /// Bq ← M: `open_query_gap[qp][qc][tc]` — open a query gap.
+    open_query_gap: [i32; 216],
+    /// Bq ← Bq: `extend_query_gap[qp][qc]` — extend a query gap.
+    extend_query_gap: [i32; 36],
+    /// Bt ← M: `open_target_gap[qc][tp][tc]` — open a target gap.
+    open_target_gap: [i32; 216],
+    /// Bt ← Bt: `extend_target_gap[tp][tc]` — extend a target gap.
+    extend_target_gap: [i32; 36],
     /// Terminal: `terminal[qc][tc]` — boundary penalty (36 entries)
     terminal: [i32; 36],
 }
@@ -50,188 +55,200 @@ pub struct Gotoh {
 impl Gotoh {
     /// Materialize all transition tables from a `ScoringModel`.
     pub fn new(table: &ScoringModel) -> Self {
-        let mut match_mm = [0i32; 1296];
-        let mut m_from_bq = [0i32; 216];
-        let mut m_from_bt = [0i32; 216];
-        let mut bq_open = [0i32; 216];
-        let mut bq_extend = [0i32; 36];
-        let mut bt_open = [0i32; 216];
-        let mut bt_extend = [0i32; 36];
+        let mut stack = [0i32; 1296];
+        let mut close_query_gap = [0i32; 216];
+        let mut close_target_gap = [0i32; 216];
+        let mut open_query_gap = [0i32; 216];
+        let mut extend_query_gap = [0i32; 36];
+        let mut open_target_gap = [0i32; 216];
+        let mut extend_target_gap = [0i32; 36];
         let mut terminal = [0i32; 36];
 
         for qp in 0..BC {
             for qc in 0..BC {
-                let qp_qc_36 = qp * BC * BC * BC + qc * BC * BC; // offset into match_mm
-                let qp_qc_6 = qp * BC + qc; // offset into bq_extend
+                let qp_qc_36 = qp * BC * BC * BC + qc * BC * BC;
+                let qp_qc_6 = qp * BC + qc;
                 for tp in 0..BC {
                     for tc in 0..BC {
-                        match_mm[qp_qc_36 + tp * BC + tc] = table.lookup(qp, qc, tp, tc);
+                        stack[qp_qc_36 + tp * BC + tc] = table.transition_energy(qp, qc, tp, tc);
                     }
                 }
                 for tc in 0..BC {
-                    m_from_bq[qp * BC * BC + qc * BC + tc] = table.lookup(qp, qc, GAP, tc);
-                    bq_open[qp * BC * BC + qc * BC + tc] = table.lookup(qp, qc, tc, GAP);
+                    close_query_gap[qp * BC * BC + qc * BC + tc] =
+                        table.transition_energy(qp, qc, GAP, tc);
+                    open_query_gap[qp * BC * BC + qc * BC + tc] =
+                        table.transition_energy(qp, qc, tc, GAP);
                 }
-                bq_extend[qp_qc_6] = table.lookup(qp, qc, GAP, GAP);
+                extend_query_gap[qp_qc_6] = table.transition_energy(qp, qc, GAP, GAP);
             }
         }
 
         for qc in 0..BC {
             for tp in 0..BC {
                 for tc in 0..BC {
-                    m_from_bt[qc * BC * BC + tp * BC + tc] = table.lookup(GAP, qc, tp, tc);
-                    bt_open[qc * BC * BC + tp * BC + tc] = table.lookup(qc, GAP, tp, tc);
+                    close_target_gap[qc * BC * BC + tp * BC + tc] =
+                        table.transition_energy(GAP, qc, tp, tc);
+                    open_target_gap[qc * BC * BC + tp * BC + tc] =
+                        table.transition_energy(qc, GAP, tp, tc);
                 }
             }
             for tc in 0..BC {
-                terminal[qc * BC + tc] = table.lookup(qc, GAP, tc, GAP);
+                terminal[qc * BC + tc] = table.transition_energy(qc, GAP, tc, GAP);
             }
         }
 
         for tp in 0..BC {
             for tc in 0..BC {
-                bt_extend[tp * BC + tc] = table.lookup(GAP, GAP, tp, tc);
+                extend_target_gap[tp * BC + tc] = table.transition_energy(GAP, GAP, tp, tc);
             }
         }
 
         Self {
-            match_mm,
-            m_from_bq,
-            m_from_bt,
-            bq_open,
-            bq_extend,
-            bt_open,
-            bt_extend,
+            stack,
+            close_query_gap,
+            close_target_gap,
+            open_query_gap,
+            extend_query_gap,
+            open_target_gap,
+            extend_target_gap,
             terminal,
         }
     }
 
     // =========================================================================
-    // POINT LOOKUPS — for init and traceback
+    // SEMANTIC TRANSITION QUERIES — used by traceback and boundary init
     // =========================================================================
 
-    /// M ← M transition energy.
+    /// M ← M transition energy: continue the paired stack.
     #[inline(always)]
-    pub fn match_energy(&self, qp: usize, qc: usize, tp: usize, tc: usize) -> i32 {
-        // SAFETY: All args are valid DP lookup indices ∈ 0..6.
-        // Max index = 5*216 + 5*36 + 5*6 + 5 = 1295 < 1296.
-        unsafe {
-            *self
-                .match_mm
-                .get_unchecked(qp * 216 + qc * 36 + tp * 6 + tc)
-        }
+    pub(crate) fn stack(&self, qp: u8, qc: u8, tp: u8, tc: u8) -> i32 {
+        let qp = usize::from(qp);
+        let qc = usize::from(qc);
+        let tp = usize::from(tp);
+        let tc = usize::from(tc);
+        unsafe { *self.stack.get_unchecked(qp * 216 + qc * 36 + tp * 6 + tc) }
     }
 
-    /// M ← Bq transition energy.
+    /// M ← Bq transition energy: close a query gap and return to the stack.
     #[inline(always)]
-    pub fn m_from_bq(&self, qp: usize, qc: usize, tc: usize) -> i32 {
-        // SAFETY: All args ∈ 0..6. Max index = 5*36 + 5*6 + 5 = 215 < 216.
-        unsafe { *self.m_from_bq.get_unchecked(qp * 36 + qc * 6 + tc) }
+    pub(crate) fn close_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
+        let qp = usize::from(qp);
+        let qc = usize::from(qc);
+        let tc = usize::from(tc);
+        unsafe { *self.close_query_gap.get_unchecked(qp * 36 + qc * 6 + tc) }
     }
 
-    /// M ← Bt transition energy.
+    /// M ← Bt transition energy: close a target gap and return to the stack.
     #[inline(always)]
-    pub fn m_from_bt(&self, qc: usize, tp: usize, tc: usize) -> i32 {
-        // SAFETY: All args ∈ 0..6. Max index = 5*36 + 5*6 + 5 = 215 < 216.
-        unsafe { *self.m_from_bt.get_unchecked(qc * 36 + tp * 6 + tc) }
+    pub(crate) fn close_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
+        let qc = usize::from(qc);
+        let tp = usize::from(tp);
+        let tc = usize::from(tc);
+        unsafe { *self.close_target_gap.get_unchecked(qc * 36 + tp * 6 + tc) }
     }
 
-    /// Bq ← M (open query bulge) transition energy.
+    /// Bq ← M transition energy: open a query gap.
     #[inline(always)]
-    pub fn bq_open(&self, qp: usize, qc: usize, tc: usize) -> i32 {
-        // SAFETY: All args ∈ 0..6. Max index = 5*36 + 5*6 + 5 = 215 < 216.
-        unsafe { *self.bq_open.get_unchecked(qp * 36 + qc * 6 + tc) }
+    pub(crate) fn open_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
+        let qp = usize::from(qp);
+        let qc = usize::from(qc);
+        let tc = usize::from(tc);
+        unsafe { *self.open_query_gap.get_unchecked(qp * 36 + qc * 6 + tc) }
     }
 
-    /// Bq ← Bq (extend query bulge) transition energy.
+    /// Bq ← Bq transition energy: extend a query gap.
     #[inline(always)]
-    pub fn bq_extend(&self, qp: usize, qc: usize) -> i32 {
-        // SAFETY: All args ∈ 0..6. Max index = 5*6 + 5 = 35 < 36.
-        unsafe { *self.bq_extend.get_unchecked(qp * 6 + qc) }
+    pub(crate) fn extend_query_gap(&self, qp: u8, qc: u8) -> i32 {
+        let qp = usize::from(qp);
+        let qc = usize::from(qc);
+        unsafe { *self.extend_query_gap.get_unchecked(qp * 6 + qc) }
     }
 
-    /// Bt ← M (open target bulge) transition energy.
+    /// Bt ← M transition energy: open a target gap.
     #[inline(always)]
-    pub fn bt_open(&self, qc: usize, tp: usize, tc: usize) -> i32 {
-        // SAFETY: All args ∈ 0..6. Max index = 5*36 + 5*6 + 5 = 215 < 216.
-        unsafe { *self.bt_open.get_unchecked(qc * 36 + tp * 6 + tc) }
+    pub(crate) fn open_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
+        let qc = usize::from(qc);
+        let tp = usize::from(tp);
+        let tc = usize::from(tc);
+        unsafe { *self.open_target_gap.get_unchecked(qc * 36 + tp * 6 + tc) }
     }
 
-    /// Bt ← Bt (extend target bulge) transition energy.
+    /// Bt ← Bt transition energy: extend a target gap.
     #[inline(always)]
-    pub fn bt_extend_e(&self, tp: usize, tc: usize) -> i32 {
-        // SAFETY: All args ∈ 0..6. Max index = 5*6 + 5 = 35 < 36.
-        unsafe { *self.bt_extend.get_unchecked(tp * 6 + tc) }
+    pub(crate) fn extend_target_gap(&self, tp: u8, tc: u8) -> i32 {
+        let tp = usize::from(tp);
+        let tc = usize::from(tc);
+        unsafe { *self.extend_target_gap.get_unchecked(tp * 6 + tc) }
     }
 
     /// Terminal (boundary) penalty.
     #[inline(always)]
-    pub fn terminal(&self, qc: usize, tc: usize) -> i32 {
-        // SAFETY: All args ∈ 0..6. Max index = 5*6 + 5 = 35 < 36.
+    pub(crate) fn terminal(&self, qc: u8, tc: u8) -> i32 {
+        let qc = usize::from(qc);
+        let tc = usize::from(tc);
         unsafe { *self.terminal.get_unchecked(qc * 6 + tc) }
     }
 
     /// Terminal (boundary) penalty for semantic bases.
     #[inline(always)]
-    pub fn terminal_bases(&self, q: Base, t: Base) -> i32 {
-        self.terminal(q as usize, t as usize)
+    pub(crate) fn terminal_bases(&self, q: Base, t: Base) -> i32 {
+        self.terminal(q as u8, t as u8)
     }
 
-    // =========================================================================
-    // ROW-PROFILE SLICE ACCESSORS — for core loop
-    // =========================================================================
-
-    /// 36-entry slice of match_mm for fixed (qp, qc): `&[tp*6+tc]`.
+    /// 36-entry row for `stack` with fixed `(qp, qc)`: `&[tp*6+tc]`.
     #[inline(always)]
-    pub fn match_profile(&self, qp: usize, qc: usize) -> &[i32] {
+    pub(super) fn stack_row(&self, qp: u8, qc: u8) -> &[i32] {
+        let qp = usize::from(qp);
+        let qc = usize::from(qc);
         let start = qp * 216 + qc * 36;
-        // SAFETY: qp, qc ∈ 0..6. Max start = 5*216 + 5*36 = 1260, end = 1296 = len.
-        unsafe { self.match_mm.get_unchecked(start..start + 36) }
+        unsafe { self.stack.get_unchecked(start..start + 36) }
     }
 
-    /// 36-entry slice of m_from_bt for fixed qc: `&[tp*6+tc]`.
+    /// 36-entry row for `close_target_gap` with fixed `qc`: `&[tp*6+tc]`.
     #[inline(always)]
-    pub fn m_from_bt_profile(&self, qc: usize) -> &[i32] {
+    pub(super) fn close_target_gap_row(&self, qc: u8) -> &[i32] {
+        let qc = usize::from(qc);
         let start = qc * 36;
-        // SAFETY: qc ∈ 0..6. Max start = 180, end = 216 = len.
-        unsafe { self.m_from_bt.get_unchecked(start..start + 36) }
+        unsafe { self.close_target_gap.get_unchecked(start..start + 36) }
     }
 
-    /// 36-entry slice of bt_open for fixed qc: `&[tp*6+tc]`.
+    /// 36-entry row for `open_target_gap` with fixed `qc`: `&[tp*6+tc]`.
     #[inline(always)]
-    pub fn bt_open_profile(&self, qc: usize) -> &[i32] {
+    pub(super) fn open_target_gap_row(&self, qc: u8) -> &[i32] {
+        let qc = usize::from(qc);
         let start = qc * 36;
-        // SAFETY: qc ∈ 0..6. Max start = 180, end = 216 = len.
-        unsafe { self.bt_open.get_unchecked(start..start + 36) }
+        unsafe { self.open_target_gap.get_unchecked(start..start + 36) }
     }
 
-    /// Full bt_extend table (36 entries): `&[tp*6+tc]`.
+    /// Full `extend_target_gap` table (36 entries): `&[tp*6+tc]`.
     #[inline(always)]
-    pub fn bt_extend_profile(&self) -> &[i32; 36] {
-        &self.bt_extend
+    pub(super) fn extend_target_gap_row(&self) -> &[i32; 36] {
+        &self.extend_target_gap
     }
 
-    /// 6-entry slice of m_from_bq for fixed (qp, qc): `&[tc]`.
+    /// 6-entry row for `close_query_gap` with fixed `(qp, qc)`: `&[tc]`.
     #[inline(always)]
-    pub fn m_from_bq_profile(&self, qp: usize, qc: usize) -> &[i32] {
+    pub(super) fn close_query_gap_row(&self, qp: u8, qc: u8) -> &[i32] {
+        let qp = usize::from(qp);
+        let qc = usize::from(qc);
         let start = qp * 36 + qc * 6;
-        // SAFETY: qp, qc ∈ 0..6. Max start = 5*36 + 5*6 = 210, end = 216 = len.
-        unsafe { self.m_from_bq.get_unchecked(start..start + 6) }
+        unsafe { self.close_query_gap.get_unchecked(start..start + 6) }
     }
 
-    /// 6-entry slice of bq_open for fixed (qp, qc): `&[tc]`.
+    /// 6-entry row for `open_query_gap` with fixed `(qp, qc)`: `&[tc]`.
     #[inline(always)]
-    pub fn bq_open_profile(&self, qp: usize, qc: usize) -> &[i32] {
+    pub(super) fn open_query_gap_row(&self, qp: u8, qc: u8) -> &[i32] {
+        let qp = usize::from(qp);
+        let qc = usize::from(qc);
         let start = qp * 36 + qc * 6;
-        // SAFETY: qp, qc ∈ 0..6. Max start = 5*36 + 5*6 = 210, end = 216 = len.
-        unsafe { self.bq_open.get_unchecked(start..start + 6) }
+        unsafe { self.open_query_gap.get_unchecked(start..start + 6) }
     }
 
-    /// 6-entry slice of terminal for fixed qc: `&[tc]`.
+    /// 6-entry row for `terminal` with fixed `qc`: `&[tc]`.
     #[inline(always)]
-    pub fn terminal_profile(&self, qc: usize) -> &[i32] {
+    pub(super) fn terminal_row(&self, qc: u8) -> &[i32] {
+        let qc = usize::from(qc);
         let start = qc * 6;
-        // SAFETY: qc ∈ 0..6. Max start = 30, end = 36 = len.
         unsafe { self.terminal.get_unchecked(start..start + 6) }
     }
 
@@ -250,47 +267,36 @@ impl Gotoh {
         // PRECOMPUTE Q/T LOOKUP INDICES (used by init AND main loop)
         // =====================================================================
 
-        let mut q_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
-        let mut t_idx = std::mem::MaybeUninit::<[usize; MAX_EXT]>::uninit();
+        let mut q_idx = std::mem::MaybeUninit::<[u8; MAX_EXT]>::uninit();
+        let mut t_idx = std::mem::MaybeUninit::<[u8; MAX_EXT]>::uninit();
 
-        let q_ptr = q_idx.as_mut_ptr() as *mut usize;
-        let t_ptr = t_idx.as_mut_ptr() as *mut usize;
+        let q_ptr = q_idx.as_mut_ptr() as *mut u8;
+        let t_ptr = t_idx.as_mut_ptr() as *mut u8;
 
         match view.dir {
             ExtendDir::Left => {
                 for i in 0..q_len {
-                    // SAFETY: q_len for Left is capped at q_anchor + 1, so q_anchor - i is in-bounds.
-                    unsafe {
-                        *q_ptr.add(i) = *view.query.get_unchecked(view.q_anchor - i) as usize
-                    };
+                    unsafe { *q_ptr.add(i) = (*view.query.get_unchecked(view.q_anchor - i)) as u8 };
                 }
                 for j in 0..t_len {
-                    // SAFETY: t_len for Left is capped at target.len() - t_anchor, so t_anchor + j is in-bounds.
-                    unsafe {
-                        *t_ptr.add(j) = *view.target.get_unchecked(view.t_anchor + j) as usize
-                    };
+                    unsafe { *t_ptr.add(j) = (*view.target.get_unchecked(view.t_anchor + j)) as u8 };
                 }
             }
             ExtendDir::Right => {
                 for i in 0..q_len {
-                    // SAFETY: q_len for Right is capped at query.len() - q_anchor, so q_anchor + i is in-bounds.
-                    unsafe {
-                        *q_ptr.add(i) = *view.query.get_unchecked(view.q_anchor + i) as usize
-                    };
+                    unsafe { *q_ptr.add(i) = (*view.query.get_unchecked(view.q_anchor + i)) as u8 };
                 }
                 for j in 0..t_len {
-                    // SAFETY: t_len for Right is capped at t_anchor + 1, so t_anchor - j is in-bounds.
-                    unsafe {
-                        *t_ptr.add(j) = *view.target.get_unchecked(view.t_anchor - j) as usize
-                    };
+                    unsafe { *t_ptr.add(j) = (*view.target.get_unchecked(view.t_anchor - j)) as u8 };
                 }
             }
         }
 
         // Initial score: terminal penalty for seed boundary
-        let mut best = BestScore::new(unsafe { self.terminal(*q_ptr, *t_ptr) });
+        let q0 = unsafe { *q_ptr };
+        let t0 = unsafe { *t_ptr };
+        let mut best = BestScore::new(self.terminal(q0, t0));
 
-        // Early return
         if q_len <= 1 || t_len <= 1 {
             return GotohResult {
                 score: best.score,
@@ -299,12 +305,7 @@ impl Gotoh {
             };
         }
 
-        // Resize grid
         grid.resize(t_len + 1, q_len + 1);
-
-        // =====================================================================
-        // INITIALIZATION - Unconditional writes to avoid stale data
-        // =====================================================================
 
         let has_main_region = self.init_frontier(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
         if !has_main_region {
@@ -315,11 +316,7 @@ impl Gotoh {
             };
         }
 
-        // =======================================================================
-        // MAIN DP LOOP (i >= 3, j >= 3)
-        // =======================================================================
-
-        self.dp_main_loop_generic(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
+        self.dp_main_loop(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
 
         trace!(
             "{} result: score={} end_i={} end_j={}",
@@ -347,14 +344,19 @@ mod tests {
         let table = ScoringModel::new(Matrix::T04, 50);
         let gotoh = Gotoh::new(&table);
 
-        for q1 in 0..6 {
-            for q2 in 0..6 {
-                for t1 in 0..6 {
-                    for t2 in 0..6 {
+        for q1 in 0u8..6 {
+            for q2 in 0u8..6 {
+                for t1 in 0u8..6 {
+                    for t2 in 0u8..6 {
                         assert_eq!(
-                            gotoh.match_energy(q1, q2, t1, t2),
-                            table.lookup(q1, q2, t1, t2),
-                            "match_energy mismatch at ({},{},{},{})",
+                            gotoh.stack(q1, q2, t1, t2),
+                            table.transition_energy(
+                                usize::from(q1),
+                                usize::from(q2),
+                                usize::from(t1),
+                                usize::from(t2),
+                            ),
+                            "stack mismatch at ({},{},{},{})",
                             q1,
                             q2,
                             t1,
@@ -367,35 +369,56 @@ mod tests {
     }
 
     #[test]
-    fn gotoh_transitions_match_gap_patterns() {
+    fn gotoh_semantic_transitions_match_scoring_model() {
         let table = ScoringModel::new(Matrix::T04, 50);
         let gotoh = Gotoh::new(&table);
 
-        for qp in 0..6 {
-            for qc in 0..6 {
-                for tc in 0..6 {
-                    assert_eq!(gotoh.m_from_bq(qp, qc, tc), table.lookup(qp, qc, GAP, tc),);
-                    assert_eq!(gotoh.bq_open(qp, qc, tc), table.lookup(qp, qc, tc, GAP),);
+        for qp in 0u8..6 {
+            for qc in 0u8..6 {
+                for tc in 0u8..6 {
+                    assert_eq!(
+                        gotoh.close_query_gap(qp, qc, tc),
+                        table.transition_energy(usize::from(qp), usize::from(qc), GAP, usize::from(tc)),
+                    );
+                    assert_eq!(
+                        gotoh.open_query_gap(qp, qc, tc),
+                        table.transition_energy(usize::from(qp), usize::from(qc), usize::from(tc), GAP),
+                    );
                 }
-                assert_eq!(gotoh.bq_extend(qp, qc), table.lookup(qp, qc, GAP, GAP),);
+                assert_eq!(
+                    gotoh.extend_query_gap(qp, qc),
+                    table.transition_energy(usize::from(qp), usize::from(qc), GAP, GAP),
+                );
             }
         }
 
-        for qc in 0..6 {
-            for tp in 0..6 {
-                for tc in 0..6 {
-                    assert_eq!(gotoh.m_from_bt(qc, tp, tc), table.lookup(GAP, qc, tp, tc),);
-                    assert_eq!(gotoh.bt_open(qc, tp, tc), table.lookup(qc, GAP, tp, tc),);
+        for qc in 0u8..6 {
+            for tp in 0u8..6 {
+                for tc in 0u8..6 {
+                    assert_eq!(
+                        gotoh.close_target_gap(qc, tp, tc),
+                        table.transition_energy(GAP, usize::from(qc), usize::from(tp), usize::from(tc)),
+                    );
+                    assert_eq!(
+                        gotoh.open_target_gap(qc, tp, tc),
+                        table.transition_energy(usize::from(qc), GAP, usize::from(tp), usize::from(tc)),
+                    );
                 }
             }
-            for tc in 0..6 {
-                assert_eq!(gotoh.terminal(qc, tc), table.lookup(qc, GAP, tc, GAP),);
+            for tc in 0u8..6 {
+                assert_eq!(
+                    gotoh.terminal(qc, tc),
+                    table.transition_energy(usize::from(qc), GAP, usize::from(tc), GAP),
+                );
             }
         }
 
-        for tp in 0..6 {
-            for tc in 0..6 {
-                assert_eq!(gotoh.bt_extend_e(tp, tc), table.lookup(GAP, GAP, tp, tc),);
+        for tp in 0u8..6 {
+            for tc in 0u8..6 {
+                assert_eq!(
+                    gotoh.extend_target_gap(tp, tc),
+                    table.transition_energy(GAP, GAP, usize::from(tp), usize::from(tc)),
+                );
             }
         }
     }

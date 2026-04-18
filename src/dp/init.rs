@@ -32,8 +32,8 @@ impl Gotoh {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn init_frontier(
         &self,
-        q_ptr: *const usize,
-        t_ptr: *const usize,
+        q_ptr: *const u8,
+        t_ptr: *const u8,
         grid: &mut DpGrid,
         q_len: usize,
         t_len: usize,
@@ -47,7 +47,6 @@ impl Gotoh {
         // SAFETY: q_ptr valid for [0, q_len), t_ptr valid for [0, t_len), values ∈ 0..6.
         // Grid allocated as (q_len+1) × (t_len+1) by Gotoh::extend().
         // All cell() calls address (i, j) with i < q_len, j < t_len, within the grid.
-        // All Gotoh calls receive valid DP lookup indices ∈ 0..6.
         unsafe {
             let q0 = *q_ptr.add(0);
             let q1 = *q_ptr.add(1);
@@ -62,15 +61,15 @@ impl Gotoh {
             *cell(ptr, width, 0, 1) = DpCell {
                 m: NEG_INF,
                 bq: NEG_INF,
-                bt: self.bt_open(q0, t0, t1),
+                bt: self.open_target_gap(q0, t0, t1),
             };
             *cell(ptr, width, 1, 0) = DpCell {
                 m: NEG_INF,
-                bq: self.bq_open(q0, q1, t0),
+                bq: self.open_query_gap(q0, q1, t0),
                 bt: NEG_INF,
             };
 
-            let m11 = self.match_energy(q0, q1, t0, t1);
+            let m11 = self.stack(q0, q1, t0, t1);
             *cell(ptr, width, 1, 1) = DpCell {
                 m: m11,
                 bq: NEG_INF,
@@ -83,8 +82,8 @@ impl Gotoh {
                 let t_prev = *t_ptr.add(k - 1);
                 let t_curr = *t_ptr.add(k);
                 let prev = (*cell(ptr, width, 0, k - 1)).bt;
-                let bt_val = prev + self.bt_extend_e(t_prev, t_curr);
-                let m_val = prev + self.m_from_bt(q1, t_prev, t_curr);
+                let bt_val = prev + self.extend_target_gap(t_prev, t_curr);
+                let m_val = prev + self.close_target_gap(q1, t_prev, t_curr);
                 *cell(ptr, width, 0, k) = DpCell {
                     m: NEG_INF,
                     bq: NEG_INF,
@@ -103,8 +102,8 @@ impl Gotoh {
                 let q_prev = *q_ptr.add(k - 1);
                 let q_curr = *q_ptr.add(k);
                 let prev = (*cell(ptr, width, k - 1, 0)).bq;
-                let bq_val = prev + self.bq_extend(q_prev, q_curr);
-                let m_val = prev + self.m_from_bq(q_prev, q_curr, t1);
+                let bq_val = prev + self.extend_query_gap(q_prev, q_curr);
+                let m_val = prev + self.close_query_gap(q_prev, q_curr, t1);
                 *cell(ptr, width, k, 0) = DpCell {
                     m: NEG_INF,
                     bq: bq_val,
@@ -130,9 +129,9 @@ impl Gotoh {
             let t1 = *t_ptr.add(1);
             let t2 = *t_ptr.add(2);
             let m11_val = (*cell(ptr, width, 1, 1)).m;
-            let bt12 = m11_val + self.bt_open(q1, t1, t2);
-            let bq21 = m11_val + self.bq_open(q1, q2, t1);
-            let m22 = m11_val + self.match_energy(q1, q2, t1, t2);
+            let bt12 = m11_val + self.open_target_gap(q1, t1, t2);
+            let bq21 = m11_val + self.open_query_gap(q1, q2, t1);
+            let m22 = m11_val + self.stack(q1, q2, t1, t2);
             (*cell(ptr, width, 1, 2)).bt = bt12;
             (*cell(ptr, width, 2, 1)).bq = bq21;
             (*cell(ptr, width, 2, 2)).m = m22;
@@ -140,8 +139,8 @@ impl Gotoh {
 
             let m12 = (*cell(ptr, width, 1, 2)).m;
             let m21 = (*cell(ptr, width, 2, 1)).m;
-            (*cell(ptr, width, 2, 2)).bq = m12 + self.bq_open(q1, q2, t2);
-            (*cell(ptr, width, 2, 2)).bt = m21 + self.bt_open(q2, t1, t2);
+            (*cell(ptr, width, 2, 2)).bq = m12 + self.open_query_gap(q1, q2, t2);
+            (*cell(ptr, width, 2, 2)).bt = m21 + self.open_target_gap(q2, t1, t2);
         }
 
         self.init_limited_rows(q_ptr, t_ptr, grid, q_len, t_len, best);
@@ -155,8 +154,8 @@ impl Gotoh {
     #[allow(clippy::too_many_arguments)]
     fn init_limited_rows(
         &self,
-        q_ptr: *const usize,
-        t_ptr: *const usize,
+        q_ptr: *const u8,
+        t_ptr: *const u8,
         grid: &mut DpGrid,
         q_len: usize,
         t_len: usize,
@@ -190,29 +189,29 @@ impl Gotoh {
 
                 let bt1 = best2(
                     m1_prev,
-                    self.bt_open(qi1, tj_prev, tj),
+                    self.open_target_gap(qi1, tj_prev, tj),
                     bt1_prev,
-                    self.bt_extend_e(tj_prev, tj),
+                    self.extend_target_gap(tj_prev, tj),
                 );
                 (*cell(ptr, width, 1, k)).bt = bt1;
 
                 let m2 = best2(
                     m1_prev,
-                    self.match_energy(qi1, qi2, tj_prev, tj),
+                    self.stack(qi1, qi2, tj_prev, tj),
                     bt1_prev,
-                    self.m_from_bt(qi2, tj_prev, tj),
+                    self.close_target_gap(qi2, tj_prev, tj),
                 );
                 (*cell(ptr, width, 2, k)).m = m2;
                 best.update(m2, self.terminal(qi2, tj), 2, k);
 
                 let m1k = (*cell(ptr, width, 1, k)).m;
-                (*cell(ptr, width, 2, k)).bq = m1k + self.bq_open(qi1, qi2, tj);
+                (*cell(ptr, width, 2, k)).bq = m1k + self.open_query_gap(qi1, qi2, tj);
 
                 let bt2 = best2(
                     m2_prev,
-                    self.bt_open(qi2, tj_prev, tj),
+                    self.open_target_gap(qi2, tj_prev, tj),
                     bt2_prev,
-                    self.bt_extend_e(tj_prev, tj),
+                    self.extend_target_gap(tj_prev, tj),
                 );
                 (*cell(ptr, width, 2, k)).bt = bt2;
 
@@ -229,8 +228,8 @@ impl Gotoh {
     #[allow(clippy::too_many_arguments)]
     fn init_limited_cols(
         &self,
-        q_ptr: *const usize,
-        t_ptr: *const usize,
+        q_ptr: *const u8,
+        t_ptr: *const u8,
         grid: &mut DpGrid,
         q_len: usize,
         t_len: usize,
@@ -264,29 +263,29 @@ impl Gotoh {
 
                 let bq1 = best2(
                     m1_prev,
-                    self.bq_open(qi_prev, qi, tj1),
+                    self.open_query_gap(qi_prev, qi, tj1),
                     bq1_prev,
-                    self.bq_extend(qi_prev, qi),
+                    self.extend_query_gap(qi_prev, qi),
                 );
                 (*cell(ptr, width, k, 1)).bq = bq1;
 
                 let m2 = best2(
                     m1_prev,
-                    self.match_energy(qi_prev, qi, tj1, tj2),
+                    self.stack(qi_prev, qi, tj1, tj2),
                     bq1_prev,
-                    self.m_from_bq(qi_prev, qi, tj2),
+                    self.close_query_gap(qi_prev, qi, tj2),
                 );
                 (*cell(ptr, width, k, 2)).m = m2;
                 best.update(m2, self.terminal(qi, tj2), k, 2);
 
                 let mk1 = (*cell(ptr, width, k, 1)).m;
-                (*cell(ptr, width, k, 2)).bt = mk1 + self.bt_open(qi, tj1, tj2);
+                (*cell(ptr, width, k, 2)).bt = mk1 + self.open_target_gap(qi, tj1, tj2);
 
                 let bq2 = best2(
                     m2_prev,
-                    self.bq_open(qi_prev, qi, tj2),
+                    self.open_query_gap(qi_prev, qi, tj2),
                     bq2_prev,
-                    self.bq_extend(qi_prev, qi),
+                    self.extend_query_gap(qi_prev, qi),
                 );
                 (*cell(ptr, width, k, 2)).bq = bq2;
 

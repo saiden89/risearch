@@ -96,23 +96,23 @@ impl ExtensionEngine {
                     let c = self.grid.get(i, j);
                     let diag = self.grid.get(i - 1, j - 1);
 
-                    let qi_prev = view.q_base(i - 1) as usize;
-                    let qi = view.q_base(i) as usize;
-                    let tj_prev = view.t_base(j - 1) as usize;
-                    let tj = view.t_base(j) as usize;
+                    let qi_prev = view.q_base(i - 1) as u8;
+                    let qi = view.q_base(i) as u8;
+                    let tj_prev = view.t_base(j - 1) as u8;
+                    let tj = view.t_base(j) as u8;
 
-                    let match_e = gotoh.match_energy(qi_prev, qi, tj_prev, tj);
-                    let m_from_bq = gotoh.m_from_bq(qi_prev, qi, tj);
-                    let m_from_bt = gotoh.m_from_bt(qi, tj_prev, tj);
+                    let stack = gotoh.stack(qi_prev, qi, tj_prev, tj);
+                    let close_query_gap = gotoh.close_query_gap(qi_prev, qi, tj);
+                    let close_target_gap = gotoh.close_target_gap(qi, tj_prev, tj);
 
                     i -= 1;
                     j -= 1;
 
-                    if is_transition(c.m, diag.m, match_e) {
+                    if is_transition(c.m, diag.m, stack) {
                         State::Match
-                    } else if is_transition(c.m, diag.bq, m_from_bq) {
+                    } else if is_transition(c.m, diag.bq, close_query_gap) {
                         State::GapQ
-                    } else if is_transition(c.m, diag.bt, m_from_bt) {
+                    } else if is_transition(c.m, diag.bt, close_target_gap) {
                         State::GapT
                     } else {
                         break;
@@ -124,18 +124,18 @@ impl ExtensionEngine {
                     let c = self.grid.get(i, j);
                     let up = self.grid.get(i - 1, j);
 
-                    let qi_prev = view.q_base(i - 1) as usize;
-                    let qi = view.q_base(i) as usize;
-                    let tj = view.t_base(j) as usize;
+                    let qi_prev = view.q_base(i - 1) as u8;
+                    let qi = view.q_base(i) as u8;
+                    let tj = view.t_base(j) as u8;
 
-                    let bq_open = gotoh.bq_open(qi_prev, qi, tj);
-                    let bq_ext = gotoh.bq_extend(qi_prev, qi);
+                    let open_query_gap = gotoh.open_query_gap(qi_prev, qi, tj);
+                    let extend_query_gap = gotoh.extend_query_gap(qi_prev, qi);
 
                     i -= 1;
 
-                    if is_transition(c.bq, up.m, bq_open) {
+                    if is_transition(c.bq, up.m, open_query_gap) {
                         State::Match
-                    } else if is_transition(c.bq, up.bq, bq_ext) {
+                    } else if is_transition(c.bq, up.bq, extend_query_gap) {
                         State::GapQ
                     } else {
                         break;
@@ -147,18 +147,18 @@ impl ExtensionEngine {
                     let c = self.grid.get(i, j);
                     let left = self.grid.get(i, j - 1);
 
-                    let qi = view.q_base(i) as usize;
-                    let tj_prev = view.t_base(j - 1) as usize;
-                    let tj = view.t_base(j) as usize;
+                    let qi = view.q_base(i) as u8;
+                    let tj_prev = view.t_base(j - 1) as u8;
+                    let tj = view.t_base(j) as u8;
 
-                    let bt_open = gotoh.bt_open(qi, tj_prev, tj);
-                    let bt_ext = gotoh.bt_extend_e(tj_prev, tj);
+                    let open_target_gap = gotoh.open_target_gap(qi, tj_prev, tj);
+                    let extend_target_gap = gotoh.extend_target_gap(tj_prev, tj);
 
                     j -= 1;
 
-                    if is_transition(c.bt, left.m, bt_open) {
+                    if is_transition(c.bt, left.m, open_target_gap) {
                         State::Match
-                    } else if is_transition(c.bt, left.bt, bt_ext) {
+                    } else if is_transition(c.bt, left.bt, extend_target_gap) {
                         State::GapT
                     } else {
                         break;

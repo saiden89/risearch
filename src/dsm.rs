@@ -21,11 +21,11 @@ pub(crate) type DsmTable = [[[[i16; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_
 /// Number of entries in a flattened DSM table (6^4 = 1296).
 pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * BASE_COUNT;
 
-/// Gap index used for DSM lookups (linked to Base::Gap).
+/// Gap index used for DSM transition queries (linked to Base::Gap).
 pub use crate::types::GAP;
 
 // =============================================================================
-// SCORING MODEL - Direction-agnostic penalty-adjusted lookup table
+// SCORING MODEL - Direction-agnostic penalty-adjusted transition table
 // =============================================================================
 
 /// Penalty-adjusted flat DSM table for one orientation.
@@ -119,19 +119,19 @@ impl ScoringModel {
         }
     }
 
-    /// Point query for dinucleotide stacking energy.
+    /// Point query for one transition energy in the canonical 4-base tensor.
     #[inline(always)]
-    pub fn lookup(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+    pub fn transition_energy(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
         debug_assert!(q1 < 6 && q2 < 6 && t1 < 6 && t2 < 6);
         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
         // SAFETY: All args ∈ 0..6. Max idx = 5*216+5*36+5*6+5 = 1295 < 1296.
         unsafe { *self.table.get_unchecked(idx) }
     }
 
-    /// Point query for dinucleotide stacking energy using semantic bases.
+    /// Point query for one transition energy using semantic bases.
     #[inline(always)]
-    pub fn lookup_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
-        self.lookup(q1 as usize, q2 as usize, t1 as usize, t2 as usize)
+    pub fn transition_energy_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
+        self.transition_energy(q1 as usize, q2 as usize, t1 as usize, t2 as usize)
     }
 
     /// Check if two bases form a valid pair.
@@ -158,7 +158,7 @@ impl ScoringModel {
         let mut score = 0;
         let t_match_end = t_pos + len - 1;
         for i in 0..(len - 1) {
-            score += self.lookup_bases(
+            score += self.transition_energy_bases(
                 query[q_pos + i],
                 query[q_pos + i + 1],
                 target[t_match_end - i],
@@ -1114,11 +1114,11 @@ mod tests {
     }
 
     #[test]
-    fn lookup_returns_nonzero_for_valid_pairs() {
+    fn transition_energy_returns_nonzero_for_valid_pairs() {
         let model = ScoringModel::new(Matrix::T04, 0);
         // Original target was U-A, index space is A-U
-        let energy = model.lookup_bases(Base::A, Base::U, Base::A, Base::U);
-        let gap_energy = model.lookup_bases(
+        let energy = model.transition_energy_bases(Base::A, Base::U, Base::A, Base::U);
+        let gap_energy = model.transition_energy_bases(
             Base::Gap,
             Base::A,
             Base::Gap,
@@ -1126,7 +1126,7 @@ mod tests {
         );
         assert!(
             gap_energy != 0 || energy != 0,
-            "At least one lookup should be non-zero"
+            "At least one transition query should be non-zero"
         );
     }
 
@@ -1135,7 +1135,7 @@ mod tests {
         let model = ScoringModel::new(Matrix::T04, 0);
         // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
         // Original target was CC, index space is GG
-        let actual = model.lookup_bases(Base::G, Base::G, Base::G, Base::G);
+        let actual = model.transition_energy_bases(Base::G, Base::G, Base::G, Base::G);
         assert_eq!(actual, 330);
     }
 
@@ -1148,8 +1148,8 @@ mod tests {
                 for t1 in 0..6 {
                     for t2 in 0..6 {
                         assert_eq!(
-                            left.lookup(q1, q2, t1, t2),
-                            right.lookup(q2, q1, t2, t1),
+                            left.transition_energy(q1, q2, t1, t2),
+                            right.transition_energy(q2, q1, t2, t1),
                             "transpose mismatch at ({},{},{},{})",
                             q1,
                             q2,
