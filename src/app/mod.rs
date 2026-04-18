@@ -78,8 +78,6 @@ fn init_thread_pool(threads: usize) -> Result<()> {
 }
 
 pub(crate) fn init_logging(verbosity: u8) {
-    use std::io::Write;
-
     let level = match verbosity {
         0 => log::LevelFilter::Warn,
         1 => log::LevelFilter::Info,
@@ -90,21 +88,7 @@ pub(crate) fn init_logging(verbosity: u8) {
     env_logger::Builder::new()
         .filter_level(level)
         .format_timestamp(None)
-        .format(|buf, record| {
-            let color = match record.level() {
-                log::Level::Error => "\x1b[31m", // red
-                log::Level::Warn => "\x1b[33m",  // yellow
-                log::Level::Info => "\x1b[32m",  // green
-                log::Level::Debug => "\x1b[34m", // blue
-                log::Level::Trace => "\x1b[35m", // magenta
-            };
-            writeln!(
-                buf,
-                "[\x1b[1m{}{:<5}\x1b[0m] {}",
-                color,
-                record.level(),
-                record.args()
-            )
-        })
+        .format_target(false)
+        .format_module_path(false)
         .init();
 }
