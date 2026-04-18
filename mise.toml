@@ -2,8 +2,8 @@
 rust = "latest"
 cmake = "latest"
 codex = "latest"
-# [tools]
-# rust = { version = "1.90", profile = "default" }
+"cargo:cargo-show-asm" = "latest"
+
 
 # [env]
 # MISE_RUSTUP_HOME = "/tmp/{{env.USER}}/risearch/rustup"
