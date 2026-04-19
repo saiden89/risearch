@@ -2,32 +2,13 @@ use std::cmp::max;
 
 use crate::dp::gotoh::Gotoh;
 
-use super::{BestScore, DpCell, DpGrid, NEG_INF};
+use super::{BestScore, DpCell, DpGrid};
 
-// =============================================================================
-// INIT HELPERS - Reduce code duplication in DP initialization
-// =============================================================================
-
-/// Transition helper: choose the best of two predecessor paths.
-#[inline(always)]
-fn best2(from_m: i32, e_m: i32, from_p: i32, e_p: i32) -> i32 {
-    max(from_m + e_m, from_p + e_p)
-}
-
-/// Get a pointer to a DP cell at `(i, j)` from the grid.
-///
-/// # Safety
-/// Caller must ensure `i * width + j` is within the grid allocation.
-#[inline(always)]
-unsafe fn cell(ptr: *mut DpCell, width: usize, i: usize, j: usize) -> *mut DpCell {
-    ptr.add(i * width + j)
-}
-
-/// Initialize DP boundary cells and bridge into limited row/column setup.
-///
-/// Returns `true` when the main DP region (`i >= 3`, `j >= 3`) exists.
-/// Returns `false` when initialization is complete and no main-loop pass is needed.
 impl Gotoh {
+    /// Initialize DP boundary cells.
+    ///
+    /// Returns `true` when the main DP region (`i >= 3`, `j >= 3`) exists.
+    /// Returns `false` when the matrix is too small for a main-loop pass.
     #[inline]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn init_frontier(
@@ -44,256 +25,171 @@ impl Gotoh {
 
         debug_assert!(width > t_len, "matrix width too small for t_len");
 
-        // SAFETY: q_ptr valid for [0, q_len), t_ptr valid for [0, t_len), values ∈ 0..6.
-        // Grid allocated as (q_len+1) × (t_len+1) by Gotoh::extend().
-        // All cell() calls address (i, j) with i < q_len, j < t_len, within the grid.
+        // SAFETY: q_ptr valid for [0, q_len), t_ptr for [0, t_len), values in 0..6.
+        // Grid is (q_len+1) x (t_len+1) via Gotoh::extend(). All writes below are
+        // to cells (i, j) with i < q_len, j < t_len — within the allocation.
         unsafe {
-            let q0 = *q_ptr.add(0);
+            let q0 = *q_ptr;
             let q1 = *q_ptr.add(1);
-            let t0 = *t_ptr.add(0);
+            let t0 = *t_ptr;
             let t1 = *t_ptr.add(1);
 
-            *cell(ptr, width, 0, 0) = DpCell {
-                m: 0,
-                bq: NEG_INF,
-                bt: NEG_INF,
-            };
-            *cell(ptr, width, 0, 1) = DpCell {
-                m: NEG_INF,
-                bq: NEG_INF,
-                bt: self.open_target_gap(q0, t0, t1),
-            };
-            *cell(ptr, width, 1, 0) = DpCell {
-                m: NEG_INF,
-                bq: self.open_query_gap(q0, q1, t0),
-                bt: NEG_INF,
-            };
-
+            // --- Origin 4-cell block (shared by tiny + full paths) ---
+            let bt01 = self.open_target_gap(q0, t0, t1);
+            let bq10 = self.open_query_gap(q0, q1, t0);
             let m11 = self.stack(q0, q1, t0, t1);
-            *cell(ptr, width, 1, 1) = DpCell {
-                m: m11,
-                bq: NEG_INF,
-                bt: NEG_INF,
-            };
+
+            *ptr = DpCell { m: 0, ..DpCell::EMPTY };
+            *ptr.add(1) = DpCell { bt: bt01, ..DpCell::EMPTY };
+            *ptr.add(width) = DpCell { bq: bq10, ..DpCell::EMPTY };
+            *ptr.add(width + 1) = DpCell { m: m11, ..DpCell::EMPTY };
             best.update(m11, self.terminal(q1, t1), 1, 1);
 
-            // Row 0 (Bt only) and Row 1 (M) — k ∈ 2..t_len
-            for k in 2..t_len {
-                let t_prev = *t_ptr.add(k - 1);
-                let t_curr = *t_ptr.add(k);
-                let prev = (*cell(ptr, width, 0, k - 1)).bt;
-                let bt_val = prev + self.extend_target_gap(t_prev, t_curr);
-                let m_val = prev + self.close_target_gap(q1, t_prev, t_curr);
-                *cell(ptr, width, 0, k) = DpCell {
-                    m: NEG_INF,
-                    bq: NEG_INF,
-                    bt: bt_val,
-                };
-                *cell(ptr, width, 1, k) = DpCell {
-                    m: m_val,
-                    bq: NEG_INF,
-                    bt: NEG_INF,
-                };
-                best.update(m_val, self.terminal(q1, t_curr), 1, k);
+            // --- Tiny-matrix path: no row/col 2 exists ---
+            if q_len <= 2 || t_len <= 2 {
+                let mut bt_prev = bt01;
+                let mut t_prev = t1;
+                for j in 2..t_len {
+                    let tc = *t_ptr.add(j);
+                    let bt = bt_prev + self.extend_target_gap(t_prev, tc);
+                    let m1 = bt_prev + self.close_target_gap(q1, t_prev, tc);
+                    *ptr.add(j) = DpCell { bt, ..DpCell::EMPTY };
+                    *ptr.add(width + j) = DpCell { m: m1, ..DpCell::EMPTY };
+                    best.update(m1, self.terminal(q1, tc), 1, j);
+                    bt_prev = bt;
+                    t_prev = tc;
+                }
+
+                let mut bq_prev = bq10;
+                let mut q_prev = q1;
+                for i in 2..q_len {
+                    let qc = *q_ptr.add(i);
+                    let bq = bq_prev + self.extend_query_gap(q_prev, qc);
+                    let m1 = bq_prev + self.close_query_gap(q_prev, qc, t1);
+                    *ptr.add(i * width) = DpCell { bq, ..DpCell::EMPTY };
+                    *ptr.add(i * width + 1) = DpCell { m: m1, ..DpCell::EMPTY };
+                    best.update(m1, self.terminal(qc, t1), i, 1);
+                    bq_prev = bq;
+                    q_prev = qc;
+                }
+
+                return false;
             }
 
-            // Col 0 (Bq only) and Col 1 (M) — k ∈ 2..q_len
-            for k in 2..q_len {
-                let q_prev = *q_ptr.add(k - 1);
-                let q_curr = *q_ptr.add(k);
-                let prev = (*cell(ptr, width, k - 1, 0)).bq;
-                let bq_val = prev + self.extend_query_gap(q_prev, q_curr);
-                let m_val = prev + self.close_query_gap(q_prev, q_curr, t1);
-                *cell(ptr, width, k, 0) = DpCell {
-                    m: NEG_INF,
-                    bq: bq_val,
-                    bt: NEG_INF,
-                };
-                *cell(ptr, width, k, 1) = DpCell {
-                    m: m_val,
-                    bq: NEG_INF,
-                    bt: NEG_INF,
-                };
-                best.update(m_val, self.terminal(q_curr, t1), k, 1);
-            }
-        }
-
-        if q_len <= 2 || t_len <= 2 {
-            return false;
-        }
-
-        // SAFETY: Same invariants as above. q_len > 2 and t_len > 2 guaranteed here.
-        unsafe {
-            let q1 = *q_ptr.add(1);
+            // --- Full path: q_len >= 3 and t_len >= 3 ---
             let q2 = *q_ptr.add(2);
-            let t1 = *t_ptr.add(1);
             let t2 = *t_ptr.add(2);
-            let m11_val = (*cell(ptr, width, 1, 1)).m;
-            let bt12 = m11_val + self.open_target_gap(q1, t1, t2);
-            let bq21 = m11_val + self.open_query_gap(q1, q2, t1);
-            let m22 = m11_val + self.stack(q1, q2, t1, t2);
-            (*cell(ptr, width, 1, 2)).bt = bt12;
-            (*cell(ptr, width, 2, 1)).bq = bq21;
-            (*cell(ptr, width, 2, 2)).m = m22;
+
+            // 3x3 corner extension (5 remaining cells)
+            let bt02 = bt01 + self.extend_target_gap(t1, t2);
+            let m12 = bt01 + self.close_target_gap(q1, t1, t2);
+            let bt12 = m11 + self.open_target_gap(q1, t1, t2);
+
+            let bq20 = bq10 + self.extend_query_gap(q1, q2);
+            let m21 = bq10 + self.close_query_gap(q1, q2, t1);
+            let bq21 = m11 + self.open_query_gap(q1, q2, t1);
+
+            let m22 = m11 + self.stack(q1, q2, t1, t2);
+            let bq22 = m12 + self.open_query_gap(q1, q2, t2);
+            let bt22 = m21 + self.open_target_gap(q2, t1, t2);
+
+            *ptr.add(2) = DpCell { bt: bt02, ..DpCell::EMPTY };
+            *ptr.add(width + 2) = DpCell { m: m12, bt: bt12, ..DpCell::EMPTY };
+            *ptr.add(2 * width) = DpCell { bq: bq20, ..DpCell::EMPTY };
+            *ptr.add(2 * width + 1) = DpCell { m: m21, bq: bq21, ..DpCell::EMPTY };
+            *ptr.add(2 * width + 2) = DpCell { m: m22, bq: bq22, bt: bt22 };
+
+            best.update(m12, self.terminal(q1, t2), 1, 2);
+            best.update(m21, self.terminal(q2, t1), 2, 1);
             best.update(m22, self.terminal(q2, t2), 2, 2);
 
-            let m12 = (*cell(ptr, width, 1, 2)).m;
-            let m21 = (*cell(ptr, width, 2, 1)).m;
-            (*cell(ptr, width, 2, 2)).bq = m12 + self.open_query_gap(q1, q2, t2);
-            (*cell(ptr, width, 2, 2)).bt = m21 + self.open_target_gap(q2, t1, t2);
-        }
-
-        self.init_limited_rows(q_ptr, t_ptr, grid, q_len, t_len, best);
-        self.init_limited_cols(q_ptr, t_ptr, grid, q_len, t_len, best);
-
-        true
-    }
-
-    #[inline]
-    /// Initialize the limited top rows (`i=1` and `i=2`) for columns `j>=3`.
-    #[allow(clippy::too_many_arguments)]
-    fn init_limited_rows(
-        &self,
-        q_ptr: *const u8,
-        t_ptr: *const u8,
-        grid: &mut DpGrid,
-        q_len: usize,
-        t_len: usize,
-        best: &mut BestScore,
-    ) {
-        let ptr = grid.ptr();
-        let width = grid.width();
-
-        debug_assert!(
-            q_len > 2 && t_len > 2,
-            "limited rows require q_len/t_len >= 3"
-        );
-
-        // SAFETY: q_ptr/t_ptr valid for [0, q_len)/[0, t_len), values ∈ 0..6.
-        // Grid allocated as (q_len+1) × (t_len+1). All cell accesses at rows 1-2,
-        // cols 2..t_len are in-bounds.
-        unsafe {
-            let qi1 = *q_ptr.add(1);
-            let qi2 = *q_ptr.add(2);
-
-            let c1_2 = *cell(ptr, width, 1, 2);
-            let c2_2 = *cell(ptr, width, 2, 2);
-            let mut m1_prev = c1_2.m;
-            let mut bt1_prev = c1_2.bt;
-            let mut m2_prev = c2_2.m;
-            let mut bt2_prev = c2_2.bt;
+            // --- Top-rows fused loop: rows 0, 1, 2 for j >= 3 ---
+            let mut bt0_prev = bt02;
+            let mut m1_prev = m12;
+            let mut bt1_prev = bt12;
+            let mut m2_prev = m22;
+            let mut bt2_prev = bt22;
+            let mut t_prev = t2;
 
             for k in 3..t_len {
                 let tj = *t_ptr.add(k);
-                let tj_prev = *t_ptr.add(k - 1);
+                let ext_t = self.extend_target_gap(t_prev, tj);
 
-                let bt1 = best2(
-                    m1_prev,
-                    self.open_target_gap(qi1, tj_prev, tj),
-                    bt1_prev,
-                    self.extend_target_gap(tj_prev, tj),
+                let bt0 = bt0_prev + ext_t;
+                let m1 = bt0_prev + self.close_target_gap(q1, t_prev, tj);
+                let bt1 = max(
+                    m1_prev + self.open_target_gap(q1, t_prev, tj),
+                    bt1_prev + ext_t,
                 );
-                (*cell(ptr, width, 1, k)).bt = bt1;
-
-                let m2 = best2(
-                    m1_prev,
-                    self.stack(qi1, qi2, tj_prev, tj),
-                    bt1_prev,
-                    self.close_target_gap(qi2, tj_prev, tj),
+                let m2 = max(
+                    m1_prev + self.stack(q1, q2, t_prev, tj),
+                    bt1_prev + self.close_target_gap(q2, t_prev, tj),
                 );
-                (*cell(ptr, width, 2, k)).m = m2;
-                best.update(m2, self.terminal(qi2, tj), 2, k);
-
-                let m1k = (*cell(ptr, width, 1, k)).m;
-                (*cell(ptr, width, 2, k)).bq = m1k + self.open_query_gap(qi1, qi2, tj);
-
-                let bt2 = best2(
-                    m2_prev,
-                    self.open_target_gap(qi2, tj_prev, tj),
-                    bt2_prev,
-                    self.extend_target_gap(tj_prev, tj),
+                let bq2 = m1 + self.open_query_gap(q1, q2, tj);
+                let bt2 = max(
+                    m2_prev + self.open_target_gap(q2, t_prev, tj),
+                    bt2_prev + ext_t,
                 );
-                (*cell(ptr, width, 2, k)).bt = bt2;
 
-                m1_prev = m1k;
+                *ptr.add(k) = DpCell { bt: bt0, ..DpCell::EMPTY };
+                *ptr.add(width + k) = DpCell { m: m1, bt: bt1, ..DpCell::EMPTY };
+                *ptr.add(2 * width + k) = DpCell { m: m2, bq: bq2, bt: bt2 };
+
+                best.update(m1, self.terminal(q1, tj), 1, k);
+                best.update(m2, self.terminal(q2, tj), 2, k);
+
+                bt0_prev = bt0;
+                m1_prev = m1;
                 bt1_prev = bt1;
                 m2_prev = m2;
                 bt2_prev = bt2;
+                t_prev = tj;
             }
-        }
-    }
 
-    #[inline]
-    /// Initialize the limited left columns (`j=1` and `j=2`) for rows `i>=3`.
-    #[allow(clippy::too_many_arguments)]
-    fn init_limited_cols(
-        &self,
-        q_ptr: *const u8,
-        t_ptr: *const u8,
-        grid: &mut DpGrid,
-        q_len: usize,
-        t_len: usize,
-        best: &mut BestScore,
-    ) {
-        let ptr = grid.ptr();
-        let width = grid.width();
-
-        debug_assert!(
-            q_len > 2 && t_len > 2,
-            "limited cols require q_len/t_len >= 3"
-        );
-
-        // SAFETY: q_ptr/t_ptr valid for [0, q_len)/[0, t_len), values ∈ 0..6.
-        // Grid allocated as (q_len+1) × (t_len+1). All cell accesses at cols 1-2,
-        // rows 2..q_len are in-bounds.
-        unsafe {
-            let tj1 = *t_ptr.add(1);
-            let tj2 = *t_ptr.add(2);
-
-            let c2_1 = *cell(ptr, width, 2, 1);
-            let c2_2 = *cell(ptr, width, 2, 2);
-            let mut m1_prev = c2_1.m;
-            let mut bq1_prev = c2_1.bq;
-            let mut m2_prev = c2_2.m;
-            let mut bq2_prev = c2_2.bq;
+            // --- Left-cols fused loop: cols 0, 1, 2 for i >= 3 ---
+            let mut bq0_prev = bq20;
+            let mut m1_prev = m21;
+            let mut bq1_prev = bq21;
+            let mut m2_prev = m22;
+            let mut bq2_prev = bq22;
+            let mut q_prev = q2;
 
             for k in 3..q_len {
                 let qi = *q_ptr.add(k);
-                let qi_prev = *q_ptr.add(k - 1);
+                let ext_q = self.extend_query_gap(q_prev, qi);
 
-                let bq1 = best2(
-                    m1_prev,
-                    self.open_query_gap(qi_prev, qi, tj1),
-                    bq1_prev,
-                    self.extend_query_gap(qi_prev, qi),
+                let bq0 = bq0_prev + ext_q;
+                let m1 = bq0_prev + self.close_query_gap(q_prev, qi, t1);
+                let bq1 = max(
+                    m1_prev + self.open_query_gap(q_prev, qi, t1),
+                    bq1_prev + ext_q,
                 );
-                (*cell(ptr, width, k, 1)).bq = bq1;
-
-                let m2 = best2(
-                    m1_prev,
-                    self.stack(qi_prev, qi, tj1, tj2),
-                    bq1_prev,
-                    self.close_query_gap(qi_prev, qi, tj2),
+                let m2 = max(
+                    m1_prev + self.stack(q_prev, qi, t1, t2),
+                    bq1_prev + self.close_query_gap(q_prev, qi, t2),
                 );
-                (*cell(ptr, width, k, 2)).m = m2;
-                best.update(m2, self.terminal(qi, tj2), k, 2);
-
-                let mk1 = (*cell(ptr, width, k, 1)).m;
-                (*cell(ptr, width, k, 2)).bt = mk1 + self.open_target_gap(qi, tj1, tj2);
-
-                let bq2 = best2(
-                    m2_prev,
-                    self.open_query_gap(qi_prev, qi, tj2),
-                    bq2_prev,
-                    self.extend_query_gap(qi_prev, qi),
+                let bt2 = m1 + self.open_target_gap(qi, t1, t2);
+                let bq2 = max(
+                    m2_prev + self.open_query_gap(q_prev, qi, t2),
+                    bq2_prev + ext_q,
                 );
-                (*cell(ptr, width, k, 2)).bq = bq2;
 
-                m1_prev = mk1;
+                *ptr.add(k * width) = DpCell { bq: bq0, ..DpCell::EMPTY };
+                *ptr.add(k * width + 1) = DpCell { m: m1, bq: bq1, ..DpCell::EMPTY };
+                *ptr.add(k * width + 2) = DpCell { m: m2, bq: bq2, bt: bt2 };
+
+                best.update(m1, self.terminal(qi, t1), k, 1);
+                best.update(m2, self.terminal(qi, t2), k, 2);
+
+                bq0_prev = bq0;
+                m1_prev = m1;
                 bq1_prev = bq1;
                 m2_prev = m2;
                 bq2_prev = bq2;
+                q_prev = qi;
             }
         }
+
+        true
     }
 }
