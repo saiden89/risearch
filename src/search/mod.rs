@@ -282,7 +282,7 @@ fn process_query_seeds(
 }
 
 struct ExtensionResult {
-    score: i32,
+    energy: i32,
     q_ext: usize,
     t_ext: usize,
     pairs: Option<SmallVec<[PairClass; 64]>>,
@@ -374,7 +374,7 @@ fn build_hit_from_seed(
     );
     let penalty = opts.score.penalty_raw();
     let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i32;
-    let energy = Energy::from(seed_e + left.score + right.score + nt_count * penalty);
+    let energy = Energy::from(seed_e + left.energy + right.energy + nt_count * penalty);
 
     (energy.as_f64() <= opts.filter.delta_g).then(|| {
         SearchHit::new(

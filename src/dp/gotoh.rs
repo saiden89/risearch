@@ -22,7 +22,7 @@ use crate::dsm::{ScoringModel, GAP};
 use crate::types::{Base, BASE_COUNT};
 use log::trace;
 
-use super::{BestScore, DpGrid, DpView, ExtendDir, GotohResult, MAX_EXT};
+use super::{BestScore, DpGrid, DpView, ExtendDir, MAX_EXT};
 
 const BC: usize = BASE_COUNT; // 6
 
@@ -254,7 +254,7 @@ impl Gotoh {
 
     #[cfg_attr(feature = "prof", inline(never))]
     /// Run DP forward pass over `view`, reusing the caller-provided grid.
-    pub fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> GotohResult {
+    pub fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> BestScore {
         let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
@@ -298,39 +298,27 @@ impl Gotoh {
         let mut best = BestScore::new(self.terminal(q0, t0));
 
         if q_len <= 1 || t_len <= 1 {
-            return GotohResult {
-                score: best.score,
-                end_i: 0,
-                end_j: 0,
-            };
+            return best;
         }
 
         grid.resize(t_len + 1, q_len + 1);
 
         let has_main_region = self.init_frontier(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
         if !has_main_region {
-            return GotohResult {
-                score: best.score,
-                end_i: best.i,
-                end_j: best.j,
-            };
+            return best;
         }
 
         self.dp_main_loop(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
 
         trace!(
-            "{} result: score={} end_i={} end_j={}",
+            "{} result: energy={} q_idx={} t_idx={}",
             view.dir,
-            best.score,
-            best.i,
-            best.j,
+            best.energy,
+            best.q_idx,
+            best.t_idx,
         );
 
-        GotohResult {
-            score: best.score,
-            end_i: best.i,
-            end_j: best.j,
-        }
+        best
     }
 }
 

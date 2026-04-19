@@ -258,7 +258,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(30),
                     );
                     let left_result = gotoh_left.extend(black_box(&left_view), &mut grid);
-                    total_score = total_score.wrapping_add(left_result.score);
+                    total_score = total_score.wrapping_add(left_result.energy);
 
                     // Right extension
                     let right_view = DpView::new(
@@ -270,7 +270,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         black_box(30),
                     );
                     let right_result = gotoh_right.extend(black_box(&right_view), &mut grid);
-                    total_score = total_score.wrapping_add(right_result.score);
+                    total_score = total_score.wrapping_add(right_result.energy);
                 }
             }
 

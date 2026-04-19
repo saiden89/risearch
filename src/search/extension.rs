@@ -57,7 +57,7 @@ impl ExtensionEngine {
         };
         if self.max_extension == 0 {
             return ExtensionResult {
-                score: gotoh.terminal_bases(query[q_anchor], target[t_anchor]),
+                energy: gotoh.terminal_bases(query[q_anchor], target[t_anchor]),
                 q_ext: 0,
                 t_ext: 0,
                 pairs: None,
@@ -67,11 +67,11 @@ impl ExtensionEngine {
         let view = DpView::new(query, target, q_anchor, t_anchor, dir, self.max_extension);
         let result = gotoh.extend(&view, &mut self.grid);
         ExtensionResult {
-            score: result.score,
-            q_ext: result.end_i,
-            t_ext: result.end_j,
-            pairs: (include_alignment && (result.end_i > 0 || result.end_j > 0))
-                .then(|| self.traceback(gotoh, &view, result.end_i, result.end_j)),
+            energy: result.energy,
+            q_ext: result.q_idx,
+            t_ext: result.t_idx,
+            pairs: (include_alignment && (result.q_idx > 0 || result.t_idx > 0))
+                .then(|| self.traceback(gotoh, &view, result.q_idx, result.t_idx)),
         }
     }
 

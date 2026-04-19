@@ -148,16 +148,20 @@ fn bench_seed_exact(c: &mut Criterion) {
 
     for target_len in [1_000, 10_000, 100_000] {
         let dataset = build_production_dataset(1, 22, target_len, &seed_config);
-        group.bench_with_input(BenchmarkId::from_parameter(target_len), &target_len, |b, _| {
-            b.iter(|| {
-                let seeds = collect(
-                    black_box(&dataset.queries),
-                    black_box(&dataset.store),
-                    black_box(&seed_config),
-                );
-                black_box(seed_count(&seeds));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(target_len),
+            &target_len,
+            |b, _| {
+                b.iter(|| {
+                    let seeds = collect(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.store),
+                        black_box(&seed_config),
+                    );
+                    black_box(seed_count(&seeds));
+                });
+            },
+        );
     }
 
     group.finish();
@@ -201,20 +205,16 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
         );
         let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
 
-        group.bench_with_input(
-            BenchmarkId::new("10q_x_100k", max_mm),
-            &max_mm,
-            |b, _| {
-                b.iter(|| {
-                    let seeds = collect(
-                        black_box(&dataset.queries),
-                        black_box(&dataset.store),
-                        black_box(&seed_config),
-                    );
-                    black_box(seed_count(&seeds));
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("10q_x_100k", max_mm), &max_mm, |b, _| {
+            b.iter(|| {
+                let seeds = collect(
+                    black_box(&dataset.queries),
+                    black_box(&dataset.store),
+                    black_box(&seed_config),
+                );
+                black_box(seed_count(&seeds));
+            });
+        });
     }
 
     group.finish();
@@ -229,16 +229,20 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
 
     for query_count in [1, 10, 50, 100] {
         let dataset = build_production_dataset(query_count, 22, 100_000, &seed_config);
-        group.bench_with_input(BenchmarkId::from_parameter(query_count), &query_count, |b, _| {
-            b.iter(|| {
-                let seeds = collect(
-                    black_box(&dataset.queries),
-                    black_box(&dataset.store),
-                    black_box(&seed_config),
-                );
-                black_box(seed_count(&seeds));
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(query_count),
+            &query_count,
+            |b, _| {
+                b.iter(|| {
+                    let seeds = collect(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.store),
+                        black_box(&seed_config),
+                    );
+                    black_box(seed_count(&seeds));
+                });
+            },
+        );
     }
 
     group.finish();

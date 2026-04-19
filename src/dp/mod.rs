@@ -164,26 +164,30 @@ const _: () = {
 };
 
 /// Tracks the best scoring position found during DP extension.
-#[derive(Clone, Copy)]
-pub(super) struct BestScore {
-    pub(super) score: i32,
-    pub(super) i: usize,
-    pub(super) j: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BestScore {
+    pub energy: i32,
+    pub q_idx: usize,
+    pub t_idx: usize,
 }
 
 impl BestScore {
-    pub(super) fn new(score: i32) -> Self {
-        Self { score, i: 0, j: 0 }
+    pub(super) fn new(energy: i32) -> Self {
+        Self {
+            energy,
+            q_idx: 0,
+            t_idx: 0,
+        }
     }
 
     /// Update if `val + term` exceeds current best.
     #[inline(always)]
-    pub(super) fn update(&mut self, val: i32, term: i32, i: usize, j: usize) {
+    pub(super) fn update(&mut self, val: i32, term: i32, q_idx: usize, t_idx: usize) {
         let curr = val + term;
-        if curr > self.score {
-            self.score = curr;
-            self.i = i;
-            self.j = j;
+        if curr > self.energy {
+            self.energy = curr;
+            self.q_idx = q_idx;
+            self.t_idx = t_idx;
         }
     }
 }
@@ -276,13 +280,3 @@ impl DpGrid {
     }
 }
 
-/// Summary of one forward DP extension pass.
-///
-/// `end_i`/`end_j` are the local DP coordinates of the best-scoring endpoint,
-/// not the input window dimensions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GotohResult {
-    pub score: i32,
-    pub end_i: usize,
-    pub end_j: usize,
-}

@@ -156,7 +156,6 @@ pub fn collect(
 #[cfg(test)]
 mod tests;
 
-
 /// Check if any position in range [start, start+len) contains 'N'.
 #[inline]
 fn has_n_in_range(n_prefix: &[u32], start: usize, len: usize) -> bool {
