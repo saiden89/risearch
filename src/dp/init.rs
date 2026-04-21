@@ -39,10 +39,22 @@ impl Gotoh {
             let bq10 = self.open_query_gap(q0, q1, t0);
             let m11 = self.stack(q0, q1, t0, t1);
 
-            *ptr = DpCell { m: 0, ..DpCell::EMPTY };
-            *ptr.add(1) = DpCell { bt: bt01, ..DpCell::EMPTY };
-            *ptr.add(width) = DpCell { bq: bq10, ..DpCell::EMPTY };
-            *ptr.add(width + 1) = DpCell { m: m11, ..DpCell::EMPTY };
+            *ptr = DpCell {
+                m: 0,
+                ..DpCell::EMPTY
+            };
+            *ptr.add(1) = DpCell {
+                bt: bt01,
+                ..DpCell::EMPTY
+            };
+            *ptr.add(width) = DpCell {
+                bq: bq10,
+                ..DpCell::EMPTY
+            };
+            *ptr.add(width + 1) = DpCell {
+                m: m11,
+                ..DpCell::EMPTY
+            };
             best.update(m11, self.terminal(q1, t1), 1, 1);
 
             // --- Tiny-matrix path: no row/col 2 exists ---
@@ -53,8 +65,14 @@ impl Gotoh {
                     let tc = *t_ptr.add(j);
                     let bt = bt_prev + self.extend_target_gap(t_prev, tc);
                     let m1 = bt_prev + self.close_target_gap(q1, t_prev, tc);
-                    *ptr.add(j) = DpCell { bt, ..DpCell::EMPTY };
-                    *ptr.add(width + j) = DpCell { m: m1, ..DpCell::EMPTY };
+                    *ptr.add(j) = DpCell {
+                        bt,
+                        ..DpCell::EMPTY
+                    };
+                    *ptr.add(width + j) = DpCell {
+                        m: m1,
+                        ..DpCell::EMPTY
+                    };
                     best.update(m1, self.terminal(q1, tc), 1, j);
                     bt_prev = bt;
                     t_prev = tc;
@@ -66,8 +84,14 @@ impl Gotoh {
                     let qc = *q_ptr.add(i);
                     let bq = bq_prev + self.extend_query_gap(q_prev, qc);
                     let m1 = bq_prev + self.close_query_gap(q_prev, qc, t1);
-                    *ptr.add(i * width) = DpCell { bq, ..DpCell::EMPTY };
-                    *ptr.add(i * width + 1) = DpCell { m: m1, ..DpCell::EMPTY };
+                    *ptr.add(i * width) = DpCell {
+                        bq,
+                        ..DpCell::EMPTY
+                    };
+                    *ptr.add(i * width + 1) = DpCell {
+                        m: m1,
+                        ..DpCell::EMPTY
+                    };
                     best.update(m1, self.terminal(qc, t1), i, 1);
                     bq_prev = bq;
                     q_prev = qc;
@@ -93,11 +117,29 @@ impl Gotoh {
             let bq22 = m12 + self.open_query_gap(q1, q2, t2);
             let bt22 = m21 + self.open_target_gap(q2, t1, t2);
 
-            *ptr.add(2) = DpCell { bt: bt02, ..DpCell::EMPTY };
-            *ptr.add(width + 2) = DpCell { m: m12, bt: bt12, ..DpCell::EMPTY };
-            *ptr.add(2 * width) = DpCell { bq: bq20, ..DpCell::EMPTY };
-            *ptr.add(2 * width + 1) = DpCell { m: m21, bq: bq21, ..DpCell::EMPTY };
-            *ptr.add(2 * width + 2) = DpCell { m: m22, bq: bq22, bt: bt22 };
+            *ptr.add(2) = DpCell {
+                bt: bt02,
+                ..DpCell::EMPTY
+            };
+            *ptr.add(width + 2) = DpCell {
+                m: m12,
+                bt: bt12,
+                ..DpCell::EMPTY
+            };
+            *ptr.add(2 * width) = DpCell {
+                bq: bq20,
+                ..DpCell::EMPTY
+            };
+            *ptr.add(2 * width + 1) = DpCell {
+                m: m21,
+                bq: bq21,
+                ..DpCell::EMPTY
+            };
+            *ptr.add(2 * width + 2) = DpCell {
+                m: m22,
+                bq: bq22,
+                bt: bt22,
+            };
 
             best.update(m12, self.terminal(q1, t2), 1, 2);
             best.update(m21, self.terminal(q2, t1), 2, 1);
@@ -131,9 +173,20 @@ impl Gotoh {
                     bt2_prev + ext_t,
                 );
 
-                *ptr.add(k) = DpCell { bt: bt0, ..DpCell::EMPTY };
-                *ptr.add(width + k) = DpCell { m: m1, bt: bt1, ..DpCell::EMPTY };
-                *ptr.add(2 * width + k) = DpCell { m: m2, bq: bq2, bt: bt2 };
+                *ptr.add(k) = DpCell {
+                    bt: bt0,
+                    ..DpCell::EMPTY
+                };
+                *ptr.add(width + k) = DpCell {
+                    m: m1,
+                    bt: bt1,
+                    ..DpCell::EMPTY
+                };
+                *ptr.add(2 * width + k) = DpCell {
+                    m: m2,
+                    bq: bq2,
+                    bt: bt2,
+                };
 
                 best.update(m1, self.terminal(q1, tj), 1, k);
                 best.update(m2, self.terminal(q2, tj), 2, k);
@@ -174,9 +227,20 @@ impl Gotoh {
                     bq2_prev + ext_q,
                 );
 
-                *ptr.add(k * width) = DpCell { bq: bq0, ..DpCell::EMPTY };
-                *ptr.add(k * width + 1) = DpCell { m: m1, bq: bq1, ..DpCell::EMPTY };
-                *ptr.add(k * width + 2) = DpCell { m: m2, bq: bq2, bt: bt2 };
+                *ptr.add(k * width) = DpCell {
+                    bq: bq0,
+                    ..DpCell::EMPTY
+                };
+                *ptr.add(k * width + 1) = DpCell {
+                    m: m1,
+                    bq: bq1,
+                    ..DpCell::EMPTY
+                };
+                *ptr.add(k * width + 2) = DpCell {
+                    m: m2,
+                    bq: bq2,
+                    bt: bt2,
+                };
 
                 best.update(m1, self.terminal(qi, t1), k, 1);
                 best.update(m2, self.terminal(qi, t2), k, 2);

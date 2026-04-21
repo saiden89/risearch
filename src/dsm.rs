@@ -88,6 +88,13 @@ impl ScoringModel {
     }
 
     /// Produce a left-canonical (transposed) copy: `[q1][q2][t1][t2] → [q2][q1][t2][t1]`.
+    /// Get raw pointer to the internal flat table
+    #[inline(always)]
+    pub fn table_ptr(&self) -> *const i32 {
+        self.table.as_ptr()
+    }
+
+    /// Produce a left-canonical (transposed) copy
     pub fn transpose(&self) -> ScoringModel {
         let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {

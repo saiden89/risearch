@@ -279,4 +279,3 @@ impl DpGrid {
         self.width
     }
 }
-
