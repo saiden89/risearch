@@ -6,7 +6,6 @@ pub mod cli {
 pub mod config;
 pub mod dp;
 pub mod dsm;
-mod dsm_extend;
 pub mod fastx;
 pub mod index;
 pub mod output;

@@ -12,7 +12,6 @@
 //! ```
 
 use crate::config::Matrix;
-use crate::dsm_extend::DSM_EXTEND_FLAT;
 use crate::types::{Base, BASE_COUNT};
 
 /// DSM table type: 4D array [q1][q2][t1][t2]
@@ -55,10 +54,19 @@ impl ScoringModel {
                         let t2_orig = Base::from_idx(t2).complement().idx();
 
                         let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
-                        let orig_idx = q1 * 216 + q2 * 36 + t1_orig * 6 + t2_orig;
+
+                        let ext_penalty_mult = if q2 == 0 && t2_orig == 0 {
+                            0
+                        } else if q2 == 0 || t2_orig == 0 {
+                            1
+                        } else if q1 == 0 && t1_orig == 0 {
+                            if PAIR_MAT[q2][t2_orig] != 0 { 2 } else { 0 }
+                        } else {
+                            2
+                        };
 
                         table[idx] = source_table[q1][q2][t1_orig][t2_orig] as i32
-                            - penalty * DSM_EXTEND_FLAT[orig_idx];
+                            - penalty * ext_penalty_mult;
                     }
                 }
             }
