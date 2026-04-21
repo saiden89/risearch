@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 
-use crate::types::Base;
+use crate::types::{Base, PairType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairClass {
@@ -17,11 +17,11 @@ impl PairClass {
         match (query, target) {
             (Base::Gap, _) => Self::TargetBulge,
             (_, Base::Gap) => Self::QueryBulge,
-            (Base::A, Base::U) | (Base::U, Base::A) | (Base::G, Base::C) | (Base::C, Base::G) => {
-                Self::Match
-            }
-            (Base::G, Base::U) | (Base::U, Base::G) => Self::Wobble,
-            _ => Self::Mismatch,
+            _ => match query.pair_type(target) {
+                PairType::Canonical => Self::Match,
+                PairType::Wobble => Self::Wobble,
+                PairType::Mismatch => Self::Mismatch,
+            },
         }
     }
 

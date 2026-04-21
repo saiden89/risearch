@@ -34,7 +34,6 @@ pub use crate::types::GAP;
 #[derive(Clone, Debug)]
 pub struct ScoringModel {
     table: [i32; DSM_FLAT_SIZE],
-    pair_mat: [[u8; 6]; 6],
 }
 
 impl ScoringModel {
@@ -60,7 +59,7 @@ impl ScoringModel {
                         } else if q2 == 0 || t2_orig == 0 {
                             1
                         } else if q1 == 0 && t1_orig == 0 {
-                            if PAIR_MAT[q2][t2_orig] != 0 { 2 } else { 0 }
+                            if Base::from_idx(q2).pair_type(Base::from_idx(t2_orig).complement()).is_match(true) { 2 } else { 0 }
                         } else {
                             2
                         };
@@ -72,27 +71,13 @@ impl ScoringModel {
             }
         }
 
-        let mut pair_mat = [[0u8; 6]; 6];
-        for q in 0..6 {
-            for t in 0..6 {
-                let t_orig = Base::from_idx(t).complement().idx();
-                pair_mat[q][t] = PAIR_MAT[q][t_orig];
-            }
-        }
-
-        Self { table, pair_mat }
+        Self { table }
     }
 
     /// Check if two bases form a valid seed pair in transformed target space.
     #[inline(always)]
     pub fn seed_pair(q: Base, t: Base, allow_wobble: bool) -> bool {
-        let source_pair_mat = if allow_wobble {
-            &PAIR_MAT
-        } else {
-            &PAIR_MAT_NO_GU
-        };
-        let t_orig = t.complement().idx();
-        source_pair_mat[q.idx()][t_orig] != 0
+        q.pair_type(t.complement()).is_match(allow_wobble)
     }
 
     /// Produce a left-canonical (transposed) copy: `[q1][q2][t1][t2] → [q2][q1][t2][t1]`.
@@ -116,10 +101,7 @@ impl ScoringModel {
                 }
             }
         }
-        Self {
-            table,
-            pair_mat: self.pair_mat,
-        }
+        Self { table }
     }
 
     /// Point query for one transition energy in the canonical 4-base tensor.
@@ -140,10 +122,7 @@ impl ScoringModel {
     /// Check if two bases form a valid pair.
     #[inline(always)]
     pub fn is_pair(&self, q: Base, t: Base) -> bool {
-        let (qi, ti) = (q.idx(), t.idx());
-        debug_assert!(qi < 6 && ti < 6);
-        // SAFETY: Base::idx() returns 0..6, matching the 6×6 pair_mat dimensions.
-        unsafe { *self.pair_mat.get_unchecked(qi).get_unchecked(ti) != 0 }
+        q.pair_type(t.complement()).is_match(true)
     }
 
     /// Seed energy calculation with antiparallel indexing.
@@ -778,23 +757,7 @@ const T99: DsmTable = [
     ],
 ];
 
-const PAIR_MAT: [[u8; 6]; 6] = [
-    [0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0], // A-U
-    [0, 0, 0, 1, 1, 0], // G-C, G-U
-    [0, 0, 1, 0, 0, 0], // C-G
-    [0, 1, 1, 0, 0, 0], // U-A, U-G
-    [0, 0, 0, 0, 0, 0],
-];
 
-const PAIR_MAT_NO_GU: [[u8; 6]; 6] = [
-    [0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0], // A-U
-    [0, 0, 0, 1, 0, 0], // G-C
-    [0, 0, 1, 0, 0, 0], // C-G
-    [0, 1, 0, 0, 0, 0], // U-A
-    [0, 0, 0, 0, 0, 0],
-];
 
 #[cfg(test)]
 mod tests {
