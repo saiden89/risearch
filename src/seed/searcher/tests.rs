@@ -30,10 +30,10 @@ fn partition_splits_by_base() {
     );
 
     assert_eq!(parts[1] - parts[0], 1); // A
-    assert_eq!(parts[2] - parts[1], 1); // C
-    assert_eq!(parts[3] - parts[2], 1); // G
-    assert_eq!(parts[4] - parts[3], 0); // N
-    assert_eq!(parts[5] - parts[4], 1); // U
+    assert_eq!(parts[2] - parts[1], 1); // G
+    assert_eq!(parts[3] - parts[2], 1); // C
+    assert_eq!(parts[4] - parts[3], 1); // U
+    assert_eq!(parts[5] - parts[4], 0); // N
 }
 
 #[test]

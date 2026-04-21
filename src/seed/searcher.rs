@@ -13,12 +13,12 @@ use std::ops::Range;
 use super::SeedHit;
 
 /// The four matchable RNA bases indexed alongside SLOTS.
-const BASES: [Base; 4] = [Base::A, Base::C, Base::G, Base::U];
+const BASES: [Base; 4] = [Base::A, Base::G, Base::C, Base::U];
 
 /// Partition slot for each matchable base in BASES.
-/// `partition()` returns `[A=0, C=1, G=2, N=3, U=4, end]`; this mapping
-/// intentionally skips the `N` bucket and addresses only searchable A/C/G/U slots.
-const SLOTS: [usize; 4] = [0, 1, 2, 4];
+/// `partition()` returns `[A=0, G=1, C=2, U=3, N=4, end]`; this mapping
+/// addresses only searchable A/G/C/U slots.
+const SLOTS: [usize; 4] = [0, 1, 2, 3];
 
 pub(crate) trait SeedSaView: Copy {
     fn sa_real_len(&self) -> usize;
@@ -300,10 +300,10 @@ const LINEAR_PARTITION_CUTOFF: usize = 1024;
 /// Base discriminants that mark partition boundaries (sorted by SA order).
 const BOUNDARIES: [u8; 5] = [
     Base::A as u8,
-    Base::C as u8,
     Base::G as u8,
-    Base::N as u8,
+    Base::C as u8,
     Base::U as u8,
+    Base::N as u8,
 ];
 
 /// Partition a sorted SA interval by base character at `depth`.

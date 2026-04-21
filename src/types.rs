@@ -24,10 +24,10 @@ pub enum Base {
     #[default]
     Gap = 0,
     A = 1,
-    C = 2,
-    G = 3,
-    N = 4,
-    U = 5,
+    G = 2,
+    C = 3,
+    U = 4,
+    N = 5,
 }
 
 // =============================================================================
@@ -35,13 +35,13 @@ pub enum Base {
 // =============================================================================
 
 /// Base → uppercase ASCII byte
-static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'C', b'G', b'N', b'U'];
+static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'G', b'C', b'U', b'N'];
 
 /// Base → lowercase ASCII byte (for to_byte())
-static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'c', b'g', b'n', b'u'];
+static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'g', b'c', b'u', b'n'];
 
 /// Index → Base (for from_idx)
-static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
+static IDX_TO_BASE: [Base; 6] = [Base::Gap, Base::A, Base::G, Base::C, Base::U, Base::N];
 
 impl Base {
     /// Convert to array index
