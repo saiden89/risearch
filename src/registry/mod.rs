@@ -10,7 +10,7 @@ use crate::fastx::read_fasta_sequences;
 use crate::index::io::validate_readable_file;
 use crate::index::sa::SuffixArray;
 use crate::index::store::SA_CHAR_PADDING;
-use crate::seq::{SeqView, Sequence};
+use crate::seq::Sequence;
 use crate::types::Base;
 
 pub trait RegistryEntry {
@@ -142,8 +142,8 @@ impl Query {
     }
 
     #[inline(always)]
-    pub fn sequence(&self) -> SeqView<'_> {
-        self.sequence.as_view()
+    pub fn sequence(&self) -> &[Base] {
+        &self.sequence
     }
 
     #[inline]
@@ -162,8 +162,8 @@ impl Query {
     }
 
     #[inline(always)]
-    pub fn seed_sequence(&self) -> SeqView<'_> {
-        self.seed_sequence.as_view()
+    pub fn seed_sequence(&self) -> &[Base] {
+        &self.seed_sequence
     }
 }
 
@@ -343,7 +343,7 @@ impl QueryRegistry {
         for query in &entries {
             offsets.push(combined_seed_seq.len() as u64);
             seed_seq_lens.push(query.seed_sequence().len() as u32);
-            combined_seed_seq.extend_from_slice(query.seed_sequence().as_slice());
+            combined_seed_seq.extend_from_slice(query.seed_sequence());
             combined_seed_seq.push(Base::Gap);
         }
 
@@ -463,10 +463,7 @@ mod tests {
         assert_eq!(query.seed_interval, 1..5);
         assert_eq!(query.min_seed_len, 2);
         assert_eq!(query.max_seed_len, 4);
-        assert_eq!(
-            query.seed_sequence().as_slice(),
-            &query.sequence().as_slice()[1..5]
-        );
+        assert_eq!(query.seed_sequence(), &query.sequence()[1..5]);
     }
 
     #[test]
@@ -479,9 +476,6 @@ mod tests {
         assert_eq!(query.min_seed_len, 3);
         assert_eq!(query.max_seed_len, 5);
         assert_eq!(query.seed_sequence().len(), 5);
-        assert_eq!(
-            query.seed_sequence().as_slice(),
-            query.sequence().as_slice()
-        );
+        assert_eq!(query.seed_sequence(), query.sequence());
     }
 }

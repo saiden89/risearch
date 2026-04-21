@@ -1,4 +1,3 @@
-use crate::seq::SeqView;
 use crate::types::Base;
 
 /// Normalize a single base for RNA output (T→U, uppercase).
@@ -32,8 +31,7 @@ pub fn bytes_to_rna_string(s: &[u8], reverse: bool) -> String {
 }
 
 /// Convert Base slice to an RNA string (uppercase) and optionally reverse.
-pub fn bases_to_rna_string(s: SeqView<'_>, reverse: bool) -> String {
-    let s = s.as_slice();
+pub fn bases_to_rna_string(s: &[Base], reverse: bool) -> String {
     let mut result = String::with_capacity(s.len());
     if reverse {
         for &b in s.iter().rev() {
@@ -61,8 +59,7 @@ pub fn push_bytes_as_rna(buf: &mut Vec<u8>, s: &[u8], reverse: bool) {
 }
 
 /// Append RNA-formatted bases (uppercased) to an existing buffer.
-pub fn push_bases_as_rna(buf: &mut Vec<u8>, s: SeqView<'_>, reverse: bool) {
-    let s = s.as_slice();
+pub fn push_bases_as_rna(buf: &mut Vec<u8>, s: &[Base], reverse: bool) {
     if reverse {
         for &b in s.iter().rev() {
             buf.push(normalize_base_enum_for_rna(b));

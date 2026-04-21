@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::ops::{Deref, Index, Range, RangeFrom, RangeFull, RangeTo};
 
 use super::normalize::{normalize_rna_sequence, NormalizationStats};
-use super::view::SeqView;
 
 /// A normalized RNA sequence stored as Vec<Base>.
 ///
@@ -47,12 +46,6 @@ impl Sequence {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-
-    /// Borrow as `SeqView` for typed API boundaries.
-    #[inline]
-    pub fn as_view(&self) -> SeqView<'_> {
-        SeqView::from(self)
     }
 
     /// Compute reverse complement of this sequence.

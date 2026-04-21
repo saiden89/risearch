@@ -304,7 +304,7 @@ impl ParsedInteraction {
 }
 
 fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'a [Base] {
-    let q_seq = query_registry.get(hit.query_idx).sequence().as_slice();
+    let q_seq = query_registry.get(hit.query_idx).sequence();
     let seq_len = q_seq.len();
     let consumed = hit
         .alignment

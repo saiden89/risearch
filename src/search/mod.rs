@@ -59,7 +59,7 @@ pub fn run_search_in_memory(
         .flat_map_iter(|(qi, seeds)| {
             let mut worker = SearchWorker::new(ctx.opts);
             let query = &ctx.queries.entries()[qi as usize];
-            let query_seq = query.sequence().as_slice();
+            let query_seq = query.sequence();
             let seed_interval = query.seed_interval.clone();
             let target = ctx.store.view();
 
@@ -225,7 +225,7 @@ fn process_query_seeds(
 ) -> Result<(usize, Vec<OutputChunk>)> {
     let query = &ctx.queries.entries()[query_idx as usize];
     let query_name = ctx.queries.get_name(query_idx);
-    let query_seq = query.sequence().as_slice();
+    let query_seq = query.sequence();
     let seed_interval = query.seed_interval.clone();
     let target = ctx.store.view();
     let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
