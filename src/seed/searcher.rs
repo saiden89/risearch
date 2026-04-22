@@ -12,14 +12,6 @@ use std::ops::Range;
 
 use super::SeedHit;
 
-/// The four matchable RNA bases indexed alongside SLOTS.
-const BASES: [Base; 4] = [Base::A, Base::G, Base::C, Base::U];
-
-/// Partition slot for each matchable base in BASES.
-/// `partition()` returns `[A=0, G=1, C=2, U=3, N=4, end]`; this mapping
-/// addresses only searchable A/G/C/U slots.
-const SLOTS: [usize; 4] = [0, 1, 2, 3];
-
 pub(crate) trait SeedSaView: Copy {
     fn sa_real_len(&self) -> usize;
     fn sa_suffix_pos(&self, sa_idx: usize) -> usize;
@@ -260,19 +252,19 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
     let ms = match_streak + 1;
     let can_mm = ctx.can_mismatch_next(depth, match_streak, mm_count);
 
-    for i in 0..4 {
-        let qs = SLOTS[i];
+    for qs in [0, 1, 2, 4] {
         if qi[qs] >= qi[qs + 1] {
             continue;
         }
+        let q_base = unsafe { Base::from_idx(qs + 1) };
 
-        for j in 0..4 {
-            let ts = SLOTS[j];
+        for ts in [0, 1, 2, 4] {
             if si[ts] >= si[ts + 1] {
                 continue;
             }
+            let t_base = unsafe { Base::from_idx(ts + 1) };
 
-            if BASES[i].pair_type(BASES[j]).is_match(WOBBLE) {
+            if q_base.pair_type(t_base).is_match(WOBBLE) {
                 recurse::<F, WOBBLE>(
                     ctx,
                     qi[qs]..qi[qs + 1],
@@ -297,20 +289,11 @@ fn recurse<F: FnMut(SeedMatch), const WOBBLE: bool>(
 
 const LINEAR_PARTITION_CUTOFF: usize = 1024;
 
-/// Base discriminants that mark partition boundaries (sorted by SA order).
-const BOUNDARIES: [u8; 5] = [
-    Base::A as u8,
-    Base::G as u8,
-    Base::C as u8,
-    Base::U as u8,
-    Base::N as u8,
-];
-
 /// Partition a sorted SA interval by base character at `depth`.
 ///
 /// Returns 6 boundary positions `[A, C, G, N, U, end]` in suffix-array order.
 /// Sub-interval for slot `k` is `bounds[k]..bounds[k+1]`.
-/// Callers that search only matchable RNA bases should skip the `N` bucket.
+/// Callers that search only matchable RNA bases should skip the `N` bucket (slot 3).
 #[inline(always)]
 fn partition<V: SeedSaView>(view: V, start: usize, end: usize, depth: usize) -> [usize; 6] {
     if start >= end {
@@ -320,14 +303,16 @@ fn partition<V: SeedSaView>(view: V, start: usize, end: usize, depth: usize) -> 
     let mut out = [0usize; 6];
     if end - start <= LINEAR_PARTITION_CUTOFF {
         let mut i = start;
-        for (slot, &target) in BOUNDARIES.iter().enumerate() {
+        for slot in 0..5 {
+            let target = (slot + 1) as u8;
             while i < end && (view.sa_base(i, depth) as u8) < target {
                 i += 1;
             }
             out[slot] = i;
         }
     } else {
-        for (slot, &target) in BOUNDARIES.iter().enumerate() {
+        for slot in 0..5 {
+            let target = (slot + 1) as u8;
             out[slot] = binary_search(view, start, end, depth, target);
         }
     }
@@ -388,18 +373,18 @@ fn recurse_half_singleton<F: FnMut(SeedMatch), const WOBBLE: bool, const Q_SINGL
     let ms = match_streak + 1;
     let mm1 = mm_count + 1;
 
-    for k in 0..4 {
-        let ps = SLOTS[k];
+    for ps in [0, 1, 2, 4] {
         if part[ps] >= part[ps + 1] {
             continue;
         }
+        let part_base = unsafe { Base::from_idx(ps + 1) };
         let part_range = part[ps]..part[ps + 1];
         let (q, s) = if Q_SINGLETON {
             (single_range.clone(), part_range)
         } else {
             (part_range, single_range.clone())
         };
-        if single_base.pair_type(BASES[k]).is_match(WOBBLE) {
+        if single_base.pair_type(part_base).is_match(WOBBLE) {
             recurse::<F, WOBBLE>(ctx, q, s, d1, ms, mm_count);
         } else if can_mm {
             recurse::<F, WOBBLE>(ctx, q, s, d1, 0, mm1);
