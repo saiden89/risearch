@@ -71,8 +71,7 @@ pub fn run_search_in_memory(
                     Strand::Reverse => t_rc,
                 };
 
-                build_hit_from_seed(
-                    &mut worker,
+                worker.build_hit_from_seed(
                     ctx.opts,
                     qi,
                     query_seq,
@@ -120,7 +119,7 @@ pub fn run_search(
                 )
             },
             |(worker, fmt), (qi, seeds)| -> Result<()> {
-                let (emitted, chunks) = process_query_seeds(&ctx, qi, &seeds, worker, fmt)?;
+                let (emitted, chunks) = worker.process_query_seeds(&ctx, qi, &seeds, fmt)?;
                 if !chunks.is_empty() {
                     let mut w = OutputWriter::new(&ctx.opts.output, &paths[qi])?;
                     write_chunks(&mut w, &chunks)?;
@@ -141,7 +140,7 @@ pub fn run_search(
                 )
             },
             |(worker, fmt), (qi, seeds)| -> Result<()> {
-                let (emitted, chunks) = process_query_seeds(&ctx, qi, &seeds, worker, fmt)?;
+                let (emitted, chunks) = worker.process_query_seeds(&ctx, qi, &seeds, fmt)?;
                 write_chunks(&mut *writer.lock().unwrap(), &chunks)?;
                 total.fetch_add(emitted, Ordering::Relaxed);
                 Ok(())
@@ -201,11 +200,146 @@ struct SearchWorker {
 impl SearchWorker {
     fn new(opts: &SearchConfig) -> Self {
         let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = ScoringModel::new(opts.score.matrix, dp_cfg.penalty_raw());
+        let model = ScoringModel::new(opts.score.matrix, dp_cfg.penalty());
         Self {
             extension: ExtensionEngine::new(dp_cfg.max_extension(), &model),
             model,
         }
+    }
+
+    fn process_query_seeds(
+        &mut self,
+        ctx: &SearchContext<'_>,
+        query_idx: usize,
+        seeds: &[SeedHit],
+        format: &mut HitFormatter,
+    ) -> Result<(usize, Vec<OutputChunk>)> {
+        let query = &ctx.queries.entries()[query_idx];
+        let query_name = ctx.queries.get_name(query_idx);
+        let query_seq = query.sequence();
+        let seed_interval = query.seed_interval.clone();
+        let target = ctx.store.view();
+        let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
+        let mut chunks = Vec::new();
+        let mut local_hits = 0usize;
+        let mut last_target_idx = None::<usize>;
+        let mut cached_t_name = None;
+
+        for seed in seeds {
+            let target_idx = seed.target_idx;
+            let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
+            let target_trans = match seed.strand {
+                Strand::Forward => t_fwd,
+                Strand::Reverse => t_rc,
+            };
+
+            let Some(hit) = self.build_hit_from_seed(
+                ctx.opts,
+                query_idx,
+                query_seq,
+                seed_interval.clone(),
+                include_alignment,
+                target_len,
+                seed,
+                target_trans,
+            ) else {
+                continue;
+            };
+
+            if last_target_idx != Some(target_idx) {
+                cached_t_name = Some(ctx.store.get_name(hit.target_idx));
+                last_target_idx = Some(target_idx);
+            }
+
+            if let Some(chunk) = format.add_hit(
+                &hit,
+                query_name,
+                query_seq,
+                cached_t_name.unwrap(),
+                t_fwd,
+                t_rc,
+            ) {
+                chunks.push(chunk);
+            }
+            local_hits += 1;
+        }
+
+        if let Some(chunk) = format.flush() {
+            chunks.push(chunk);
+        }
+
+        Ok((local_hits, chunks))
+    }
+
+    fn build_hit_from_seed(
+        &mut self,
+        opts: &SearchConfig,
+        query_idx: usize,
+        query_bases: &[Base],
+        seed_interval: Range<usize>,
+        include_alignment: bool,
+        target_len: usize,
+        seed: &SeedHit,
+        target_trans: &[Base],
+    ) -> Option<SearchHit> {
+        debug_assert!(seed.target_start + seed.len <= target_trans.len());
+        let q_start = seed.query_start;
+        let t_start = seed.target_start;
+        let len = seed.len;
+        let t_match_end = t_start + len - 1;
+
+        if !opts.filter.no_max_prune
+            && !is_maximal(
+                seed,
+                query_bases,
+                target_trans,
+                &seed_interval,
+                opts.seed.seed_wobble,
+            )
+        {
+            return None;
+        }
+
+        let seed_e = self
+            .model
+            .energy(query_bases, target_trans, q_start, t_start, len);
+        let max_ext = DpConfig::from((&opts.score, &opts.extend)).max_extension();
+        let view_left = DpView::new(
+            query_bases,
+            target_trans,
+            q_start,
+            t_match_end,
+            ExtendDir::Left,
+            max_ext,
+        );
+        let left = self.extension.extend(&view_left, include_alignment);
+
+        let view_right = DpView::new(
+            query_bases,
+            target_trans,
+            q_start + len - 1,
+            t_start,
+            ExtendDir::Right,
+            max_ext,
+        );
+        let right = self.extension.extend(&view_right, include_alignment);
+        let penalty = opts.score.penalty_raw();
+        let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i32;
+        let energy = Energy::from(seed_e + left.energy + right.energy + nt_count * penalty);
+
+        (energy.as_f64() <= opts.filter.delta_g).then(|| {
+            SearchHit::new(
+                query_idx,
+                query_bases,
+                target_trans,
+                seed,
+                &left,
+                &right,
+                energy,
+                include_alignment,
+                target_len,
+            )
+        })
     }
 }
 
@@ -214,71 +348,6 @@ fn write_chunks(writer: &mut OutputWriter, chunks: &[OutputChunk]) -> Result<()>
         writer.write_chunk(chunk)?;
     }
     Ok(())
-}
-
-fn process_query_seeds(
-    ctx: &SearchContext<'_>,
-    query_idx: usize,
-    seeds: &[SeedHit],
-    worker: &mut SearchWorker,
-    format: &mut HitFormatter,
-) -> Result<(usize, Vec<OutputChunk>)> {
-    let query = &ctx.queries.entries()[query_idx];
-    let query_name = ctx.queries.get_name(query_idx);
-    let query_seq = query.sequence();
-    let seed_interval = query.seed_interval.clone();
-    let target = ctx.store.view();
-    let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
-    let mut chunks = Vec::new();
-    let mut local_hits = 0usize;
-    let mut last_target_idx = None::<usize>;
-    let mut cached_t_name = None;
-
-    for seed in seeds {
-        let target_idx = seed.target_idx;
-        let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
-        let target_trans = match seed.strand {
-            Strand::Forward => t_fwd,
-            Strand::Reverse => t_rc,
-        };
-
-        let Some(hit) = build_hit_from_seed(
-            worker,
-            ctx.opts,
-            query_idx,
-            query_seq,
-            seed_interval.clone(),
-            include_alignment,
-            target_len,
-            seed,
-            target_trans,
-        ) else {
-            continue;
-        };
-
-        if last_target_idx != Some(target_idx) {
-            cached_t_name = Some(ctx.store.get_name(hit.target_idx));
-            last_target_idx = Some(target_idx);
-        }
-
-        if let Some(chunk) = format.add_hit(
-            &hit,
-            query_name,
-            query_seq,
-            cached_t_name.unwrap(),
-            t_fwd,
-            t_rc,
-        ) {
-            chunks.push(chunk);
-        }
-        local_hits += 1;
-    }
-
-    if let Some(chunk) = format.flush() {
-        chunks.push(chunk);
-    }
-
-    Ok((local_hits, chunks))
 }
 
 struct ExtensionResult {
@@ -322,77 +391,6 @@ fn is_maximal(
     }
 
     true
-}
-
-fn build_hit_from_seed(
-    worker: &mut SearchWorker,
-    opts: &SearchConfig,
-    query_idx: usize,
-    query_bases: &[Base],
-    seed_interval: Range<usize>,
-    include_alignment: bool,
-    target_len: usize,
-    seed: &SeedHit,
-    target_trans: &[Base],
-) -> Option<SearchHit> {
-    debug_assert!(seed.target_start + seed.len <= target_trans.len());
-    let q_start = seed.query_start;
-    let t_start = seed.target_start;
-    let len = seed.len;
-    let t_match_end = t_start + len - 1;
-
-    if !opts.filter.no_max_prune
-        && !is_maximal(
-            seed,
-            query_bases,
-            target_trans,
-            &seed_interval,
-            opts.seed.seed_wobble,
-        )
-    {
-        return None;
-    }
-
-    let seed_e = worker
-        .model
-        .energy(query_bases, target_trans, q_start, t_start, len);
-    let max_ext = DpConfig::from((&opts.score, &opts.extend)).max_extension();
-    let view_left = DpView::new(
-        query_bases,
-        target_trans,
-        q_start,
-        t_match_end,
-        ExtendDir::Left,
-        max_ext,
-    );
-    let left = worker.extension.extend(&view_left, include_alignment);
-
-    let view_right = DpView::new(
-        query_bases,
-        target_trans,
-        q_start + len - 1,
-        t_start,
-        ExtendDir::Right,
-        max_ext,
-    );
-    let right = worker.extension.extend(&view_right, include_alignment);
-    let penalty = opts.score.penalty_raw();
-    let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i32;
-    let energy = Energy::from(seed_e + left.energy + right.energy + nt_count * penalty);
-
-    (energy.as_f64() <= opts.filter.delta_g).then(|| {
-        SearchHit::new(
-            query_idx,
-            query_bases,
-            target_trans,
-            seed,
-            &left,
-            &right,
-            energy,
-            include_alignment,
-            target_len,
-        )
-    })
 }
 
 const BINDING_SITE_FLANK_LEN: usize = 20;

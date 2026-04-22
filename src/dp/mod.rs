@@ -24,7 +24,7 @@ impl DpConfig {
     }
 
     #[inline(always)]
-    pub(crate) const fn penalty_raw(self) -> i32 {
+    pub(crate) const fn penalty(self) -> i32 {
         self.penalty_raw
     }
 }
@@ -106,7 +106,7 @@ impl<'a> DpView<'a> {
     }
 
     #[inline(always)]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.q_len == 0 || self.t_len == 0
     }
 

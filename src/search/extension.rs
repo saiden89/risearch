@@ -4,7 +4,6 @@ use crate::alignment::PairClass;
 use crate::dp::gotoh::Gotoh;
 use crate::dp::{is_valid_score, DpGrid, DpView, ExtendDir};
 use crate::dsm::ScoringModel;
-use crate::types::Base;
 
 use super::ExtensionResult;
 
@@ -169,6 +168,7 @@ impl ExtensionEngine {
 mod tests {
     use super::*;
     use crate::config::Matrix;
+    use crate::types::Base;
 
     #[test]
     fn extension_result_extents_match_traceback_consumption() {
@@ -177,7 +177,8 @@ mod tests {
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::G, Base::C, Base::A, Base::U];
 
-        let result = engine.extend(&query, &target, 0, target.len() - 1, ExtendDir::Right, true);
+        let view = DpView::new(&query, &target, 0, target.len() - 1, ExtendDir::Right, 8);
+        let result = engine.extend(&view, true);
         let pairs = result.pairs.expect("traceback expected");
 
         assert!(result.q_ext > 0);

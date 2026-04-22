@@ -4,6 +4,8 @@ use std::ops::Deref;
 
 use anyhow::{anyhow, Error};
 use libsais::SuffixArrayConstruction;
+#[cfg(debug_assertions)]
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::types::Base;
