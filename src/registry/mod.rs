@@ -10,6 +10,7 @@ use crate::fastx::read_fasta_sequences;
 use crate::index::io::validate_readable_file;
 use crate::index::sa::SuffixArray;
 use crate::index::store::SA_CHAR_PADDING;
+use crate::seed::SeedView;
 use crate::seq::Sequence;
 use crate::types::Base;
 
@@ -170,15 +171,6 @@ impl RegistryEntry for Query {
     }
 }
 
-/// Combined query data for seed search — mirrors `TargetView` on the target side.
-#[derive(Clone, Copy)]
-pub struct QueryView<'a> {
-    pub combined_seed_seq: &'a [Base],
-    pub combined_sa: &'a [u64],
-    pub len: usize,
-    pub offsets: &'a [usize],
-    pub seed_seq_lens: &'a [usize],
-}
 
 /// Registry of queries with a combined suffix array for efficient seed search.
 ///
@@ -228,13 +220,13 @@ impl QueryRegistry {
         self.inner.iter()
     }
 
-    pub fn view(&self) -> QueryView<'_> {
-        QueryView {
-            combined_seed_seq: &self.combined_seed_seq,
+    pub fn view(&self) -> SeedView<'_> {
+        SeedView {
+            combined_seq: &self.combined_seed_seq,
             combined_sa: &self.combined_sa,
-            len: self.len,
+            sa_real_len: self.len,
             offsets: &self.offsets,
-            seed_seq_lens: &self.seed_seq_lens,
+            seq_lens: &self.seed_seq_lens,
         }
     }
 }

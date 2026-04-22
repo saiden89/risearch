@@ -9,6 +9,7 @@ use needletail::parse_fastx_file;
 
 use crate::index::io::validate_output_path;
 use crate::index::sa::SuffixArray;
+use crate::seed::SeedView;
 use crate::seq::Sequence;
 use crate::types::{Base, Strand};
 
@@ -56,63 +57,6 @@ pub struct TargetStore {
     sa_real_len: usize,
 }
 
-/// Target-side combined suffix-array view for seed search — zero-copy from mmap.
-#[derive(Clone, Copy)]
-pub struct TargetView<'a> {
-    pub combined_seq: &'a [Base],
-    pub combined_sa: &'a [u64],
-    pub sa_real_len: usize,
-    /// Start offset of each target block in the global combined_seq.
-    /// Length = target_count.
-    pub offsets: &'a [usize],
-    /// Original forward sequence length of each target.
-    /// Length = target_count.
-    pub seq_lens: &'a [usize],
-}
-
-impl<'a> TargetView<'a> {
-    /// Return the forward and reverse-complement slices for a target, plus its length.
-    ///
-    /// Layout within global: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap.
-    #[inline]
-    pub fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
-        let seq_len = self.seq_lens[target_idx];
-        let offset = self.offsets[target_idx];
-        let t_fwd = &self.combined_seq[offset..offset + seq_len];
-        let t_rc = &self.combined_seq[offset + seq_len + 1..offset + 2 * seq_len + 1];
-        (t_fwd, t_rc, seq_len)
-    }
-
-    /// Map a local position within a target block to strand and view-normalized start.
-    ///
-    /// Block layout: `fwd_comp[seq_len] + Gap + rc[seq_len] + Gap`.
-    /// Returns `None` if the position falls on a Gap or the seed overflows the block.
-    #[inline]
-    pub fn map_target_pos(
-        local_pos: usize,
-        seq_len: usize,
-        seed_len: usize,
-    ) -> Option<(Strand, usize)> {
-        if local_pos < seq_len {
-            if local_pos + seed_len > seq_len {
-                return None;
-            }
-            return Some((Strand::Reverse, seq_len - (local_pos + seed_len)));
-        }
-
-        let rc_start = seq_len + 1;
-        let rc_end = rc_start + seq_len;
-        if local_pos >= rc_start && local_pos < rc_end {
-            let rc_pos = local_pos - rc_start;
-            if rc_pos + seed_len > seq_len {
-                return None;
-            }
-            return Some((Strand::Forward, seq_len - (rc_pos + seed_len)));
-        }
-
-        None
-    }
-}
 
 impl TargetStore {
     /// Build a new RSIDX6 index from a FASTA file.
@@ -349,15 +293,58 @@ impl TargetStore {
         self.names.iter().position(|n| n == name)
     }
 
-    /// Get a target-side view of the combined SA and sequence for seed search.
-    pub fn view(&self) -> TargetView<'_> {
-        TargetView {
+    /// Get a seed-search view of the combined SA and sequence.
+    pub fn view(&self) -> SeedView<'_> {
+        SeedView {
             combined_seq: self.combined_seq(),
             combined_sa: self.combined_sa(),
             sa_real_len: self.sa_real_len,
             offsets: &self.offsets,
             seq_lens: &self.seq_lens,
         }
+    }
+
+    /// Return the forward and reverse-complement slices for a target entry.
+    ///
+    /// Block layout: `fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap`.
+    #[inline]
+    pub fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
+        let seq_len = self.seq_lens[target_idx];
+        let offset = self.offsets[target_idx];
+        let combined_seq = self.combined_seq();
+        let t_fwd = &combined_seq[offset..offset + seq_len];
+        let t_rc = &combined_seq[offset + seq_len + 1..offset + 2 * seq_len + 1];
+        (t_fwd, t_rc, seq_len)
+    }
+
+    /// Map a local position within a target block to strand and view-normalized start.
+    ///
+    /// Block layout: `fwd_comp[seq_len] + Gap + rc[seq_len] + Gap`.
+    /// Returns `None` if the position falls on a Gap or the seed overflows the block.
+    #[inline]
+    pub fn map_target_pos(
+        local_pos: usize,
+        seq_len: usize,
+        seed_len: usize,
+    ) -> Option<(Strand, usize)> {
+        if local_pos < seq_len {
+            if local_pos + seed_len > seq_len {
+                return None;
+            }
+            return Some((Strand::Reverse, seq_len - (local_pos + seed_len)));
+        }
+
+        let rc_start = seq_len + 1;
+        let rc_end = rc_start + seq_len;
+        if local_pos >= rc_start && local_pos < rc_end {
+            let rc_pos = local_pos - rc_start;
+            if rc_pos + seed_len > seq_len {
+                return None;
+            }
+            return Some((Strand::Forward, seq_len - (rc_pos + seed_len)));
+        }
+
+        None
     }
 
     /// Get per-target sequence slices for output/extension.
@@ -568,23 +555,23 @@ mod tests {
 
     #[test]
     fn map_target_pos_normalizes_into_strand_view() {
-        use super::TargetView;
+        use super::TargetStore;
         use crate::types::Strand;
 
         let seq_len = 5;
         let seed_len = 2;
 
         assert_eq!(
-            TargetView::map_target_pos(1, seq_len, seed_len),
+            TargetStore::map_target_pos(1, seq_len, seed_len),
             Some((Strand::Reverse, 2))
         );
         assert_eq!(
-            TargetView::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
+            TargetStore::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
             Some((Strand::Forward, 1))
         );
-        assert_eq!(TargetView::map_target_pos(seq_len, seq_len, seed_len), None);
+        assert_eq!(TargetStore::map_target_pos(seq_len, seq_len, seed_len), None);
         assert_eq!(
-            TargetView::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
+            TargetStore::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
             None
         );
     }

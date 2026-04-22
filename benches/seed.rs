@@ -2,12 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use risearch::config::{
-    ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
-    OutputFormat, ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
-};
+use risearch::config::{MismatchSpec, SeedConfig, SeedSpec};
 use risearch::registry::QueryRegistry;
-use risearch::search::{run_search, run_search_in_memory};
 use risearch::seed::{collect, SeedHit};
 use risearch::seq::Sequence;
 use risearch::types::Base;
@@ -106,46 +102,16 @@ fn build_production_dataset(
     }
 }
 
-fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
-    SearchConfig {
-        seed: seed_config.clone(),
-        score: ScoreConfig {
-            matrix: Matrix::T04,
-            penalty: 0.0,
-            matrix2: None,
-            matpath: None,
-            temperature: None,
-            weights: None,
-        },
-        extend: ExtendConfig {
-            max_extension: 0,
-            band: None,
-        },
-        filter: FilterConfig {
-            delta_g: f64::NEG_INFINITY,
-            seed_energy: 0.0,
-            no_max_prune: false,
-        },
-        output: OutputConfig {
-            format: OutputFormat::Minimal,
-            compress: OutputCompression::None,
-            multifile: false,
-        },
-        one_vs_one: false,
-        three_prime_match: None,
-        five_prime_match: None,
-    }
-}
-
 fn seed_count(groups: &[(usize, Vec<SeedHit>)]) -> usize {
     groups.iter().map(|(_, seeds)| seeds.len()).sum()
 }
 
 fn bench_seed_exact(c: &mut Criterion) {
-    let mut group = c.benchmark_group("seed_exact");
+    let mut group = c.benchmark_group("exact_target_scaling");
     let seed_config =
         SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::exact(), false);
 
+    // Isolate exact seeding cost as target corpus size grows.
     for target_len in [1_000, 10_000, 100_000] {
         let dataset = build_production_dataset(1, 22, target_len, &seed_config);
         group.bench_with_input(
@@ -168,8 +134,9 @@ fn bench_seed_exact(c: &mut Criterion) {
 }
 
 fn bench_seed_mismatch(c: &mut Criterion) {
-    let mut group = c.benchmark_group("seed_mismatch");
+    let mut group = c.benchmark_group("mismatch");
 
+    // Measure how allowing more mismatches changes seed enumeration cost.
     for max_mm in [1, 2, 3, 4, 5] {
         let seed_config = SeedConfig::with_wobble(
             SeedSpec::LengthOnly(7),
@@ -194,9 +161,11 @@ fn bench_seed_mismatch(c: &mut Criterion) {
 }
 
 fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
-    let mut group = c.benchmark_group("seed_prod_shaped_mismatch");
+    let mut group = c.benchmark_group("prod_shaped_mismatch");
     group.sample_size(10);
 
+    // Approximate the common production-shaped case: multiple short queries
+    // against one large target corpus with wobble-enabled mismatch seeding.
     for max_mm in [1, 2, 3, 4, 5] {
         let seed_config = SeedConfig::with_wobble(
             SeedSpec::LengthOnly(7),
@@ -205,7 +174,7 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
         );
         let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
 
-        group.bench_with_input(BenchmarkId::new("10q_x_100k", max_mm), &max_mm, |b, _| {
+        group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
             b.iter(|| {
                 let seeds = collect(
                     black_box(&dataset.queries),
@@ -221,12 +190,14 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
 }
 
 fn bench_seed_query_scaling(c: &mut Criterion) {
-    let mut group = c.benchmark_group("seed_query_scaling");
+    let mut group = c.benchmark_group("query_scaling");
     group.sample_size(10);
 
     let seed_config =
         SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
 
+    // Hold target size fixed and measure how global query traversal scales
+    // as more queries are packed into the combined query corpus.
     for query_count in [1, 10, 50, 100] {
         let dataset = build_production_dataset(query_count, 22, 100_000, &seed_config);
         group.bench_with_input(
@@ -248,60 +219,11 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_seed_prod_shaped_pipeline(c: &mut Criterion) {
-    let mut group = c.benchmark_group("seed_prod_shaped_search");
-    group.sample_size(10);
-
-    let seed_config =
-        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
-    let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
-    let args = make_search_config(&seed_config);
-    let output_path = dataset._tmpdir.path().join("search.out");
-
-    group.bench_function("collect_10q_x_100k", |b| {
-        b.iter(|| {
-            let seeds = collect(
-                black_box(&dataset.queries),
-                black_box(&dataset.store),
-                black_box(&seed_config),
-            );
-            black_box(seed_count(&seeds));
-        });
-    });
-
-    group.bench_function("run_search_in_memory_10q_x_100k", |b| {
-        b.iter(|| {
-            let hits = run_search_in_memory(
-                black_box(&dataset.queries),
-                black_box(&dataset.store),
-                black_box(&args),
-            )
-            .expect("run search in memory");
-            black_box(hits.len());
-        });
-    });
-
-    group.bench_function("run_search_10q_x_100k", |b| {
-        b.iter(|| {
-            run_search(
-                black_box(&dataset.queries),
-                black_box(&dataset.store),
-                black_box(&args),
-                black_box(output_path.as_path()),
-            )
-            .expect("run search");
-        });
-    });
-
-    group.finish();
-}
-
 criterion_group!(
     benches,
     bench_seed_exact,
     bench_seed_mismatch,
     bench_seed_prod_shaped_mismatch,
-    bench_seed_query_scaling,
-    bench_seed_prod_shaped_pipeline
+    bench_seed_query_scaling
 );
 criterion_main!(benches);

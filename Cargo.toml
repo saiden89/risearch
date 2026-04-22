@@ -43,13 +43,16 @@ tabled = "0.18"
 tempfile = "3.24.0"
 rstest = "0.24"
 
+[[bench]]
+name = "format"
+harness = false
 
 [[bench]]
 name = "dp"
 harness = false
 
 [[bench]]
-name = "output"
+name = "search"
 harness = false
 
 [[bench]]
@@ -57,7 +60,7 @@ name = "seed"
 harness = false
 
 [[bench]]
-name = "format"
+name = "output"
 harness = false
 
 [profile.profiling]

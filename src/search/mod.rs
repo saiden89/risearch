@@ -61,11 +61,9 @@ pub fn run_search_in_memory(
             let query = &ctx.queries.entries()[qi];
             let query_seq = query.sequence();
             let seed_interval = query.seed_interval.clone();
-            let target = ctx.store.view();
-
             seeds.into_iter().filter_map(move |seed| {
                 let target_idx = seed.target_idx;
-                let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
+                let (t_fwd, t_rc, target_len) = ctx.store.target_slices(target_idx);
                 let target_trans = match seed.strand {
                     Strand::Forward => t_fwd,
                     Strand::Reverse => t_rc,
@@ -218,7 +216,6 @@ impl SearchWorker {
         let query_name = ctx.queries.get_name(query_idx);
         let query_seq = query.sequence();
         let seed_interval = query.seed_interval.clone();
-        let target = ctx.store.view();
         let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
         let mut chunks = Vec::new();
         let mut local_hits = 0usize;
@@ -227,7 +224,7 @@ impl SearchWorker {
 
         for seed in seeds {
             let target_idx = seed.target_idx;
-            let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
+            let (t_fwd, t_rc, target_len) = ctx.store.target_slices(target_idx);
             let target_trans = match seed.strand {
                 Strand::Forward => t_fwd,
                 Strand::Reverse => t_rc,
