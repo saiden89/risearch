@@ -27,13 +27,13 @@ use super::{BestScore, DpGrid, DpView, ExtendDir, MAX_EXT};
 /// Precomputed transition tables for the Gotoh 3-state DP.
 ///
 /// Direction-agnostic: each instance corresponds to one `ScoringModel` orientation.
-pub struct Gotoh {
+pub(crate) struct Gotoh {
     pub(crate) model: ScoringModel,
 }
 
 impl Gotoh {
     /// Materialize all transition tables from a `ScoringModel`.
-    pub fn new(table: &ScoringModel) -> Self {
+    pub(crate) fn new(table: &ScoringModel) -> Self {
         Self {
             model: table.clone(),
         }
@@ -99,7 +99,7 @@ impl Gotoh {
 
     #[cfg_attr(feature = "prof", inline(never))]
     /// Run DP forward pass over `view`, reusing the caller-provided grid.
-    pub fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> BestScore {
+    pub(crate) fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> BestScore {
         let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);

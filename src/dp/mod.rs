@@ -2,7 +2,7 @@ use crate::config::{ExtendConfig, ScoreConfig};
 use crate::types::Base;
 
 mod core;
-pub mod gotoh;
+pub(crate) mod gotoh;
 mod init;
 use std::cmp::max;
 
@@ -12,19 +12,19 @@ const MAX_EXT: usize = 256;
 
 /// DP runtime configuration derived from high-level search configs.
 #[derive(Clone, Copy, Debug)]
-pub struct DpConfig {
+pub(crate) struct DpConfig {
     max_extension: usize,
     penalty_raw: i32,
 }
 
 impl DpConfig {
     #[inline(always)]
-    pub const fn max_extension(self) -> usize {
+    pub(crate) const fn max_extension(self) -> usize {
         self.max_extension
     }
 
     #[inline(always)]
-    pub const fn penalty_raw(self) -> i32 {
+    pub(crate) const fn penalty_raw(self) -> i32 {
         self.penalty_raw
     }
 }
@@ -44,7 +44,7 @@ impl From<(&ScoreConfig, &ExtendConfig)> for DpConfig {
 /// only affects sequence coordinate arithmetic. Stacking order is resolved
 /// by the direction-canonical `Gotoh` tables.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ExtendDir {
+pub(crate) enum ExtendDir {
     Left,
     Right,
 }
@@ -68,19 +68,19 @@ impl std::fmt::Display for ExtendDir {
 /// It defines the extension window and how DP offsets map back to semantic
 /// query/target bases. Scoring-specific lookup indices are materialized once
 /// in `Gotoh::extend`.
-pub struct DpView<'a> {
+pub(crate) struct DpView<'a> {
     query: &'a [Base],
     target: &'a [Base],
     q_anchor: usize,
     t_anchor: usize,
-    pub(super) dir: ExtendDir,
-    pub q_len: usize,
-    pub t_len: usize,
+    dir: ExtendDir,
+    q_len: usize,
+    t_len: usize,
 }
 
 impl<'a> DpView<'a> {
     /// Create a directional extension view anchored at a seed boundary.
-    pub fn new(
+    pub(crate) fn new(
         query: &'a [Base],
         target: &'a [Base],
         q_anchor: usize,
@@ -103,6 +103,26 @@ impl<'a> DpView<'a> {
                 ExtendDir::Right => (t_anchor + 1).min(max_ext),
             },
         }
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.q_len == 0 || self.t_len == 0
+    }
+
+    #[inline(always)]
+    pub(crate) fn dir(&self) -> ExtendDir {
+        self.dir
+    }
+
+    #[inline(always)]
+    pub(crate) fn q_anchor_base(&self) -> Base {
+        unsafe { *self.query.get_unchecked(self.q_anchor) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn t_anchor_base(&self) -> Base {
+        unsafe { *self.target.get_unchecked(self.t_anchor) }
     }
 
     /// Get query base at DP position i (0 = anchor).
@@ -137,7 +157,12 @@ impl<'a> DpView<'a> {
 /// Must satisfy two invariants (enforced by compile-time assert below):
 /// 1. Invalid scores can never drift into valid range through accumulated adds
 /// 2. No i32 underflow from accumulated negative energy
-pub(crate) const NEG_INF: i32 = -1_000_000_000;
+const NEG_INF: i32 = -1_000_000_000;
+
+#[inline(always)]
+pub(crate) fn is_valid_score(score: i32) -> bool {
+    score > NEG_INF
+}
 
 /// Conservative upper bound on |energy| from a single scoring table lookup.
 /// Source tables are i16 (max 32767); penalty adds modest overhead.
@@ -165,10 +190,10 @@ const _: () = {
 
 /// Tracks the best scoring position found during DP extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BestScore {
-    pub energy: i32,
-    pub q_idx: usize,
-    pub t_idx: usize,
+pub(crate) struct BestScore {
+    pub(crate) energy: i32,
+    pub(crate) q_idx: usize,
+    pub(crate) t_idx: usize,
 }
 
 impl BestScore {
@@ -209,10 +234,10 @@ pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
 /// so interleaving them maximizes cache line utilization.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) struct DpCell {
-    pub(crate) m: i32,  // Match/mismatch state
-    pub(crate) bq: i32, // Query bulge (gap in target)
-    pub(crate) bt: i32, // Target bulge (gap in query)
+pub(super) struct DpCell {
+    pub(super) m: i32,  // Match/mismatch state
+    pub(super) bq: i32, // Query bulge (gap in target)
+    pub(super) bt: i32, // Target bulge (gap in query)
 }
 
 impl DpCell {
@@ -227,13 +252,13 @@ impl DpCell {
 ///
 /// Row-major layout: cell (i, j) is at index `i * width + j`.
 /// Reused across extensions (resized, not reallocated).
-pub struct DpGrid {
+pub(crate) struct DpGrid {
     data: Vec<DpCell>,
     width: usize,
 }
 
 impl DpGrid {
-    pub fn new(max_extension: usize) -> Self {
+    pub(crate) fn new(max_extension: usize) -> Self {
         let side = max_extension.min(MAX_EXT).saturating_add(1).max(1);
         Self {
             data: vec![DpCell::EMPTY; side * side],
@@ -253,7 +278,7 @@ impl DpGrid {
     }
 
     #[inline(always)]
-    pub(crate) fn get(&self, i: usize, j: usize) -> DpCell {
+    pub(super) fn get(&self, i: usize, j: usize) -> DpCell {
         let idx = i * self.width + j;
         debug_assert!(
             idx < self.data.len(),

@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{OutputFormat, SearchConfig};
-use crate::dp::{DpConfig, ExtendDir};
+use crate::dp::{DpConfig, DpView, ExtendDir};
 use crate::dsm::ScoringModel;
 use crate::index::store::TargetStore;
 use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
@@ -356,22 +356,26 @@ fn build_hit_from_seed(
     let seed_e = worker
         .model
         .energy(query_bases, target_trans, q_start, t_start, len);
-    let left = worker.extension.extend(
+    let max_ext = DpConfig::from((&opts.score, &opts.extend)).max_extension();
+    let view_left = DpView::new(
         query_bases,
         target_trans,
         q_start,
         t_match_end,
         ExtendDir::Left,
-        include_alignment,
+        max_ext,
     );
-    let right = worker.extension.extend(
+    let left = worker.extension.extend(&view_left, include_alignment);
+
+    let view_right = DpView::new(
         query_bases,
         target_trans,
         q_start + len - 1,
         t_start,
         ExtendDir::Right,
-        include_alignment,
+        max_ext,
     );
+    let right = worker.extension.extend(&view_right, include_alignment);
     let penalty = opts.score.penalty_raw();
     let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i32;
     let energy = Energy::from(seed_e + left.energy + right.energy + nt_count * penalty);

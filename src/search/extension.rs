@@ -2,7 +2,7 @@ use smallvec::SmallVec;
 
 use crate::alignment::PairClass;
 use crate::dp::gotoh::Gotoh;
-use crate::dp::{DpGrid, DpView, ExtendDir, NEG_INF};
+use crate::dp::{is_valid_score, DpGrid, DpView, ExtendDir};
 use crate::dsm::ScoringModel;
 use crate::types::Base;
 
@@ -17,26 +17,23 @@ enum State {
 
 #[inline(always)]
 fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
-    pred > NEG_INF && val == pred + energy
+    is_valid_score(pred) && val == pred + energy
 }
 
 /// Per-worker extension engine. Each worker owns one; `&mut` is safe because
 /// only `grid` is mutated — the rest is read-only extension state.
 pub(super) struct ExtensionEngine {
     grid: DpGrid,
-    max_extension: usize,
     gotoh_left: Gotoh,
     gotoh_right: Gotoh,
 }
 
 impl ExtensionEngine {
     pub(super) fn new(max_extension: usize, model: &ScoringModel) -> Self {
-        let left_model = model.transpose();
         let gotoh_right = Gotoh::new(model);
-        let gotoh_left = Gotoh::new(&left_model);
+        let gotoh_left = Gotoh::new(&model.transpose());
         Self {
             grid: DpGrid::new(max_extension),
-            max_extension,
             gotoh_left,
             gotoh_right,
         }
@@ -44,34 +41,29 @@ impl ExtensionEngine {
 
     pub(super) fn extend(
         &mut self,
-        query: &[Base],
-        target: &[Base],
-        q_anchor: usize,
-        t_anchor: usize,
-        dir: ExtendDir,
+        view: &DpView<'_>,
         include_alignment: bool,
     ) -> ExtensionResult {
-        let gotoh = match dir {
+        let gotoh = match view.dir() {
             ExtendDir::Left => &self.gotoh_left,
             ExtendDir::Right => &self.gotoh_right,
         };
-        if self.max_extension == 0 {
+        if view.is_empty() {
             return ExtensionResult {
-                energy: gotoh.terminal_bases(query[q_anchor], target[t_anchor]),
+                energy: gotoh.terminal_bases(view.q_anchor_base(), view.t_anchor_base()),
                 q_ext: 0,
                 t_ext: 0,
                 pairs: None,
             };
         }
 
-        let view = DpView::new(query, target, q_anchor, t_anchor, dir, self.max_extension);
-        let result = gotoh.extend(&view, &mut self.grid);
+        let result = gotoh.extend(view, &mut self.grid);
         ExtensionResult {
             energy: result.energy,
             q_ext: result.q_idx,
             t_ext: result.t_idx,
             pairs: (include_alignment && (result.q_idx > 0 || result.t_idx > 0))
-                .then(|| self.traceback(gotoh, &view, result.q_idx, result.t_idx)),
+                .then(|| self.traceback(gotoh, view, result.q_idx, result.t_idx)),
         }
     }
 
