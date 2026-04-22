@@ -7,7 +7,7 @@
 use crate::config::SeedConfig;
 use crate::index::store::{TargetStore, TargetView};
 use crate::registry::QueryRegistry;
-use crate::types::{Base, SeedLen, TargetId};
+use crate::types::Base;
 use std::ops::Range;
 
 use super::SeedHit;
@@ -51,7 +51,7 @@ pub fn collect(
     queries: &QueryRegistry,
     targets: &TargetStore,
     config: &SeedConfig,
-) -> Vec<(u32, Vec<SeedHit>)> {
+) -> Vec<(usize, Vec<SeedHit>)> {
     let qview = queries.view();
     let target = targets.view();
     if qview.len == 0 {
@@ -83,19 +83,15 @@ pub fn collect(
         min_suffix: config.mismatch.min_suffix_matches,
         on_match: &mut |m| {
             let seed_len = m.seed_len;
-            let Some(seed_len_typed) = SeedLen::new(seed_len) else {
-                return;
-            };
-
             for &q_sa_pos in &qview.combined_sa[m.query_interval.start..m.query_interval.end] {
                 let Some((qi, q_local_pos)) = remap(qview.offsets, q_sa_pos as usize) else {
                     continue;
                 };
-                if q_local_pos + seed_len > qview.seed_seq_lens[qi] as usize {
+                if q_local_pos + seed_len > qview.seed_seq_lens[qi] {
                     continue;
                 }
 
-                let query = queries.get(qi as u32);
+                let query = queries.get(qi);
                 if seed_len < query.min_seed_len || seed_len > query.max_seed_len {
                     continue;
                 }
@@ -109,20 +105,18 @@ pub fn collect(
                     let Some((ti, t_local_pos)) = remap(target.offsets, t_sa_pos as usize) else {
                         continue;
                     };
-                    let Some((strand, target_start)) = TargetView::map_target_pos(
-                        t_local_pos,
-                        target.seq_lens[ti] as usize,
-                        seed_len,
-                    ) else {
+                    let Some((strand, target_start)) =
+                        TargetView::map_target_pos(t_local_pos, target.seq_lens[ti], seed_len)
+                    else {
                         continue;
                     };
 
                     seeds_by_query[qi].push(SeedHit {
-                        query_idx: qi as u32,
+                        query_idx: qi,
                         query_start: q_pos,
-                        target_id: TargetId(ti as u32),
+                        target_idx: ti,
                         target_start,
-                        len: seed_len_typed,
+                        len: seed_len,
                         strand,
                     });
                 }
@@ -141,7 +135,7 @@ pub fn collect(
     seeds_by_query
         .into_iter()
         .enumerate()
-        .filter_map(|(qi, seeds)| (!seeds.is_empty()).then_some((qi as u32, seeds)))
+        .filter_map(|(qi, seeds)| (!seeds.is_empty()).then_some((qi, seeds)))
         .collect()
 }
 
@@ -157,11 +151,11 @@ fn has_n_in_range(n_prefix: &[u32], start: usize, len: usize) -> bool {
 /// Remap a global SA position to an index via binary search on an offset table.
 /// Returns `None` if the position falls before the first entry.
 #[inline]
-fn remap(offsets: &[u64], global_pos: usize) -> Option<(usize, usize)> {
+fn remap(offsets: &[usize], global_pos: usize) -> Option<(usize, usize)> {
     let idx = offsets
-        .partition_point(|&o| o <= global_pos as u64)
+        .partition_point(|&o| o <= global_pos)
         .checked_sub(1)?;
-    Some((idx, global_pos - offsets[idx] as usize))
+    Some((idx, global_pos - offsets[idx]))
 }
 
 struct SeedingContext<'a, F: FnMut(SeedMatch)> {

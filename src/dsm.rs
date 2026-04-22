@@ -59,7 +59,14 @@ impl ScoringModel {
                         } else if q2 == 0 || t2_orig == 0 {
                             1
                         } else if q1 == 0 && t1_orig == 0 {
-                            if unsafe { Base::from_idx(q2) }.pair_type(unsafe { Base::from_idx(t2_orig) }.complement()).is_match(true) { 2 } else { 0 }
+                            if unsafe { Base::from_idx(q2) }
+                                .pair_type(unsafe { Base::from_idx(t2_orig) }.complement())
+                                .is_match(true)
+                            {
+                                2
+                            } else {
+                                0
+                            }
                         } else {
                             2
                         };
@@ -756,8 +763,6 @@ const T99: DsmTable = [
         ],
     ],
 ];
-
-
 
 #[cfg(test)]
 mod tests {

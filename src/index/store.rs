@@ -41,9 +41,9 @@ pub struct TargetStore {
     mmap: Mmap,
     names: Vec<String>,
     /// Start offset of each target block in global combined_seq.
-    offsets: Vec<u64>,
+    offsets: Vec<usize>,
     /// Original forward sequence length of each target.
-    seq_lens: Vec<u32>,
+    seq_lens: Vec<usize>,
     /// Byte offset into mmap where the global combined_seq begins.
     seq_data_offset: usize,
     /// Total number of Base entries in global combined_seq (including padding).
@@ -64,10 +64,10 @@ pub struct TargetView<'a> {
     pub sa_real_len: usize,
     /// Start offset of each target block in the global combined_seq.
     /// Length = target_count.
-    pub offsets: &'a [u64],
+    pub offsets: &'a [usize],
     /// Original forward sequence length of each target.
     /// Length = target_count.
-    pub seq_lens: &'a [u32],
+    pub seq_lens: &'a [usize],
 }
 
 impl<'a> TargetView<'a> {
@@ -76,8 +76,8 @@ impl<'a> TargetView<'a> {
     /// Layout within global: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap.
     #[inline]
     pub fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
-        let seq_len = self.seq_lens[target_idx] as usize;
-        let offset = self.offsets[target_idx] as usize;
+        let seq_len = self.seq_lens[target_idx];
+        let offset = self.offsets[target_idx];
         let t_fwd = &self.combined_seq[offset..offset + seq_len];
         let t_rc = &self.combined_seq[offset + seq_len + 1..offset + 2 * seq_len + 1];
         (t_fwd, t_rc, seq_len)
@@ -252,9 +252,11 @@ impl TargetStore {
                 u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().expect("name_len"))
                     as usize;
             let seq_len =
-                u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"));
+                u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"))
+                    as usize;
             let global_offset =
-                u64::from_le_bytes(bytes[cursor + 8..cursor + 16].try_into().expect("offset"));
+                u64::from_le_bytes(bytes[cursor + 8..cursor + 16].try_into().expect("offset"))
+                    as usize;
             cursor += META_ENTRY_FIXED_BYTES;
 
             let name_end = cursor
@@ -339,12 +341,12 @@ impl TargetStore {
     }
 
     #[inline]
-    pub fn get_name(&self, idx: u32) -> &str {
-        &self.names[idx as usize]
+    pub fn get_name(&self, idx: usize) -> &str {
+        &self.names[idx]
     }
 
-    pub fn index_of(&self, name: &str) -> Option<u32> {
-        self.names.iter().position(|n| n == name).map(|i| i as u32)
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.names.iter().position(|n| n == name)
     }
 
     /// Get a target-side view of the combined SA and sequence for seed search.
@@ -369,8 +371,8 @@ impl TargetStore {
         }
 
         let name = self.names[idx].as_str();
-        let seq_len = self.seq_lens[idx] as usize;
-        let offset = self.offsets[idx] as usize;
+        let seq_len = self.seq_lens[idx];
+        let offset = self.offsets[idx];
         let combined_seq = self.combined_seq();
 
         // Layout within global: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
@@ -605,7 +607,7 @@ mod tests {
 
         // Verify offsets are contiguous: offset[i+1] = offset[i] + 2*seq_len[i] + 2
         for i in 0..store.len() - 1 {
-            let expected_next = target.offsets[i] + 2 * target.seq_lens[i] as u64 + 2;
+            let expected_next = target.offsets[i] + 2 * target.seq_lens[i] + 2;
             assert_eq!(
                 target.offsets[i + 1],
                 expected_next,

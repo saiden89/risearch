@@ -186,7 +186,7 @@ pub(crate) fn build_multifile_paths(
     let mut out: Vec<PathBuf> = Vec::with_capacity(queries.len());
 
     for query_idx in 0..queries.len() {
-        let name = queries.get_name(query_idx as u32);
+        let name = queries.get_name(query_idx);
         let stem_raw = sanitize_filename(name);
         let stem = unique_filename_stem(&stem_raw, &mut used_stems);
         out.push(output_dir.join(format!("{stem}{ext}")));

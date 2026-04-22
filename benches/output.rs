@@ -80,7 +80,7 @@ fn bench_get_name_microbench(c: &mut Criterion) {
                     // Simulate looking up names for many hits
                     let mut sum = 0usize;
                     for idx in 0..10000 {
-                        let name = registry.get_name((idx % n) as u32);
+                        let name = registry.get_name(idx % n);
                         sum += name.len();
                     }
                     black_box(sum);
@@ -101,8 +101,8 @@ fn bench_simulated_output(c: &mut Criterion) {
         let target_name_registry = setup_registry(100);
 
         // Simulate hit indices
-        let hit_indices: Vec<(u32, u32)> = (0..num_hits)
-            .map(|i| ((i % 100) as u32, ((i * 7) % 100) as u32))
+        let hit_indices: Vec<(usize, usize)> = (0..num_hits)
+            .map(|i| ((i % 100), ((i * 7) % 100)))
             .collect();
 
         group.bench_with_input(BenchmarkId::from_parameter(num_hits), &num_hits, |b, _| {

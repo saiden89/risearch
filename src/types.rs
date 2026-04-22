@@ -139,36 +139,6 @@ pub const BASE_COUNT: usize = 6;
 /// Constant for Gap index used in array indexing and DSM lookups.
 pub const GAP: usize = Base::Gap as usize;
 
-// =============================================================================
-// IDENTIFIERS / UNITS
-// =============================================================================
-
-/// Index into query registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub struct QueryId(pub u32);
-
-/// Index into target registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub struct TargetId(pub u32);
-
-/// Seed length (always positive by construction).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SeedLen(u16);
-
-impl SeedLen {
-    pub fn new(len: usize) -> Option<Self> {
-        let len_u16 = u16::try_from(len).ok()?;
-        if len_u16 == 0 {
-            return None;
-        }
-        Some(Self(len_u16))
-    }
-
-    pub const fn get(self) -> usize {
-        self.0 as usize
-    }
-}
-
 /// Strand direction for search
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

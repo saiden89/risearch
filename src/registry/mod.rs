@@ -35,8 +35,8 @@ impl<T> Registry<T> {
         self.entries.is_empty()
     }
 
-    pub fn get(&self, idx: u32) -> &T {
-        &self.entries[idx as usize]
+    pub fn get(&self, idx: usize) -> &T {
+        &self.entries[idx]
     }
 
     pub fn entries(&self) -> &[T] {
@@ -55,26 +55,23 @@ impl<T: RegistryEntry> Registry<T> {
     /// Caller must ensure idx is valid (< number of entries).
     /// In practice, idx comes from hit.query_idx which is always valid.
     #[inline(always)]
-    pub fn get_name(&self, idx: u32) -> &str {
+    pub fn get_name(&self, idx: usize) -> &str {
         debug_assert!(
-            (idx as usize) < self.entries.len(),
+            idx < self.entries.len(),
             "Registry index out of bounds: {} >= {}",
             idx,
             self.entries.len()
         );
         // SAFETY: idx comes from generated hits, guaranteed to be valid
-        unsafe { self.entries.get_unchecked(idx as usize).name() }
+        unsafe { self.entries.get_unchecked(idx).name() }
     }
 
-    pub fn index_of(&self, name: &str) -> Option<u32> {
-        self.entries
-            .iter()
-            .position(|e| e.name() == name)
-            .map(|i| i as u32)
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.entries.iter().position(|e| e.name() == name)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u32, &T)> {
-        self.entries.iter().enumerate().map(|(i, e)| (i as u32, e))
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
+        self.entries.iter().enumerate()
     }
 }
 
@@ -179,8 +176,8 @@ pub struct QueryView<'a> {
     pub combined_seed_seq: &'a [Base],
     pub combined_sa: &'a [u64],
     pub len: usize,
-    pub offsets: &'a [u64],
-    pub seed_seq_lens: &'a [u32],
+    pub offsets: &'a [usize],
+    pub seed_seq_lens: &'a [usize],
 }
 
 /// Registry of queries with a combined suffix array for efficient seed search.
@@ -197,9 +194,9 @@ pub struct QueryRegistry {
     /// Number of real SA entries (excluding padding).
     len: usize,
     /// Start offset of each query's seed sequence in combined_seed_seq.
-    offsets: Vec<u64>,
+    offsets: Vec<usize>,
     /// Length of each query's seed sequence.
-    seed_seq_lens: Vec<u32>,
+    seed_seq_lens: Vec<usize>,
 }
 
 impl QueryRegistry {
@@ -211,7 +208,7 @@ impl QueryRegistry {
         self.inner.is_empty()
     }
 
-    pub fn get(&self, idx: u32) -> &Query {
+    pub fn get(&self, idx: usize) -> &Query {
         self.inner.get(idx)
     }
 
@@ -219,15 +216,15 @@ impl QueryRegistry {
         self.inner.entries()
     }
 
-    pub fn get_name(&self, idx: u32) -> &str {
+    pub fn get_name(&self, idx: usize) -> &str {
         self.inner.get_name(idx)
     }
 
-    pub fn index_of(&self, name: &str) -> Option<u32> {
+    pub fn index_of(&self, name: &str) -> Option<usize> {
         self.inner.index_of(name)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u32, &Query)> {
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Query)> {
         self.inner.iter()
     }
 
@@ -337,12 +334,12 @@ impl QueryRegistry {
 
         // Build combined seed sequence and SA (mirrors TargetStore::build_from_fasta).
         let mut combined_seed_seq: Vec<Base> = Vec::new();
-        let mut offsets: Vec<u64> = Vec::with_capacity(entries.len());
-        let mut seed_seq_lens: Vec<u32> = Vec::with_capacity(entries.len());
+        let mut offsets: Vec<usize> = Vec::with_capacity(entries.len());
+        let mut seed_seq_lens: Vec<usize> = Vec::with_capacity(entries.len());
 
         for query in &entries {
-            offsets.push(combined_seed_seq.len() as u64);
-            seed_seq_lens.push(query.seed_sequence().len() as u32);
+            offsets.push(combined_seed_seq.len());
+            seed_seq_lens.push(query.seed_sequence().len());
             combined_seed_seq.extend_from_slice(query.seed_sequence());
             combined_seed_seq.push(Base::Gap);
         }
@@ -392,7 +389,7 @@ mod tests {
         let r2 = QueryRegistry::from_fastas(&[f.path()], &cfg).unwrap();
 
         assert_eq!(r1.len(), r2.len());
-        for i in 0..r1.len() as u32 {
+        for i in 0..r1.len() {
             assert_eq!(r1.get_name(i), r2.get_name(i));
         }
     }
@@ -406,7 +403,7 @@ mod tests {
         let registry = QueryRegistry::from_fastas(&[f1.path(), f2.path()], &cfg).unwrap();
 
         assert_eq!(registry.len(), 2);
-        let names: Vec<&str> = (0..2u32).map(|i| registry.get_name(i)).collect();
+        let names: Vec<&str> = (0..2).map(|i| registry.get_name(i)).collect();
         assert!(names.contains(&"seq1") && names.contains(&"seq2"));
     }
 

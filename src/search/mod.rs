@@ -30,8 +30,8 @@ use crate::types::{Base, Energy, Strand};
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
-    pub query_idx: u32,
-    pub target_idx: u32,
+    pub query_idx: usize,
+    pub target_idx: usize,
     pub q_start: usize,
     pub q_end: usize,
     pub t_start: usize,
@@ -58,13 +58,13 @@ pub fn run_search_in_memory(
         .into_par_iter()
         .flat_map_iter(|(qi, seeds)| {
             let mut worker = SearchWorker::new(ctx.opts);
-            let query = &ctx.queries.entries()[qi as usize];
+            let query = &ctx.queries.entries()[qi];
             let query_seq = query.sequence();
             let seed_interval = query.seed_interval.clone();
             let target = ctx.store.view();
 
             seeds.into_iter().filter_map(move |seed| {
-                let target_idx = seed.target_id.0 as usize;
+                let target_idx = seed.target_idx;
                 let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
                 let target_trans = match seed.strand {
                     Strand::Forward => t_fwd,
@@ -122,7 +122,7 @@ pub fn run_search(
             |(worker, fmt), (qi, seeds)| -> Result<()> {
                 let (emitted, chunks) = process_query_seeds(&ctx, qi, &seeds, worker, fmt)?;
                 if !chunks.is_empty() {
-                    let mut w = OutputWriter::new(&ctx.opts.output, &paths[qi as usize])?;
+                    let mut w = OutputWriter::new(&ctx.opts.output, &paths[qi])?;
                     write_chunks(&mut w, &chunks)?;
                     w.flush_all()?;
                 }
@@ -218,12 +218,12 @@ fn write_chunks(writer: &mut OutputWriter, chunks: &[OutputChunk]) -> Result<()>
 
 fn process_query_seeds(
     ctx: &SearchContext<'_>,
-    query_idx: u32,
+    query_idx: usize,
     seeds: &[SeedHit],
     worker: &mut SearchWorker,
     format: &mut HitFormatter,
 ) -> Result<(usize, Vec<OutputChunk>)> {
-    let query = &ctx.queries.entries()[query_idx as usize];
+    let query = &ctx.queries.entries()[query_idx];
     let query_name = ctx.queries.get_name(query_idx);
     let query_seq = query.sequence();
     let seed_interval = query.seed_interval.clone();
@@ -235,7 +235,7 @@ fn process_query_seeds(
     let mut cached_t_name = None;
 
     for seed in seeds {
-        let target_idx = seed.target_id.0 as usize;
+        let target_idx = seed.target_idx;
         let (t_fwd, t_rc, target_len) = target.target_slices(target_idx);
         let target_trans = match seed.strand {
             Strand::Forward => t_fwd,
@@ -297,7 +297,7 @@ fn is_maximal(
 ) -> bool {
     let q_start = seed.query_start;
     let t_start = seed.target_start;
-    let len = seed.len.get();
+    let len = seed.len;
 
     if q_start > seed_interval.start
         && t_start + len < target_trans.len()
@@ -327,7 +327,7 @@ fn is_maximal(
 fn build_hit_from_seed(
     worker: &mut SearchWorker,
     opts: &SearchConfig,
-    query_idx: u32,
+    query_idx: usize,
     query_bases: &[Base],
     seed_interval: Range<usize>,
     include_alignment: bool,
@@ -335,10 +335,10 @@ fn build_hit_from_seed(
     seed: &SeedHit,
     target_trans: &[Base],
 ) -> Option<SearchHit> {
-    debug_assert!(seed.target_start + seed.len.get() <= target_trans.len());
+    debug_assert!(seed.target_start + seed.len <= target_trans.len());
     let q_start = seed.query_start;
     let t_start = seed.target_start;
-    let len = seed.len.get();
+    let len = seed.len;
     let t_match_end = t_start + len - 1;
 
     if !opts.filter.no_max_prune
@@ -430,7 +430,7 @@ impl SearchHit {
     }
 
     fn new(
-        query_idx: u32,
+        query_idx: usize,
         query_bases: &[Base],
         target_trans: &[Base],
         seed: &SeedHit,
@@ -442,7 +442,7 @@ impl SearchHit {
     ) -> Self {
         let q_start = seed.query_start;
         let t_start = seed.target_start;
-        let len = seed.len.get();
+        let len = seed.len;
 
         let final_q_start = q_start - left.q_ext;
         let final_q_end = q_start + len - 1 + right.q_ext;
@@ -478,7 +478,7 @@ impl SearchHit {
 
         Self {
             query_idx,
-            target_idx: seed.target_id.0,
+            target_idx: seed.target_idx,
             q_start: final_q_start,
             q_end: final_q_end,
             t_start: final_t_start,

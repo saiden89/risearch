@@ -137,7 +137,7 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
     }
 }
 
-fn seed_count(groups: &[(u32, Vec<SeedHit>)]) -> usize {
+fn seed_count(groups: &[(usize, Vec<SeedHit>)]) -> usize {
     groups.iter().map(|(_, seeds)| seeds.len()).sum()
 }
 

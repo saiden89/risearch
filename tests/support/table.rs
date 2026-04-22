@@ -332,7 +332,7 @@ fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'
 }
 
 fn hit_target_bases<'a>(hit: &SearchHit, target_store: &'a TargetStore) -> &'a [Base] {
-    let t_idx = hit.target_idx as usize;
+    let t_idx = hit.target_idx;
     let (_, t_fwd, t_rc, _) = match target_store.target_seqs(t_idx) {
         Ok(s) => s,
         Err(_) => return &[],

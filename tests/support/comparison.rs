@@ -406,7 +406,7 @@ pub(crate) fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end
 }
 
 /// Check if two hits overlap in both query and target coordinates.
-/// Also requires same query_id and target_id to be meaningful.
+/// Also requires same query_idx and target_idx to be meaningful.
 pub(crate) fn hits_overlap(a: &SearchHit, b: &SearchHit) -> bool {
     a.query_idx == b.query_idx
         && a.target_idx == b.target_idx
