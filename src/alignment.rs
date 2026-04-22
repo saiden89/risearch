@@ -4,7 +4,7 @@ use crate::types::{Base, PairType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairClass {
-    Match,
+    Canonical,
     Wobble,
     Mismatch,
     TargetBulge,
@@ -18,7 +18,7 @@ impl PairClass {
             (Base::Gap, _) => Self::TargetBulge,
             (_, Base::Gap) => Self::QueryBulge,
             _ => match query.pair_type(target) {
-                PairType::Canonical => Self::Match,
+                PairType::Canonical => Self::Canonical,
                 PairType::Wobble => Self::Wobble,
                 PairType::Mismatch => Self::Mismatch,
             },
@@ -27,7 +27,7 @@ impl PairClass {
 
     pub const fn symbol(self) -> char {
         match self {
-            Self::Match => 'P',
+            Self::Canonical => 'P',
             Self::Wobble => 'W',
             Self::Mismatch => 'U',
             Self::TargetBulge => 'T',
@@ -37,7 +37,7 @@ impl PairClass {
 
     pub const fn alignment_symbol(self) -> char {
         match self {
-            Self::Match => '|',
+            Self::Canonical => '|',
             Self::Wobble => ':',
             _ => ' ',
         }
@@ -81,7 +81,7 @@ impl Alignment {
         let steps = interaction
             .chars()
             .map(|c| match c {
-                'P' => PairClass::Match,
+                'P' => PairClass::Canonical,
                 'W' => PairClass::Wobble,
                 'U' => PairClass::Mismatch,
                 'T' => PairClass::TargetBulge,

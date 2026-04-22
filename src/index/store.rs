@@ -122,7 +122,7 @@ impl TargetStore {
     /// 2. Concatenate into global combined_seq with Gap separators
     /// 3. Build single global SA
     /// 4. Write flat binary: header -> metadata -> seq -> SA
-    pub fn build_from_fasta(input: &Path, output: &Path) -> Result<()> {
+    pub fn build(input: &Path, output: &Path) -> Result<()> {
         validate_output_path(output)?;
 
         let mut seen = HashSet::new();
@@ -425,8 +425,8 @@ fn write_index_file(
     output: &Path,
     targets: &[(String, u32, u64)],
     metadata_bytes: usize,
-    combined_bases: &[Base],
-    padded_sa: &[u64],
+    seq: &[Base],
+    sa: &[u64],
 ) -> Result<()> {
     let output_name = output
         .file_name()
@@ -471,16 +471,14 @@ fn write_index_file(
     }
 
     // Global combined_seq: count[8] + data
-    let seq_byte_count = combined_bases.len() as u64;
+    let seq_byte_count = seq.len() as u64;
     writer.write_all(&seq_byte_count.to_le_bytes())?;
     // SAFETY: Base is #[repr(u8)], so &[Base] is layout-compatible with &[u8].
-    let seq_bytes = unsafe {
-        std::slice::from_raw_parts(combined_bases.as_ptr().cast::<u8>(), combined_bases.len())
-    };
+    let seq_bytes = unsafe { std::slice::from_raw_parts(seq.as_ptr().cast::<u8>(), seq.len()) };
     writer.write_all(seq_bytes)?;
 
     // Pad to 8-byte alignment before SA
-    let after_seq = aligned_cursor + 8 + combined_bases.len();
+    let after_seq = aligned_cursor + 8 + seq.len();
     let sa_start = align_up(after_seq, DATA_ALIGN);
     let sa_pad = sa_start - after_seq;
     if sa_pad > 0 {
@@ -488,10 +486,9 @@ fn write_index_file(
     }
 
     // Global combined_sa: count[8] + data
-    let sa_entry_count = padded_sa.len() as u64;
+    let sa_entry_count = sa.len() as u64;
     writer.write_all(&sa_entry_count.to_le_bytes())?;
-    let sa_bytes =
-        unsafe { std::slice::from_raw_parts(padded_sa.as_ptr().cast::<u8>(), padded_sa.len() * 8) };
+    let sa_bytes = unsafe { std::slice::from_raw_parts(sa.as_ptr().cast::<u8>(), sa.len() * 8) };
     writer.write_all(sa_bytes)?;
 
     writer.flush().context("Failed to flush index file")?;
@@ -533,7 +530,7 @@ mod tests {
         writeln!(fasta, ">chrB\nUUUGCA").unwrap();
         drop(fasta);
 
-        TargetStore::build_from_fasta(&fasta_path, &index_path).unwrap();
+        TargetStore::build(&fasta_path, &index_path).unwrap();
         let store = TargetStore::open(&index_path).unwrap();
         let expected = [("chrA", 6usize), ("chrB", 6usize)];
         assert_eq!(store.len(), expected.len());
@@ -602,7 +599,7 @@ mod tests {
         writeln!(fasta, ">t3\nAA").unwrap();
         drop(fasta);
 
-        TargetStore::build_from_fasta(&fasta_path, &index_path).unwrap();
+        TargetStore::build(&fasta_path, &index_path).unwrap();
         let store = TargetStore::open(&index_path).unwrap();
         let target = store.view();
 

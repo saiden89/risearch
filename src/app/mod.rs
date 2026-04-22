@@ -29,7 +29,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 
 fn cmd_index(input: &Path, output: &Path) -> Result<()> {
     info!("Creating index: {:?} -> {:?}", input, output);
-    TargetStore::build_from_fasta(input, output).context("Failed to write index file")?;
+    TargetStore::build(input, output).context("Failed to write index file")?;
     info!("Index saved to {:?}", output);
     Ok(())
 }

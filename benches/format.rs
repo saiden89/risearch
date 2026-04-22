@@ -10,7 +10,7 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>, Vec<Base>) {
     let t_fwd = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
     let t_rc = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
 
-    let seed: Vec<PairClass> = (0..6).map(|_| PairClass::Match).collect();
+    let seed: Vec<PairClass> = (0..6).map(|_| PairClass::Canonical).collect();
     let alignment = Alignment::new(&[], &seed, &[]);
 
     let hit = SearchHit {

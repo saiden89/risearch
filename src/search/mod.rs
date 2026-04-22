@@ -543,7 +543,7 @@ mod tests {
     fn build_store(target_fa: &std::path::Path) -> (TargetStore, tempfile::TempDir) {
         let tmpdir = tempfile::tempdir().unwrap();
         let idx = tmpdir.path().join("target.idx");
-        TargetStore::build_from_fasta(target_fa, &idx).unwrap();
+        TargetStore::build(target_fa, &idx).unwrap();
         let store = TargetStore::open(&idx).unwrap();
         (store, tmpdir)
     }

@@ -96,7 +96,7 @@ fn build_production_dataset(
     write_fasta(&targets_path, "t", &targets);
 
     let queries = QueryRegistry::from_fasta(&queries_path, seed_config).expect("query registry");
-    TargetStore::build_from_fasta(&targets_path, &index_path).expect("build target index");
+    TargetStore::build(&targets_path, &index_path).expect("build target index");
     let store = TargetStore::open(&index_path).expect("open target index");
 
     ProductionSeedDataset {

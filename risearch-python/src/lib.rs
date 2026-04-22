@@ -172,7 +172,7 @@ impl PyTargetStore {
 /// may run concurrently.
 #[pyfunction]
 fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> {
-    py.allow_threads(|| TargetStore::build_from_fasta(&fasta, &output))?;
+    py.allow_threads(|| TargetStore::build(&fasta, &output))?;
     Ok(())
 }
 

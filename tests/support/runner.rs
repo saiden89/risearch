@@ -62,7 +62,7 @@ impl RustRunner<NoIndex> {
             }
         };
 
-        risearch::TargetStore::build_from_fasta(&self.target_path, &index_path)
+        risearch::TargetStore::build(&self.target_path, &index_path)
             .expect("build store index");
         let target_store = risearch::TargetStore::open(&index_path).expect("open target store");
 
