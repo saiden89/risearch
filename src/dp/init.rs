@@ -20,7 +20,7 @@ impl Gotoh {
         t_len: usize,
         best: &mut BestScore,
     ) -> bool {
-        let ptr = grid.ptr();
+        let ptr = grid.as_mut_ptr();
         let width = grid.width();
 
         debug_assert!(width > t_len, "matrix width too small for t_len");
@@ -34,7 +34,6 @@ impl Gotoh {
             let t0 = *t_ptr;
             let t1 = *t_ptr.add(1);
 
-            // --- Origin 4-cell block (shared by tiny + full paths) ---
             let bt01 = self.open_target_gap(q0, t0, t1);
             let bq10 = self.open_query_gap(q0, q1, t0);
             let m11 = self.stack(q0, q1, t0, t1);
@@ -55,7 +54,7 @@ impl Gotoh {
                 m: m11,
                 ..DpCell::EMPTY
             };
-            best.update(m11, self.terminal(q1, t1), 1, 1);
+            best.update_if_better(m11, self.terminal(q1, t1), 1, 1);
 
             // --- Tiny-matrix path: no row/col 2 exists ---
             if q_len <= 2 || t_len <= 2 {
@@ -73,7 +72,7 @@ impl Gotoh {
                         m: m1,
                         ..DpCell::EMPTY
                     };
-                    best.update(m1, self.terminal(q1, tc), 1, j);
+                    best.update_if_better(m1, self.terminal(q1, tc), 1, j);
                     bt_prev = bt;
                     t_prev = tc;
                 }
@@ -92,7 +91,7 @@ impl Gotoh {
                         m: m1,
                         ..DpCell::EMPTY
                     };
-                    best.update(m1, self.terminal(qc, t1), i, 1);
+                    best.update_if_better(m1, self.terminal(qc, t1), i, 1);
                     bq_prev = bq;
                     q_prev = qc;
                 }
@@ -141,9 +140,9 @@ impl Gotoh {
                 bt: bt22,
             };
 
-            best.update(m12, self.terminal(q1, t2), 1, 2);
-            best.update(m21, self.terminal(q2, t1), 2, 1);
-            best.update(m22, self.terminal(q2, t2), 2, 2);
+            best.update_if_better(m12, self.terminal(q1, t2), 1, 2);
+            best.update_if_better(m21, self.terminal(q2, t1), 2, 1);
+            best.update_if_better(m22, self.terminal(q2, t2), 2, 2);
 
             // --- Top-rows fused loop: rows 0, 1, 2 for j >= 3 ---
             let mut bt0_prev = bt02;
@@ -188,8 +187,8 @@ impl Gotoh {
                     bt: bt2,
                 };
 
-                best.update(m1, self.terminal(q1, tj), 1, k);
-                best.update(m2, self.terminal(q2, tj), 2, k);
+                best.update_if_better(m1, self.terminal(q1, tj), 1, k);
+                best.update_if_better(m2, self.terminal(q2, tj), 2, k);
 
                 bt0_prev = bt0;
                 m1_prev = m1;
@@ -242,8 +241,8 @@ impl Gotoh {
                     bt: bt2,
                 };
 
-                best.update(m1, self.terminal(qi, t1), k, 1);
-                best.update(m2, self.terminal(qi, t2), k, 2);
+                best.update_if_better(m1, self.terminal(qi, t1), k, 1);
+                best.update_if_better(m2, self.terminal(qi, t2), k, 2);
 
                 bq0_prev = bq0;
                 m1_prev = m1;

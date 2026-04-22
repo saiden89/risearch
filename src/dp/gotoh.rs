@@ -46,57 +46,49 @@ impl Gotoh {
     /// M ← M transition energy: continue the paired stack.
     #[inline(always)]
     pub(crate) fn stack(&self, qp: u8, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model
-            .transition_energy(qp as usize, qc as usize, tp as usize, tc as usize)
+        self.model.transition_energy(qp, qc, tp, tc)
     }
 
     /// M ← Bq transition energy: close a query gap and return to the stack.
     #[inline(always)]
     pub(crate) fn close_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
-        self.model
-            .transition_energy(qp as usize, qc as usize, GAP, tc as usize)
+        self.model.transition_energy(qp, qc, GAP, tc)
     }
 
     /// M ← Bt transition energy: close a target gap and return to the stack.
     #[inline(always)]
     pub(crate) fn close_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model
-            .transition_energy(GAP, qc as usize, tp as usize, tc as usize)
+        self.model.transition_energy(GAP, qc, tp, tc)
     }
 
     /// Bq ← M transition energy: open a query gap.
     #[inline(always)]
     pub(crate) fn open_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
-        self.model
-            .transition_energy(qp as usize, qc as usize, tc as usize, GAP)
+        self.model.transition_energy(qp, qc, tc, GAP)
     }
 
     /// Bq ← Bq transition energy: extend a query gap.
     #[inline(always)]
     pub(crate) fn extend_query_gap(&self, qp: u8, qc: u8) -> i32 {
-        self.model
-            .transition_energy(qp as usize, qc as usize, GAP, GAP)
+        self.model.transition_energy(qp, qc, GAP, GAP)
     }
 
     /// Bt ← M transition energy: open a target gap.
     #[inline(always)]
     pub(crate) fn open_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model
-            .transition_energy(qc as usize, GAP, tp as usize, tc as usize)
+        self.model.transition_energy(qc, GAP, tp, tc)
     }
 
     /// Bt ← Bt transition energy: extend a target gap.
     #[inline(always)]
     pub(crate) fn extend_target_gap(&self, tp: u8, tc: u8) -> i32 {
-        self.model
-            .transition_energy(GAP, GAP, tp as usize, tc as usize)
+        self.model.transition_energy(GAP, GAP, tp, tc)
     }
 
     /// Terminal (boundary) penalty.
     #[inline(always)]
     pub(crate) fn terminal(&self, qc: u8, tc: u8) -> i32 {
-        self.model
-            .transition_energy(qc as usize, GAP, tc as usize, GAP)
+        self.model.transition_energy(qc, GAP, tc, GAP)
     }
 
     /// Terminal (boundary) penalty for semantic bases.
@@ -195,12 +187,7 @@ mod tests {
                     for t2 in 0u8..6 {
                         assert_eq!(
                             gotoh.stack(q1, q2, t1, t2),
-                            table.transition_energy(
-                                usize::from(q1),
-                                usize::from(q2),
-                                usize::from(t1),
-                                usize::from(t2),
-                            ),
+                            table.transition_energy(q1, q2, t1, t2),
                             "stack mismatch at ({},{},{},{})",
                             q1,
                             q2,
@@ -223,26 +210,16 @@ mod tests {
                 for tc in 0u8..6 {
                     assert_eq!(
                         gotoh.close_query_gap(qp, qc, tc),
-                        table.transition_energy(
-                            usize::from(qp),
-                            usize::from(qc),
-                            GAP,
-                            usize::from(tc)
-                        ),
+                        table.transition_energy(qp, qc, GAP, tc),
                     );
                     assert_eq!(
                         gotoh.open_query_gap(qp, qc, tc),
-                        table.transition_energy(
-                            usize::from(qp),
-                            usize::from(qc),
-                            usize::from(tc),
-                            GAP
-                        ),
+                        table.transition_energy(qp, qc, tc, GAP),
                     );
                 }
                 assert_eq!(
                     gotoh.extend_query_gap(qp, qc),
-                    table.transition_energy(usize::from(qp), usize::from(qc), GAP, GAP),
+                    table.transition_energy(qp, qc, GAP, GAP),
                 );
             }
         }
@@ -252,28 +229,18 @@ mod tests {
                 for tc in 0u8..6 {
                     assert_eq!(
                         gotoh.close_target_gap(qc, tp, tc),
-                        table.transition_energy(
-                            GAP,
-                            usize::from(qc),
-                            usize::from(tp),
-                            usize::from(tc)
-                        ),
+                        table.transition_energy(GAP, qc, tp, tc),
                     );
                     assert_eq!(
                         gotoh.open_target_gap(qc, tp, tc),
-                        table.transition_energy(
-                            usize::from(qc),
-                            GAP,
-                            usize::from(tp),
-                            usize::from(tc)
-                        ),
+                        table.transition_energy(qc, GAP, tp, tc),
                     );
                 }
             }
             for tc in 0u8..6 {
                 assert_eq!(
                     gotoh.terminal(qc, tc),
-                    table.transition_energy(usize::from(qc), GAP, usize::from(tc), GAP),
+                    table.transition_energy(qc, GAP, tc, GAP),
                 );
             }
         }
@@ -282,7 +249,7 @@ mod tests {
             for tc in 0u8..6 {
                 assert_eq!(
                     gotoh.extend_target_gap(tp, tc),
-                    table.transition_energy(GAP, GAP, usize::from(tp), usize::from(tc)),
+                    table.transition_energy(GAP, GAP, tp, tc),
                 );
             }
         }

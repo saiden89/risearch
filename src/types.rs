@@ -137,7 +137,7 @@ impl PairType {
 pub const BASE_COUNT: usize = 6;
 
 /// Constant for Gap index used in array indexing and DSM lookups.
-pub const GAP: usize = Base::Gap as usize;
+pub const GAP: u8 = Base::Gap as u8;
 
 /// Strand direction for search
 

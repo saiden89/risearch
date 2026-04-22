@@ -113,9 +113,9 @@ impl ScoringModel {
 
     /// Point query for one transition energy in the canonical 4-base tensor.
     #[inline(always)]
-    pub fn transition_energy(&self, q1: usize, q2: usize, t1: usize, t2: usize) -> i32 {
+    pub fn transition_energy(&self, q1: u8, q2: u8, t1: u8, t2: u8) -> i32 {
         debug_assert!(q1 < 6 && q2 < 6 && t1 < 6 && t2 < 6);
-        let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+        let idx = (q1 as usize) * 216 + (q2 as usize) * 36 + (t1 as usize) * 6 + (t2 as usize);
         // SAFETY: All args ∈ 0..6. Max idx = 5*216+5*36+5*6+5 = 1295 < 1296.
         unsafe { *self.table.get_unchecked(idx) }
     }
@@ -123,7 +123,7 @@ impl ScoringModel {
     /// Point query for one transition energy using semantic bases.
     #[inline(always)]
     pub fn transition_energy_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
-        self.transition_energy(q1 as usize, q2 as usize, t1 as usize, t2 as usize)
+        self.transition_energy(q1 as u8, q2 as u8, t1 as u8, t2 as u8)
     }
 
     /// Check if two bases form a valid pair.
@@ -811,10 +811,10 @@ mod tests {
     fn transpose_swaps_both_pairs() {
         let right = ScoringModel::new(Matrix::T04, 50);
         let left = right.transpose();
-        for q1 in 0..6 {
-            for q2 in 0..6 {
-                for t1 in 0..6 {
-                    for t2 in 0..6 {
+        for q1 in 0u8..6 {
+            for q2 in 0u8..6 {
+                for t1 in 0u8..6 {
+                    for t2 in 0u8..6 {
                         assert_eq!(
                             left.transition_energy(q1, q2, t1, t2),
                             right.transition_energy(q2, q1, t2, t1),

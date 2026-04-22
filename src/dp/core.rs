@@ -23,7 +23,7 @@ impl Gotoh {
         // - grid allocated as (q_len+1) × (t_len+1), so all (i,j) with
         //   i ∈ 0..q_len, j ∈ 0..t_len are in-bounds
         unsafe {
-            let ptr = grid.ptr();
+            let ptr = grid.as_mut_ptr();
             let width = grid.width();
             let table = self.model.table_ptr();
 
@@ -65,7 +65,7 @@ impl Gotoh {
                     );
                     let curr = DpCell { m, bq, bt };
 
-                    best.update(m, *t_open_ptr.add(tc * 6), i, j);
+                    best.update_if_better(m, *t_open_ptr.add(tc * 6), i, j);
                     *curr_ptr = curr;
 
                     diag = up;

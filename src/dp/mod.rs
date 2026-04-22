@@ -182,7 +182,7 @@ impl BestScore {
 
     /// Update if `val + term` exceeds current best.
     #[inline(always)]
-    pub(super) fn update(&mut self, val: i32, term: i32, q_idx: usize, t_idx: usize) {
+    pub(super) fn update_if_better(&mut self, val: i32, term: i32, q_idx: usize, t_idx: usize) {
         let curr = val + term;
         if curr > self.energy {
             self.energy = curr;
@@ -270,7 +270,7 @@ impl DpGrid {
     }
 
     #[inline(always)]
-    pub(super) fn ptr(&mut self) -> *mut DpCell {
+    pub(super) fn as_mut_ptr(&mut self) -> *mut DpCell {
         self.data.as_mut_ptr()
     }
 

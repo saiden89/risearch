@@ -12,9 +12,9 @@ pub struct FilterArgs {
         default_value_t = -20.0,
         allow_hyphen_values = true
     )]
-    pub delta_g: f64,
+    pub total_energy: f64,
 
-    /// Energy per length threshold that filters seeds
+    /// Energy per length threshold that filters seeds (in kcal/mol)
     #[arg(long = "seed-energy", value_name = "THRESHOLD", default_value_t = 0.0)]
     pub seed_energy: f64,
 
@@ -26,7 +26,7 @@ pub struct FilterArgs {
 impl From<FilterArgs> for FilterConfig {
     fn from(value: FilterArgs) -> Self {
         FilterConfig {
-            delta_g: value.delta_g,
+            delta_g: value.total_energy,
             seed_energy: value.seed_energy,
             no_max_prune: value.no_max_prune,
         }
