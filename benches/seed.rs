@@ -145,7 +145,7 @@ fn bench_seed_mismatch(c: &mut Criterion) {
         );
         let dataset = build_production_dataset(1, 22, 10_000, &seed_config);
 
-        group.bench_with_input(BenchmarkId::new("max_mm", max_mm), &max_mm, |b, _| {
+        group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
             b.iter(|| {
                 let seeds = collect(
                     black_box(&dataset.queries),
@@ -219,11 +219,39 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_seed_long_mismatch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("long_seed_mismatch");
+    group.sample_size(10);
+
+    // Stress test: 21nt seed on 22nt query with 2 mismatches.
+    // This mirrors the scenario where C pulls ahead by 3x.
+    let seed_config = SeedConfig::with_wobble(
+        SeedSpec::LengthOnly(21),
+        MismatchSpec::new(2, 2, 2),
+        true,
+    );
+    let dataset = build_production_dataset(1, 22, 100_000, &seed_config);
+
+    group.bench_function("seed_21_mm_2_2", |b| {
+        b.iter(|| {
+            let seeds = collect(
+                black_box(&dataset.queries),
+                black_box(&dataset.store),
+                black_box(&seed_config),
+            );
+            black_box(seed_count(&seeds));
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_seed_exact,
     bench_seed_mismatch,
     bench_seed_prod_shaped_mismatch,
-    bench_seed_query_scaling
+    bench_seed_query_scaling,
+    bench_seed_long_mismatch
 );
 criterion_main!(benches);

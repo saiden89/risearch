@@ -171,7 +171,6 @@ impl RegistryEntry for Query {
     }
 }
 
-
 /// Registry of queries with a combined suffix array for efficient seed search.
 ///
 /// Individual `Query` entries hold per-query metadata (sequence, seed interval,
@@ -338,11 +337,16 @@ impl QueryRegistry {
 
         let combined_sa_raw = SuffixArray::try_from(combined_seed_seq.as_slice())
             .context("Failed to build combined query SA")?;
-        let sa_real_len = combined_sa_raw.len();
+        let mut combined_sa = filter_seedable_query_suffixes(
+            combined_sa_raw.into_inner(),
+            &entries,
+            &offsets,
+            &seed_seq_lens,
+        );
+        let sa_real_len = combined_sa.len();
 
         // Pad both for branchless SA character lookup.
         combined_seed_seq.resize(combined_seed_seq.len() + SA_CHAR_PADDING, Base::Gap);
-        let mut combined_sa = combined_sa_raw.into_inner();
         combined_sa.resize(combined_sa.len() + SA_CHAR_PADDING, 0u64);
 
         Ok(Self {
@@ -354,6 +358,24 @@ impl QueryRegistry {
             seed_seq_lens,
         })
     }
+}
+
+fn filter_seedable_query_suffixes(
+    sa: Vec<u64>,
+    entries: &[Query],
+    offsets: &[usize],
+    seed_seq_lens: &[usize],
+) -> Vec<u64> {
+    sa.into_iter()
+        .filter(|&suffix_pos| {
+            let suffix_pos = suffix_pos as usize;
+            let query_idx = offsets.partition_point(|&offset| offset <= suffix_pos) - 1;
+            let min_seed_len = entries[query_idx].min_seed_len;
+            let seed_seq_len = seed_seq_lens[query_idx];
+            let local_pos = suffix_pos - offsets[query_idx];
+            min_seed_len * 2 <= seed_seq_len + 1 || local_pos + min_seed_len <= seed_seq_len
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -466,5 +488,22 @@ mod tests {
         assert_eq!(query.max_seed_len, 5);
         assert_eq!(query.seed_sequence().len(), 5);
         assert_eq!(query.seed_sequence(), query.sequence());
+    }
+
+    #[test]
+    fn query_sa_keeps_only_suffixes_that_can_reach_min_seed_len() {
+        let f = temp_fasta(">q1\nACGUACGUACGUACGUACGUAC\n>q2\nUGCAUGCAUGCAUGCAUGCAUG\n");
+        let cfg = SeedConfig::with_wobble(SeedSpec::LengthOnly(22), MismatchSpec::exact(), false);
+
+        let registry = QueryRegistry::from_fasta(f.path(), &cfg).unwrap();
+        let view = registry.view();
+
+        assert_eq!(view.sa_real_len, 2);
+        let mut starts: Vec<usize> = view.combined_sa[..view.sa_real_len]
+            .iter()
+            .map(|&pos| pos as usize)
+            .collect();
+        starts.sort_unstable();
+        assert_eq!(starts, vec![0, 23]);
     }
 }
