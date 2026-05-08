@@ -30,7 +30,7 @@ fn make_hit(
         t_start,
         t_end,
         strand,
-        energy: Energy::new(energy),
+        energy: Energy::from(energy),
         seed_start: None,
         seed_end: None,
         alignment: Some(alignment),

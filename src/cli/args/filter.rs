@@ -1,6 +1,6 @@
-use crate::config;
+use crate::config::FilterConfig;
+use crate::types::Energy;
 
-use config::FilterConfig;
 /// Arguments for filtering and pruning policies
 #[derive(clap::Args, Debug, Clone)]
 pub struct FilterArgs {
@@ -9,14 +9,14 @@ pub struct FilterArgs {
         short = 'e',
         long = "energy",
         value_name = "dG",
-        default_value_t = -20.0,
+        default_value = "-20.0",
         allow_hyphen_values = true
     )]
-    pub total_energy: f64,
+    pub total_energy: Energy,
 
     /// Energy per length threshold that filters seeds (in kcal/mol)
-    #[arg(long = "seed-energy", value_name = "THRESHOLD", default_value_t = 0.0)]
-    pub seed_energy: f64,
+    #[arg(long = "seed-energy", value_name = "THRESHOLD", default_value = "0.0")]
+    pub seed_energy: Energy,
 
     /// Disable maximality check (allows redundant seeds)
     #[arg(long = "no-max-prune", action = clap::ArgAction::SetTrue)]

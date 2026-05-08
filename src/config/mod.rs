@@ -1,5 +1,7 @@
 use clap::ValueEnum;
 
+use crate::types::Energy;
+
 // =============================================================================
 // SEED SPECIFICATION TYPES (moved from seed::spec)
 // =============================================================================
@@ -234,7 +236,7 @@ pub struct ScoreConfig {
     pub matrix: Matrix,
 
     /// Per-nucleotide penalty (in kcal/mol), applied wherever score is computed
-    pub penalty: f64,
+    pub penalty: Energy,
 
     // Placeholder flags from C implementation - not yet implemented
     // (see cli/args for detailed documentation)
@@ -242,14 +244,6 @@ pub struct ScoreConfig {
     pub matpath: Option<String>,
     pub temperature: Option<String>,
     pub weights: Option<String>,
-}
-
-impl ScoreConfig {
-    /// Penalty converted to the raw integer representation used by DP tables.
-    /// Converts from kcal/mol (f64) to centcal (i32).
-    pub fn penalty_raw(&self) -> i32 {
-        (self.penalty * 100.0).round() as i32
-    }
 }
 
 /// Arguments for extension strategy.
@@ -267,10 +261,10 @@ pub struct ExtendConfig {
 #[derive(Debug, Clone)]
 pub struct FilterConfig {
     /// Set deltaG energy threshold (in kcal/mol) to filter predictions
-    pub delta_g: f64,
+    pub delta_g: Energy,
 
     /// Energy per length threshold that filters seeds
-    pub seed_energy: f64,
+    pub seed_energy: Energy,
 
     /// Disable maximality check (allows redundant seeds)
     pub no_max_prune: bool,

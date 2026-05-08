@@ -49,7 +49,7 @@ pub fn run_search_in_memory(
     store: &TargetStore,
     opts: &SearchConfig,
 ) -> Result<Vec<SearchHit>> {
-    let Some(ctx) = init_search(queries, store, opts) else {
+    let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(Vec::new());
     };
     let seeds = collect(ctx.queries, ctx.store, &ctx.opts.seed);
@@ -57,7 +57,7 @@ pub fn run_search_in_memory(
     let hits: Vec<SearchHit> = seeds
         .into_par_iter()
         .flat_map_iter(|(qi, seeds)| {
-            let mut worker = SearchWorker::new(ctx.opts);
+            let mut worker = SearchWorker::new(ctx.opts, &ctx.model);
             let query = &ctx.queries.entries()[qi];
             let query_seq = query.sequence();
             let seed_interval = query.seed_interval.clone();
@@ -93,7 +93,7 @@ pub fn run_search(
     opts: &SearchConfig,
     output_path: &Path,
 ) -> Result<()> {
-    let Some(ctx) = init_search(queries, store, opts) else {
+    let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(());
     };
     let seed_groups = collect(ctx.queries, ctx.store, &ctx.opts.seed);
@@ -112,7 +112,7 @@ pub fn run_search(
         seed_groups.into_par_iter().try_for_each_init(
             || {
                 (
-                    SearchWorker::new(ctx.opts),
+                    SearchWorker::new(ctx.opts, &ctx.model),
                     HitFormatter::new(ctx.opts.output.format),
                 )
             },
@@ -133,7 +133,7 @@ pub fn run_search(
         seed_groups.into_par_iter().try_for_each_init(
             || {
                 (
-                    SearchWorker::new(ctx.opts),
+                    SearchWorker::new(ctx.opts, &ctx.model),
                     HitFormatter::new(ctx.opts.output.format),
                 )
             },
@@ -157,14 +157,21 @@ struct SearchContext<'a> {
     queries: &'a QueryRegistry,
     store: &'a TargetStore,
     opts: &'a SearchConfig,
+    model: ScoringModel,
 }
 
 impl<'a> SearchContext<'a> {
-    fn new(queries: &'a QueryRegistry, store: &'a TargetStore, opts: &'a SearchConfig) -> Self {
+    fn new(
+        queries: &'a QueryRegistry,
+        store: &'a TargetStore,
+        opts: &'a SearchConfig,
+        model: ScoringModel,
+    ) -> Self {
         Self {
             queries,
             store,
             opts,
+            model,
         }
     }
 }
@@ -173,9 +180,9 @@ fn init_search<'a>(
     queries: &'a QueryRegistry,
     store: &'a TargetStore,
     opts: &'a SearchConfig,
-) -> Option<SearchContext<'a>> {
+) -> Result<Option<SearchContext<'a>>> {
     if store.is_empty() || queries.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     info!(
@@ -187,7 +194,8 @@ fn init_search<'a>(
         opts.filter.delta_g
     );
 
-    Some(SearchContext::new(queries, store, opts))
+    let model = ScoringModel::from_score_config(&opts.score)?;
+    Ok(Some(SearchContext::new(queries, store, opts, model)))
 }
 
 struct SearchWorker {
@@ -196,9 +204,9 @@ struct SearchWorker {
 }
 
 impl SearchWorker {
-    fn new(opts: &SearchConfig) -> Self {
-        let dp_cfg = DpConfig::from((&opts.score, &opts.extend));
-        let model = ScoringModel::new(opts.score.matrix, dp_cfg.penalty());
+    fn new(opts: &SearchConfig, model: &ScoringModel) -> Self {
+        let dp_cfg = DpConfig::from(&opts.extend);
+        let model = model.clone();
         Self {
             extension: ExtensionEngine::new(dp_cfg.max_extension(), &model),
             model,
@@ -300,7 +308,7 @@ impl SearchWorker {
         let seed_e = self
             .model
             .energy(query_bases, target_trans, q_start, t_start, len);
-        let max_ext = DpConfig::from((&opts.score, &opts.extend)).max_extension();
+        let max_ext = DpConfig::from(&opts.extend).max_extension();
         let view_left = DpView::new(
             query_bases,
             target_trans,
@@ -320,11 +328,14 @@ impl SearchWorker {
             max_ext,
         );
         let right = self.extension.extend(&view_right, include_alignment);
-        let penalty = opts.score.penalty_raw();
-        let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i32;
-        let energy = Energy::from(seed_e + left.energy + right.energy + nt_count * penalty);
+        let penalty = opts.score.penalty.to_raw();
+        let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i64;
+        let energy_sum =
+            i64::from(seed_e) + i64::from(left.energy) + i64::from(right.energy);
+        let total_raw = energy_sum + nt_count * i64::from(penalty);
+        let energy = self.model.energy_from_raw(total_raw);
 
-        (energy.as_f64() <= opts.filter.delta_g).then(|| {
+        (energy <= opts.filter.delta_g).then(|| {
             SearchHit::new(
                 query_idx,
                 query_bases,
@@ -513,7 +524,7 @@ mod tests {
             seed: SeedConfig::with_wobble(SeedSpec::LengthOnly(8), MismatchSpec::exact(), true),
             score: ScoreConfig {
                 matrix: Matrix::T04,
-                penalty: 3.5,
+                penalty: Energy::from(3.5),
                 matrix2: None,
                 matpath: None,
                 temperature: None,
@@ -524,8 +535,8 @@ mod tests {
                 band: None,
             },
             filter: FilterConfig {
-                delta_g: -10.0,
-                seed_energy: 0.0,
+                delta_g: Energy::from(-10.0),
+                seed_energy: Energy::from(0.0),
                 no_max_prune: false,
             },
             output: OutputConfig {
@@ -586,7 +597,7 @@ mod tests {
 
         let config = SearchConfig {
             filter: FilterConfig {
-                delta_g: -100.0,
+                delta_g: Energy::from(-100.0),
                 ..test_config().filter
             },
             ..test_config()

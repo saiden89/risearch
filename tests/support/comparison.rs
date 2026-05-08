@@ -159,7 +159,7 @@ impl ParityResult {
             let label = format!(
                 "RUST-BETTER: {} vs C E={:.2}",
                 matched.rust.fmt_coords(),
-                matched.c.energy.as_f64()
+                matched.c.energy
             );
             let table = render_table(ParityKind::Mismatch {
                 rust: &matched.rust,
@@ -177,7 +177,7 @@ impl ParityResult {
             let label = format!(
                 "✗ RUST-WORSE: {} vs C E={:.2}",
                 matched.rust.fmt_coords(),
-                matched.c.energy.as_f64()
+                matched.c.energy
             );
             let table = render_table(ParityKind::Mismatch {
                 rust: &matched.rust,
@@ -205,7 +205,7 @@ impl ParityResult {
             let key = (missing.query_idx, missing.target_idx);
             let (label, table) = match overlap {
                 Some(rust_hit) => {
-                    let energy_diff = missing.energy.as_f64() - rust_hit.energy.as_f64();
+                    let energy_diff = f64::from(missing.energy) - f64::from(rust_hit.energy);
                     // Format: C hit coords vs Rust hit coords, with energy delta
                     let label = format!(
                         "✗ MISSING ({}): C {} vs R {} (ΔE={:+.2})",
@@ -285,7 +285,7 @@ impl ParityResult {
         let avg_extra_energy = if self.extras.is_empty() {
             0.0
         } else {
-            self.extras.iter().map(|r| r.energy.as_f64()).sum::<f64>() / self.extras.len() as f64
+            self.extras.iter().map(|r| f64::from(r.energy)).sum::<f64>() / self.extras.len() as f64
         };
         let avg_missing_len = if self.missings.is_empty() {
             0.0
@@ -305,7 +305,7 @@ impl ParityResult {
         } else {
             self.missings
                 .iter()
-                .map(|(r, _, _)| r.energy.as_f64())
+                .map(|(r, _, _)| f64::from(r.energy))
                 .sum::<f64>()
                 / self.missings.len() as f64
         };
@@ -421,21 +421,21 @@ pub(crate) fn classify_missing<'a>(
     c_hit: &SearchHit,
     rust_hits: &[&'a SearchHit],
 ) -> (MissingReason, Option<&'a SearchHit>) {
-    let c_e = c_hit.energy.as_f64();
+    let c_e = f64::from(c_hit.energy);
 
     let best_overlap = rust_hits
         .iter()
         .filter(|r| hits_overlap(c_hit, r))
         .min_by(|a, b| {
-            let a_e = a.energy.as_f64();
-            let b_e = b.energy.as_f64();
-            a_e.partial_cmp(&b_e).unwrap_or(std::cmp::Ordering::Equal)
+            a.energy
+                .partial_cmp(&b.energy)
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .copied();
 
     match best_overlap {
         Some(r) => {
-            let r_e = r.energy.as_f64();
+            let r_e = f64::from(r.energy);
             let reason = if r_e < c_e - 0.001 {
                 MissingReason::BetterEnergy
             } else if r_e > c_e + 0.001 {
@@ -528,7 +528,7 @@ impl<'a> ParityComparator<'a> {
                 for (i, c) in c_group.iter().enumerate() {
                     if !c_matched[i]
                         && r.coords_match(c)
-                        && (r.energy.as_f64() - c.energy.as_f64()).abs() < 0.01
+                        && (f64::from(r.energy) - f64::from(c.energy)).abs() < 0.01
                         && r.fingerprint() == c.fingerprint()
                     {
                         c_matched[i] = true;
@@ -560,7 +560,7 @@ impl<'a> ParityComparator<'a> {
                         continue;
                     }
                     if r.coords_match(c) {
-                        let delta = (r.energy.as_f64() - c.energy.as_f64()).abs();
+                        let delta = (f64::from(r.energy) - f64::from(c.energy)).abs();
                         if delta < best_delta {
                             best_delta = delta;
                             best_match_idx = Some(i);
@@ -572,8 +572,8 @@ impl<'a> ParityComparator<'a> {
                     c_rem_matched[idx] = true;
                     let c = c_remaining[idx];
 
-                    let r_e = r.energy.as_f64();
-                    let c_e = c.energy.as_f64();
+                    let r_e = f64::from(r.energy);
+                    let c_e = f64::from(c.energy);
 
                     let matched = MatchedHit {
                         rust: (*r).clone(),

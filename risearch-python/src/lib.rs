@@ -11,8 +11,8 @@ use clap::ValueEnum;
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::{
-    cli::args::seed_spec_from_args, run_search_in_memory, ExtendConfig, FilterConfig, Matrix,
-    MismatchSpec, OutputCompression, OutputConfig, OutputFormat, QueryRegistry, ScoreConfig,
+    cli::args::seed_spec_from_args, run_search_in_memory, Energy, ExtendConfig, FilterConfig,
+    Matrix, MismatchSpec, OutputCompression, OutputConfig, OutputFormat, QueryRegistry, ScoreConfig,
     SearchConfig, SearchHit, SeedConfig, SeedPairingMode, TargetStore,
 };
 
@@ -50,14 +50,14 @@ fn hits_to_record_batch(hits: Vec<SearchHit>, schema: &SchemaRef) -> RecordBatch
     let mut alignment: Vec<Option<String>> = Vec::with_capacity(n);
 
     for h in hits {
-        query_idx.push(h.query_idx);
-        target_idx.push(h.target_idx);
+        query_idx.push(h.query_idx as u32);
+        target_idx.push(h.target_idx as u32);
         q_start.push(h.q_start as u32);
         q_end.push(h.q_end as u32);
         t_start.push(h.t_start as u32);
         t_end.push(h.t_end as u32);
         strand.push(h.strand.to_string());
-        energy.push(h.energy.as_f64());
+        energy.push(f64::from(h.energy));
         alignment.push(h.alignment.as_ref().map(|a| a.fingerprint()));
     }
 
@@ -249,7 +249,7 @@ fn search(
         },
         score: ScoreConfig {
             matrix: mat,
-            penalty,
+            penalty: Energy::from(penalty),
             matrix2: None,
             matpath: None,
             temperature: None,
@@ -260,8 +260,8 @@ fn search(
             band: None,
         },
         filter: FilterConfig {
-            delta_g: energy_threshold,
-            seed_energy,
+            delta_g: Energy::from(energy_threshold),
+            seed_energy: Energy::from(seed_energy),
             no_max_prune,
         },
         output: OutputConfig {

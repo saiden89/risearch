@@ -1,4 +1,4 @@
-use crate::config::{ExtendConfig, ScoreConfig};
+use crate::config::ExtendConfig;
 use crate::types::Base;
 
 mod core;
@@ -14,7 +14,6 @@ const MAX_EXT: usize = 256;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DpConfig {
     max_extension: usize,
-    penalty_raw: i32,
 }
 
 impl DpConfig {
@@ -22,18 +21,12 @@ impl DpConfig {
     pub(crate) const fn max_extension(self) -> usize {
         self.max_extension
     }
-
-    #[inline(always)]
-    pub(crate) const fn penalty(self) -> i32 {
-        self.penalty_raw
-    }
 }
 
-impl From<(&ScoreConfig, &ExtendConfig)> for DpConfig {
-    fn from((score, extend): (&ScoreConfig, &ExtendConfig)) -> Self {
+impl From<&ExtendConfig> for DpConfig {
+    fn from(extend: &ExtendConfig) -> Self {
         Self {
             max_extension: usize::from(extend.max_extension).min(MAX_EXT),
-            penalty_raw: score.penalty_raw(),
         }
     }
 }
@@ -157,7 +150,7 @@ impl<'a> DpView<'a> {
 /// Must satisfy two invariants (enforced by compile-time assert below):
 /// 1. Invalid scores can never drift into valid range through accumulated adds
 /// 2. No i32 underflow from accumulated negative energy
-const NEG_INF: i32 = -1_000_000_000;
+const NEG_INF: i32 = -1_500_000_000;
 
 #[inline(always)]
 pub(crate) fn is_valid_score(score: i32) -> bool {
@@ -165,10 +158,10 @@ pub(crate) fn is_valid_score(score: i32) -> bool {
 }
 
 /// Conservative upper bound on |energy| from a single scoring table lookup.
-/// Source tables are i16 (max 32767); penalty adds modest overhead.
-/// Real values are ~300-400 (0.01 kcal/mol units), but we bound generously.
-/// Enforced at runtime in ScoringModel::new.
-const MAX_ENERGY: i64 = 40_000;
+/// Tables use RIsearch3 raw units (1e-4 kcal/mol). Worst case: TSV energy
+/// 20 kcal/mol (200k raw) + penalty 50 kcal/mol (500k raw) × 2 = 1.2M.
+/// Enforced at runtime in ScoringModel::from_source_table.
+pub(crate) const MAX_ENERGY: i64 = 1_200_000;
 
 // Compile-time proof that NEG_INF arithmetic is safe for MAX_EXT.
 const _: () = {

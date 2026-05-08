@@ -2,7 +2,7 @@
 //! RNA dinucleotide stacking energy matrices (DSM)
 //!
 //! Tables encode nearest-neighbor thermodynamic parameters for RNA-RNA interactions.
-//! Energy values are in 0.01 kcal/mol (divide by -100 for kcal/mol).
+//! Runtime energy values are in 0.0001 kcal/mol (divide by -10000 for kcal/mol).
 //!
 //! Indices: `[q1][q2][t1][t2]` = stacking energy for:
 //! ```text
@@ -11,14 +11,34 @@
 //! Target: 3'─ t1 ─ t2 ─ 5'
 //! ```
 
-use crate::config::Matrix;
-use crate::types::{Base, BASE_COUNT};
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+
+use crate::config::{Matrix, ScoreConfig};
+use crate::types::{Base, Energy, BASE_COUNT};
 
 /// DSM table type: 4D array [q1][q2][t1][t2]
-pub(crate) type DsmTable = [[[[i16; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
+pub(crate) type DsmTable = [[[[i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
 
 /// Number of entries in a flattened DSM table (6^4 = 1296).
 pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * BASE_COUNT;
+
+const DSM_TSV_VALUE_COUNT: usize = DSM_FLAT_SIZE + 1;
+const BUILTIN_SCALE: i32 = 100;
+/// Duplex initiation free energy for built-in Turner 2004/1999 parameters.
+/// Applied once per interaction: ΔG = (raw_score - init) / -SCALE.
+/// Value: 5.59 kcal/mol × 10000 = 55,900 raw units.
+const INITIATION_ENERGY_RAW: i32 = 55_900;
+const MAX_TSV_ENERGY: f64 = 20.0;
+const DEFAULT_TEMPERATURES: [f64; 3] = [310.15, 310.15, 315.15];
+const TSV_BASE_TO_RUST: [usize; BASE_COUNT] = [
+    Base::A as usize,
+    Base::C as usize,
+    Base::G as usize,
+    Base::U as usize,
+    Base::N as usize,
+    Base::Gap as usize,
+];
 
 /// Gap index used for DSM transition queries (linked to Base::Gap).
 pub use crate::types::GAP;
@@ -34,6 +54,7 @@ pub use crate::types::GAP;
 #[derive(Clone, Debug)]
 pub struct ScoringModel {
     table: [i32; DSM_FLAT_SIZE],
+    initiation_raw: i32,
 }
 
 impl ScoringModel {
@@ -44,6 +65,32 @@ impl ScoringModel {
             Matrix::T99 => &T99,
         };
 
+        Self::from_source_table(source_table, INITIATION_ENERGY_RAW, penalty, BUILTIN_SCALE)
+    }
+
+    pub(crate) fn from_score_config(score: &ScoreConfig) -> Result<Self> {
+        let penalty = score.penalty.to_raw();
+        let Some(matpath) = &score.matpath else {
+            return Ok(Self::new(score.matrix, penalty));
+        };
+        let matrix = matrix_file_stem(score.matrix);
+        let temps = parse_temperatures(score.temperature.as_deref())?;
+        let (initiation_raw, source_table) =
+            load_temperature_table(Path::new(matpath), matrix, score.matrix2.as_deref(), temps)?;
+        Ok(Self::from_source_table(
+            &source_table,
+            initiation_raw,
+            penalty,
+            1,
+        ))
+    }
+
+    fn from_source_table(
+        source_table: &DsmTable,
+        initiation_raw: i32,
+        penalty: i32,
+        source_scale: i32,
+    ) -> Self {
         let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {
             for q2 in 0..6 {
@@ -71,14 +118,28 @@ impl ScoringModel {
                             2
                         };
 
-                        table[idx] = source_table[q1][q2][t1_orig][t2_orig] as i32
+                        table[idx] = source_table[q1][q2][t1_orig][t2_orig] * source_scale
                             - penalty * ext_penalty_mult;
                     }
                 }
             }
         }
 
-        Self { table }
+        for (i, &val) in table.iter().enumerate() {
+            assert!(
+                (val as i64).unsigned_abs() <= crate::dp::MAX_ENERGY as u64,
+                "table entry {} = {} exceeds MAX_ENERGY bound {}",
+                i,
+                val,
+                crate::dp::MAX_ENERGY,
+            );
+        }
+
+        Self { table, initiation_raw }
+    }
+
+    pub(crate) fn energy_from_raw(&self, raw: i64) -> Energy {
+        Energy::from((raw as f64 - self.initiation_raw as f64) / -Energy::RAW_SCALE)
     }
 
     /// Check if two bases form a valid seed pair in transformed target space.
@@ -108,7 +169,10 @@ impl ScoringModel {
                 }
             }
         }
-        Self { table }
+        Self {
+            table,
+            initiation_raw: self.initiation_raw,
+        }
     }
 
     /// Point query for one transition energy in the canonical 4-base tensor.
@@ -156,6 +220,158 @@ impl ScoringModel {
         }
         score
     }
+}
+
+fn matrix_file_stem(matrix: Matrix) -> &'static str {
+    match matrix {
+        Matrix::T04 => "t04.v4",
+        Matrix::T99 => "t99.v2",
+    }
+}
+
+fn parse_temperatures(raw: Option<&str>) -> Result<[f64; 3]> {
+    let mut temps = DEFAULT_TEMPERATURES;
+    let Some(raw) = raw else {
+        return Ok(temps);
+    };
+    for (i, part) in raw.split(',').enumerate() {
+        if i >= temps.len() {
+            bail!("Expected at most 3 temperatures, got '{}'", raw);
+        }
+        if part.is_empty() {
+            bail!("Empty temperature in '{}'", raw);
+        }
+        temps[i] = part
+            .parse::<f64>()
+            .with_context(|| format!("Invalid temperature '{}'", part))?;
+    }
+    for (i, temp) in temps.iter().enumerate() {
+        if !temp.is_finite() || !(273.15..=373.15).contains(temp) {
+            bail!(
+                "Temperatures must be in the range 273.15 - 373.15K; T{} is {}",
+                i,
+                temp
+            );
+        }
+    }
+    if temps[1] >= temps[2] {
+        bail!("Temperature interpolation requires T1 < T2");
+    }
+    Ok(temps)
+}
+
+fn load_temperature_table(
+    matpath: &Path,
+    matrix: &str,
+    matrix2: Option<&str>,
+    temps: [f64; 3],
+) -> Result<(i32, DsmTable)> {
+    let exact_path = matrix_path(matpath, temps[0], matrix);
+    if exact_path.is_file() {
+        return load_dsm_tsv(&exact_path);
+    }
+
+    let t1_path = matrix_path(matpath, temps[1], matrix);
+    let matrix2 = matrix2.unwrap_or(matrix);
+    let t2_path = matrix_path(matpath, temps[2], matrix2);
+    let (offset_1, table_1) = load_dsm_tsv(&t1_path)
+        .with_context(|| format!("Failed to load T1 matrix {}", t1_path.display()))?;
+    let (offset_2, table_2) = load_dsm_tsv(&t2_path)
+        .with_context(|| format!("Failed to load T2 matrix {}", t2_path.display()))?;
+    Ok(interpolate_tables(
+        offset_1, &table_1, offset_2, &table_2, temps,
+    ))
+}
+
+fn matrix_path(matpath: &Path, temp: f64, matrix: &str) -> PathBuf {
+    matpath
+        .join("RNA/RNA")
+        .join(format!("{temp:.2}"))
+        .join(format!("{matrix}.tsv"))
+}
+
+fn load_dsm_tsv(path: &Path) -> Result<(i32, DsmTable)> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read DSM TSV {}", path.display()))?;
+    let values = text
+        .split_whitespace()
+        .map(|token| {
+            token
+                .parse::<f64>()
+                .with_context(|| format!("Invalid DSM value '{}' in {}", token, path.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    if values.len() != DSM_TSV_VALUE_COUNT {
+        bail!(
+            "Read {} DSM values from {}, expected {}",
+            values.len(),
+            path.display(),
+            DSM_TSV_VALUE_COUNT
+        );
+    }
+
+    let offset = values[0];
+    if !offset.is_finite() {
+        bail!("Non-finite DSM offset in {}", path.display());
+    }
+    let initiation_raw = scale_raw(offset);
+    let mut table = [[[[0i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
+    for (flat, value) in values.iter().skip(1).enumerate() {
+        if !value.is_finite() {
+            bail!(
+                "Non-finite DSM value at position {} in {}",
+                flat + 1,
+                path.display()
+            );
+        }
+        if value.abs() > MAX_TSV_ENERGY {
+            bail!(
+                "DSM value {} at position {} exceeds max energy {} in {}",
+                value,
+                flat + 1,
+                MAX_TSV_ENERGY,
+                path.display()
+            );
+        }
+        let t2 = TSV_BASE_TO_RUST[flat % BASE_COUNT];
+        let t1 = TSV_BASE_TO_RUST[(flat / BASE_COUNT) % BASE_COUNT];
+        let q2 = TSV_BASE_TO_RUST[(flat / (BASE_COUNT * BASE_COUNT)) % BASE_COUNT];
+        let q1 = TSV_BASE_TO_RUST[(flat / (BASE_COUNT * BASE_COUNT * BASE_COUNT)) % BASE_COUNT];
+        table[q1][q2][t1][t2] = scale_raw(-*value);
+    }
+    Ok((initiation_raw, table))
+}
+
+fn interpolate_tables(
+    offset_1: i32,
+    table_1: &DsmTable,
+    offset_2: i32,
+    table_2: &DsmTable,
+    temps: [f64; 3],
+) -> (i32, DsmTable) {
+    let mut table = [[[[0i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
+    for q1 in 0..BASE_COUNT {
+        for q2 in 0..BASE_COUNT {
+            for t1 in 0..BASE_COUNT {
+                for t2 in 0..BASE_COUNT {
+                    table[q1][q2][t1][t2] =
+                        interpolate_raw(table_1[q1][q2][t1][t2], table_2[q1][q2][t1][t2], temps);
+                }
+            }
+        }
+    }
+    (interpolate_raw(offset_1, offset_2, temps), table)
+}
+
+fn interpolate_raw(raw_1: i32, raw_2: i32, temps: [f64; 3]) -> i32 {
+    let [t0, t1, t2] = temps;
+    let diff = i64::from(raw_1) - i64::from(raw_2);
+    ((t0 - t2) / (t1 - t2) * diff as f64 + f64::from(raw_2)).round() as i32
+}
+
+fn scale_raw(value: f64) -> i32 {
+    (value * Energy::RAW_SCALE).round() as i32
 }
 
 const T04: DsmTable = [
@@ -767,6 +983,7 @@ const T99: DsmTable = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn pairing_distinguishes_seed_and_extension_modes() {
@@ -804,7 +1021,14 @@ mod tests {
         // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
         // Original target was CC, index space is GG
         let actual = model.transition_energy_bases(Base::G, Base::G, Base::G, Base::G);
-        assert_eq!(actual, 330);
+        assert_eq!(actual, 33_000);
+    }
+
+    #[test]
+    fn built_in_energy_conversion_preserves_previous_kcal_output() {
+        let model = ScoringModel::new(Matrix::T04, 0);
+        let energy = model.energy_from_raw(33_000_i64);
+        assert_eq!(f64::from(energy), 2.29);
     }
 
     #[test]
@@ -828,5 +1052,122 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn load_dsm_tsv_parses_offset_and_flat_order() {
+        let file = write_temp_tsv(&tsv_with_overrides(
+            1.2345,
+            0.0,
+            &[(0, 0.1), (1, 0.2), (DSM_FLAT_SIZE - 1, 3.0)],
+        ));
+        let (offset, table) = load_dsm_tsv(file.path()).unwrap();
+        assert_eq!(offset, 12_345);
+        assert_eq!(
+            table[Base::A.idx()][Base::A.idx()][Base::A.idx()][Base::A.idx()],
+            -1_000
+        );
+        assert_eq!(
+            table[Base::A.idx()][Base::A.idx()][Base::A.idx()][Base::C.idx()],
+            -2_000
+        );
+        assert_eq!(
+            table[Base::Gap.idx()][Base::Gap.idx()][Base::Gap.idx()][Base::Gap.idx()],
+            -30_000
+        );
+    }
+
+    #[test]
+    fn load_dsm_tsv_rejects_wrong_count_and_invalid_values() {
+        let too_short = write_temp_tsv("0.0\n1.0\n");
+        assert!(load_dsm_tsv(too_short.path()).is_err());
+
+        let nan = write_temp_tsv(&tsv_with_overrides(0.0, 0.0, &[(0, f64::NAN)]));
+        assert!(load_dsm_tsv(nan.path()).is_err());
+
+        let too_large = write_temp_tsv(&tsv_with_overrides(0.0, 0.0, &[(0, 20.0001)]));
+        assert!(load_dsm_tsv(too_large.path()).is_err());
+    }
+
+    #[test]
+    fn score_config_loads_exact_temperature_table_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        write_matrix(dir.path(), 310.15, "t04.v4", &uniform_tsv(1.0, 1.0));
+        write_matrix(dir.path(), 315.15, "t04.v4", &uniform_tsv(3.0, 3.0));
+
+        let score = test_score_config(dir.path(), Some("310.15"));
+        let model = ScoringModel::from_score_config(&score).unwrap();
+        assert_eq!(model.initiation_raw, 10_000);
+        assert_eq!(
+            model.transition_energy_bases(Base::A, Base::A, Base::U, Base::U),
+            -10_000
+        );
+    }
+
+    #[test]
+    fn score_config_interpolates_missing_temperature_table() {
+        let dir = tempfile::tempdir().unwrap();
+        write_matrix(dir.path(), 310.15, "t04.v4", &uniform_tsv(1.0, 1.0));
+        write_matrix(dir.path(), 315.15, "t04.v4", &uniform_tsv(3.0, 3.0));
+
+        let score = test_score_config(dir.path(), Some("312.65"));
+        let model = ScoringModel::from_score_config(&score).unwrap();
+        assert_eq!(model.initiation_raw, 20_000);
+        assert_eq!(
+            model.transition_energy_bases(Base::A, Base::A, Base::U, Base::U),
+            -20_000
+        );
+    }
+
+    #[test]
+    fn parse_temperatures_rejects_bad_input() {
+        assert!(parse_temperatures(Some("310.15,315.15,320.15,325.15")).is_err());
+        assert!(parse_temperatures(Some("310.15,,315.15")).is_err());
+        assert!(parse_temperatures(Some("272.0")).is_err());
+        assert!(parse_temperatures(Some("315.15,315.15,310.15")).is_err());
+    }
+
+    fn test_score_config(path: &std::path::Path, temperature: Option<&str>) -> ScoreConfig {
+        ScoreConfig {
+            matrix: Matrix::T04,
+            penalty: Energy::from(0.0),
+            matrix2: None,
+            matpath: Some(path.display().to_string()),
+            temperature: temperature.map(str::to_owned),
+            weights: None,
+        }
+    }
+
+    fn write_matrix(root: &std::path::Path, temp: f64, name: &str, content: &str) {
+        let dir = root.join("RNA/RNA").join(format!("{temp:.2}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.tsv")), content).unwrap();
+    }
+
+    fn write_temp_tsv(content: &str) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file
+    }
+
+    fn uniform_tsv(offset: f64, value: f64) -> String {
+        tsv_with_overrides(offset, value, &[])
+    }
+
+    fn tsv_with_overrides(offset: f64, value: f64, overrides: &[(usize, f64)]) -> String {
+        let mut values = vec![value; DSM_FLAT_SIZE];
+        for &(idx, override_value) in overrides {
+            values[idx] = override_value;
+        }
+        let mut out = format!("{offset:.4}");
+        for value in values {
+            out.push('\t');
+            if value.is_nan() {
+                out.push_str("NaN");
+            } else {
+                out.push_str(&format!("{value:.4}"));
+            }
+        }
+        out
     }
 }

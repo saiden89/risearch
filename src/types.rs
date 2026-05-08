@@ -30,10 +30,6 @@ pub enum Base {
     U = 5,
 }
 
-// =============================================================================
-// BASE CONVERSION LUTS - Constant-time lookups for Base enum
-// =============================================================================
-
 /// Base → uppercase ASCII byte
 static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'C', b'G', b'N', b'U'];
 
@@ -155,10 +151,6 @@ pub enum SeedPairingMode {
     Strict,
 }
 
-// =============================================================================
-// STRAND - Display and conversion impls
-// =============================================================================
-
 impl std::fmt::Display for Strand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -186,27 +178,22 @@ impl From<Strand> for char {
     }
 }
 
-// =============================================================================
-// ENERGY NEWTYPE
-// =============================================================================
 
-/// Energy value in kcal/mol.
-///
-/// Thin wrapper for type safety only.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub struct Energy(pub f64);
+pub struct Energy(f64);
 
 impl Energy {
-    /// Create from raw kcal/mol value.
-    #[inline]
-    pub fn new(value: f64) -> Self {
-        Energy(value)
-    }
+    pub(crate) const RAW_SCALE: f64 = 10000.0;
 
-    /// Get the raw kcal/mol value.
-    #[inline]
-    pub fn as_f64(&self) -> f64 {
-        self.0
+    /// Convert to RIsearch3 raw integer units (1e-4 kcal/mol).
+    pub fn to_raw(self) -> i32 {
+        let scaled = self.0 * Self::RAW_SCALE;
+        debug_assert!(
+            scaled >= i32::MIN as f64 && scaled <= i32::MAX as f64,
+            "Energy {:.4} kcal/mol overflows i32 raw units",
+            self.0
+        );
+        scaled.round() as i32
     }
 }
 
@@ -216,9 +203,28 @@ impl From<f64> for Energy {
     }
 }
 
-/// Convert DSM raw integer units → kcal/mol. 559 = terminal penalty offset.
-impl From<i32> for Energy {
-    fn from(raw: i32) -> Self {
-        Energy((raw as f64 - 559.0) / -100.0)
+impl From<Energy> for f64 {
+    fn from(e: Energy) -> Self {
+        e.0
+    }
+}
+
+impl PartialOrd for Energy {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl std::str::FromStr for Energy {
+    type Err = std::num::ParseFloatError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse::<f64>().map(Energy)
+    }
+}
+
+impl std::fmt::Display for Energy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.2}", self.0)
     }
 }

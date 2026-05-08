@@ -101,7 +101,7 @@ pub(crate) fn parse_output(
             .then(a.t_end.cmp(&b.t_end))
     });
     hits.dedup_by(|a, b| {
-        a.coords_match(b) && (a.energy.as_f64() - b.energy.as_f64()).abs() < 0.001
+        a.coords_match(b) && (f64::from(a.energy) - f64::from(b.energy)).abs() < 0.001
     });
     (hits, parsed_count)
 }

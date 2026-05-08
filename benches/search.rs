@@ -8,6 +8,7 @@ use risearch::config::{
 };
 use risearch::registry::QueryRegistry;
 use risearch::search::{run_search, run_search_in_memory};
+use risearch::Energy;
 use risearch::seed::{collect, SeedHit};
 use risearch::seq::Sequence;
 use risearch::types::Base;
@@ -111,7 +112,7 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
         seed: seed_config.clone(),
         score: ScoreConfig {
             matrix: Matrix::T04,
-            penalty: 0.0,
+            penalty: Energy::from(0.0),
             matrix2: None,
             matpath: None,
             temperature: None,
@@ -122,8 +123,8 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             band: None,
         },
         filter: FilterConfig {
-            delta_g: f64::NEG_INFINITY,
-            seed_energy: 0.0,
+            delta_g: Energy::from(f64::NEG_INFINITY),
+            seed_energy: Energy::from(0.0),
             no_max_prune: false,
         },
         output: OutputConfig {

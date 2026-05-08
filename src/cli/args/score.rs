@@ -1,11 +1,12 @@
 use crate::config::{self, Matrix};
+use crate::types::Energy;
 
-fn parse_penalty(s: &str) -> Result<f64, String> {
+fn parse_penalty(s: &str) -> Result<Energy, String> {
     let v: f64 = s.parse().map_err(|e| format!("{e}"))?;
     if !(0.0..=50.0).contains(&v) {
         return Err(format!("penalty must be between 0 and 50, got {v}"));
     }
-    Ok(v)
+    Ok(Energy::from(v))
 }
 
 /// Arguments for global scoring model
@@ -20,10 +21,10 @@ pub struct ScoreArgs {
         short = 'd',
         long = "penalty",
         value_name = "PENALTY",
-        default_value_t = 0.0,
+        default_value = "0.0",
         value_parser = parse_penalty
     )]
-    pub penalty: f64,
+    pub penalty: Energy,
 
     /// TODO: Secondary energy matrix for custom energy parameters.
     /// In C: `-y mat2, --matrix2=mat2` - Only needed for custom energy matrices.
