@@ -194,14 +194,17 @@ fn init_search<'a>(
         opts.filter.delta_g
     );
 
-    let model = ScoringModel::from_canonical(opts.score.dsm_id, opts.score.temperature, opts.score.penalty)?;
+    let model = ScoringModel::from_canonical(
+        opts.score.dsm_id,
+        opts.score.temperature,
+        opts.score.penalty,
+    )?;
     Ok(Some(SearchContext::new(queries, store, opts, model)))
 }
 
 struct SearchWorker {
     extension: ExtensionEngine,
     model: ScoringModel,
-    penalty: i32,
 }
 
 impl SearchWorker {
@@ -211,7 +214,6 @@ impl SearchWorker {
         Self {
             extension: ExtensionEngine::new(dp_cfg.max_extension(), &model),
             model,
-            penalty: opts.score.penalty.to_units(),
         }
     }
 
@@ -307,9 +309,9 @@ impl SearchWorker {
             return None;
         }
 
-        let seed_e = self
+        let seed_score = self
             .model
-            .energy(query_bases, target_trans, q_start, t_start, len);
+            .seed_score(query_bases, target_trans, q_start, t_start, len);
         let max_ext = DpConfig::from(&opts.extend).max_extension();
         let view_left = DpView::new(
             query_bases,
@@ -330,11 +332,10 @@ impl SearchWorker {
             max_ext,
         );
         let right = self.extension.extend(&view_right, include_alignment);
-        let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i64;
-        let energy_sum =
-            i64::from(seed_e) + i64::from(left.energy) + i64::from(right.energy);
-        let total = energy_sum + nt_count * i64::from(self.penalty);
-        let energy = self.model.to_energy(total);
+        let nt_count = left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len;
+        let energy = self
+            .model
+            .hit_energy(seed_score, left.energy, right.energy, nt_count);
 
         (energy <= opts.filter.delta_g).then(|| {
             SearchHit::new(
@@ -510,12 +511,12 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        ExtendConfig, FilterConfig, MismatchSpec, OutputCompression, OutputConfig,
-        OutputFormat, ScoreConfig, SeedConfig, SeedSpec,
+        ExtendConfig, FilterConfig, MismatchSpec, OutputCompression, OutputConfig, OutputFormat,
+        ScoreConfig, SeedConfig, SeedSpec,
     };
-    use crate::types::DsmId;
     use crate::index::store::TargetStore;
     use crate::registry::QueryRegistry;
+    use crate::types::DsmId;
 
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

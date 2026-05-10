@@ -157,9 +157,9 @@ pub(crate) fn is_valid_score(score: i32) -> bool {
     score > NEG_INF
 }
 
-/// Conservative upper bound on |energy| from a single scoring table lookup.
-/// Tables use RIsearch3 raw units (1e-4 kcal/mol). Worst case: TSV energy
-/// 20 kcal/mol (200k raw) + penalty 50 kcal/mol (500k raw) × 2 = 1.2M.
+/// Conservative upper bound on |score| from a single scoring table lookup.
+/// Tables use RIsearch3 score units (score = -kcal/mol * 10000). Worst case:
+/// TSV energy 20 kcal/mol (200k score) + penalty 50 kcal/mol (500k score) × 2 = 1.2M.
 /// Enforced at runtime in ScoringModel::from_source_table.
 pub(crate) const MAX_ENERGY: i64 = 1_200_000;
 

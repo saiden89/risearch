@@ -178,34 +178,36 @@ impl From<Strand> for char {
     }
 }
 
-
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub struct Energy(f64);
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Energy(pub(crate) i32);
 
 impl Energy {
-    pub(crate) const SCALE: f64 = 10000.0;
+    const SCALE: f64 = 10000.0;
 
-    /// Convert to RIsearch3 raw integer units (1e-4 kcal/mol).
-    pub fn to_units(self) -> i32 {
-        let scaled = self.0 * Self::SCALE;
+    pub fn from_kcal(kcal: f64) -> Self {
+        let score = kcal * Self::SCALE;
         debug_assert!(
-            scaled >= i32::MIN as f64 && scaled <= i32::MAX as f64,
-            "Energy {:.4} kcal/mol overflows i32 raw units",
-            self.0
+            score >= i32::MIN as f64 && score <= i32::MAX as f64,
+            "Energy {:.4} kcal/mol overflows i32 score units",
+            kcal
         );
-        scaled.round() as i32
+        Energy(score.round() as i32)
+    }
+
+    pub fn to_kcal(self) -> f64 {
+        f64::from(self.0) / Self::SCALE
     }
 }
 
 impl From<f64> for Energy {
     fn from(v: f64) -> Self {
-        Energy(v)
+        Energy::from_kcal(v)
     }
 }
 
 impl From<Energy> for f64 {
     fn from(e: Energy) -> Self {
-        e.0
+        e.to_kcal()
     }
 }
 
@@ -219,13 +221,13 @@ impl std::str::FromStr for Energy {
     type Err = std::num::ParseFloatError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<f64>().map(Energy)
+        s.parse::<f64>().map(Energy::from_kcal)
     }
 }
 
 impl std::fmt::Display for Energy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:.2}", self.0)
+        write!(f, "{:.2}", self.to_kcal())
     }
 }
 
@@ -242,7 +244,9 @@ impl TryFrom<&str> for SequenceType {
         match s {
             "rna" => Ok(SequenceType::Rna),
             "dna" => Ok(SequenceType::Dna),
-            _ => Err(format!("invalid sequence type '{s}', expected 'rna' or 'dna'")),
+            _ => Err(format!(
+                "invalid sequence type '{s}', expected 'rna' or 'dna'"
+            )),
         }
     }
 }

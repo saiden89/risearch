@@ -2,7 +2,7 @@
 //! RNA dinucleotide stacking energy matrices (DSM)
 //!
 //! Tables encode nearest-neighbor thermodynamic parameters for RNA-RNA interactions.
-//! Runtime energy values are in 0.0001 kcal/mol (divide by -10000 for kcal/mol).
+//! Canonical table values are stored in kcal/mol and converted to score units on load.
 //!
 //! Indices: `[q1][q2][t1][t2]` = stacking energy for:
 //! ```text
@@ -80,64 +80,25 @@ static CANONICAL_TABLES: &[CanonicalDsms] = &[
 /// Gap index used for DSM transition queries (linked to Base::Gap).
 pub use crate::types::GAP;
 
-// =============================================================================
-// SCORING MODEL - Direction-agnostic penalty-adjusted transition table
-// =============================================================================
-
-/// Penalty-adjusted flat DSM table for one orientation.
+/// Penalty-adjusted flat scoring table for one orientation.
 ///
-/// Each instance is one canonical orientation (right or left).
-/// Use `transpose()` to create the other orientation.
+/// External inputs and outputs are kcal/mol. Internally DP uses integer scores:
+/// `score = -delta_g * 10000`.
 #[derive(Clone, Debug)]
 pub struct ScoringModel {
     table: [i32; DSM_FLAT_SIZE],
-    initiation: i32,
+    initiation: Energy,
+    penalty: Energy,
 }
 
 impl ScoringModel {
     /// Load from bundled canonical DSM tables, interpolating between bracket temperatures if needed.
     pub fn from_canonical(id: DsmId, temperature: i32, penalty: Energy) -> Result<Self> {
-        let penalty = penalty.to_units();
-        let entries: Vec<&CanonicalDsms> = CANONICAL_TABLES
-            .iter()
-            .filter(|e| e.id == id)
-            .collect();
-
-        if entries.is_empty() {
-            bail!("No canonical DSM for id='{}'", id.as_str());
-        }
-
-        if let Some(e) = entries.iter().find(|e| e.temperature == temperature) {
-            let (initiation, table) =
-                load_canonical_dsm_tsv_text(e.tsv, e.initiation, e.orientation)?;
-            return Ok(Self::from_source_table(&table, initiation, penalty));
-        }
-
-        let lo = entries.iter().filter(|e| e.temperature < temperature).max_by_key(|e| e.temperature);
-        let hi = entries.iter().filter(|e| e.temperature > temperature).min_by_key(|e| e.temperature);
-
-        let (lo, hi) = match (lo, hi) {
-            (Some(l), Some(h)) => (l, h),
-            _ => bail!(
-                "Temperature {} is outside the range of canonical DSM '{}'",
-                temperature, id.as_str()
-            ),
-        };
-
-        let (init1, table1) =
-            load_canonical_dsm_tsv_text(lo.tsv, lo.initiation, lo.orientation)?;
-        let (init2, table2) =
-            load_canonical_dsm_tsv_text(hi.tsv, hi.initiation, hi.orientation)?;
-
-        let (initiation, table) = interpolate_tables(
-            init1, &table1, init2, &table2,
-            [temperature as f64, lo.temperature as f64, hi.temperature as f64],
-        );
-
+        let (initiation, table) = load_canonical_table(id, temperature)?;
         Ok(Self::from_source_table(&table, initiation, penalty))
     }
 
-    fn from_source_table(source_table: &DsmTable, initiation: i32, penalty: i32) -> Self {
+    fn from_source_table(source_table: &DsmTable, initiation: Energy, penalty: Energy) -> Self {
         let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {
             for q2 in 0..6 {
@@ -165,8 +126,8 @@ impl ScoringModel {
                             2
                         };
 
-                        table[idx] = source_table[q1][q2][t1_orig][t2_orig]
-                            - penalty * ext_penalty_mult;
+                        table[idx] =
+                            source_table[q1][q2][t1_orig][t2_orig] - penalty.0 * ext_penalty_mult;
                     }
                 }
             }
@@ -182,11 +143,36 @@ impl ScoringModel {
             );
         }
 
-        Self { table, initiation }
+        Self {
+            table,
+            initiation,
+            penalty,
+        }
     }
 
-    pub(crate) fn to_energy(&self, units: i64) -> Energy {
-        Energy::from((units as f64 - self.initiation as f64) / -Energy::SCALE)
+    pub(crate) fn hit_energy(
+        &self,
+        seed_score: i32,
+        left_score: i32,
+        right_score: i32,
+        nt_count: usize,
+    ) -> Energy {
+        let alignment_score = seed_score
+            .checked_add(left_score)
+            .and_then(|score| score.checked_add(right_score))
+            .expect("alignment score overflows i32");
+        let penalty = i32::try_from(nt_count)
+            .expect("nt_count overflows i32")
+            .checked_mul(self.penalty.0)
+            .expect("penalty score overflows i32");
+        let energy = self
+            .initiation
+            .0
+            .checked_sub(alignment_score)
+            .and_then(|score| score.checked_sub(penalty))
+            .expect("Energy score overflows i32");
+
+        Energy(energy)
     }
 
     /// Check if two bases form a valid seed pair in transformed target space.
@@ -195,14 +181,12 @@ impl ScoringModel {
         q.pair_type(t.complement()).is_match(allow_wobble)
     }
 
-    /// Produce a left-canonical (transposed) copy: `[q1][q2][t1][t2] → [q2][q1][t2][t1]`.
-    /// Get raw pointer to the internal flat table
     #[inline(always)]
     pub fn table_ptr(&self) -> *const i32 {
         self.table.as_ptr()
     }
 
-    /// Produce a left-canonical (transposed) copy
+    /// Produce a left-canonical (transposed) copy.
     pub fn transpose(&self) -> ScoringModel {
         let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..BASE_COUNT {
@@ -219,22 +203,23 @@ impl ScoringModel {
         Self {
             table,
             initiation: self.initiation,
+            penalty: self.penalty,
         }
     }
 
-    /// Point query for one transition energy in the canonical 4-base tensor.
+    /// Point query for one transition score in the canonical 4-base tensor.
     #[inline(always)]
-    pub fn transition_energy(&self, q1: u8, q2: u8, t1: u8, t2: u8) -> i32 {
+    pub fn transition_score(&self, q1: u8, q2: u8, t1: u8, t2: u8) -> i32 {
         debug_assert!(q1 < 6 && q2 < 6 && t1 < 6 && t2 < 6);
         let idx = (q1 as usize) * 216 + (q2 as usize) * 36 + (t1 as usize) * 6 + (t2 as usize);
-        // SAFETY: All args ∈ 0..6. Max idx = 5*216+5*36+5*6+5 = 1295 < 1296.
+        // SAFETY: All args are in 0..6. Max idx = 1295 < 1296.
         unsafe { *self.table.get_unchecked(idx) }
     }
 
-    /// Point query for one transition energy using semantic bases.
+    /// Point query for one transition score using semantic bases.
     #[inline(always)]
-    pub fn transition_energy_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
-        self.transition_energy(q1 as u8, q2 as u8, t1 as u8, t2 as u8)
+    pub fn transition_score_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
+        self.transition_score(q1 as u8, q2 as u8, t1 as u8, t2 as u8)
     }
 
     /// Check if two bases form a valid pair.
@@ -243,8 +228,8 @@ impl ScoringModel {
         q.pair_type(t.complement()).is_match(true)
     }
 
-    /// Seed energy calculation with antiparallel indexing.
-    pub fn energy(
+    /// Seed score calculation with antiparallel indexing.
+    pub fn seed_score(
         &self,
         query: &[Base],
         target: &[Base],
@@ -258,7 +243,7 @@ impl ScoringModel {
         let mut score = 0;
         let t_match_end = t_pos + len - 1;
         for i in 0..(len - 1) {
-            score += self.transition_energy_bases(
+            score += self.transition_score_bases(
                 query[q_pos + i],
                 query[q_pos + i + 1],
                 target[t_match_end - i],
@@ -269,13 +254,56 @@ impl ScoringModel {
     }
 }
 
+fn load_canonical_table(id: DsmId, temperature: i32) -> Result<(Energy, DsmTable)> {
+    let entries: Vec<&CanonicalDsms> = CANONICAL_TABLES.iter().filter(|e| e.id == id).collect();
+
+    if entries.is_empty() {
+        bail!("No canonical DSM for id='{}'", id.as_str());
+    }
+
+    if let Some(e) = entries.iter().find(|e| e.temperature == temperature) {
+        return load_canonical_dsm_tsv_text(e.tsv, e.initiation, e.orientation);
+    }
+
+    let lo = entries
+        .iter()
+        .filter(|e| e.temperature < temperature)
+        .max_by_key(|e| e.temperature);
+    let hi = entries
+        .iter()
+        .filter(|e| e.temperature > temperature)
+        .min_by_key(|e| e.temperature);
+
+    let (lo, hi) = match (lo, hi) {
+        (Some(l), Some(h)) => (l, h),
+        _ => bail!(
+            "Temperature {} is outside the range of canonical DSM '{}'",
+            temperature,
+            id.as_str()
+        ),
+    };
+
+    let (init1, table1) = load_canonical_dsm_tsv_text(lo.tsv, lo.initiation, lo.orientation)?;
+    let (init2, table2) = load_canonical_dsm_tsv_text(hi.tsv, hi.initiation, hi.orientation)?;
+
+    Ok(interpolate_tables(
+        init1,
+        &table1,
+        init2,
+        &table2,
+        [
+            temperature as f64,
+            lo.temperature as f64,
+            hi.temperature as f64,
+        ],
+    ))
+}
 
 fn load_canonical_dsm_tsv_text(
     text: &str,
     initiation: f64,
     orientation: Orientation,
-) -> Result<(i32, DsmTable)> {
-
+) -> Result<(Energy, DsmTable)> {
     let mut lines = text.lines();
     let header = lines.next().context("DSM TSV is empty")?;
     let header_cols = header.split_whitespace().collect::<Vec<_>>();
@@ -333,7 +361,7 @@ fn load_canonical_dsm_tsv_text(
         if std::mem::replace(&mut seen[idx], true) {
             bail!("Duplicate DSM coordinate at row {}", line_no + 2);
         }
-        table[q1][q2][t1][t2] = kcal_to_units(-delta_g);
+        table[q1][q2][t1][t2] = Energy::from_kcal(-delta_g).0;
         row_count += 1;
     }
 
@@ -345,7 +373,7 @@ fn load_canonical_dsm_tsv_text(
         );
     }
 
-    Ok((kcal_to_units(initiation), table))
+    Ok((Energy::from_kcal(initiation), table))
 }
 
 fn parse_canonical_base(raw: &str) -> Result<usize> {
@@ -422,15 +450,17 @@ fn validate_canonical_manifest_text(text: &str, data_root: &Path) -> Result<()> 
                 bail!("DSM '{}' has non-finite initiation", id);
             }
             let path = data_root.join(file);
-            let table_text = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read canonical DSM table {}", path.display()))?;
+            let table_text = std::fs::read_to_string(&path).with_context(|| {
+                format!("Failed to read canonical DSM table {}", path.display())
+            })?;
             load_canonical_dsm_tsv_text(&table_text, initiation, orientation)
                 .with_context(|| format!("Invalid canonical DSM table {}", path.display()))?;
         }
         if !has_default {
             bail!(
                 "DSM '{}' default temperature {} is not present",
-                id, default_temperature
+                id,
+                default_temperature
             );
         }
     }
@@ -489,12 +519,12 @@ fn required_inline_number(table: &toml_edit::InlineTable, key: &str) -> Result<f
 }
 
 fn interpolate_tables(
-    offset_1: i32,
+    offset_1: Energy,
     table_1: &DsmTable,
-    offset_2: i32,
+    offset_2: Energy,
     table_2: &DsmTable,
     temps: [f64; 3],
-) -> (i32, DsmTable) {
+) -> (Energy, DsmTable) {
     let mut table = [[[[0i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
     for q1 in 0..BASE_COUNT {
         for q2 in 0..BASE_COUNT {
@@ -506,17 +536,13 @@ fn interpolate_tables(
             }
         }
     }
-    (lerp(offset_1, offset_2, temps), table)
+    (Energy(lerp(offset_1.0, offset_2.0, temps)), table)
 }
 
 fn lerp(v1: i32, v2: i32, temps: [f64; 3]) -> i32 {
     let [t0, t1, t2] = temps;
     let diff = i64::from(v1) - i64::from(v2);
     ((t0 - t2) / (t1 - t2) * diff as f64 + f64::from(v2)).round() as i32
-}
-
-fn kcal_to_units(value: f64) -> i32 {
-    (value * Energy::SCALE).round() as i32
 }
 
 #[cfg(test)]
@@ -527,28 +553,19 @@ mod tests {
     fn pairing_distinguishes_seed_and_extension_modes() {
         let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
 
-        // DP/display pairing follows the scoring matrix semantics.
         assert!(model.is_pair(Base::G, Base::G));
         assert!(model.is_pair(Base::G, Base::A));
-
-        // Seed pairing can be stricter than the extension model.
         assert!(!ScoringModel::seed_pair(Base::G, Base::A, false));
         assert!(ScoringModel::seed_pair(Base::G, Base::A, true));
     }
 
     #[test]
-    fn transition_energy_returns_nonzero_for_valid_pairs() {
+    fn transition_score_returns_nonzero_for_valid_pairs() {
         let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
-        // Original target was U-A, index space is A-U
-        let energy = model.transition_energy_bases(Base::A, Base::U, Base::A, Base::U);
-        let gap_energy = model.transition_energy_bases(
-            Base::Gap,
-            Base::A,
-            Base::Gap,
-            Base::A, // original was U, index is A
-        );
+        let score = model.transition_score_bases(Base::A, Base::U, Base::A, Base::U);
+        let gap_score = model.transition_score_bases(Base::Gap, Base::A, Base::Gap, Base::A);
         assert!(
-            gap_energy != 0 || energy != 0,
+            gap_score != 0 || score != 0,
             "At least one transition query should be non-zero"
         );
     }
@@ -556,16 +573,15 @@ mod tests {
     #[test]
     fn gg_cc_stack_is_strongest() {
         let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
-        let actual = model.transition_energy_bases(Base::G, Base::G, Base::G, Base::G);
+        let actual = model.transition_score_bases(Base::G, Base::G, Base::G, Base::G);
         assert_eq!(actual, 33016);
     }
 
     #[test]
     fn energy_conversion_roundtrips() {
         let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
-        let energy = model.to_energy(33016_i64);
-        let kcal = f64::from(energy);
-        assert!((kcal - 2.8264).abs() < 0.001);
+        let energy = model.hit_energy(33016, 0, 0, 0);
+        assert!((energy.to_kcal() - 2.8264).abs() < 0.001);
     }
 
     #[test]
@@ -577,8 +593,8 @@ mod tests {
                 for t1 in 0u8..6 {
                     for t2 in 0u8..6 {
                         assert_eq!(
-                            left.transition_energy(q1, q2, t1, t2),
-                            right.transition_energy(q2, q1, t2, t1),
+                            left.transition_score(q1, q2, t1, t2),
+                            right.transition_score(q2, q1, t2, t1),
                             "transpose mismatch at ({},{},{},{})",
                             q1,
                             q2,
@@ -616,5 +632,4 @@ mod tests {
         );
         assert!(load_canonical_dsm_tsv_text(tsv, 1.0, Orientation::Identity).is_err());
     }
-
 }
