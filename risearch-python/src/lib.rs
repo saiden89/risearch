@@ -11,9 +11,9 @@ use clap::ValueEnum;
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::{
-    cli::args::seed_spec_from_args, run_search_in_memory, Energy, ExtendConfig, FilterConfig,
-    Matrix, MismatchSpec, OutputCompression, OutputConfig, OutputFormat, QueryRegistry, ScoreConfig,
-    SearchConfig, SearchHit, SeedConfig, SeedPairingMode, TargetStore,
+    cli::args::seed_spec_from_args, run_search_in_memory, DsmId, Energy, ExtendConfig,
+    FilterConfig, MismatchSpec, OutputCompression, OutputConfig, OutputFormat, QueryRegistry,
+    ScoreConfig, SearchConfig, SearchHit, SeedConfig, SeedPairingMode, TargetStore,
 };
 
 // =============================================================================
@@ -208,6 +208,7 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
     seed_pairing = "allow_wobble",
     matrix = "t04",
     penalty = 3.5,
+    temperature = 37,
     max_extension = 20,
     seed_energy = 0.0,
     no_max_prune = false,
@@ -226,6 +227,7 @@ fn search(
     seed_pairing: &str,
     matrix: &str,
     penalty: f64,
+    temperature: i32,
     max_extension: u8,
     seed_energy: f64,
     no_max_prune: bool,
@@ -236,7 +238,7 @@ fn search(
         SeedPairingMode::AllowWobble
     );
 
-    let mat = Matrix::from_str(matrix, true).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let dsm_id = DsmId::try_from(matrix).map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let seed = seed_spec_from_args(seed_start, seed_end, seed_length)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -248,12 +250,9 @@ fn search(
             mismatch: MismatchSpec::new(mismatches, mismatch_prefix, mismatch_suffix),
         },
         score: ScoreConfig {
-            matrix: mat,
+            dsm_id,
             penalty: Energy::from(penalty),
-            matrix2: None,
-            matpath: None,
-            temperature: None,
-            weights: None,
+            temperature,
         },
         extend: ExtendConfig {
             max_extension,

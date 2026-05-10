@@ -27,13 +27,13 @@ use super::{BestScore, DpGrid, DpView, ExtendDir, MAX_EXT};
 /// Precomputed transition tables for the Gotoh 3-state DP.
 ///
 /// Direction-agnostic: each instance corresponds to one `ScoringModel` orientation.
-pub(crate) struct Gotoh {
+pub struct Gotoh {
     pub(crate) model: ScoringModel,
 }
 
 impl Gotoh {
     /// Materialize all transition tables from a `ScoringModel`.
-    pub(crate) fn new(table: &ScoringModel) -> Self {
+    pub fn new(table: &ScoringModel) -> Self {
         Self {
             model: table.clone(),
         }
@@ -99,7 +99,7 @@ impl Gotoh {
 
     #[cfg_attr(feature = "prof", inline(never))]
     /// Run DP forward pass over `view`, reusing the caller-provided grid.
-    pub(crate) fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> BestScore {
+    pub fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> BestScore {
         let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
 
         trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
@@ -174,11 +174,11 @@ impl Gotoh {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Matrix;
+    use crate::types::{DsmId, Energy};
 
     #[test]
     fn gotoh_matches_scoring_table() {
-        let table = ScoringModel::new(Matrix::T04, 50);
+        let table = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.005)).unwrap();
         let gotoh = Gotoh::new(&table);
 
         for q1 in 0u8..6 {
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn gotoh_semantic_transitions_match_scoring_model() {
-        let table = ScoringModel::new(Matrix::T04, 50);
+        let table = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.005)).unwrap();
         let gotoh = Gotoh::new(&table);
 
         for qp in 0u8..6 {

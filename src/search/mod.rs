@@ -194,13 +194,14 @@ fn init_search<'a>(
         opts.filter.delta_g
     );
 
-    let model = ScoringModel::from_score_config(&opts.score)?;
+    let model = ScoringModel::from_canonical(opts.score.dsm_id, opts.score.temperature, opts.score.penalty)?;
     Ok(Some(SearchContext::new(queries, store, opts, model)))
 }
 
 struct SearchWorker {
     extension: ExtensionEngine,
     model: ScoringModel,
+    penalty: i32,
 }
 
 impl SearchWorker {
@@ -210,6 +211,7 @@ impl SearchWorker {
         Self {
             extension: ExtensionEngine::new(dp_cfg.max_extension(), &model),
             model,
+            penalty: opts.score.penalty.to_units(),
         }
     }
 
@@ -328,12 +330,11 @@ impl SearchWorker {
             max_ext,
         );
         let right = self.extension.extend(&view_right, include_alignment);
-        let penalty = opts.score.penalty.to_raw();
         let nt_count = (left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len) as i64;
         let energy_sum =
             i64::from(seed_e) + i64::from(left.energy) + i64::from(right.energy);
-        let total_raw = energy_sum + nt_count * i64::from(penalty);
-        let energy = self.model.energy_from_raw(total_raw);
+        let total = energy_sum + nt_count * i64::from(self.penalty);
+        let energy = self.model.to_energy(total);
 
         (energy <= opts.filter.delta_g).then(|| {
             SearchHit::new(
@@ -509,9 +510,10 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
+        ExtendConfig, FilterConfig, MismatchSpec, OutputCompression, OutputConfig,
         OutputFormat, ScoreConfig, SeedConfig, SeedSpec,
     };
+    use crate::types::DsmId;
     use crate::index::store::TargetStore;
     use crate::registry::QueryRegistry;
 
@@ -523,12 +525,9 @@ mod tests {
         SearchConfig {
             seed: SeedConfig::with_wobble(SeedSpec::LengthOnly(8), MismatchSpec::exact(), true),
             score: ScoreConfig {
-                matrix: Matrix::T04,
+                dsm_id: DsmId::T04,
                 penalty: Energy::from(3.5),
-                matrix2: None,
-                matpath: None,
-                temperature: None,
-                weights: None,
+                temperature: 37,
             },
             extend: ExtendConfig {
                 max_extension: 10,

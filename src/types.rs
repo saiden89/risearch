@@ -183,11 +183,11 @@ impl From<Strand> for char {
 pub struct Energy(f64);
 
 impl Energy {
-    pub(crate) const RAW_SCALE: f64 = 10000.0;
+    pub(crate) const SCALE: f64 = 10000.0;
 
     /// Convert to RIsearch3 raw integer units (1e-4 kcal/mol).
-    pub fn to_raw(self) -> i32 {
-        let scaled = self.0 * Self::RAW_SCALE;
+    pub fn to_units(self) -> i32 {
+        let scaled = self.0 * Self::SCALE;
         debug_assert!(
             scaled >= i32::MIN as f64 && scaled <= i32::MAX as f64,
             "Energy {:.4} kcal/mol overflows i32 raw units",
@@ -226,5 +226,71 @@ impl std::str::FromStr for Energy {
 impl std::fmt::Display for Energy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:.2}", self.0)
+    }
+}
+
+/// Nucleic acid type for query/target strand identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequenceType {
+    Rna,
+    Dna,
+}
+
+impl TryFrom<&str> for SequenceType {
+    type Error = String;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "rna" => Ok(SequenceType::Rna),
+            "dna" => Ok(SequenceType::Dna),
+            _ => Err(format!("invalid sequence type '{s}', expected 'rna' or 'dna'")),
+        }
+    }
+}
+
+/// Identifier for a bundled canonical DSM (dinucleotide stacking model).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DsmId {
+    #[default]
+    T04,
+    T99,
+    Slh04,
+    S95RnaDna,
+    S95DnaRna,
+}
+
+impl DsmId {
+    pub const ALL: &'static [DsmId] = &[
+        DsmId::T04,
+        DsmId::T99,
+        DsmId::Slh04,
+        DsmId::S95RnaDna,
+        DsmId::S95DnaRna,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            DsmId::T04 => "t04",
+            DsmId::T99 => "t99",
+            DsmId::Slh04 => "slh04",
+            DsmId::S95RnaDna => "s95-rna-dna",
+            DsmId::S95DnaRna => "s95-dna-rna",
+        }
+    }
+}
+
+impl TryFrom<&str> for DsmId {
+    type Error = String;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        DsmId::ALL
+            .iter()
+            .find(|d| d.as_str() == s)
+            .copied()
+            .ok_or_else(|| format!("unknown DSM id '{s}'"))
+    }
+}
+
+impl std::fmt::Display for DsmId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }

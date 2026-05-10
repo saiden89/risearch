@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 
-use crate::types::Energy;
+use crate::types::{DsmId, Energy};
 
 // =============================================================================
 // SEED SPECIFICATION TYPES (moved from seed::spec)
@@ -134,24 +134,6 @@ impl SeedSpec {
 // ENUMS (shared by config and CLI via clap derives)
 // =============================================================================
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[clap(rename_all = "lowercase")]
-pub enum Matrix {
-    /// Turner 1999 RNA-RNA parameters
-    T99,
-    /// Turner 2004 RNA-RNA parameters (default)
-    #[default]
-    T04,
-}
-
-impl std::fmt::Display for Matrix {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Matrix::T99 => write!(f, "t99"),
-            Matrix::T04 => write!(f, "t04"),
-        }
-    }
-}
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[clap(rename_all = "lowercase")]
@@ -232,18 +214,9 @@ impl SeedConfig {
 /// Global scoring model shared by seed scoring and DP extension.
 #[derive(Debug, Clone)]
 pub struct ScoreConfig {
-    /// Energy matrix for RNA-RNA duplexes
-    pub matrix: Matrix,
-
-    /// Per-nucleotide penalty (in kcal/mol), applied wherever score is computed
+    pub dsm_id: DsmId,
     pub penalty: Energy,
-
-    // Placeholder flags from C implementation - not yet implemented
-    // (see cli/args for detailed documentation)
-    pub matrix2: Option<String>,
-    pub matpath: Option<String>,
-    pub temperature: Option<String>,
-    pub weights: Option<String>,
+    pub temperature: i32,
 }
 
 /// Arguments for extension strategy.

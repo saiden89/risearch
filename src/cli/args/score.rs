@@ -1,5 +1,8 @@
-use crate::config::{self, Matrix};
-use crate::types::Energy;
+use clap::builder::PossibleValuesParser;
+
+use crate::config;
+use crate::dsm::DSM_IDS;
+use crate::types::{DsmId, Energy};
 
 fn parse_penalty(s: &str) -> Result<Energy, String> {
     let v: f64 = s.parse().map_err(|e| format!("{e}"))?;
@@ -9,12 +12,26 @@ fn parse_penalty(s: &str) -> Result<Energy, String> {
     Ok(Energy::from(v))
 }
 
+fn parse_temperature(s: &str) -> Result<i32, String> {
+    let v: i32 = s.parse().map_err(|e| format!("{e}"))?;
+    if !(0..=100).contains(&v) {
+        return Err(format!("temperature must be between 0 and 100, got {v}"));
+    }
+    Ok(v)
+}
+
 /// Arguments for global scoring model
 #[derive(clap::Args, Debug, Clone)]
 pub struct ScoreArgs {
-    /// Energy matrix for RNA-RNA duplexes
-    #[arg(short = 'z', long = "matrix", value_name = "MATRIX", default_value_t = Matrix::T04, value_enum)]
-    pub matrix: Matrix,
+    /// Dinucleotide stacking model for energy calculations
+    #[arg(
+        short = 'z',
+        long = "matrix",
+        value_name = "MATRIX",
+        default_value = "t04",
+        value_parser = PossibleValuesParser::new(DSM_IDS)
+    )]
+    pub dsm_id: String,
 
     /// Per-nucleotide penalty used by the scoring model (in kcal/mol, 0–50)
     #[arg(
@@ -26,37 +43,24 @@ pub struct ScoreArgs {
     )]
     pub penalty: Energy,
 
-    /// TODO: Secondary energy matrix for custom energy parameters.
-    /// In C: `-y mat2, --matrix2=mat2` - Only needed for custom energy matrices.
-    #[arg(long = "matrix2", value_name = "MATRIX2", hide = true)]
-    pub matrix2: Option<String>,
-
-    /// TODO: Path to directory holding custom energy matrices.
-    /// In C: `-M PATH, --matpath=PATH` - Directory with energy matrix files.
-    #[arg(long = "matpath", value_name = "PATH", hide = true)]
-    pub matpath: Option<String>,
-
-    /// TODO: Temperature scaling for energy calculations.
-    /// In C: `-K T1[,T2,T3], --temperature=T0[,T1,T2]` - Temperatures in Kelvin.
-    /// T0 is the target temperature; T1/T2 only needed for custom energy parameters.
-    #[arg(long = "temperature", value_name = "T1[,T2,T3]", hide = true)]
-    pub temperature: Option<String>,
-
-    /// TODO: CRISPR weighting for gRNA-target interactions.
-    /// In C: `-w arr, --weights=arr` - Use "CRISPR_gRNApPAM" to weight by CRISPR/Cas9 impact.
-    #[arg(long = "weights", value_name = "WEIGHTS", hide = true)]
-    pub weights: Option<String>,
+    /// Temperature for energy calculations (degrees Celsius, 0–100)
+    #[arg(
+        short = 'T',
+        long = "temperature",
+        value_name = "TEMP",
+        default_value = "37",
+        value_parser = parse_temperature
+    )]
+    pub temperature: i32,
 }
 
 impl From<ScoreArgs> for config::ScoreConfig {
     fn from(value: ScoreArgs) -> Self {
         config::ScoreConfig {
-            matrix: value.matrix,
+            // PossibleValuesParser guarantees dsm_id is a valid DSM_IDS member
+            dsm_id: DsmId::try_from(value.dsm_id.as_str()).expect("clap validated"),
             penalty: value.penalty,
-            matrix2: value.matrix2,
-            matpath: value.matpath,
             temperature: value.temperature,
-            weights: value.weights,
         }
     }
 }

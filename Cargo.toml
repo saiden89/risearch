@@ -31,6 +31,7 @@ rkyv = { version = "0.8", features = ["bytecheck", "std", "pointer_width_64"] }
 serde = { version = "1.0.228", features = ["derive"] }
 smallvec = "1.15.1"
 tikv-jemallocator = "0.6"
+toml_edit = "0.23.10"
 zstd = "0.13"
 
 [dev-dependencies]

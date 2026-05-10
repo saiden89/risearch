@@ -24,8 +24,9 @@ pub use types::{Base, Energy, PairType, SeedPairingMode, Strand, BASE_COUNT, GAP
 
 // Search API re-exports for library usage
 pub use config::{
-    ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
+    ExtendConfig, FilterConfig, MismatchSpec, OutputCompression, OutputConfig,
     OutputFormat, ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
 };
+pub use types::DsmId;
 pub use search::{run_search, run_search_in_memory, SearchHit};
 pub use seed::SeedHit;

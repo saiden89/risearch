@@ -2,7 +2,7 @@ use crate::config::ExtendConfig;
 use crate::types::Base;
 
 mod core;
-pub(crate) mod gotoh;
+pub mod gotoh;
 mod init;
 use std::cmp::max;
 
@@ -37,7 +37,7 @@ impl From<&ExtendConfig> for DpConfig {
 /// only affects sequence coordinate arithmetic. Stacking order is resolved
 /// by the direction-canonical `Gotoh` tables.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ExtendDir {
+pub enum ExtendDir {
     Left,
     Right,
 }
@@ -61,7 +61,7 @@ impl std::fmt::Display for ExtendDir {
 /// It defines the extension window and how DP offsets map back to semantic
 /// query/target bases. Scoring-specific lookup indices are materialized once
 /// in `Gotoh::extend`.
-pub(crate) struct DpView<'a> {
+pub struct DpView<'a> {
     query: &'a [Base],
     target: &'a [Base],
     q_anchor: usize,
@@ -73,7 +73,7 @@ pub(crate) struct DpView<'a> {
 
 impl<'a> DpView<'a> {
     /// Create a directional extension view anchored at a seed boundary.
-    pub(crate) fn new(
+    pub fn new(
         query: &'a [Base],
         target: &'a [Base],
         q_anchor: usize,
@@ -183,10 +183,10 @@ const _: () = {
 
 /// Tracks the best scoring position found during DP extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BestScore {
-    pub(crate) energy: i32,
-    pub(crate) q_idx: usize,
-    pub(crate) t_idx: usize,
+pub struct BestScore {
+    pub energy: i32,
+    pub q_idx: usize,
+    pub t_idx: usize,
 }
 
 impl BestScore {
@@ -245,13 +245,13 @@ impl DpCell {
 ///
 /// Row-major layout: cell (i, j) is at index `i * width + j`.
 /// Reused across extensions (resized, not reallocated).
-pub(crate) struct DpGrid {
+pub struct DpGrid {
     data: Vec<DpCell>,
     width: usize,
 }
 
 impl DpGrid {
-    pub(crate) fn new(max_extension: usize) -> Self {
+    pub fn new(max_extension: usize) -> Self {
         let side = max_extension.min(MAX_EXT).saturating_add(1).max(1);
         Self {
             data: vec![DpCell::EMPTY; side * side],

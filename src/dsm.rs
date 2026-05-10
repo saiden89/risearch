@@ -12,32 +12,69 @@
 //! ```
 
 use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
 
-use crate::config::{Matrix, ScoreConfig};
-use crate::types::{Base, Energy, BASE_COUNT};
+use crate::types::{Base, DsmId, Energy, SequenceType, BASE_COUNT};
 
-/// DSM table type: 4D array [q1][q2][t1][t2]
-pub(crate) type DsmTable = [[[[i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
+type DsmTable = [[[[i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
 
-/// Number of entries in a flattened DSM table (6^4 = 1296).
-pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * BASE_COUNT;
+const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * BASE_COUNT;
 
-const DSM_TSV_VALUE_COUNT: usize = DSM_FLAT_SIZE + 1;
-const BUILTIN_SCALE: i32 = 100;
-/// Duplex initiation free energy for built-in Turner 2004/1999 parameters.
-/// Applied once per interaction: ΔG = (raw_score - init) / -SCALE.
-/// Value: 5.59 kcal/mol × 10000 = 55,900 raw units.
-const INITIATION_ENERGY_RAW: i32 = 55_900;
 const MAX_TSV_ENERGY: f64 = 20.0;
-const DEFAULT_TEMPERATURES: [f64; 3] = [310.15, 310.15, 315.15];
-const TSV_BASE_TO_RUST: [usize; BASE_COUNT] = [
-    Base::A as usize,
-    Base::C as usize,
-    Base::G as usize,
-    Base::U as usize,
-    Base::N as usize,
-    Base::Gap as usize,
+
+pub const DSM_IDS: [&str; DsmId::ALL.len()] = {
+    let mut ids = [""; DsmId::ALL.len()];
+    let mut i = 0;
+    while i < DsmId::ALL.len() {
+        ids[i] = DsmId::ALL[i].as_str();
+        i += 1;
+    }
+    ids
+};
+const CANONICAL_DSM_HEADER: [&str; 5] = ["q1", "q2", "t1", "t2", "delta_g_kcal_per_mol"];
+
+#[derive(Clone, Copy)]
+enum Orientation {
+    Identity,
+    ReverseSwap,
+}
+
+struct CanonicalDsms {
+    id: DsmId,
+    temperature: i32,
+    initiation: f64,
+    orientation: Orientation,
+    tsv: &'static str,
+}
+
+static CANONICAL_TABLES: &[CanonicalDsms] = &[
+    // t04: Turner 2004 RNA-RNA
+    CanonicalDsms { id: DsmId::T04, temperature: 0,  initiation: 6.8982, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/t04/0.tsv")  },
+    CanonicalDsms { id: DsmId::T04, temperature: 25, initiation: 6.3786, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/t04/25.tsv") },
+    CanonicalDsms { id: DsmId::T04, temperature: 37, initiation: 6.128,  orientation: Orientation::Identity, tsv: include_str!("../data/dsm/t04/37.tsv") },
+    CanonicalDsms { id: DsmId::T04, temperature: 42, initiation: 5.9848, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/t04/42.tsv") },
+    CanonicalDsms { id: DsmId::T04, temperature: 50, initiation: 5.7678, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/t04/50.tsv") },
+    // slh04: SantaLucia-Hicks 2004 DNA-DNA
+    CanonicalDsms { id: DsmId::Slh04, temperature: 0,  initiation: 1.858,  orientation: Orientation::Identity, tsv: include_str!("../data/dsm/slh04/0.tsv")  },
+    CanonicalDsms { id: DsmId::Slh04, temperature: 25, initiation: 1.9532, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/slh04/25.tsv") },
+    CanonicalDsms { id: DsmId::Slh04, temperature: 37, initiation: 2.0438, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/slh04/37.tsv") },
+    CanonicalDsms { id: DsmId::Slh04, temperature: 42, initiation: 2.1748, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/slh04/42.tsv") },
+    CanonicalDsms { id: DsmId::Slh04, temperature: 50, initiation: 2.4016, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/slh04/50.tsv") },
+    // s95-rna-dna: Sugimoto 1995 RNA-DNA (identity)
+    CanonicalDsms { id: DsmId::S95RnaDna, temperature: 0,  initiation: 4.3476, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/s95/0.tsv")  },
+    CanonicalDsms { id: DsmId::S95RnaDna, temperature: 25, initiation: 4.1588, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/s95/25.tsv") },
+    CanonicalDsms { id: DsmId::S95RnaDna, temperature: 37, initiation: 4.035,  orientation: Orientation::Identity, tsv: include_str!("../data/dsm/s95/37.tsv") },
+    CanonicalDsms { id: DsmId::S95RnaDna, temperature: 42, initiation: 3.9402, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/s95/42.tsv") },
+    CanonicalDsms { id: DsmId::S95RnaDna, temperature: 50, initiation: 3.8672, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/s95/50.tsv") },
+    // s95-dna-rna: Sugimoto 1995 DNA-RNA (reverse-swap of RNA-DNA)
+    CanonicalDsms { id: DsmId::S95DnaRna, temperature: 0,  initiation: 4.3476, orientation: Orientation::ReverseSwap, tsv: include_str!("../data/dsm/s95/0.tsv")  },
+    CanonicalDsms { id: DsmId::S95DnaRna, temperature: 25, initiation: 4.1588, orientation: Orientation::ReverseSwap, tsv: include_str!("../data/dsm/s95/25.tsv") },
+    CanonicalDsms { id: DsmId::S95DnaRna, temperature: 37, initiation: 4.035,  orientation: Orientation::ReverseSwap, tsv: include_str!("../data/dsm/s95/37.tsv") },
+    CanonicalDsms { id: DsmId::S95DnaRna, temperature: 42, initiation: 3.9402, orientation: Orientation::ReverseSwap, tsv: include_str!("../data/dsm/s95/42.tsv") },
+    CanonicalDsms { id: DsmId::S95DnaRna, temperature: 50, initiation: 3.8672, orientation: Orientation::ReverseSwap, tsv: include_str!("../data/dsm/s95/50.tsv") },
+    // t99: Turner 1999 RNA-RNA (37°C only)
+    CanonicalDsms { id: DsmId::T99, temperature: 37, initiation: 5.59, orientation: Orientation::Identity, tsv: include_str!("../data/dsm/t99/37.tsv") },
 ];
 
 /// Gap index used for DSM transition queries (linked to Base::Gap).
@@ -54,43 +91,53 @@ pub use crate::types::GAP;
 #[derive(Clone, Debug)]
 pub struct ScoringModel {
     table: [i32; DSM_FLAT_SIZE],
-    initiation_raw: i32,
+    initiation: i32,
 }
 
 impl ScoringModel {
-    /// Create a new scoring table from a base matrix, baking in the extension penalty.
-    pub fn new(matrix: Matrix, penalty: i32) -> Self {
-        let source_table = match matrix {
-            Matrix::T04 => &T04,
-            Matrix::T99 => &T99,
+    /// Load from bundled canonical DSM tables, interpolating between bracket temperatures if needed.
+    pub fn from_canonical(id: DsmId, temperature: i32, penalty: Energy) -> Result<Self> {
+        let penalty = penalty.to_units();
+        let entries: Vec<&CanonicalDsms> = CANONICAL_TABLES
+            .iter()
+            .filter(|e| e.id == id)
+            .collect();
+
+        if entries.is_empty() {
+            bail!("No canonical DSM for id='{}'", id.as_str());
+        }
+
+        if let Some(e) = entries.iter().find(|e| e.temperature == temperature) {
+            let (initiation, table) =
+                load_canonical_dsm_tsv_text(e.tsv, e.initiation, e.orientation)?;
+            return Ok(Self::from_source_table(&table, initiation, penalty));
+        }
+
+        let lo = entries.iter().filter(|e| e.temperature < temperature).max_by_key(|e| e.temperature);
+        let hi = entries.iter().filter(|e| e.temperature > temperature).min_by_key(|e| e.temperature);
+
+        let (lo, hi) = match (lo, hi) {
+            (Some(l), Some(h)) => (l, h),
+            _ => bail!(
+                "Temperature {} is outside the range of canonical DSM '{}'",
+                temperature, id.as_str()
+            ),
         };
 
-        Self::from_source_table(source_table, INITIATION_ENERGY_RAW, penalty, BUILTIN_SCALE)
+        let (init1, table1) =
+            load_canonical_dsm_tsv_text(lo.tsv, lo.initiation, lo.orientation)?;
+        let (init2, table2) =
+            load_canonical_dsm_tsv_text(hi.tsv, hi.initiation, hi.orientation)?;
+
+        let (initiation, table) = interpolate_tables(
+            init1, &table1, init2, &table2,
+            [temperature as f64, lo.temperature as f64, hi.temperature as f64],
+        );
+
+        Ok(Self::from_source_table(&table, initiation, penalty))
     }
 
-    pub(crate) fn from_score_config(score: &ScoreConfig) -> Result<Self> {
-        let penalty = score.penalty.to_raw();
-        let Some(matpath) = &score.matpath else {
-            return Ok(Self::new(score.matrix, penalty));
-        };
-        let matrix = matrix_file_stem(score.matrix);
-        let temps = parse_temperatures(score.temperature.as_deref())?;
-        let (initiation_raw, source_table) =
-            load_temperature_table(Path::new(matpath), matrix, score.matrix2.as_deref(), temps)?;
-        Ok(Self::from_source_table(
-            &source_table,
-            initiation_raw,
-            penalty,
-            1,
-        ))
-    }
-
-    fn from_source_table(
-        source_table: &DsmTable,
-        initiation_raw: i32,
-        penalty: i32,
-        source_scale: i32,
-    ) -> Self {
+    fn from_source_table(source_table: &DsmTable, initiation: i32, penalty: i32) -> Self {
         let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {
             for q2 in 0..6 {
@@ -118,7 +165,7 @@ impl ScoringModel {
                             2
                         };
 
-                        table[idx] = source_table[q1][q2][t1_orig][t2_orig] * source_scale
+                        table[idx] = source_table[q1][q2][t1_orig][t2_orig]
                             - penalty * ext_penalty_mult;
                     }
                 }
@@ -135,11 +182,11 @@ impl ScoringModel {
             );
         }
 
-        Self { table, initiation_raw }
+        Self { table, initiation }
     }
 
-    pub(crate) fn energy_from_raw(&self, raw: i64) -> Energy {
-        Energy::from((raw as f64 - self.initiation_raw as f64) / -Energy::RAW_SCALE)
+    pub(crate) fn to_energy(&self, units: i64) -> Energy {
+        Energy::from((units as f64 - self.initiation as f64) / -Energy::SCALE)
     }
 
     /// Check if two bases form a valid seed pair in transformed target space.
@@ -158,10 +205,10 @@ impl ScoringModel {
     /// Produce a left-canonical (transposed) copy
     pub fn transpose(&self) -> ScoringModel {
         let mut table = [0i32; DSM_FLAT_SIZE];
-        for q1 in 0..6 {
-            for q2 in 0..6 {
-                for t1 in 0..6 {
-                    for t2 in 0..6 {
+        for q1 in 0..BASE_COUNT {
+            for q2 in 0..BASE_COUNT {
+                for t1 in 0..BASE_COUNT {
+                    for t2 in 0..BASE_COUNT {
                         let dst = q1 * 216 + q2 * 36 + t1 * 6 + t2;
                         let src = q2 * 216 + q1 * 36 + t2 * 6 + t1;
                         table[dst] = self.table[src];
@@ -171,7 +218,7 @@ impl ScoringModel {
         }
         Self {
             table,
-            initiation_raw: self.initiation_raw,
+            initiation: self.initiation,
         }
     }
 
@@ -222,125 +269,223 @@ impl ScoringModel {
     }
 }
 
-fn matrix_file_stem(matrix: Matrix) -> &'static str {
-    match matrix {
-        Matrix::T04 => "t04.v4",
-        Matrix::T99 => "t99.v2",
-    }
-}
 
-fn parse_temperatures(raw: Option<&str>) -> Result<[f64; 3]> {
-    let mut temps = DEFAULT_TEMPERATURES;
-    let Some(raw) = raw else {
-        return Ok(temps);
-    };
-    for (i, part) in raw.split(',').enumerate() {
-        if i >= temps.len() {
-            bail!("Expected at most 3 temperatures, got '{}'", raw);
-        }
-        if part.is_empty() {
-            bail!("Empty temperature in '{}'", raw);
-        }
-        temps[i] = part
-            .parse::<f64>()
-            .with_context(|| format!("Invalid temperature '{}'", part))?;
-    }
-    for (i, temp) in temps.iter().enumerate() {
-        if !temp.is_finite() || !(273.15..=373.15).contains(temp) {
-            bail!(
-                "Temperatures must be in the range 273.15 - 373.15K; T{} is {}",
-                i,
-                temp
-            );
-        }
-    }
-    if temps[1] >= temps[2] {
-        bail!("Temperature interpolation requires T1 < T2");
-    }
-    Ok(temps)
-}
-
-fn load_temperature_table(
-    matpath: &Path,
-    matrix: &str,
-    matrix2: Option<&str>,
-    temps: [f64; 3],
+fn load_canonical_dsm_tsv_text(
+    text: &str,
+    initiation: f64,
+    orientation: Orientation,
 ) -> Result<(i32, DsmTable)> {
-    let exact_path = matrix_path(matpath, temps[0], matrix);
-    if exact_path.is_file() {
-        return load_dsm_tsv(&exact_path);
-    }
 
-    let t1_path = matrix_path(matpath, temps[1], matrix);
-    let matrix2 = matrix2.unwrap_or(matrix);
-    let t2_path = matrix_path(matpath, temps[2], matrix2);
-    let (offset_1, table_1) = load_dsm_tsv(&t1_path)
-        .with_context(|| format!("Failed to load T1 matrix {}", t1_path.display()))?;
-    let (offset_2, table_2) = load_dsm_tsv(&t2_path)
-        .with_context(|| format!("Failed to load T2 matrix {}", t2_path.display()))?;
-    Ok(interpolate_tables(
-        offset_1, &table_1, offset_2, &table_2, temps,
-    ))
-}
-
-fn matrix_path(matpath: &Path, temp: f64, matrix: &str) -> PathBuf {
-    matpath
-        .join("RNA/RNA")
-        .join(format!("{temp:.2}"))
-        .join(format!("{matrix}.tsv"))
-}
-
-fn load_dsm_tsv(path: &Path) -> Result<(i32, DsmTable)> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read DSM TSV {}", path.display()))?;
-    let values = text
-        .split_whitespace()
-        .map(|token| {
-            token
-                .parse::<f64>()
-                .with_context(|| format!("Invalid DSM value '{}' in {}", token, path.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    if values.len() != DSM_TSV_VALUE_COUNT {
+    let mut lines = text.lines();
+    let header = lines.next().context("DSM TSV is empty")?;
+    let header_cols = header.split_whitespace().collect::<Vec<_>>();
+    if header_cols != CANONICAL_DSM_HEADER {
         bail!(
-            "Read {} DSM values from {}, expected {}",
-            values.len(),
-            path.display(),
-            DSM_TSV_VALUE_COUNT
+            "Invalid DSM TSV header {:?}, expected {:?}",
+            header_cols,
+            CANONICAL_DSM_HEADER
         );
     }
 
-    let offset = values[0];
-    if !offset.is_finite() {
-        bail!("Non-finite DSM offset in {}", path.display());
-    }
-    let initiation_raw = scale_raw(offset);
+    let reverse_swap = matches!(orientation, Orientation::ReverseSwap);
+
     let mut table = [[[[0i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
-    for (flat, value) in values.iter().skip(1).enumerate() {
-        if !value.is_finite() {
+    let mut seen = [false; DSM_FLAT_SIZE];
+    let mut row_count = 0usize;
+    for (line_no, line) in lines.enumerate() {
+        let cols = line.split_whitespace().collect::<Vec<_>>();
+        if cols.len() != 5 {
             bail!(
-                "Non-finite DSM value at position {} in {}",
-                flat + 1,
-                path.display()
+                "Invalid DSM TSV row {}: expected 5 columns, got {}",
+                line_no + 2,
+                cols.len()
             );
         }
-        if value.abs() > MAX_TSV_ENERGY {
+
+        let mut q1 = parse_canonical_base(cols[0])
+            .with_context(|| format!("Invalid q1 at DSM TSV row {}", line_no + 2))?;
+        let mut q2 = parse_canonical_base(cols[1])
+            .with_context(|| format!("Invalid q2 at DSM TSV row {}", line_no + 2))?;
+        let mut t1 = parse_canonical_base(cols[2])
+            .with_context(|| format!("Invalid t1 at DSM TSV row {}", line_no + 2))?;
+        let mut t2 = parse_canonical_base(cols[3])
+            .with_context(|| format!("Invalid t2 at DSM TSV row {}", line_no + 2))?;
+        if reverse_swap {
+            (q1, q2, t1, t2) = (t2, t1, q2, q1);
+        }
+
+        let delta_g = cols[4]
+            .parse::<f64>()
+            .with_context(|| format!("Invalid delta_g at DSM TSV row {}", line_no + 2))?;
+        if !delta_g.is_finite() {
+            bail!("Non-finite delta_g at DSM TSV row {}", line_no + 2);
+        }
+        if delta_g.abs() > MAX_TSV_ENERGY {
             bail!(
-                "DSM value {} at position {} exceeds max energy {} in {}",
-                value,
-                flat + 1,
-                MAX_TSV_ENERGY,
-                path.display()
+                "DSM value {} at row {} exceeds max energy {}",
+                delta_g,
+                line_no + 2,
+                MAX_TSV_ENERGY
             );
         }
-        let t2 = TSV_BASE_TO_RUST[flat % BASE_COUNT];
-        let t1 = TSV_BASE_TO_RUST[(flat / BASE_COUNT) % BASE_COUNT];
-        let q2 = TSV_BASE_TO_RUST[(flat / (BASE_COUNT * BASE_COUNT)) % BASE_COUNT];
-        let q1 = TSV_BASE_TO_RUST[(flat / (BASE_COUNT * BASE_COUNT * BASE_COUNT)) % BASE_COUNT];
-        table[q1][q2][t1][t2] = scale_raw(-*value);
+
+        let idx = q1 * 216 + q2 * 36 + t1 * 6 + t2;
+        if std::mem::replace(&mut seen[idx], true) {
+            bail!("Duplicate DSM coordinate at row {}", line_no + 2);
+        }
+        table[q1][q2][t1][t2] = kcal_to_units(-delta_g);
+        row_count += 1;
     }
-    Ok((initiation_raw, table))
+
+    if row_count != DSM_FLAT_SIZE {
+        bail!(
+            "Read {} DSM rows from canonical TSV, expected {}",
+            row_count,
+            DSM_FLAT_SIZE
+        );
+    }
+
+    Ok((kcal_to_units(initiation), table))
+}
+
+fn parse_canonical_base(raw: &str) -> Result<usize> {
+    match raw {
+        "A" => Ok(Base::A.idx()),
+        "C" => Ok(Base::C.idx()),
+        "G" => Ok(Base::G.idx()),
+        "U" => Ok(Base::U.idx()),
+        "N" => Ok(Base::N.idx()),
+        "-" => Ok(Base::Gap.idx()),
+        other => bail!("Invalid canonical DSM base '{}'", other),
+    }
+}
+
+fn validate_canonical_manifest_text(text: &str, data_root: &Path) -> Result<()> {
+    let doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .context("Failed to parse DSM manifest")?;
+    let entries = doc["dsm"]
+        .as_array_of_tables()
+        .context("DSM manifest must contain [[dsm]] entries")?;
+    if entries.is_empty() {
+        bail!("DSM manifest has no entries");
+    }
+
+    let mut keys = HashSet::new();
+    for entry in entries {
+        let id = required_table_str(entry, "id")?;
+        let query = required_table_str(entry, "query")?;
+        let target = required_table_str(entry, "target")?;
+        validate_sequence_type(query).with_context(|| format!("Invalid query for DSM '{}'", id))?;
+        validate_sequence_type(target)
+            .with_context(|| format!("Invalid target for DSM '{}'", id))?;
+        if !keys.insert((query.to_owned(), target.to_owned(), id.to_owned())) {
+            bail!("Duplicate DSM manifest entry for ({query}, {target}, {id})");
+        }
+
+        required_table_str(entry, "family")?;
+        required_table_str(entry, "publication")?;
+        required_table_str(entry, "doi")?;
+        let orientation = parse_orientation(required_table_str(entry, "orientation")?)
+            .with_context(|| format!("Invalid orientation for DSM '{}'", id))?;
+        let default_temperature = required_table_int(entry, "default_temperature")?;
+        let temperatures = entry
+            .get("temperatures")
+            .and_then(toml_edit::Item::as_array)
+            .context("DSM manifest entry must contain temperatures array")?;
+        if temperatures.is_empty() {
+            bail!("DSM '{}' has no temperatures", id);
+        }
+
+        let mut seen = HashSet::new();
+        let mut previous = None;
+        let mut has_default = false;
+        for value in temperatures.iter() {
+            let temp = value
+                .as_inline_table()
+                .context("DSM temperature entry must be an inline table")?;
+            let temperature = required_inline_int(temp, "temperature")?;
+            if !seen.insert(temperature) {
+                bail!("DSM '{}' has duplicate temperature {}", id, temperature);
+            }
+            if let Some(prev) = previous {
+                if temperature <= prev {
+                    bail!("DSM '{}' temperatures must be strictly ascending", id);
+                }
+            }
+            previous = Some(temperature);
+            has_default |= temperature == default_temperature;
+
+            let file = required_inline_str(temp, "file")?;
+            let initiation = required_inline_number(temp, "initiation_kcal")?;
+            if !initiation.is_finite() {
+                bail!("DSM '{}' has non-finite initiation", id);
+            }
+            let path = data_root.join(file);
+            let table_text = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read canonical DSM table {}", path.display()))?;
+            load_canonical_dsm_tsv_text(&table_text, initiation, orientation)
+                .with_context(|| format!("Invalid canonical DSM table {}", path.display()))?;
+        }
+        if !has_default {
+            bail!(
+                "DSM '{}' default temperature {} is not present",
+                id, default_temperature
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_orientation(raw: &str) -> Result<Orientation> {
+    match raw {
+        "identity" => Ok(Orientation::Identity),
+        "reverse-swap" => Ok(Orientation::ReverseSwap),
+        other => bail!("unknown orientation '{}'", other),
+    }
+}
+
+fn validate_sequence_type(raw: &str) -> Result<SequenceType> {
+    SequenceType::try_from(raw).map_err(|e| anyhow::anyhow!(e))
+}
+
+fn required_table_str<'a>(table: &'a toml_edit::Table, key: &str) -> Result<&'a str> {
+    table
+        .get(key)
+        .and_then(toml_edit::Item::as_str)
+        .with_context(|| format!("DSM manifest entry requires string field '{}'", key))
+}
+
+fn required_table_int(table: &toml_edit::Table, key: &str) -> Result<i64> {
+    table
+        .get(key)
+        .and_then(toml_edit::Item::as_integer)
+        .with_context(|| format!("DSM manifest entry requires integer field '{}'", key))
+}
+
+fn required_inline_str<'a>(table: &'a toml_edit::InlineTable, key: &str) -> Result<&'a str> {
+    table
+        .get(key)
+        .and_then(toml_edit::Value::as_str)
+        .with_context(|| format!("DSM temperature entry requires string field '{}'", key))
+}
+
+fn required_inline_int(table: &toml_edit::InlineTable, key: &str) -> Result<i64> {
+    table
+        .get(key)
+        .and_then(toml_edit::Value::as_integer)
+        .with_context(|| format!("DSM temperature entry requires integer field '{}'", key))
+}
+
+fn required_inline_number(table: &toml_edit::InlineTable, key: &str) -> Result<f64> {
+    let value = table
+        .get(key)
+        .with_context(|| format!("DSM temperature entry requires numeric field '{}'", key))?;
+    value
+        .as_float()
+        .or_else(|| value.as_integer().map(|integer| integer as f64))
+        .with_context(|| format!("DSM temperature entry field '{}' must be numeric", key))
 }
 
 fn interpolate_tables(
@@ -356,638 +501,31 @@ fn interpolate_tables(
             for t1 in 0..BASE_COUNT {
                 for t2 in 0..BASE_COUNT {
                     table[q1][q2][t1][t2] =
-                        interpolate_raw(table_1[q1][q2][t1][t2], table_2[q1][q2][t1][t2], temps);
+                        lerp(table_1[q1][q2][t1][t2], table_2[q1][q2][t1][t2], temps);
                 }
             }
         }
     }
-    (interpolate_raw(offset_1, offset_2, temps), table)
+    (lerp(offset_1, offset_2, temps), table)
 }
 
-fn interpolate_raw(raw_1: i32, raw_2: i32, temps: [f64; 3]) -> i32 {
+fn lerp(v1: i32, v2: i32, temps: [f64; 3]) -> i32 {
     let [t0, t1, t2] = temps;
-    let diff = i64::from(raw_1) - i64::from(raw_2);
-    ((t0 - t2) / (t1 - t2) * diff as f64 + f64::from(raw_2)).round() as i32
+    let diff = i64::from(v1) - i64::from(v2);
+    ((t0 - t2) / (t1 - t2) * diff as f64 + f64::from(v2)).round() as i32
 }
 
-fn scale_raw(value: f64) -> i32 {
-    (value * Energy::RAW_SCALE).round() as i32
+fn kcal_to_units(value: f64) -> i32 {
+    (value * Energy::SCALE).round() as i32
 }
-
-const T04: DsmTable = [
-    [
-        [
-            [-2000, -123, -123, -123, -123, -123],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-        ],
-        [
-            [-123, 0, 0, 0, 0, 105],
-            [-123, -22, -22, -22, -22, -45],
-            [-123, -22, -22, -22, -22, -45],
-            [-123, -22, -22, -22, -22, -45],
-            [-123, -22, -22, -22, -22, -45],
-            [-123, -22, -22, -22, -22, -45],
-        ],
-        [
-            [-123, 0, 0, 150, 0, 0],
-            [-123, -22, -22, 0, -22, -22],
-            [-123, -22, -22, 0, -22, -22],
-            [-123, -22, -22, 0, -22, -22],
-            [-123, -22, -22, 0, -22, -22],
-            [-123, -22, -22, 0, -22, -22],
-        ],
-        [
-            [-123, 0, 150, 0, 0, 105],
-            [-123, -22, 0, -22, -22, -45],
-            [-123, -22, 0, -22, -22, -45],
-            [-123, -22, 0, -22, -22, -45],
-            [-123, -22, 0, -22, -22, -45],
-            [-123, -22, 0, -22, -22, -45],
-        ],
-        [
-            [-123, 0, 0, 0, 0, 0],
-            [-123, -22, -22, -22, -22, -22],
-            [-123, -22, -22, -22, -22, -22],
-            [-123, -22, -22, -22, -22, -22],
-            [-123, -22, -22, -22, -22, -22],
-            [-123, -22, -22, -22, -22, -22],
-        ],
-        [
-            [-123, 105, 0, 105, 0, 0],
-            [-123, -45, -22, -45, -22, -22],
-            [-123, -45, -22, -45, -22, -22],
-            [-123, -45, -22, -45, -22, -22],
-            [-123, -45, -22, -45, -22, -22],
-            [-123, -45, -22, -45, -22, -22],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [-45, -285, -285, -285, -285, -285],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -45],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, 30],
-            [-71, -22, -22, -22, -22, -70],
-            [-285, -230, -230, -150, -230, 90],
-        ],
-        [
-            [-40, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 100, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-285, -230, -230, 220, -230, -230],
-        ],
-        [
-            [-40, -22, 0, -22, -22, -45],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 100, -22, -22, 30],
-            [-71, -22, 0, -22, -22, -70],
-            [-285, -130, 210, -110, -230, 60],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-285, -230, -230, -230, -230, -230],
-        ],
-        [
-            [-40, -45, -22, -45, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, 30, -22, 30, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-285, 110, -230, 140, -230, -160],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [0, -240, -240, -240, -240, -240],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -45],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, -70],
-            [-240, -160, -160, -80, -160, 210],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, -70],
-        ],
-        [
-            [-40, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-240, -160, -160, 330, -160, -160],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-        ],
-        [
-            [-40, -22, 0, -22, -22, -45],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 0, -22, -22, -70],
-            [-240, -60, 240, -40, -160, 140],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 0, -22, -22, -70],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-240, -160, -160, -160, -160, -160],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-        ],
-        [
-            [-40, -45, -22, -45, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-240, 210, -160, 210, -160, -90],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -71, -71, -71, -71, -71],
-            [0, -240, -240, -240, -240, -240],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [-45, -285, -285, -285, -285, -285],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -45],
-            [-71, -22, -22, -22, -22, 10],
-            [-240, -160, -160, -80, -160, 240],
-            [-71, -22, -22, -22, -22, 50],
-            [-71, -22, -22, -22, -22, -70],
-            [-285, -230, -230, -150, -230, 130],
-        ],
-        [
-            [-40, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 80, -22, -22],
-            [-240, -160, -160, 340, -160, -160],
-            [-71, -22, -22, 120, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-285, -230, -230, 250, -230, -230],
-        ],
-        [
-            [-40, -22, 0, -22, -22, -45],
-            [-71, -22, 80, -22, -22, 10],
-            [-240, -60, 330, -40, -160, 150],
-            [-71, -22, 120, -22, -22, 50],
-            [-71, -22, 0, -22, -22, -70],
-            [-285, -130, 210, -110, -230, 50],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-240, -160, -160, -160, -160, -160],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-285, -230, -230, -230, -230, -230],
-        ],
-        [
-            [-40, -45, -22, -45, -22, -22],
-            [-71, 10, -22, 10, -22, -22],
-            [-240, 220, -160, 250, -160, -90],
-            [-71, 50, -22, 50, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-285, 140, -230, -130, -230, -160],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -45],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, -70],
-        ],
-        [
-            [-40, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 0, -22, -22],
-        ],
-        [
-            [-40, -22, 0, -22, -22, -45],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 0, -22, -22, -70],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-        ],
-        [
-            [-40, -45, -22, -45, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, -70, -22, -70, -22, -22],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-45, -285, -285, -285, -285, -285],
-            [-2000, -71, -71, -71, -71, -71],
-            [-45, -285, -285, -285, -285, -285],
-            [-2000, -71, -71, -71, -71, -71],
-            [-2000, -71, -71, -71, -71, -71],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -45],
-            [-285, -230, -230, -150, -230, 130],
-            [-71, -22, -22, -22, -22, -70],
-            [-285, -230, -230, -150, -230, 100],
-            [-71, -22, -22, -22, -22, -70],
-            [-71, -22, -22, -22, -22, 0],
-        ],
-        [
-            [-40, -22, -22, 0, -22, -22],
-            [-285, -230, -230, 240, -230, -230],
-            [-71, -22, -22, 0, -22, -22],
-            [-285, -230, -230, 150, -230, -230],
-            [-71, -22, -22, 0, -22, -22],
-            [-71, -22, -22, 70, -22, -22],
-        ],
-        [
-            [-40, -22, 0, -22, -22, -45],
-            [-285, -130, 210, -110, -230, 100],
-            [-71, -22, 0, -22, -22, -70],
-            [-285, -130, 140, -110, -230, -30],
-            [-71, -22, 0, -22, -22, -70],
-            [-71, -22, 70, -22, -22, 0],
-        ],
-        [
-            [-40, -22, -22, -22, -22, -22],
-            [-285, -230, -230, -230, -230, -230],
-            [-71, -22, -22, -22, -22, -22],
-            [-285, -230, -230, -230, -230, -230],
-            [-71, -22, -22, -22, -22, -22],
-            [-71, -22, -22, -22, -22, -22],
-        ],
-        [
-            [-40, -45, -22, -45, -22, -22],
-            [-285, 90, -230, 130, -230, -160],
-            [-71, -70, -22, -70, -22, -22],
-            [-285, 60, -230, 50, -230, -160],
-            [-71, -70, -22, -70, -22, -22],
-            [-71, 0, -22, 0, -22, -22],
-        ],
-    ],
-];
-
-const T99: DsmTable = [
-    [
-        [
-            [-2000, -123, -123, -123, -123, -123],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-            [-123, -40, -40, -40, -40, -40],
-        ],
-        [
-            [-123, 0, 0, 0, 0, 105],
-            [-123, -24, -24, -24, -24, -45],
-            [-123, -24, -24, -24, -24, -45],
-            [-123, -24, -24, -24, -24, -45],
-            [-123, -24, -24, -24, -24, -45],
-            [-123, -24, -24, -24, -24, -45],
-        ],
-        [
-            [-123, 0, 0, 150, 0, 0],
-            [-123, -24, -24, 0, -24, -24],
-            [-123, -24, -24, 0, -24, -24],
-            [-123, -24, -24, 0, -24, -24],
-            [-123, -24, -24, 0, -24, -24],
-            [-123, -24, -24, 0, -24, -24],
-        ],
-        [
-            [-123, 0, 150, 0, 0, 105],
-            [-123, -24, 0, -24, -24, -45],
-            [-123, -24, 0, -24, -24, -45],
-            [-123, -24, 0, -24, -24, -45],
-            [-123, -24, 0, -24, -24, -45],
-            [-123, -24, 0, -24, -24, -45],
-        ],
-        [
-            [-123, 0, 0, 0, 0, 0],
-            [-123, -24, -24, -24, -24, -24],
-            [-123, -24, -24, -24, -24, -24],
-            [-123, -24, -24, -24, -24, -24],
-            [-123, -24, -24, -24, -24, -24],
-            [-123, -24, -24, -24, -24, -24],
-        ],
-        [
-            [-123, 105, 0, 105, 0, 0],
-            [-123, -45, -24, -45, -24, -24],
-            [-123, -45, -24, -45, -24, -24],
-            [-123, -45, -24, -45, -24, -24],
-            [-123, -45, -24, -45, -24, -24],
-            [-123, -45, -24, -45, -24, -24],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [-45, -285, -285, -285, -285, -285],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -45],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, 45],
-            [-60, -24, -24, -24, -24, -65],
-            [-285, -217, -217, -107, -217, 90],
-        ],
-        [
-            [-40, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 110, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-285, -217, -217, 220, -217, -217],
-        ],
-        [
-            [-40, -24, 0, -24, -24, -45],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 110, -24, -24, 45],
-            [-60, -24, 0, -24, -24, -65],
-            [-285, -107, 210, -217, -217, 60],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-285, -217, -217, -217, -217, -217],
-        ],
-        [
-            [-40, -45, -24, -45, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, 45, -24, 45, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-285, 110, -217, 140, -217, -147],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [0, -240, -240, -240, -240, -240],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -45],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-            [-240, -152, -152, -42, -152, 210],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-        ],
-        [
-            [-40, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-240, -152, -152, 330, -152, -152],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-        ],
-        [
-            [-40, -24, 0, -24, -24, -45],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-            [-240, -42, 240, -152, -152, 140],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-240, -152, -152, -152, -152, -152],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-        ],
-        [
-            [-40, -45, -24, -45, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-240, 210, -152, 210, -152, -82],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -60, -60, -60, -60, -60],
-            [0, -240, -240, -240, -240, -240],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [-45, -285, -285, -285, -285, -285],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -45],
-            [-60, -24, -24, -24, -24, 45],
-            [-240, -152, -152, -42, -152, 240],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-            [-285, -217, -217, -107, -217, 130],
-        ],
-        [
-            [-40, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 110, -24, -24],
-            [-240, -152, -152, 340, -152, -152],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-285, -217, -217, 250, -217, -217],
-        ],
-        [
-            [-40, -24, 0, -24, -24, -45],
-            [-60, -24, 110, -24, -24, 45],
-            [-240, -42, 330, -152, -152, 150],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-            [-285, -107, 210, -217, -217, 50],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-240, -152, -152, -152, -152, -152],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-285, -217, -217, -217, -217, -217],
-        ],
-        [
-            [-40, -45, -24, -45, -24, -24],
-            [-60, 45, -24, 45, -24, -24],
-            [-240, 220, -152, 250, -152, -82],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-285, 140, -217, -130, -217, -147],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -45],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, -65],
-        ],
-        [
-            [-40, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 0, -24, -24],
-        ],
-        [
-            [-40, -24, 0, -24, -24, -45],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 0, -24, -24, -65],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-        ],
-        [
-            [-40, -45, -24, -45, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, -65, -24, -65, -24, -24],
-        ],
-    ],
-    [
-        [
-            [-123, -123, -123, -123, -123, -123],
-            [-45, -285, -285, -285, -285, -285],
-            [-2000, -60, -60, -60, -60, -60],
-            [-45, -285, -285, -285, -285, -285],
-            [-2000, -60, -60, -60, -60, -60],
-            [-2000, -60, -60, -60, -60, -60],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -45],
-            [-285, -217, -217, -107, -217, 130],
-            [-60, -24, -24, -24, -24, -65],
-            [-285, -217, -217, -107, -217, 100],
-            [-60, -24, -24, -24, -24, -65],
-            [-60, -24, -24, -24, -24, 5],
-        ],
-        [
-            [-40, -24, -24, 0, -24, -24],
-            [-285, -217, -217, 240, -217, -217],
-            [-60, -24, -24, 0, -24, -24],
-            [-285, -217, -217, 150, -217, -217],
-            [-60, -24, -24, 0, -24, -24],
-            [-60, -24, -24, 70, -24, -24],
-        ],
-        [
-            [-40, -24, 0, -24, -24, -45],
-            [-285, -107, 210, -217, -217, 100],
-            [-60, -24, 0, -24, -24, -65],
-            [-285, -107, 140, -217, -217, -30],
-            [-60, -24, 0, -24, -24, -65],
-            [-60, -24, 70, -24, -24, 5],
-        ],
-        [
-            [-40, -24, -24, -24, -24, -24],
-            [-285, -217, -217, -217, -217, -217],
-            [-60, -24, -24, -24, -24, -24],
-            [-285, -217, -217, -217, -217, -217],
-            [-60, -24, -24, -24, -24, -24],
-            [-60, -24, -24, -24, -24, -24],
-        ],
-        [
-            [-40, -45, -24, -45, -24, -24],
-            [-285, 90, -217, 130, -217, -147],
-            [-60, -65, -24, -65, -24, -24],
-            [-285, 60, -217, 50, -217, -147],
-            [-60, -65, -24, -65, -24, -24],
-            [-60, 5, -24, 5, -24, -24],
-        ],
-    ],
-];
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn pairing_distinguishes_seed_and_extension_modes() {
-        let model = ScoringModel::new(Matrix::T04, 0);
+        let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
 
         // DP/display pairing follows the scoring matrix semantics.
         assert!(model.is_pair(Base::G, Base::G));
@@ -1000,7 +538,7 @@ mod tests {
 
     #[test]
     fn transition_energy_returns_nonzero_for_valid_pairs() {
-        let model = ScoringModel::new(Matrix::T04, 0);
+        let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
         // Original target was U-A, index space is A-U
         let energy = model.transition_energy_bases(Base::A, Base::U, Base::A, Base::U);
         let gap_energy = model.transition_energy_bases(
@@ -1016,24 +554,23 @@ mod tests {
     }
 
     #[test]
-    fn gg_cc_stack_is_strongest_at_330() {
-        let model = ScoringModel::new(Matrix::T04, 0);
-        // GG/CC stack is the strongest at 330 (3.30 kcal/mol)
-        // Original target was CC, index space is GG
+    fn gg_cc_stack_is_strongest() {
+        let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
         let actual = model.transition_energy_bases(Base::G, Base::G, Base::G, Base::G);
-        assert_eq!(actual, 33_000);
+        assert_eq!(actual, 33016);
     }
 
     #[test]
-    fn built_in_energy_conversion_preserves_previous_kcal_output() {
-        let model = ScoringModel::new(Matrix::T04, 0);
-        let energy = model.energy_from_raw(33_000_i64);
-        assert_eq!(f64::from(energy), 2.29);
+    fn energy_conversion_roundtrips() {
+        let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
+        let energy = model.to_energy(33016_i64);
+        let kcal = f64::from(energy);
+        assert!((kcal - 2.8264).abs() < 0.001);
     }
 
     #[test]
     fn transpose_swaps_both_pairs() {
-        let right = ScoringModel::new(Matrix::T04, 50);
+        let right = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.005)).unwrap();
         let left = right.transpose();
         for q1 in 0u8..6 {
             for q2 in 0u8..6 {
@@ -1055,119 +592,29 @@ mod tests {
     }
 
     #[test]
-    fn load_dsm_tsv_parses_offset_and_flat_order() {
-        let file = write_temp_tsv(&tsv_with_overrides(
-            1.2345,
-            0.0,
-            &[(0, 0.1), (1, 0.2), (DSM_FLAT_SIZE - 1, 3.0)],
-        ));
-        let (offset, table) = load_dsm_tsv(file.path()).unwrap();
-        assert_eq!(offset, 12_345);
-        assert_eq!(
-            table[Base::A.idx()][Base::A.idx()][Base::A.idx()][Base::A.idx()],
-            -1_000
-        );
-        assert_eq!(
-            table[Base::A.idx()][Base::A.idx()][Base::A.idx()][Base::C.idx()],
-            -2_000
-        );
-        assert_eq!(
-            table[Base::Gap.idx()][Base::Gap.idx()][Base::Gap.idx()][Base::Gap.idx()],
-            -30_000
-        );
+    fn canonical_dsm_data_package_is_valid() {
+        let data_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/dsm");
+        validate_canonical_manifest_text(
+            include_str!("../data/dsm/manifest.toml"),
+            data_root.as_path(),
+        )
+        .unwrap();
     }
 
     #[test]
-    fn load_dsm_tsv_rejects_wrong_count_and_invalid_values() {
-        let too_short = write_temp_tsv("0.0\n1.0\n");
-        assert!(load_dsm_tsv(too_short.path()).is_err());
-
-        let nan = write_temp_tsv(&tsv_with_overrides(0.0, 0.0, &[(0, f64::NAN)]));
-        assert!(load_dsm_tsv(nan.path()).is_err());
-
-        let too_large = write_temp_tsv(&tsv_with_overrides(0.0, 0.0, &[(0, 20.0001)]));
-        assert!(load_dsm_tsv(too_large.path()).is_err());
+    fn canonical_dsm_parser_rejects_bad_header() {
+        let tsv = "q1\tq2\tt1\tt2\tenergy\n";
+        assert!(load_canonical_dsm_tsv_text(tsv, 1.0, Orientation::Identity).is_err());
     }
 
     #[test]
-    fn score_config_loads_exact_temperature_table_when_present() {
-        let dir = tempfile::tempdir().unwrap();
-        write_matrix(dir.path(), 310.15, "t04.v4", &uniform_tsv(1.0, 1.0));
-        write_matrix(dir.path(), 315.15, "t04.v4", &uniform_tsv(3.0, 3.0));
-
-        let score = test_score_config(dir.path(), Some("310.15"));
-        let model = ScoringModel::from_score_config(&score).unwrap();
-        assert_eq!(model.initiation_raw, 10_000);
-        assert_eq!(
-            model.transition_energy_bases(Base::A, Base::A, Base::U, Base::U),
-            -10_000
+    fn canonical_dsm_parser_rejects_duplicate_coordinate() {
+        let tsv = concat!(
+            "q1\tq2\tt1\tt2\tdelta_g_kcal_per_mol\n",
+            "A\tA\tA\tA\t1.0\n",
+            "A\tA\tA\tA\t2.0\n",
         );
+        assert!(load_canonical_dsm_tsv_text(tsv, 1.0, Orientation::Identity).is_err());
     }
 
-    #[test]
-    fn score_config_interpolates_missing_temperature_table() {
-        let dir = tempfile::tempdir().unwrap();
-        write_matrix(dir.path(), 310.15, "t04.v4", &uniform_tsv(1.0, 1.0));
-        write_matrix(dir.path(), 315.15, "t04.v4", &uniform_tsv(3.0, 3.0));
-
-        let score = test_score_config(dir.path(), Some("312.65"));
-        let model = ScoringModel::from_score_config(&score).unwrap();
-        assert_eq!(model.initiation_raw, 20_000);
-        assert_eq!(
-            model.transition_energy_bases(Base::A, Base::A, Base::U, Base::U),
-            -20_000
-        );
-    }
-
-    #[test]
-    fn parse_temperatures_rejects_bad_input() {
-        assert!(parse_temperatures(Some("310.15,315.15,320.15,325.15")).is_err());
-        assert!(parse_temperatures(Some("310.15,,315.15")).is_err());
-        assert!(parse_temperatures(Some("272.0")).is_err());
-        assert!(parse_temperatures(Some("315.15,315.15,310.15")).is_err());
-    }
-
-    fn test_score_config(path: &std::path::Path, temperature: Option<&str>) -> ScoreConfig {
-        ScoreConfig {
-            matrix: Matrix::T04,
-            penalty: Energy::from(0.0),
-            matrix2: None,
-            matpath: Some(path.display().to_string()),
-            temperature: temperature.map(str::to_owned),
-            weights: None,
-        }
-    }
-
-    fn write_matrix(root: &std::path::Path, temp: f64, name: &str, content: &str) {
-        let dir = root.join("RNA/RNA").join(format!("{temp:.2}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{name}.tsv")), content).unwrap();
-    }
-
-    fn write_temp_tsv(content: &str) -> tempfile::NamedTempFile {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(content.as_bytes()).unwrap();
-        file
-    }
-
-    fn uniform_tsv(offset: f64, value: f64) -> String {
-        tsv_with_overrides(offset, value, &[])
-    }
-
-    fn tsv_with_overrides(offset: f64, value: f64, overrides: &[(usize, f64)]) -> String {
-        let mut values = vec![value; DSM_FLAT_SIZE];
-        for &(idx, override_value) in overrides {
-            values[idx] = override_value;
-        }
-        let mut out = format!("{offset:.4}");
-        for value in values {
-            out.push('\t');
-            if value.is_nan() {
-                out.push_str("NaN");
-            } else {
-                out.push_str(&format!("{value:.4}"));
-            }
-        }
-        out
-    }
 }

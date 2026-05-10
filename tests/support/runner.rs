@@ -155,11 +155,13 @@ impl ParityRunner {
         Vec<risearch::SearchHit>,
         risearch::QueryRegistry,
     ) {
-        let search_args = parse_search_args(args);
+        let args = legacy_parity_args(args);
+        let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+        let search_args = parse_search_args(&args_ref);
         let (rust_hits, query_registry) = self.rust.search(query, &search_args);
 
         // Translate args to C format
-        let c_args = translate_args_for_c(args);
+        let c_args = translate_args_for_c(&args_ref);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
         let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_store);
@@ -258,6 +260,18 @@ impl SingleSeqRunner {
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+fn legacy_parity_args(args: &[&str]) -> Vec<String> {
+    let has_matrix = args.iter().any(|arg| {
+        matches!(*arg, "-z" | "--matrix") || arg.starts_with("-z=") || arg.starts_with("--matrix=")
+    });
+    let mut out: Vec<String> = args.iter().map(|&s| s.to_owned()).collect();
+    if !has_matrix {
+        // RIsearch2 and RIsearch3 share t99 semantics; t04 differs between versions.
+        out.extend(["-z".to_owned(), "t99".to_owned()]);
+    }
+    out
+}
 
 /// Translate Rust CLI args to C-compatible args.
 ///

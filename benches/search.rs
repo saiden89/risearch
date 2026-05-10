@@ -3,15 +3,15 @@ use std::path::Path;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::{
-    ExtendConfig, FilterConfig, Matrix, MismatchSpec, OutputCompression, OutputConfig,
-    OutputFormat, ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
+    ExtendConfig, FilterConfig, MismatchSpec, OutputCompression, OutputConfig, OutputFormat,
+    ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
 };
 use risearch::registry::QueryRegistry;
 use risearch::search::{run_search, run_search_in_memory};
 use risearch::Energy;
 use risearch::seed::{collect, SeedHit};
 use risearch::seq::Sequence;
-use risearch::types::Base;
+use risearch::types::{Base, DsmId};
 use risearch::TargetStore;
 use tempfile::TempDir;
 
@@ -111,12 +111,9 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
     SearchConfig {
         seed: seed_config.clone(),
         score: ScoreConfig {
-            matrix: Matrix::T04,
+            dsm_id: DsmId::T04,
             penalty: Energy::from(0.0),
-            matrix2: None,
-            matpath: None,
-            temperature: None,
-            weights: None,
+            temperature: 37,
         },
         extend: ExtendConfig {
             max_extension: 0,

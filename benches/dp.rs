@@ -1,10 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use risearch::config::Matrix;
 use risearch::dp::gotoh::Gotoh;
 use risearch::dp::{DpGrid, DpView, ExtendDir};
 use risearch::dsm::ScoringModel;
 use risearch::seq::Sequence;
-use risearch::types::Base;
+use risearch::types::{Base, DsmId, Energy};
 
 // ============================================================================
 // SIMPLE LINEAR CONGRUENTIAL GENERATOR (LCG)
@@ -59,7 +58,7 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
 
 fn bench_extend_left(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_left");
-    let model = ScoringModel::new(Matrix::T04, 0);
+    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
     let left_model = model.transpose();
     let gotoh = Gotoh::new(&left_model);
 
@@ -91,7 +90,7 @@ fn bench_extend_left(c: &mut Criterion) {
 
 fn bench_extend_right(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_right");
-    let model = ScoringModel::new(Matrix::T04, 0);
+    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
     let gotoh = Gotoh::new(&model);
 
     for len in [10, 20, 30, 50].iter() {
@@ -124,7 +123,7 @@ fn bench_extend_right(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("throughput");
     group.sample_size(10); // Smaller sample size for realistic wall-clock time
-    let model = ScoringModel::new(Matrix::T04, 0);
+    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
     let left_model = model.transpose();
     let gotoh_right = Gotoh::new(&model);
     let gotoh_left = Gotoh::new(&left_model);
@@ -213,7 +212,7 @@ fn bench_throughput(c: &mut Criterion) {
 fn bench_many_extensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("many_extensions");
     group.sample_size(10);
-    let model = ScoringModel::new(Matrix::T04, 0);
+    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
     let left_model = model.transpose();
     let gotoh_right = Gotoh::new(&model);
     let gotoh_left = Gotoh::new(&left_model);

@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::alignment::{Alignment, PairClass};
 use risearch::config::OutputFormat;
-use risearch::output::format::{format_hit_into, HitCtx};
+use risearch::output::format::format_hit_into;
 use risearch::search::SearchHit;
 use risearch::types::{Base, Energy, Strand};
 
@@ -32,13 +32,6 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>, Vec<Base>) {
 
 fn bench_format_hit(c: &mut Criterion) {
     let (hit, q_seq, t_fwd, t_rc) = setup_hit();
-    let ctx = HitCtx {
-        q_name: "test_query",
-        q_seq: &q_seq,
-        t_name: "test_target",
-        t_fwd: &t_fwd,
-        t_rc: &t_rc,
-    };
 
     let mut group = c.benchmark_group("hit_formatting");
 
@@ -57,7 +50,17 @@ fn bench_format_hit(c: &mut Criterion) {
             |b, &fmt| {
                 b.iter(|| {
                     out.clear();
-                    format_hit_into(&mut out, &mut itoa, &hit, ctx, fmt);
+                    format_hit_into(
+                        &mut out,
+                        &mut itoa,
+                        &hit,
+                        "test_query",
+                        &q_seq,
+                        "test_target",
+                        &t_fwd,
+                        &t_rc,
+                        fmt,
+                    );
                     black_box(&out);
                 });
             },
