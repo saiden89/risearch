@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::dp::gotoh::Gotoh;
 use risearch::dp::{DpGrid, DpView, ExtendDir};
-use risearch::dsm::ScoringModel;
+use risearch::dsm::{DsmRegistry, ScoringModel};
 use risearch::seq::Sequence;
 use risearch::types::{Base, DsmId, Energy};
 
@@ -58,7 +58,8 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
 
 fn bench_extend_left(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_left");
-    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
+    let (init, source) = DsmRegistry::load(DsmId::T04, 37).unwrap();
+    let model = ScoringModel::new(&source, init, Energy::from(0.0));
     let left_model = model.transpose();
     let gotoh = Gotoh::new(&left_model);
 
@@ -90,7 +91,8 @@ fn bench_extend_left(c: &mut Criterion) {
 
 fn bench_extend_right(c: &mut Criterion) {
     let mut group = c.benchmark_group("extend_right");
-    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
+    let (init, source) = DsmRegistry::load(DsmId::T04, 37).unwrap();
+    let model = ScoringModel::new(&source, init, Energy::from(0.0));
     let gotoh = Gotoh::new(&model);
 
     for len in [10, 20, 30, 50].iter() {
@@ -123,7 +125,8 @@ fn bench_extend_right(c: &mut Criterion) {
 fn bench_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("throughput");
     group.sample_size(10); // Smaller sample size for realistic wall-clock time
-    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
+    let (init, source) = DsmRegistry::load(DsmId::T04, 37).unwrap();
+    let model = ScoringModel::new(&source, init, Energy::from(0.0));
     let left_model = model.transpose();
     let gotoh_right = Gotoh::new(&model);
     let gotoh_left = Gotoh::new(&left_model);
@@ -212,7 +215,8 @@ fn bench_throughput(c: &mut Criterion) {
 fn bench_many_extensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("many_extensions");
     group.sample_size(10);
-    let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
+    let (init, source) = DsmRegistry::load(DsmId::T04, 37).unwrap();
+    let model = ScoringModel::new(&source, init, Energy::from(0.0));
     let left_model = model.transpose();
     let gotoh_right = Gotoh::new(&model);
     let gotoh_left = Gotoh::new(&left_model);

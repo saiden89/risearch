@@ -167,11 +167,13 @@ impl ExtensionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsm::DsmRegistry;
     use crate::types::{Base, DsmId, Energy};
 
     #[test]
     fn extension_result_extents_match_traceback_consumption() {
-        let model = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.0)).unwrap();
+        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
+        let model = ScoringModel::new(&source, init, Energy::from(0.0));
         let mut engine = ExtensionEngine::new(8, &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::G, Base::C, Base::A, Base::U];

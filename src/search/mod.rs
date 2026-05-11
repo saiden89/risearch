@@ -21,12 +21,14 @@ use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{OutputFormat, SearchConfig};
 use crate::dp::{DpConfig, DpView, ExtendDir};
-use crate::dsm::ScoringModel;
+use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetStore;
-use crate::output::writer::{HitFormatter, OutputChunk, OutputWriter};
+use crate::output::output_extension;
+use crate::output::writer::{build_multifile_paths, HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
 use crate::seed::{collect, SeedHit};
 use crate::types::{Base, Energy, Strand};
+
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -106,8 +108,8 @@ pub fn run_search(
                 output_path
             )
         })?;
-        let ext = crate::output::output_extension(&opts.output);
-        let paths = crate::output::writer::build_multifile_paths(queries, output_path, ext);
+        let ext = output_extension(&opts.output);
+        let paths = build_multifile_paths(queries, output_path, ext);
 
         seed_groups.into_par_iter().try_for_each_init(
             || {
@@ -194,11 +196,10 @@ fn init_search<'a>(
         opts.filter.delta_g
     );
 
-    let model = ScoringModel::from_canonical(
-        opts.score.dsm_id,
-        opts.score.temperature,
-        opts.score.penalty,
-    )?;
+    let (initiation, source_table) =
+        DsmRegistry::load(&opts.score.dsm_id, opts.score.temperature)?;
+
+    let model = ScoringModel::new(&source_table, initiation, opts.score.penalty);
     Ok(Some(SearchContext::new(queries, store, opts, model)))
 }
 

@@ -36,6 +36,22 @@ static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'C', b'G', b'N', b'U'];
 /// Base → lowercase ASCII byte (for to_byte())
 static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'c', b'g', b'n', b'u'];
 
+impl TryFrom<char> for Base {
+    type Error = String;
+
+    fn try_from(c: char) -> Result<Self, Self::Error> {
+        match c.to_ascii_uppercase() {
+            'A' => Ok(Base::A),
+            'C' => Ok(Base::C),
+            'G' => Ok(Base::G),
+            'U' | 'T' => Ok(Base::U),
+            'N' => Ok(Base::N),
+            '-' => Ok(Base::Gap),
+            _ => Err(format!("invalid base '{c}'")),
+        }
+    }
+}
+
 impl Base {
     /// Convert to array index
     #[inline]
@@ -182,16 +198,23 @@ impl From<Strand> for char {
 pub struct Energy(pub(crate) i32);
 
 impl Energy {
-    const SCALE: f64 = 10000.0;
+    pub const SCALE: f64 = 10000.0;
 
+    /// Create Energy from kcal/mol. Panics if value is non-finite or overflows i32.
     pub fn from_kcal(kcal: f64) -> Self {
+        Self::try_from_kcal(kcal).expect("invalid energy value")
+    }
+
+    /// Safely create Energy from kcal/mol.
+    pub fn try_from_kcal(kcal: f64) -> Result<Self, String> {
+        if !kcal.is_finite() {
+            return Err(format!("non-finite energy: {kcal}"));
+        }
         let score = kcal * Self::SCALE;
-        debug_assert!(
-            score >= i32::MIN as f64 && score <= i32::MAX as f64,
-            "Energy {:.4} kcal/mol overflows i32 score units",
-            kcal
-        );
-        Energy(score.round() as i32)
+        if score < i32::MIN as f64 || score > i32::MAX as f64 {
+            return Err(format!("energy overflow: {kcal} kcal/mol"));
+        }
+        Ok(Energy(score.round() as i32))
     }
 
     pub fn to_kcal(self) -> f64 {
@@ -218,10 +241,11 @@ impl PartialOrd for Energy {
 }
 
 impl std::str::FromStr for Energy {
-    type Err = std::num::ParseFloatError;
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<f64>().map(Energy::from_kcal)
+        let kcal = s.parse::<f64>().map_err(|e| e.to_string())?;
+        Self::try_from_kcal(kcal)
     }
 }
 
@@ -251,50 +275,19 @@ impl TryFrom<&str> for SequenceType {
     }
 }
 
-/// Identifier for a bundled canonical DSM (dinucleotide stacking model).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum DsmId {
-    #[default]
-    T04,
-    T99,
-    Slh04,
-    S95RnaDna,
-    S95DnaRna,
-}
-
-impl DsmId {
-    pub const ALL: &'static [DsmId] = &[
-        DsmId::T04,
-        DsmId::T99,
-        DsmId::Slh04,
-        DsmId::S95RnaDna,
-        DsmId::S95DnaRna,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            DsmId::T04 => "t04",
-            DsmId::T99 => "t99",
-            DsmId::Slh04 => "slh04",
-            DsmId::S95RnaDna => "s95-rna-dna",
-            DsmId::S95DnaRna => "s95-dna-rna",
-        }
-    }
-}
-
-impl TryFrom<&str> for DsmId {
-    type Error = String;
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        DsmId::ALL
-            .iter()
-            .find(|d| d.as_str() == s)
-            .copied()
-            .ok_or_else(|| format!("unknown DSM id '{s}'"))
-    }
-}
+/// Identifier for a bundled dinucleotide stacking model (DSM).
+/// The set of valid IDs is determined by data/dsm/manifest.toml.
+#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct DsmId(pub String);
 
 impl std::fmt::Display for DsmId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for DsmId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
     }
 }

@@ -1,8 +1,8 @@
 use clap::builder::PossibleValuesParser;
 
 use crate::config;
-use crate::dsm::DSM_IDS;
-use crate::types::{DsmId, Energy};
+use crate::dsm::DsmRegistry;
+use crate::types::Energy;
 
 fn parse_penalty(s: &str) -> Result<Energy, String> {
     let v: f64 = s.parse().map_err(|e| format!("{e}"))?;
@@ -29,7 +29,7 @@ pub struct ScoreArgs {
         long = "matrix",
         value_name = "MATRIX",
         default_value = "t04",
-        value_parser = PossibleValuesParser::new(DSM_IDS)
+        value_parser = PossibleValuesParser::new(DsmRegistry::all_names())
     )]
     pub dsm_id: String,
 
@@ -57,8 +57,8 @@ pub struct ScoreArgs {
 impl From<ScoreArgs> for config::ScoreConfig {
     fn from(value: ScoreArgs) -> Self {
         config::ScoreConfig {
-            // PossibleValuesParser guarantees dsm_id is a valid DSM_IDS member
-            dsm_id: DsmId::try_from(value.dsm_id.as_str()).expect("clap validated"),
+            // PossibleValuesParser guarantees dsm_id is a valid DSM identifier
+            dsm_id: DsmRegistry::parse_id(value.dsm_id.as_str()).expect("clap validated"),
             penalty: value.penalty,
             temperature: value.temperature,
         }

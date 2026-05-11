@@ -1,8 +1,7 @@
-use anyhow::Result;
+use crate::dp::MAX_ENERGY;
+use crate::types::{Base, Energy, BASE_COUNT};
 
-use crate::types::{Base, DsmId, Energy, BASE_COUNT};
-
-use super::{load_canonical_table, DsmTable, DSM_FLAT_SIZE};
+use super::{DsmTable, DSM_FLAT_SIZE};
 
 /// Penalty-adjusted flat scoring table for one orientation.
 ///
@@ -16,13 +15,8 @@ pub struct ScoringModel {
 }
 
 impl ScoringModel {
-    /// Load from bundled canonical DSM tables, interpolating between bracket temperatures if needed.
-    pub fn from_canonical(id: DsmId, temperature: i32, penalty: Energy) -> Result<Self> {
-        let (initiation, table) = load_canonical_table(id, temperature)?;
-        Ok(Self::from_source_table(&table, initiation, penalty))
-    }
-
-    fn from_source_table(source_table: &DsmTable, initiation: Energy, penalty: Energy) -> Self {
+    /// Create a new scoring model from a source table and initiation energy.
+    pub fn new(source_table: &DsmTable, initiation: Energy, penalty: Energy) -> Self {
         let mut table = [0i32; DSM_FLAT_SIZE];
         for q1 in 0..6 {
             for q2 in 0..6 {
@@ -59,11 +53,11 @@ impl ScoringModel {
 
         for (i, &val) in table.iter().enumerate() {
             assert!(
-                (val as i64).unsigned_abs() <= crate::dp::MAX_ENERGY as u64,
+                (val as i64).unsigned_abs() <= MAX_ENERGY as u64,
                 "table entry {} = {} exceeds MAX_ENERGY bound {}",
                 i,
                 val,
-                crate::dp::MAX_ENERGY,
+                MAX_ENERGY,
             );
         }
 

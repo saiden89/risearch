@@ -18,8 +18,8 @@
 //! `Gotoh::extend()` materializes those dense indices once from the semantic
 //! `DpView` before entering the hot DP kernels.
 
-use crate::dsm::{ScoringModel, GAP};
-use crate::types::Base;
+use crate::dsm::ScoringModel;
+use crate::types::{Base, GAP};
 use log::trace;
 
 use super::{BestScore, DpGrid, DpView, ExtendDir, MAX_EXT};
@@ -174,11 +174,13 @@ impl Gotoh {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsm::DsmRegistry;
     use crate::types::{DsmId, Energy};
 
     #[test]
     fn gotoh_matches_scoring_table() {
-        let table = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.005)).unwrap();
+        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
+        let table = ScoringModel::new(&source, init, Energy::from(0.005));
         let gotoh = Gotoh::new(&table);
 
         for q1 in 0u8..6 {
@@ -202,7 +204,8 @@ mod tests {
 
     #[test]
     fn gotoh_semantic_transitions_match_scoring_model() {
-        let table = ScoringModel::from_canonical(DsmId::T04, 37, Energy::from(0.005)).unwrap();
+        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
+        let table = ScoringModel::new(&source, init, Energy::from(0.005));
         let gotoh = Gotoh::new(&table);
 
         for qp in 0u8..6 {
