@@ -7,13 +7,13 @@ use arrow_array::{
     ArrayRef, Float64Array, RecordBatch, RecordBatchIterator, StringArray, UInt32Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use clap::ValueEnum;
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
+use risearch::dsm::DsmRegistry;
 use risearch::{
-    cli::args::seed_spec_from_args, run_search_in_memory, DsmId, Energy, ExtendConfig,
+    cli::args::seed_spec_from_args, run_search_in_memory, Energy, ExtendConfig,
     FilterConfig, MismatchSpec, OutputCompression, OutputConfig, OutputFormat, QueryRegistry,
-    ScoreConfig, SearchConfig, SearchHit, SeedConfig, SeedPairingMode, TargetStore,
+    ScoreConfig, SearchConfig, SearchHit, SeedConfig, TargetStore,
 };
 
 // =============================================================================
@@ -205,7 +205,7 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
     mismatches = 0,
     mismatch_prefix = 1,
     mismatch_suffix = 0,
-    seed_pairing = "allow_wobble",
+    seed_wobble = true,
     matrix = "t04",
     penalty = 3.5,
     temperature = 37,
@@ -224,7 +224,7 @@ fn search(
     mismatches: usize,
     mismatch_prefix: usize,
     mismatch_suffix: usize,
-    seed_pairing: &str,
+    seed_wobble: bool,
     matrix: &str,
     penalty: f64,
     temperature: i32,
@@ -232,13 +232,8 @@ fn search(
     seed_energy: f64,
     no_max_prune: bool,
 ) -> PyResult<PySearchResult> {
-    let seed_wobble = matches!(
-        SeedPairingMode::from_str(seed_pairing, true)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?,
-        SeedPairingMode::AllowWobble
-    );
-
-    let dsm_id = DsmId::try_from(matrix).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let dsm_id = DsmRegistry::parse_id(matrix)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let seed = seed_spec_from_args(seed_start, seed_end, seed_length)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -251,7 +246,8 @@ fn search(
         },
         score: ScoreConfig {
             dsm_id,
-            penalty: Energy::from(penalty),
+            penalty: Energy::try_from(penalty)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
             temperature,
         },
         extend: ExtendConfig {
@@ -259,8 +255,10 @@ fn search(
             band: None,
         },
         filter: FilterConfig {
-            delta_g: Energy::from(energy_threshold),
-            seed_energy: Energy::from(seed_energy),
+            delta_g: Energy::try_from(energy_threshold)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
+            seed_energy: Energy::try_from(seed_energy)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
             no_max_prune,
         },
         output: OutputConfig {

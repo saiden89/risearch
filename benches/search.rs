@@ -9,7 +9,7 @@ use risearch::config::{
 use risearch::registry::QueryRegistry;
 use risearch::search::{run_search, run_search_in_memory};
 use risearch::Energy;
-use risearch::seed::{collect, SeedHit};
+use risearch::seed::{SeedHit, SeedingEngine};
 use risearch::seq::Sequence;
 use risearch::types::{Base, DsmId};
 use risearch::TargetStore;
@@ -111,8 +111,8 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
     SearchConfig {
         seed: seed_config.clone(),
         score: ScoreConfig {
-            dsm_id: DsmId::T04,
-            penalty: Energy::from(0.0),
+            dsm_id: DsmId::from("t04"),
+            penalty: Energy::from_kcal(0.0),
             temperature: 37,
         },
         extend: ExtendConfig {
@@ -120,8 +120,8 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             band: None,
         },
         filter: FilterConfig {
-            delta_g: Energy::from(f64::NEG_INFINITY),
-            seed_energy: Energy::from(0.0),
+            delta_g: Energy::from_kcal(f64::NEG_INFINITY),
+            seed_energy: Energy::from_kcal(0.0),
             no_max_prune: false,
         },
         output: OutputConfig {
@@ -155,11 +155,10 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
 
     group.bench_with_input(BenchmarkId::new("collect", case), &case, |b, _| {
         b.iter(|| {
-            let seeds = collect(
+            let seeds = SeedingEngine::new(
                 black_box(&dataset.queries),
                 black_box(&dataset.store),
-                black_box(&seed_config),
-            );
+            ).run(black_box(&seed_config));
             black_box(seed_count(&seeds));
         });
     });

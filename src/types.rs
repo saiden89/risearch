@@ -1,6 +1,5 @@
 //! Core domain types used across the codebase
 
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 /// Nucleotide/gap representation for DSM indexing and sequence operations
@@ -159,14 +158,6 @@ pub enum Strand {
     Reverse,
 }
 
-/// Seed pairing mode (wobble vs strict)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub enum SeedPairingMode {
-    AllowWobble,
-    Strict,
-}
-
 impl std::fmt::Display for Strand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -194,39 +185,42 @@ impl From<Strand> for char {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// Represents thermodynamic energy, internally stored as an integer (scaling kcal/mol by 10,000).
+/// All conversions from floating-point values expect inputs in kcal/mol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Energy(pub(crate) i32);
-
 impl Energy {
     pub const SCALE: f64 = 10000.0;
 
-    /// Create Energy from kcal/mol. Panics if value is non-finite or overflows i32.
+    /// Create Energy from a value in kcal/mol. Panics if the value is non-finite or overflows.
+    /// Use this for trusted internal constants and tests.
     pub fn from_kcal(kcal: f64) -> Self {
-        Self::try_from_kcal(kcal).expect("invalid energy value")
+        Self::try_from(kcal).expect("invalid energy value")
     }
 
-    /// Safely create Energy from kcal/mol.
-    pub fn try_from_kcal(kcal: f64) -> Result<Self, String> {
-        if !kcal.is_finite() {
-            return Err(format!("non-finite energy: {kcal}"));
-        }
-        let score = kcal * Self::SCALE;
-        if score < i32::MIN as f64 || score > i32::MAX as f64 {
-            return Err(format!("energy overflow: {kcal} kcal/mol"));
-        }
-        Ok(Energy(score.round() as i32))
-    }
-
+    /// Convert the internal integer representation back to kcal/mol.
     pub fn to_kcal(self) -> f64 {
         f64::from(self.0) / Self::SCALE
     }
 }
 
-impl From<f64> for Energy {
-    fn from(v: f64) -> Self {
-        Energy::from_kcal(v)
+impl TryFrom<f64> for Energy {
+    type Error = String;
+
+    /// Create Energy from a value in kcal/mol.
+    /// Returns an error if the value is non-finite or would overflow the internal representation.
+    fn try_from(kcal: f64) -> Result<Self, Self::Error> {
+        if !kcal.is_finite() {
+            return Err(format!("non-finite energy: {kcal}"));
+        }
+        let score = kcal * Self::SCALE;
+        if score < f64::from(i32::MIN) || score > f64::from(i32::MAX) {
+            return Err(format!("energy overflow: {kcal} kcal/mol"));
+        }
+        Ok(Energy(score.round() as i32))
     }
 }
+
 
 impl From<Energy> for f64 {
     fn from(e: Energy) -> Self {
@@ -245,7 +239,7 @@ impl std::str::FromStr for Energy {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let kcal = s.parse::<f64>().map_err(|e| e.to_string())?;
-        Self::try_from_kcal(kcal)
+        Self::try_from(kcal)
     }
 }
 

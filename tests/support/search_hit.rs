@@ -117,7 +117,7 @@ pub(crate) fn parse_bindingsite_output(
     let strand: Strand = fields[6].chars().next().unwrap_or('+').into();
 
     // Parse energy
-    let energy = Energy::from(fields[7].parse::<f64>().ok()?);
+    let energy = Energy::from_kcal(fields[7].parse::<f64>().ok()?);
 
     // Create alignment from C interaction/target columns.
     let alignment = Alignment::from_c_output(&interaction, &target_seq);

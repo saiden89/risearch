@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn pairing_distinguishes_seed_and_extension_modes() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from(0.0));
+        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
 
         assert!(model.is_pair(Base::G, Base::G));
         assert!(model.is_pair(Base::G, Base::A));
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn transition_score_returns_nonzero_for_valid_pairs() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from(0.0));
+        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
         let score = model.transition_score_bases(Base::A, Base::U, Base::A, Base::U);
         let gap_score = model.transition_score_bases(Base::Gap, Base::A, Base::Gap, Base::A);
         assert!(
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn gg_cc_stack_is_strongest() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from(0.0));
+        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
         let actual = model.transition_score_bases(Base::G, Base::G, Base::G, Base::G);
         assert_eq!(actual, 33016);
     }
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn energy_conversion_roundtrips() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from(0.0));
+        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
         let energy = model.hit_energy(33016, 0, 0, 0);
         assert!((energy.to_kcal() - 2.8264).abs() < 0.001);
     }
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn transpose_swaps_both_pairs() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let right = ScoringModel::new(&source, init, Energy::from(0.005));
+        let right = ScoringModel::new(&source, init, Energy::from_kcal(0.005));
         let left = right.transpose();
         for q1 in 0u8..6 {
             for q2 in 0u8..6 {
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn canonical_dsm_parser_rejects_bad_header() {
         let tsv = "q1\tq2\tt1\tt2\tenergy\n";
-        assert!(load_canonical_dsm_tsv_text(tsv, 1.0, 20.0, Orientation::Identity).is_err());
+        assert!(load_dsm_tsv_text(tsv, 1.0, 20.0, Orientation::Identity).is_err());
     }
 
     #[test]
@@ -392,6 +392,6 @@ mod tests {
             "A\tA\tA\tA\t1.0\n",
             "A\tA\tA\tA\t2.0\n",
         );
-        assert!(load_canonical_dsm_tsv_text(tsv, 1.0, 20.0, Orientation::Identity).is_err());
+        assert!(load_dsm_tsv_text(tsv, 1.0, 20.0, Orientation::Identity).is_err());
     }
 }

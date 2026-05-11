@@ -9,7 +9,7 @@ fn parse_penalty(s: &str) -> Result<Energy, String> {
     if !(0.0..=50.0).contains(&v) {
         return Err(format!("penalty must be between 0 and 50, got {v}"));
     }
-    Ok(Energy::from_kcal(v))
+    Energy::try_from(v)
 }
 
 fn parse_temperature(s: &str) -> Result<i32, String> {

@@ -1,7 +1,7 @@
 mod parallel_sa;
 mod engine;
 
-pub use engine::collect;
+pub use engine::SeedingEngine;
 
 use crate::types::{Base, Strand};
 

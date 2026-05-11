@@ -5,25 +5,14 @@ use crate::registry::QueryRegistry;
 use super::parallel_sa::{traverse, SeedMatch};
 use super::{SeedHit, SeedView};
 
-/// Find all seeds across all queries × all targets in a single SA traversal.
-///
-/// Returns non-empty per-query seed buckets ready for parallel extension.
-pub fn collect(
-    queries: &QueryRegistry,
-    targets: &TargetStore,
-    config: &SeedConfig,
-) -> Vec<(usize, Vec<SeedHit>)> {
-    SeedingEngine::new(queries, targets).collect(config)
-}
-
-struct SeedingEngine<'a> {
+pub struct SeedingEngine<'a> {
     queries: &'a QueryRegistry,
     qview: SeedView<'a>,
     tview: SeedView<'a>,
 }
 
 impl<'a> SeedingEngine<'a> {
-    fn new(queries: &'a QueryRegistry, targets: &'a TargetStore) -> Self {
+    pub fn new(queries: &'a QueryRegistry, targets: &'a TargetStore) -> Self {
         Self {
             queries,
             qview: queries.view(),
@@ -31,7 +20,7 @@ impl<'a> SeedingEngine<'a> {
         }
     }
 
-    fn collect(&self, config: &SeedConfig) -> Vec<(usize, Vec<SeedHit>)> {
+    pub fn run(&self, config: &SeedConfig) -> Vec<(usize, Vec<SeedHit>)> {
         if self.qview.sa_real_len == 0 {
             return Vec::new();
         }
@@ -193,7 +182,7 @@ mod tests {
         let queries = build_queries(">q1\nGGAC\n", &config);
         let (targets, _dir) = build_store(">t1\nGU\n");
 
-        let groups = collect(&queries, &targets, &config);
+        let groups = SeedingEngine::new(&queries, &targets).run(&config);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, 0);
         assert_eq!(groups[0].1.len(), 1);
@@ -213,7 +202,7 @@ mod tests {
         let queries = build_queries(">q1\nAC\n", &config);
         let (targets, _dir) = build_store(">t1\nAC\n");
 
-        let groups = collect(&queries, &targets, &config);
+        let groups = SeedingEngine::new(&queries, &targets).run(&config);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].1.len(), 1);
 

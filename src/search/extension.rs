@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn extension_result_extents_match_traceback_consumption() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from(0.0));
+        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
         let mut engine = ExtensionEngine::new(8, &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::G, Base::C, Base::A, Base::U];

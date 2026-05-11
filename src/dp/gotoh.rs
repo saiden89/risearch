@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn gotoh_matches_scoring_table() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let table = ScoringModel::new(&source, init, Energy::from(0.005));
+        let table = ScoringModel::new(&source, init, Energy::from_kcal(0.005));
         let gotoh = Gotoh::new(&table);
 
         for q1 in 0u8..6 {
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn gotoh_semantic_transitions_match_scoring_model() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let table = ScoringModel::new(&source, init, Energy::from(0.005));
+        let table = ScoringModel::new(&source, init, Energy::from_kcal(0.005));
         let gotoh = Gotoh::new(&table);
 
         for qp in 0u8..6 {

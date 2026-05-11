@@ -184,6 +184,18 @@ pub enum OutputCompression {
     Zstd(i32), // level -7..22
 }
 
+impl OutputCompression {
+    /// Return a suitable file extension (including leading dot) for this compression
+    /// configuration, assuming TSV format, e.g. `".tsv"`, `".tsv.gz"`, `".tsv.zst"`.
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::None => ".tsv",
+            Self::Gzip(_) => ".tsv.gz",
+            Self::Zstd(_) => ".tsv.zst",
+        }
+    }
+}
+
 // =============================================================================
 // CONFIG TYPES
 // =============================================================================

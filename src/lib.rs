@@ -20,7 +20,7 @@ pub use alignment::{Alignment, PairClass};
 pub use index::store::TargetStore;
 pub use registry::QueryRegistry;
 pub use seq::{AlignedSeq, Sequence};
-pub use types::{Base, Energy, PairType, SeedPairingMode, Strand, BASE_COUNT, GAP};
+pub use types::{Base, Energy, PairType, Strand, BASE_COUNT, GAP};
 
 // Search API re-exports for library usage
 pub use config::{

@@ -30,7 +30,10 @@ pub(crate) fn load_dsm_tsv_text(
 
     let reverse_swap = matches!(orientation, Orientation::ReverseSwap);
 
-    let invalid_score = Energy::from_kcal(-invalid_transition).0;
+    let invalid_score = Energy::try_from(-invalid_transition)
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("Invalid transition energy")?
+        .0;
     let mut table = [[[[invalid_score; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
     let mut seen = [false; DSM_FLAT_SIZE];
     let mut row_count = 0usize;
@@ -69,7 +72,7 @@ pub(crate) fn load_dsm_tsv_text(
             bail!("Duplicate DSM coordinate at row {}", line_no + 2);
         }
 
-        table[q1][q2][t1][t2] = Energy::try_from_kcal(-cols[4].parse::<f64>().with_context(|| {
+        table[q1][q2][t1][t2] = Energy::try_from(-cols[4].parse::<f64>().with_context(|| {
             format!("Invalid delta_g '{}' at row {}", cols[4], line_no + 2)
         })?)
         .map_err(|e| anyhow::anyhow!(e))
@@ -83,7 +86,7 @@ pub(crate) fn load_dsm_tsv_text(
     }
 
     Ok((
-        Energy::try_from_kcal(initiation)
+        Energy::try_from(initiation)
             .map_err(|e| anyhow::anyhow!(e))
             .context("Invalid initiation energy")?,
         table,

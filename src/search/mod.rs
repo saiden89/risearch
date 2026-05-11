@@ -23,10 +23,9 @@ use crate::config::{OutputFormat, SearchConfig};
 use crate::dp::{DpConfig, DpView, ExtendDir};
 use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetStore;
-use crate::output::output_extension;
 use crate::output::writer::{build_multifile_paths, HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
-use crate::seed::{collect, SeedHit};
+use crate::seed::{SeedHit, SeedingEngine};
 use crate::types::{Base, Energy, Strand};
 
 
@@ -54,7 +53,7 @@ pub fn run_search_in_memory(
     let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(Vec::new());
     };
-    let seeds = collect(ctx.queries, ctx.store, &ctx.opts.seed);
+    let seeds = SeedingEngine::new(ctx.queries, ctx.store).run(&ctx.opts.seed);
 
     let hits: Vec<SearchHit> = seeds
         .into_par_iter()
@@ -98,7 +97,7 @@ pub fn run_search(
     let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(());
     };
-    let seed_groups = collect(ctx.queries, ctx.store, &ctx.opts.seed);
+    let seed_groups = SeedingEngine::new(ctx.queries, ctx.store).run(&ctx.opts.seed);
     let total = AtomicUsize::new(0);
 
     if opts.output.multifile {
@@ -108,7 +107,7 @@ pub fn run_search(
                 output_path
             )
         })?;
-        let ext = output_extension(&opts.output);
+        let ext = opts.output.compress.extension();
         let paths = build_multifile_paths(queries, output_path, ext);
 
         seed_groups.into_par_iter().try_for_each_init(
@@ -527,8 +526,8 @@ mod tests {
         SearchConfig {
             seed: SeedConfig::with_wobble(SeedSpec::LengthOnly(8), MismatchSpec::exact(), true),
             score: ScoreConfig {
-                dsm_id: DsmId::T04,
-                penalty: Energy::from(3.5),
+                dsm_id: DsmId::from("t04"),
+                penalty: Energy::from_kcal(3.5),
                 temperature: 37,
             },
             extend: ExtendConfig {
@@ -536,8 +535,8 @@ mod tests {
                 band: None,
             },
             filter: FilterConfig {
-                delta_g: Energy::from(-10.0),
-                seed_energy: Energy::from(0.0),
+                delta_g: Energy::from_kcal(-10.0),
+                seed_energy: Energy::from_kcal(0.0),
                 no_max_prune: false,
             },
             output: OutputConfig {
@@ -598,7 +597,7 @@ mod tests {
 
         let config = SearchConfig {
             filter: FilterConfig {
-                delta_g: Energy::from(-100.0),
+                delta_g: Energy::from_kcal(-100.0),
                 ..test_config().filter
             },
             ..test_config()

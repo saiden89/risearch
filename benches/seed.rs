@@ -4,7 +4,7 @@ use std::path::Path;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::{MismatchSpec, SeedConfig, SeedSpec};
 use risearch::registry::QueryRegistry;
-use risearch::seed::{collect, SeedHit};
+use risearch::seed::{SeedHit, SeedingEngine};
 use risearch::seq::Sequence;
 use risearch::types::Base;
 use risearch::TargetStore;
@@ -119,11 +119,10 @@ fn bench_seed_exact(c: &mut Criterion) {
             &target_len,
             |b, _| {
                 b.iter(|| {
-                    let seeds = collect(
+                    let seeds = SeedingEngine::new(
                         black_box(&dataset.queries),
                         black_box(&dataset.store),
-                        black_box(&seed_config),
-                    );
+                    ).run(black_box(&seed_config));
                     black_box(seed_count(&seeds));
                 });
             },
@@ -147,11 +146,10 @@ fn bench_seed_mismatch(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
             b.iter(|| {
-                let seeds = collect(
+                let seeds = SeedingEngine::new(
                     black_box(&dataset.queries),
                     black_box(&dataset.store),
-                    black_box(&seed_config),
-                );
+                ).run(black_box(&seed_config));
                 black_box(seed_count(&seeds));
             });
         });
@@ -176,11 +174,10 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
             b.iter(|| {
-                let seeds = collect(
+                let seeds = SeedingEngine::new(
                     black_box(&dataset.queries),
                     black_box(&dataset.store),
-                    black_box(&seed_config),
-                );
+                ).run(black_box(&seed_config));
                 black_box(seed_count(&seeds));
             });
         });
@@ -205,11 +202,10 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
             &query_count,
             |b, _| {
                 b.iter(|| {
-                    let seeds = collect(
+                    let seeds = SeedingEngine::new(
                         black_box(&dataset.queries),
                         black_box(&dataset.store),
-                        black_box(&seed_config),
-                    );
+                    ).run(black_box(&seed_config));
                     black_box(seed_count(&seeds));
                 });
             },
@@ -234,11 +230,10 @@ fn bench_seed_long_mismatch(c: &mut Criterion) {
 
     group.bench_function("seed_21_mm_2_2", |b| {
         b.iter(|| {
-            let seeds = collect(
+            let seeds = SeedingEngine::new(
                 black_box(&dataset.queries),
                 black_box(&dataset.store),
-                black_box(&seed_config),
-            );
+            ).run(black_box(&seed_config));
             black_box(seed_count(&seeds));
         });
     });
