@@ -39,18 +39,16 @@ impl ExtensionEngine {
         }
     }
 
-    pub(super) fn extend(
-        &mut self,
-        view: &DpView<'_>,
-        include_alignment: bool,
-    ) -> ExtensionResult {
+    pub(super) fn extend(&mut self, view: &DpView<'_>, include_alignment: bool) -> ExtensionResult {
         let gotoh = match view.dir() {
             ExtendDir::Left => &self.gotoh_left,
             ExtendDir::Right => &self.gotoh_right,
         };
         if view.is_empty() {
             return ExtensionResult {
-                energy: Energy(gotoh.terminal_bases(view.q_anchor_base(), view.t_anchor_base())),
+                energy: Energy(
+                    gotoh.terminal(view.q_anchor_base().as_u8(), view.t_anchor_base().as_u8()),
+                ),
                 q_ext: 0,
                 t_ext: 0,
                 pairs: None,
@@ -88,14 +86,17 @@ impl ExtensionEngine {
                     let c = self.grid.get(i, j);
                     let diag = self.grid.get(i - 1, j - 1);
 
-                    let qi_prev = view.q_base(i - 1) as u8;
-                    let qi = view.q_base(i) as u8;
-                    let tj_prev = view.t_base(j - 1) as u8;
-                    let tj = view.t_base(j) as u8;
+                    let qi_prev = view.q_base(i - 1);
+                    let qi = view.q_base(i);
+                    let tj_prev = view.t_base(j - 1);
+                    let tj = view.t_base(j);
 
-                    let stack = gotoh.stack(qi_prev, qi, tj_prev, tj);
-                    let close_query_gap = gotoh.close_query_gap(qi_prev, qi, tj);
-                    let close_target_gap = gotoh.close_target_gap(qi, tj_prev, tj);
+                    let stack =
+                        gotoh.stack(qi_prev.as_u8(), qi.as_u8(), tj_prev.as_u8(), tj.as_u8());
+                    let close_query_gap =
+                        gotoh.close_query_gap(qi_prev.as_u8(), qi.as_u8(), tj.as_u8());
+                    let close_target_gap =
+                        gotoh.close_target_gap(qi.as_u8(), tj_prev.as_u8(), tj.as_u8());
 
                     i -= 1;
                     j -= 1;
@@ -116,12 +117,13 @@ impl ExtensionEngine {
                     let c = self.grid.get(i, j);
                     let up = self.grid.get(i - 1, j);
 
-                    let qi_prev = view.q_base(i - 1) as u8;
-                    let qi = view.q_base(i) as u8;
-                    let tj = view.t_base(j) as u8;
+                    let qi_prev = view.q_base(i - 1);
+                    let qi = view.q_base(i);
+                    let tj = view.t_base(j);
 
-                    let open_query_gap = gotoh.open_query_gap(qi_prev, qi, tj);
-                    let extend_query_gap = gotoh.extend_query_gap(qi_prev, qi);
+                    let open_query_gap =
+                        gotoh.open_query_gap(qi_prev.as_u8(), qi.as_u8(), tj.as_u8());
+                    let extend_query_gap = gotoh.extend_query_gap(qi_prev.as_u8(), qi.as_u8());
 
                     i -= 1;
 
@@ -139,12 +141,13 @@ impl ExtensionEngine {
                     let c = self.grid.get(i, j);
                     let left = self.grid.get(i, j - 1);
 
-                    let qi = view.q_base(i) as u8;
-                    let tj_prev = view.t_base(j - 1) as u8;
-                    let tj = view.t_base(j) as u8;
+                    let qi = view.q_base(i);
+                    let tj_prev = view.t_base(j - 1);
+                    let tj = view.t_base(j);
 
-                    let open_target_gap = gotoh.open_target_gap(qi, tj_prev, tj);
-                    let extend_target_gap = gotoh.extend_target_gap(tj_prev, tj);
+                    let open_target_gap =
+                        gotoh.open_target_gap(qi.as_u8(), tj_prev.as_u8(), tj.as_u8());
+                    let extend_target_gap = gotoh.extend_target_gap(tj_prev.as_u8(), tj.as_u8());
 
                     j -= 1;
 

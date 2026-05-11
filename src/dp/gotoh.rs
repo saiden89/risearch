@@ -1,7 +1,7 @@
 //! Gotoh 3-state DP recurrence: precomputed transition tables.
 //!
 //! All transitions are materialized at construction time from a `ScoringModel`.
-//! The DP core asks semantic transition questions, not arbitrary 4-base tensor
+//! The DP core asks rank-byte transition questions, not arbitrary 4-base tensor
 //! lookups:
 //!
 //! - `M`: continue the paired stack, close a query gap, or close a target gap
@@ -19,7 +19,7 @@
 //! `DpView` before entering the hot DP kernels.
 
 use crate::dsm::ScoringModel;
-use crate::types::{Base, GAP};
+use crate::types::GAP;
 use log::trace;
 
 use super::{BestScore, DpGrid, DpView, ExtendDir, MAX_EXT};
@@ -38,10 +38,6 @@ impl Gotoh {
             model: table.clone(),
         }
     }
-
-    // =========================================================================
-    // SEMANTIC TRANSITION QUERIES — used by traceback and boundary init
-    // =========================================================================
 
     /// M ← M transition score: continue the paired stack.
     #[inline(always)]
@@ -91,12 +87,6 @@ impl Gotoh {
         self.model.transition_score(qc, GAP, tc, GAP)
     }
 
-    /// Terminal (boundary) penalty for semantic bases.
-    #[inline(always)]
-    pub(crate) fn terminal_bases(&self, q: Base, t: Base) -> i32 {
-        self.terminal(q as u8, t as u8)
-    }
-
     #[cfg_attr(feature = "prof", inline(never))]
     /// Run DP forward pass over `view`, reusing the caller-provided grid.
     pub fn extend(&self, view: &DpView<'_>, grid: &mut DpGrid) -> BestScore {
@@ -108,10 +98,6 @@ impl Gotoh {
             "DP view must define a non-empty window"
         );
 
-        // =====================================================================
-        // PRECOMPUTE Q/T LOOKUP INDICES (used by init AND main loop)
-        // =====================================================================
-
         let mut q_idx = std::mem::MaybeUninit::<[u8; MAX_EXT]>::uninit();
         let mut t_idx = std::mem::MaybeUninit::<[u8; MAX_EXT]>::uninit();
 
@@ -121,22 +107,18 @@ impl Gotoh {
         match view.dir {
             ExtendDir::Left => {
                 for i in 0..q_len {
-                    unsafe { *q_ptr.add(i) = (*view.query.get_unchecked(view.q_anchor - i)) as u8 };
+                    unsafe { *q_ptr.add(i) = view.query.get_unchecked(view.q_anchor - i).as_u8() };
                 }
                 for j in 0..t_len {
-                    unsafe {
-                        *t_ptr.add(j) = (*view.target.get_unchecked(view.t_anchor + j)) as u8
-                    };
+                    unsafe { *t_ptr.add(j) = view.target.get_unchecked(view.t_anchor + j).as_u8() };
                 }
             }
             ExtendDir::Right => {
                 for i in 0..q_len {
-                    unsafe { *q_ptr.add(i) = (*view.query.get_unchecked(view.q_anchor + i)) as u8 };
+                    unsafe { *q_ptr.add(i) = view.query.get_unchecked(view.q_anchor + i).as_u8() };
                 }
                 for j in 0..t_len {
-                    unsafe {
-                        *t_ptr.add(j) = (*view.target.get_unchecked(view.t_anchor - j)) as u8
-                    };
+                    unsafe { *t_ptr.add(j) = view.target.get_unchecked(view.t_anchor - j).as_u8() };
                 }
             }
         }
@@ -175,7 +157,7 @@ impl Gotoh {
 mod tests {
     use super::*;
     use crate::dsm::DsmRegistry;
-    use crate::types::{DsmId, Energy};
+    use crate::types::{DsmId, Energy, BASE_COUNT};
 
     #[test]
     fn gotoh_matches_scoring_table() {
@@ -183,10 +165,10 @@ mod tests {
         let table = ScoringModel::new(&source, init, Energy::from_kcal(0.005));
         let gotoh = Gotoh::new(&table);
 
-        for q1 in 0u8..6 {
-            for q2 in 0u8..6 {
-                for t1 in 0u8..6 {
-                    for t2 in 0u8..6 {
+        for q1 in 0..BASE_COUNT as u8 {
+            for q2 in 0..BASE_COUNT as u8 {
+                for t1 in 0..BASE_COUNT as u8 {
+                    for t2 in 0..BASE_COUNT as u8 {
                         assert_eq!(
                             gotoh.stack(q1, q2, t1, t2),
                             table.transition_score(q1, q2, t1, t2),
@@ -208,9 +190,9 @@ mod tests {
         let table = ScoringModel::new(&source, init, Energy::from_kcal(0.005));
         let gotoh = Gotoh::new(&table);
 
-        for qp in 0u8..6 {
-            for qc in 0u8..6 {
-                for tc in 0u8..6 {
+        for qp in 0..BASE_COUNT as u8 {
+            for qc in 0..BASE_COUNT as u8 {
+                for tc in 0..BASE_COUNT as u8 {
                     assert_eq!(
                         gotoh.close_query_gap(qp, qc, tc),
                         table.transition_score(qp, qc, GAP, tc),
@@ -227,9 +209,9 @@ mod tests {
             }
         }
 
-        for qc in 0u8..6 {
-            for tp in 0u8..6 {
-                for tc in 0u8..6 {
+        for qc in 0..BASE_COUNT as u8 {
+            for tp in 0..BASE_COUNT as u8 {
+                for tc in 0..BASE_COUNT as u8 {
                     assert_eq!(
                         gotoh.close_target_gap(qc, tp, tc),
                         table.transition_score(GAP, qc, tp, tc),
@@ -240,7 +222,7 @@ mod tests {
                     );
                 }
             }
-            for tc in 0u8..6 {
+            for tc in 0..BASE_COUNT as u8 {
                 assert_eq!(
                     gotoh.terminal(qc, tc),
                     table.transition_score(qc, GAP, tc, GAP),
@@ -248,8 +230,8 @@ mod tests {
             }
         }
 
-        for tp in 0u8..6 {
-            for tc in 0u8..6 {
+        for tp in 0..BASE_COUNT as u8 {
+            for tc in 0..BASE_COUNT as u8 {
                 assert_eq!(
                     gotoh.extend_target_gap(tp, tc),
                     table.transition_score(GAP, GAP, tp, tc),

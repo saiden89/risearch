@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Nucleotide/gap representation for DSM indexing and sequence operations
+/// Nucleotide/gap representation for DSM indexing and sequence operations.
+///
+/// The discriminants are the canonical internal rank. DSM tables, DP scoring,
+/// and suffix-array construction/partitioning all depend on this exact order.
 #[repr(u8)]
 #[derive(
     Clone,
@@ -54,31 +57,27 @@ impl TryFrom<char> for Base {
 impl Base {
     /// Convert to array index
     #[inline]
-    pub const fn idx(self) -> usize {
+    pub const fn as_usize(self) -> usize {
         self as usize
     }
 
-    /// Convert from usize index to Base.
-    ///
-    /// # Safety
-    /// Caller must ensure `i < 6`.
-    #[inline(always)]
-    pub unsafe fn from_idx(i: usize) -> Self {
-        debug_assert!(i < 6, "Invalid Base index: {}", i);
-        std::mem::transmute(i as u8)
+    /// Convert to raw u8 byte representation.
+    #[inline]
+    pub const fn as_u8(self) -> u8 {
+        self as u8
     }
 
     /// Get standard uppercase ASCII byte (A, G, C, U, N)
     #[inline]
     pub fn to_u8_upper(self) -> u8 {
-        BASE_TO_UPPER[self as usize]
+        BASE_TO_UPPER[self.as_usize()]
     }
 
     /// Convert Base to lowercase ASCII byte (a, g, c, t, n, -)
     /// Used for display and output formatting.
     #[inline]
     pub fn to_byte(self) -> u8 {
-        BASE_TO_BYTE[self as usize]
+        BASE_TO_BYTE[self.as_usize()]
     }
 
     /// Get char representation
@@ -154,7 +153,7 @@ impl PairType {
 pub const BASE_COUNT: usize = 6;
 
 /// Constant for Gap index used in array indexing and DSM lookups.
-pub const GAP: u8 = Base::Gap as u8;
+pub const GAP: u8 = Base::Gap.as_u8();
 
 /// Strand direction for search
 
@@ -227,7 +226,6 @@ impl TryFrom<f64> for Energy {
     }
 }
 
-
 impl From<Energy> for f64 {
     fn from(e: Energy) -> Self {
         e.to_kcal()
@@ -246,6 +244,21 @@ impl std::str::FromStr for Energy {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let kcal = s.parse::<f64>().map_err(|e| e.to_string())?;
         Self::try_from(kcal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Base;
+
+    #[test]
+    fn base_discriminants_are_canonical_internal_rank() {
+        assert_eq!(Base::Gap.as_u8(), 0);
+        assert_eq!(Base::A.as_u8(), 1);
+        assert_eq!(Base::C.as_u8(), 2);
+        assert_eq!(Base::G.as_u8(), 3);
+        assert_eq!(Base::N.as_u8(), 4);
+        assert_eq!(Base::U.as_u8(), 5);
     }
 }
 

@@ -30,6 +30,11 @@ pub(crate) const DSM_FLAT_SIZE: usize = BASE_COUNT * BASE_COUNT * BASE_COUNT * B
 
 pub(crate) const DSM_HEADER: [&str; 5] = ["q1", "q2", "t1", "t2", "delta_g_kcal_per_mol"];
 
+#[inline(always)]
+pub(crate) const fn flat_idx(q1: u8, q2: u8, t1: u8, t2: u8) -> usize {
+    (q1 as usize) * 216 + (q2 as usize) * 36 + (t1 as usize) * 6 + t2 as usize
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Orientation {
     Identity,

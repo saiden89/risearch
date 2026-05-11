@@ -1,6 +1,5 @@
 //! Parallel suffix-array traversal kernel for seed search.
 
-
 use std::ops::Range;
 
 use crate::types::Base;
@@ -150,17 +149,15 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
         let ms = match_streak + 1;
         let can_mm = self.can_mismatch_next(depth, match_streak, mm_count);
 
-        for query_slot in [0, 1, 2, 4] {
+        for (query_slot, query_base) in MATCHABLE_BUCKETS {
             if query_partitions[query_slot] >= query_partitions[query_slot + 1] {
                 continue;
             }
-            let query_base = unsafe { Base::from_idx(query_slot + 1) };
 
-            for target_slot in [0, 1, 2, 4] {
+            for (target_slot, target_base) in MATCHABLE_BUCKETS {
                 if target_partitions[target_slot] >= target_partitions[target_slot + 1] {
                     continue;
                 }
-                let target_base = unsafe { Base::from_idx(target_slot + 1) };
 
                 if query_base.pair_type(target_base).is_match(WOBBLE) {
                     self.recurse::<WOBBLE>(
@@ -214,11 +211,10 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
         let ms = match_streak + 1;
         let mm1 = mm_count + 1;
 
-        for multi_slot in [0, 1, 2, 4] {
+        for (multi_slot, multi_base) in MATCHABLE_BUCKETS {
             if multi_partitions[multi_slot] >= multi_partitions[multi_slot + 1] {
                 continue;
             }
-            let multi_base = unsafe { Base::from_idx(multi_slot + 1) };
             let multi_range = multi_partitions[multi_slot]..multi_partitions[multi_slot + 1];
             let (query_sa, target_sa) = if Q_SINGLETON {
                 (singleton_range.clone(), multi_range)
@@ -287,6 +283,12 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
 }
 
 const LINEAR_PARTITION_CUTOFF: usize = 1024;
+const MATCHABLE_BUCKETS: [(usize, Base); 4] = [
+    (Base::A.as_usize() - 1, Base::A),
+    (Base::C.as_usize() - 1, Base::C),
+    (Base::G.as_usize() - 1, Base::G),
+    (Base::U.as_usize() - 1, Base::U),
+];
 
 /// Partition a sorted SA interval by base character at `depth`.
 ///
@@ -304,7 +306,7 @@ fn partition(view: SeedView<'_>, start: usize, end: usize, depth: usize) -> [usi
         let mut i = start;
         for slot in 0..5 {
             let target = (slot + 1) as u8;
-            while i < end && unsafe { view.sa_base_unchecked(i, depth) as u8 } < target {
+            while i < end && unsafe { view.sa_base_unchecked(i, depth).as_u8() } < target {
                 i += 1;
             }
             out[slot] = i;
@@ -331,7 +333,7 @@ fn binary_search(
     let mut half = (end - start) >> 1;
     while start < end {
         let mid = start + half;
-        if unsafe { view.sa_base_unchecked(mid, depth) as u8 } >= target {
+        if unsafe { view.sa_base_unchecked(mid, depth).as_u8() } >= target {
             end = start + half;
         } else {
             start += if half != 0 { half } else { 1 };
