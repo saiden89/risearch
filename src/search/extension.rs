@@ -2,28 +2,18 @@ use smallvec::SmallVec;
 
 use crate::alignment::PairClass;
 use crate::dp::gotoh::Gotoh;
-use crate::dp::{is_valid_score, DpGrid, DpView, ExtendDir};
+use crate::dp::{DpGrid, DpView, ExtendDir, TraceOp, MAX_EXT};
 use crate::dsm::ScoringModel;
 use crate::types::Energy;
 
 use super::ExtensionResult;
 
-#[derive(Clone, Copy)]
-enum State {
-    Match,
-    GapQ,
-    GapT,
-}
-
-#[inline(always)]
-fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
-    is_valid_score(pred) && val == pred + energy
-}
-
 /// Per-worker extension engine. Each worker owns one; `&mut` is safe because
-/// only `grid` is mutated — the rest is read-only extension state.
+/// only mutable state (grid, buffers) is mutated — the Gotoh tables are read-only.
 pub(super) struct ExtensionEngine {
     grid: DpGrid,
+    q_buf: [u8; MAX_EXT],
+    t_buf: [u8; MAX_EXT],
     gotoh_left: Gotoh,
     gotoh_right: Gotoh,
 }
@@ -34,6 +24,8 @@ impl ExtensionEngine {
         let gotoh_left = Gotoh::new(&model.transpose());
         Self {
             grid: DpGrid::new(max_extension),
+            q_buf: [0u8; MAX_EXT],
+            t_buf: [0u8; MAX_EXT],
             gotoh_left,
             gotoh_right,
         }
@@ -55,117 +47,56 @@ impl ExtensionEngine {
             };
         }
 
-        let result = gotoh.extend(view, &mut self.grid);
+        let result = gotoh.extend(view, &mut self.grid, &mut self.q_buf, &mut self.t_buf);
+        let pairs = if include_alignment && (result.q_idx > 0 || result.t_idx > 0) {
+            let ops = gotoh.traceback(
+                &self.q_buf,
+                &self.t_buf,
+                &self.grid,
+                result.q_idx,
+                result.t_idx,
+            );
+            Some(map_trace_to_pairs(view, &ops, result.q_idx, result.t_idx))
+        } else {
+            None
+        };
         ExtensionResult {
             energy: Energy(result.energy),
             q_ext: result.q_idx,
             t_ext: result.t_idx,
-            pairs: (include_alignment && (result.q_idx > 0 || result.t_idx > 0))
-                .then(|| self.traceback(gotoh, view, result.q_idx, result.t_idx)),
+            pairs,
         }
     }
+}
 
-    fn traceback(
-        &self,
-        gotoh: &Gotoh,
-        view: &DpView<'_>,
-        end_i: usize,
-        end_j: usize,
-    ) -> SmallVec<[PairClass; 64]> {
-        let mut out = SmallVec::new();
-        let (mut i, mut j) = (end_i, end_j);
-        let mut state = State::Match;
-
-        while i > 0 || j > 0 {
-            let next = match state {
-                State::Match if i > 0 && j > 0 => {
-                    let q_base = view.q_base(i);
-                    let t_base = view.t_base(j).complement();
-                    out.push(PairClass::from_bases(q_base, t_base));
-
-                    let c = self.grid.get(i, j);
-                    let diag = self.grid.get(i - 1, j - 1);
-
-                    let qi_prev = view.q_base(i - 1);
-                    let qi = view.q_base(i);
-                    let tj_prev = view.t_base(j - 1);
-                    let tj = view.t_base(j);
-
-                    let stack =
-                        gotoh.stack(qi_prev.as_u8(), qi.as_u8(), tj_prev.as_u8(), tj.as_u8());
-                    let close_query_gap =
-                        gotoh.close_query_gap(qi_prev.as_u8(), qi.as_u8(), tj.as_u8());
-                    let close_target_gap =
-                        gotoh.close_target_gap(qi.as_u8(), tj_prev.as_u8(), tj.as_u8());
-
-                    i -= 1;
-                    j -= 1;
-
-                    if is_transition(c.m, diag.m, stack) {
-                        State::Match
-                    } else if is_transition(c.m, diag.bq, close_query_gap) {
-                        State::GapQ
-                    } else if is_transition(c.m, diag.bt, close_target_gap) {
-                        State::GapT
-                    } else {
-                        break;
-                    }
-                }
-                State::GapQ if i > 0 => {
-                    out.push(PairClass::QueryBulge);
-
-                    let c = self.grid.get(i, j);
-                    let up = self.grid.get(i - 1, j);
-
-                    let qi_prev = view.q_base(i - 1);
-                    let qi = view.q_base(i);
-                    let tj = view.t_base(j);
-
-                    let open_query_gap =
-                        gotoh.open_query_gap(qi_prev.as_u8(), qi.as_u8(), tj.as_u8());
-                    let extend_query_gap = gotoh.extend_query_gap(qi_prev.as_u8(), qi.as_u8());
-
-                    i -= 1;
-
-                    if is_transition(c.bq, up.m, open_query_gap) {
-                        State::Match
-                    } else if is_transition(c.bq, up.bq, extend_query_gap) {
-                        State::GapQ
-                    } else {
-                        break;
-                    }
-                }
-                State::GapT if j > 0 => {
-                    out.push(PairClass::TargetBulge);
-
-                    let c = self.grid.get(i, j);
-                    let left = self.grid.get(i, j - 1);
-
-                    let qi = view.q_base(i);
-                    let tj_prev = view.t_base(j - 1);
-                    let tj = view.t_base(j);
-
-                    let open_target_gap =
-                        gotoh.open_target_gap(qi.as_u8(), tj_prev.as_u8(), tj.as_u8());
-                    let extend_target_gap = gotoh.extend_target_gap(tj_prev.as_u8(), tj.as_u8());
-
-                    j -= 1;
-
-                    if is_transition(c.bt, left.m, open_target_gap) {
-                        State::Match
-                    } else if is_transition(c.bt, left.bt, extend_target_gap) {
-                        State::GapT
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
-            };
-            state = next;
+fn map_trace_to_pairs(
+    view: &DpView<'_>,
+    ops: &[TraceOp],
+    end_i: usize,
+    end_j: usize,
+) -> SmallVec<[PairClass; 64]> {
+    let mut out = SmallVec::with_capacity(ops.len());
+    let (mut i, mut j) = (end_i, end_j);
+    for &op in ops {
+        match op {
+            TraceOp::Paired => {
+                let q_base = view.q_base(i);
+                let t_base = view.t_base(j).complement();
+                out.push(PairClass::from_bases(q_base, t_base));
+                i -= 1;
+                j -= 1;
+            }
+            TraceOp::GapQ => {
+                out.push(PairClass::QueryBulge);
+                i -= 1;
+            }
+            TraceOp::GapT => {
+                out.push(PairClass::TargetBulge);
+                j -= 1;
+            }
         }
-
-        out
     }
+    out
 }
 
 #[cfg(test)]

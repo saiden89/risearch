@@ -8,7 +8,7 @@ use std::cmp::max;
 
 /// Maximum extension length for precomputed DP lookup arrays.
 /// Matches the typical max_ext parameter (100-200 bases).
-const MAX_EXT: usize = 256;
+pub(crate) const MAX_EXT: usize = 256;
 
 /// DP runtime configuration derived from high-level search configs.
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +49,14 @@ impl std::fmt::Display for ExtendDir {
             Self::Right => write!(f, "[EXT_RIGHT]"),
         }
     }
+}
+
+/// One step in a Gotoh traceback: which DP state was active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceOp {
+    Paired,
+    GapQ,
+    GapT,
 }
 
 // =============================================================================
