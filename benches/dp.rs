@@ -71,6 +71,8 @@ fn bench_extend_left(c: &mut Criterion) {
             let t_start = 50;
 
             let mut grid = DpGrid::new(200);
+            let mut q_buf = [0u8; 256];
+            let mut t_buf = [0u8; 256];
 
             b.iter(|| {
                 let view = DpView::new(
@@ -81,7 +83,7 @@ fn bench_extend_left(c: &mut Criterion) {
                     ExtendDir::Left,
                     black_box(len),
                 );
-                let _ = gotoh.extend(black_box(&view), &mut grid);
+                let _ = gotoh.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
             });
         });
     }
@@ -103,6 +105,8 @@ fn bench_extend_right(c: &mut Criterion) {
             let t_end = 49;
 
             let mut grid = DpGrid::new(200);
+            let mut q_buf = [0u8; 256];
+            let mut t_buf = [0u8; 256];
 
             b.iter(|| {
                 let view = DpView::new(
@@ -113,7 +117,7 @@ fn bench_extend_right(c: &mut Criterion) {
                     ExtendDir::Right,
                     black_box(len),
                 );
-                let _ = gotoh.extend(black_box(&view), &mut grid);
+                let _ = gotoh.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
             });
         });
     }
@@ -143,6 +147,8 @@ fn bench_throughput(c: &mut Criterion) {
                 let t_start = 50;
 
                 let mut grid = DpGrid::new(200);
+                let mut q_buf = [0u8; 256];
+                let mut t_buf = [0u8; 256];
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
@@ -157,7 +163,7 @@ fn bench_throughput(c: &mut Criterion) {
                             ExtendDir::Left,
                             black_box(len),
                         );
-                        let result = gotoh_left.extend(black_box(&view), &mut grid);
+                        let result = gotoh_left.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -180,6 +186,8 @@ fn bench_throughput(c: &mut Criterion) {
                 let t_end = 49;
 
                 let mut grid = DpGrid::new(200);
+                let mut q_buf = [0u8; 256];
+                let mut t_buf = [0u8; 256];
 
                 b.iter_custom(|iters| {
                     let mut total_duration = std::time::Duration::ZERO;
@@ -194,7 +202,7 @@ fn bench_throughput(c: &mut Criterion) {
                             ExtendDir::Right,
                             black_box(len),
                         );
-                        let result = gotoh_right.extend(black_box(&view), &mut grid);
+                        let result = gotoh_right.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -230,6 +238,8 @@ fn bench_many_extensions(c: &mut Criterion) {
             .collect();
 
         let mut grid = DpGrid::new(200);
+        let mut q_buf = [0u8; 256];
+        let mut t_buf = [0u8; 256];
 
         b.iter(|| {
             let mut total_score = 0i32;
@@ -260,7 +270,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         ExtendDir::Left,
                         black_box(30),
                     );
-                    let left_result = gotoh_left.extend(black_box(&left_view), &mut grid);
+                    let left_result = gotoh_left.extend(black_box(&left_view), &mut grid, &mut q_buf, &mut t_buf);
                     total_score = total_score.wrapping_add(left_result.energy);
 
                     // Right extension
@@ -272,7 +282,7 @@ fn bench_many_extensions(c: &mut Criterion) {
                         ExtendDir::Right,
                         black_box(30),
                     );
-                    let right_result = gotoh_right.extend(black_box(&right_view), &mut grid);
+                    let right_result = gotoh_right.extend(black_box(&right_view), &mut grid, &mut q_buf, &mut t_buf);
                     total_score = total_score.wrapping_add(right_result.energy);
                 }
             }

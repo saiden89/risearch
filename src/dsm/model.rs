@@ -1,9 +1,68 @@
 use crate::dp::MAX_ENERGY;
-use crate::types::{Base, Energy, BASE_COUNT};
+use crate::types::{Base, Energy, BASE_COUNT, GAP};
 
 use super::{flat_idx, DsmTable, DSM_FLAT_SIZE};
 
 const BASES: [Base; BASE_COUNT] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
+
+/// Row-local precomputed lookup into the flat scoring table.
+///
+/// Constructed once per outer-loop iteration (fixed qp, qc pair). Inner-loop
+/// methods take only target-side indices and return transition scores without
+/// exposing the flat-table layout or the GAP=0 offset trick.
+///
+/// # Safety
+///
+/// All index arguments (`tp`, `tc`) must be in `0..BASE_COUNT`.
+/// The backing table pointer must remain valid for the lifetime of this struct.
+#[derive(Clone, Copy)]
+pub(crate) struct RowLookup {
+    qp_qc_base: *const i32,
+    close_qgap: *const i32,
+    open_qgap: *const i32,
+    close_tgap: *const i32,
+    open_tgap: *const i32,
+    extend_tgap: *const i32,
+    terminal_base: *const i32,
+    pub(crate) ext_qgap: i32,
+}
+
+impl RowLookup {
+    #[inline(always)]
+    pub(crate) fn stack(&self, tp: usize, tc: usize) -> i32 {
+        unsafe { *self.qp_qc_base.add(tp * BASE_COUNT + tc) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn close_query_gap(&self, tc: usize) -> i32 {
+        unsafe { *self.close_qgap.add(tc) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn open_query_gap(&self, tc: usize) -> i32 {
+        unsafe { *self.open_qgap.add(tc * BASE_COUNT) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn close_target_gap(&self, tp: usize, tc: usize) -> i32 {
+        unsafe { *self.close_tgap.add(tp * BASE_COUNT + tc) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn open_target_gap(&self, tp: usize, tc: usize) -> i32 {
+        unsafe { *self.open_tgap.add(tp * BASE_COUNT + tc) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn extend_target_gap(&self, tp: usize, tc: usize) -> i32 {
+        unsafe { *self.extend_tgap.add(tp * BASE_COUNT + tc) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn terminal(&self, tc: usize) -> i32 {
+        unsafe { *self.terminal_base.add(tc * BASE_COUNT) }
+    }
+}
 
 /// Penalty-adjusted flat scoring table for one orientation.
 ///
@@ -81,6 +140,76 @@ impl ScoringModel {
     #[inline(always)]
     pub fn table_ptr(&self) -> *const i32 {
         self.table.as_ptr()
+    }
+
+    /// Build a row-local lookup for the given (qp, qc) pair.
+    ///
+    /// # Safety
+    ///
+    /// `qp` and `qc` must be in `0..BASE_COUNT` (valid base rank indices).
+    #[inline(always)]
+    pub(crate) fn row_lookup(&self, qp: u8, qc: u8) -> RowLookup {
+        let table = self.table_ptr();
+        unsafe {
+            RowLookup {
+                qp_qc_base: table.add(flat_idx(qp, qc, 0, 0)),
+                close_qgap: table.add(flat_idx(qp, qc, GAP, 0)),
+                open_qgap: table.add(flat_idx(qp, qc, 0, GAP)),
+                close_tgap: table.add(flat_idx(GAP, qc, 0, 0)),
+                open_tgap: table.add(flat_idx(qc, GAP, 0, 0)),
+                extend_tgap: table.add(flat_idx(GAP, GAP, 0, 0)),
+                terminal_base: table.add(flat_idx(qc, GAP, 0, GAP)),
+                ext_qgap: *table.add(flat_idx(qp, qc, GAP, GAP)),
+            }
+        }
+    }
+
+    /// M ← M transition score: continue the paired stack.
+    #[inline(always)]
+    pub(crate) fn stack_score(&self, qp: u8, qc: u8, tp: u8, tc: u8) -> i32 {
+        self.transition_score(qp, qc, tp, tc)
+    }
+
+    /// M ← Bq transition score: close a query gap and return to the stack.
+    #[inline(always)]
+    pub(crate) fn close_query_gap_score(&self, qp: u8, qc: u8, tc: u8) -> i32 {
+        self.transition_score(qp, qc, GAP, tc)
+    }
+
+    /// M ← Bt transition score: close a target gap and return to the stack.
+    #[inline(always)]
+    pub(crate) fn close_target_gap_score(&self, qc: u8, tp: u8, tc: u8) -> i32 {
+        self.transition_score(GAP, qc, tp, tc)
+    }
+
+    /// Bq ← M transition score: open a query gap.
+    #[inline(always)]
+    pub(crate) fn open_query_gap_score(&self, qp: u8, qc: u8, tc: u8) -> i32 {
+        self.transition_score(qp, qc, tc, GAP)
+    }
+
+    /// Bq ← Bq transition score: extend a query gap.
+    #[inline(always)]
+    pub(crate) fn extend_query_gap_score(&self, qp: u8, qc: u8) -> i32 {
+        self.transition_score(qp, qc, GAP, GAP)
+    }
+
+    /// Bt ← M transition score: open a target gap.
+    #[inline(always)]
+    pub(crate) fn open_target_gap_score(&self, qc: u8, tp: u8, tc: u8) -> i32 {
+        self.transition_score(qc, GAP, tp, tc)
+    }
+
+    /// Bt ← Bt transition score: extend a target gap.
+    #[inline(always)]
+    pub(crate) fn extend_target_gap_score(&self, tp: u8, tc: u8) -> i32 {
+        self.transition_score(GAP, GAP, tp, tc)
+    }
+
+    /// Terminal (boundary) penalty.
+    #[inline(always)]
+    pub(crate) fn terminal_penalty(&self, qc: u8, tc: u8) -> i32 {
+        self.transition_score(qc, GAP, tc, GAP)
     }
 
     /// Produce a left-canonical (transposed) copy.

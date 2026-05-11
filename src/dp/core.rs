@@ -7,7 +7,7 @@ use super::{max3, BestScore, DpCell, DpGrid};
 impl Gotoh {
     #[cfg_attr(feature = "prof", inline(never))]
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn dp_main_loop(
+    pub(super) fn main_loop(
         &self,
         q_ptr: *const u8,
         t_ptr: *const u8,
@@ -25,54 +25,49 @@ impl Gotoh {
         unsafe {
             let ptr = grid.as_mut_ptr();
             let width = grid.width();
-            let table = self.model.table_ptr();
 
             for i in 3..q_len {
-                let row_i = i * width;
-                let row_prev = (i - 1) * width;
-                let qi_prev = *q_ptr.add(i - 1) as usize;
-                let qi = *q_ptr.add(i) as usize;
+                let prev_row_offset = (i - 1) * width;
+                let curr_row_offset = i * width;
 
-                let qp_qc = qi_prev * 216 + qi * 36;
-                let stack_ptr = table.add(qp_qc);
-                let t_close_ptr = table.add(qi * 36);
-                let t_open_ptr = table.add(qi * 216);
-                let t_extend_ptr = table;
+                let row = self.row_lookup(*q_ptr.add(i - 1), *q_ptr.add(i));
 
-                let extend_query_gap = *stack_ptr; // GAP = 0
+                // 1. Target Sequence Context
+                let mut tp = *t_ptr.add(2) as usize; // Target previous
+                let mut tc_ptr = t_ptr.add(3);       // Target current
 
-                let mut diag = *ptr.add(row_prev + 2);
-                let mut left = *ptr.add(row_i + 2);
-                let mut up_ptr = ptr.add(row_prev + 3);
-                let mut curr_ptr = ptr.add(row_i + 3);
-                let mut t_curr_ptr = t_ptr.add(3);
-                let mut tp = *t_ptr.add(2) as usize;
+                // 2. Previous Row Grid Context (Reads only)
+                let mut diag = *ptr.add(prev_row_offset + 2);
+                let mut up_ptr = ptr.add(prev_row_offset + 3);
+
+                // 3. Current Row Grid Context (Reads and Writes)
+                let mut left = *ptr.add(curr_row_offset + 2);
+                let mut curr_ptr = ptr.add(curr_row_offset + 3);
 
                 for j in 3..t_len {
                     let up = *up_ptr;
-                    let tc = *t_curr_ptr as usize;
-                    let pair_ix = tp * 6 + tc;
+                    let tc = *tc_ptr as usize;
 
                     let m = max3(
-                        diag.m + *stack_ptr.add(pair_ix),
-                        diag.bq + *stack_ptr.add(tc),
-                        diag.bt + *t_close_ptr.add(pair_ix),
+                        diag.m + row.stack(tp, tc),
+                        diag.bq + row.close_query_gap(tc),
+                        diag.bt + row.close_target_gap(tp, tc),
                     );
-                    let bq = max(up.m + *stack_ptr.add(tc * 6), up.bq + extend_query_gap);
+                    let bq = max(up.m + row.open_query_gap(tc), up.bq + row.ext_qgap);
                     let bt = max(
-                        left.m + *t_open_ptr.add(pair_ix),
-                        left.bt + *t_extend_ptr.add(pair_ix),
+                        left.m + row.open_target_gap(tp, tc),
+                        left.bt + row.extend_target_gap(tp, tc),
                     );
                     let curr = DpCell { m, bq, bt };
 
-                    best.update_if_better(m, *t_open_ptr.add(tc * 6), i, j);
+                    best.update_if_better(m, row.terminal(tc), i, j);
                     *curr_ptr = curr;
 
                     diag = up;
                     left = curr;
                     up_ptr = up_ptr.add(1);
                     curr_ptr = curr_ptr.add(1);
-                    t_curr_ptr = t_curr_ptr.add(1);
+                    tc_ptr = tc_ptr.add(1);
                     tp = tc;
                 }
             }

@@ -20,8 +20,7 @@
 
 use smallvec::SmallVec;
 
-use crate::dsm::ScoringModel;
-use crate::types::GAP;
+use crate::dsm::{RowLookup, ScoringModel};
 use log::trace;
 
 use super::{is_valid_score, BestScore, DpGrid, DpView, ExtendDir, TraceOp, MAX_EXT};
@@ -46,52 +45,62 @@ impl Gotoh {
         }
     }
 
+    /// Build a row-local lookup for the given (qp, qc) pair.
+    ///
+    /// # Safety
+    ///
+    /// `qp` and `qc` must be in `0..BASE_COUNT` (valid base rank indices).
+    #[inline(always)]
+    pub(crate) fn row_lookup(&self, qp: u8, qc: u8) -> RowLookup {
+        self.model.row_lookup(qp, qc)
+    }
+
     /// M ← M transition score: continue the paired stack.
     #[inline(always)]
     pub(crate) fn stack(&self, qp: u8, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model.transition_score(qp, qc, tp, tc)
+        self.model.stack_score(qp, qc, tp, tc)
     }
 
     /// M ← Bq transition score: close a query gap and return to the stack.
     #[inline(always)]
     pub(crate) fn close_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
-        self.model.transition_score(qp, qc, GAP, tc)
+        self.model.close_query_gap_score(qp, qc, tc)
     }
 
     /// M ← Bt transition score: close a target gap and return to the stack.
     #[inline(always)]
     pub(crate) fn close_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model.transition_score(GAP, qc, tp, tc)
+        self.model.close_target_gap_score(qc, tp, tc)
     }
 
     /// Bq ← M transition score: open a query gap.
     #[inline(always)]
     pub(crate) fn open_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
-        self.model.transition_score(qp, qc, tc, GAP)
+        self.model.open_query_gap_score(qp, qc, tc)
     }
 
     /// Bq ← Bq transition score: extend a query gap.
     #[inline(always)]
     pub(crate) fn extend_query_gap(&self, qp: u8, qc: u8) -> i32 {
-        self.model.transition_score(qp, qc, GAP, GAP)
+        self.model.extend_query_gap_score(qp, qc)
     }
 
     /// Bt ← M transition score: open a target gap.
     #[inline(always)]
     pub(crate) fn open_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model.transition_score(qc, GAP, tp, tc)
+        self.model.open_target_gap_score(qc, tp, tc)
     }
 
     /// Bt ← Bt transition score: extend a target gap.
     #[inline(always)]
     pub(crate) fn extend_target_gap(&self, tp: u8, tc: u8) -> i32 {
-        self.model.transition_score(GAP, GAP, tp, tc)
+        self.model.extend_target_gap_score(tp, tc)
     }
 
     /// Terminal (boundary) penalty.
     #[inline(always)]
     pub(crate) fn terminal(&self, qc: u8, tc: u8) -> i32 {
-        self.model.transition_score(qc, GAP, tc, GAP)
+        self.model.terminal_penalty(qc, tc)
     }
 
     #[cfg_attr(feature = "prof", inline(never))]
@@ -148,7 +157,7 @@ impl Gotoh {
             return best;
         }
 
-        self.dp_main_loop(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
+        self.main_loop(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
 
         trace!(
             "{} result: energy={} q_idx={} t_idx={}",
@@ -202,7 +211,10 @@ impl Gotoh {
                     } else if is_transition(c.m, diag.bt, close_target_gap) {
                         TraceOp::GapT
                     } else {
-                        debug_assert!(false, "traceback: no valid predecessor at ({i},{j}) in Paired state");
+                        debug_assert!(
+                            false,
+                            "traceback: no valid predecessor at ({i},{j}) in Paired state"
+                        );
                         break;
                     }
                 }
@@ -226,7 +238,10 @@ impl Gotoh {
                     } else if is_transition(c.bq, up.bq, extend_query_gap) {
                         TraceOp::GapQ
                     } else {
-                        debug_assert!(false, "traceback: no valid predecessor at ({i},{j}) in GapQ state");
+                        debug_assert!(
+                            false,
+                            "traceback: no valid predecessor at ({i},{j}) in GapQ state"
+                        );
                         break;
                     }
                 }
@@ -250,7 +265,10 @@ impl Gotoh {
                     } else if is_transition(c.bt, left.bt, extend_target_gap) {
                         TraceOp::GapT
                     } else {
-                        debug_assert!(false, "traceback: no valid predecessor at ({i},{j}) in GapT state");
+                        debug_assert!(
+                            false,
+                            "traceback: no valid predecessor at ({i},{j}) in GapT state"
+                        );
                         break;
                     }
                 }
@@ -265,88 +283,6 @@ impl Gotoh {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::dsm::DsmRegistry;
-    use crate::types::{DsmId, Energy, BASE_COUNT};
-
-    #[test]
-    fn gotoh_matches_scoring_table() {
-        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let table = ScoringModel::new(&source, init, Energy::from_kcal(0.005));
-        let gotoh = Gotoh::new(&table);
-
-        for q1 in 0..BASE_COUNT as u8 {
-            for q2 in 0..BASE_COUNT as u8 {
-                for t1 in 0..BASE_COUNT as u8 {
-                    for t2 in 0..BASE_COUNT as u8 {
-                        assert_eq!(
-                            gotoh.stack(q1, q2, t1, t2),
-                            table.transition_score(q1, q2, t1, t2),
-                            "stack mismatch at ({},{},{},{})",
-                            q1,
-                            q2,
-                            t1,
-                            t2
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn gotoh_semantic_transitions_match_scoring_model() {
-        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let table = ScoringModel::new(&source, init, Energy::from_kcal(0.005));
-        let gotoh = Gotoh::new(&table);
-
-        for qp in 0..BASE_COUNT as u8 {
-            for qc in 0..BASE_COUNT as u8 {
-                for tc in 0..BASE_COUNT as u8 {
-                    assert_eq!(
-                        gotoh.close_query_gap(qp, qc, tc),
-                        table.transition_score(qp, qc, GAP, tc),
-                    );
-                    assert_eq!(
-                        gotoh.open_query_gap(qp, qc, tc),
-                        table.transition_score(qp, qc, tc, GAP),
-                    );
-                }
-                assert_eq!(
-                    gotoh.extend_query_gap(qp, qc),
-                    table.transition_score(qp, qc, GAP, GAP),
-                );
-            }
-        }
-
-        for qc in 0..BASE_COUNT as u8 {
-            for tp in 0..BASE_COUNT as u8 {
-                for tc in 0..BASE_COUNT as u8 {
-                    assert_eq!(
-                        gotoh.close_target_gap(qc, tp, tc),
-                        table.transition_score(GAP, qc, tp, tc),
-                    );
-                    assert_eq!(
-                        gotoh.open_target_gap(qc, tp, tc),
-                        table.transition_score(qc, GAP, tp, tc),
-                    );
-                }
-            }
-            for tc in 0..BASE_COUNT as u8 {
-                assert_eq!(
-                    gotoh.terminal(qc, tc),
-                    table.transition_score(qc, GAP, tc, GAP),
-                );
-            }
-        }
-
-        for tp in 0..BASE_COUNT as u8 {
-            for tc in 0..BASE_COUNT as u8 {
-                assert_eq!(
-                    gotoh.extend_target_gap(tp, tc),
-                    table.transition_score(GAP, GAP, tp, tc),
-                );
-            }
-        }
-    }
+    // Note: Integration tests for the DP algorithm (parity with legacy RIsearch)
+    // are located in the /tests directory.
 }

@@ -218,7 +218,7 @@ impl BestScore {
     }
 }
 
-/// max of 3 values - branchless
+/// Compares and returns the maximum of two values.
 #[inline(always)]
 pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
     max(max(a, b), c)

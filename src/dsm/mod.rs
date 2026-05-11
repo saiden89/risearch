@@ -23,6 +23,7 @@ mod parse;
 use parse::load_dsm_tsv_text;
 
 pub use model::ScoringModel;
+pub(crate) use model::RowLookup;
 
 pub(crate) type DsmTable = [[[[i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
 
