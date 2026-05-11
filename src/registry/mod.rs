@@ -163,6 +163,29 @@ impl Query {
     pub fn seed_sequence(&self) -> &[Base] {
         &self.seed_sequence
     }
+
+    /// Map a local position within the seed view to a global query start coordinate.
+    ///
+    /// Returns `None` if the seed overflows the query's seed-search interval,
+    /// violates the query-specific length constraints, or contains an 'N' base.
+    #[inline]
+    pub fn map_seed_pos(&self, local_pos: usize, seed_len: usize) -> Option<usize> {
+        if local_pos + seed_len > self.seed_sequence.len() {
+            return None;
+        }
+
+        if seed_len < self.min_seed_len || seed_len > self.max_seed_len {
+            return None;
+        }
+
+        let query_start = self.seed_interval.start + local_pos;
+
+        if self.has_n_any && self.n_prefix[query_start + seed_len] != self.n_prefix[query_start] {
+            return None;
+        }
+
+        Some(query_start)
+    }
 }
 
 impl RegistryEntry for Query {

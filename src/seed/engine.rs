@@ -83,19 +83,9 @@ impl<'a> SeedingEngine<'a> {
             else {
                 continue;
             };
-            if query_local_pos + seed_len > self.qview.seq_lens[query_idx] {
+            let Some(query_start) = self.queries.get(query_idx).map_seed_pos(query_local_pos, seed_len) else {
                 continue;
-            }
-
-            let query = self.queries.get(query_idx);
-            if seed_len < query.min_seed_len || seed_len > query.max_seed_len {
-                continue;
-            }
-
-            let query_start = query.seed_interval.start + query_local_pos;
-            if query.has_n_any() && has_n_in_range(query.n_prefix(), query_start, seed_len) {
-                continue;
-            }
+            };
 
             for &target_sa_pos in &self.tview.combined_sa
                 [raw_match.target_interval.start..raw_match.target_interval.end]
@@ -124,12 +114,6 @@ impl<'a> SeedingEngine<'a> {
             }
         }
     }
-}
-
-/// Check if any position in range [start, start+len) contains 'N'.
-#[inline]
-fn has_n_in_range(n_prefix: &[u32], start: usize, len: usize) -> bool {
-    n_prefix[start + len] != n_prefix[start]
 }
 
 /// Remap a global SA position to an index via binary search on an offset table.
