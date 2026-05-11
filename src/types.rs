@@ -119,6 +119,12 @@ impl Base {
             _ => PairType::Mismatch,
         }
     }
+
+    /// Check if this base forms a valid pair with the target base (which is in transformed/forward space).
+    #[inline(always)]
+    pub fn forms_pair(self, target: Base, allow_wobble: bool) -> bool {
+        self.pair_type(target.complement()).is_match(allow_wobble)
+    }
 }
 
 /// Classification of a base pair in complement-transformed target space.
@@ -240,6 +246,46 @@ impl std::str::FromStr for Energy {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let kcal = s.parse::<f64>().map_err(|e| e.to_string())?;
         Self::try_from(kcal)
+    }
+}
+
+impl std::ops::Add for Energy {
+    type Output = Self;
+
+    #[track_caller]
+    fn add(self, rhs: Self) -> Self::Output {
+        Self(
+            self.0
+                .checked_add(rhs.0)
+                .expect("Energy addition overflowed i32"),
+        )
+    }
+}
+
+impl std::ops::Sub for Energy {
+    type Output = Self;
+
+    #[track_caller]
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self(
+            self.0
+                .checked_sub(rhs.0)
+                .expect("Energy subtraction overflowed i32"),
+        )
+    }
+}
+
+impl std::ops::Mul<usize> for Energy {
+    type Output = Self;
+
+    #[track_caller]
+    fn mul(self, rhs: usize) -> Self::Output {
+        let rhs_i32 = i32::try_from(rhs).expect("Energy multiplier overflows i32");
+        Self(
+            self.0
+                .checked_mul(rhs_i32)
+                .expect("Energy multiplication overflowed i32"),
+        )
     }
 }
 

@@ -68,35 +68,10 @@ impl ScoringModel {
         }
     }
 
-    pub(crate) fn hit_energy(
-        &self,
-        seed_score: i32,
-        left_score: i32,
-        right_score: i32,
-        nt_count: usize,
-    ) -> Energy {
-        let alignment_score = seed_score
-            .checked_add(left_score)
-            .and_then(|score| score.checked_add(right_score))
-            .expect("alignment score overflows i32");
-        let penalty = i32::try_from(nt_count)
-            .expect("nt_count overflows i32")
-            .checked_mul(self.penalty.0)
-            .expect("penalty score overflows i32");
-        let energy = self
-            .initiation
-            .0
-            .checked_sub(alignment_score)
-            .and_then(|score| score.checked_sub(penalty))
-            .expect("Energy score overflows i32");
-
-        Energy(energy)
-    }
-
-    /// Check if two bases form a valid seed pair in transformed target space.
-    #[inline(always)]
-    pub fn seed_pair(q: Base, t: Base, allow_wobble: bool) -> bool {
-        q.pair_type(t.complement()).is_match(allow_wobble)
+    /// Compute the total binding free energy for a state with the given total
+    /// stacking stability score and physical length.
+    pub fn binding_energy(&self, stacking_stability: Energy, length: usize) -> Energy {
+        self.initiation - stacking_stability - (self.penalty * length)
     }
 
     #[inline(always)]
@@ -140,23 +115,17 @@ impl ScoringModel {
         self.transition_score(q1 as u8, q2 as u8, t1 as u8, t2 as u8)
     }
 
-    /// Check if two bases form a valid pair.
-    #[inline(always)]
-    pub fn is_pair(&self, q: Base, t: Base) -> bool {
-        q.pair_type(t.complement()).is_match(true)
-    }
-
-    /// Seed score calculation with antiparallel indexing.
-    pub fn seed_score(
+    /// Calculate the thermodynamic score of a continuous, ungapped anti-parallel duplex.
+    pub fn ungapped_duplex_score(
         &self,
         query: &[Base],
         target: &[Base],
         q_pos: usize,
         t_pos: usize,
         len: usize,
-    ) -> i32 {
+    ) -> Energy {
         if len <= 1 {
-            return 0;
+            return Energy(0);
         }
         let mut score = 0;
         let t_match_end = t_pos + len - 1;
@@ -168,6 +137,6 @@ impl ScoringModel {
                 target[t_match_end - i - 1],
             );
         }
-        score
+        Energy(score)
     }
 }

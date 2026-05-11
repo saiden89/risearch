@@ -309,9 +309,9 @@ impl SearchWorker {
             return None;
         }
 
-        let seed_score = self
+        let duplex_score = self
             .model
-            .seed_score(query_bases, target_trans, q_start, t_start, len);
+            .ungapped_duplex_score(query_bases, target_trans, q_start, t_start, len);
         let max_ext = DpConfig::from(&opts.extend).max_extension();
         let view_left = DpView::new(
             query_bases,
@@ -333,9 +333,8 @@ impl SearchWorker {
         );
         let right = self.extension.extend(&view_right, include_alignment);
         let nt_count = left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len;
-        let energy = self
-            .model
-            .hit_energy(seed_score, left.energy, right.energy, nt_count);
+        let stacking_stability = duplex_score + left.energy + right.energy;
+        let energy = self.model.binding_energy(stacking_stability, nt_count);
 
         (energy <= opts.filter.delta_g).then(|| {
             SearchHit::new(
@@ -361,7 +360,7 @@ fn write_chunks(writer: &mut OutputWriter, chunks: &[OutputChunk]) -> Result<()>
 }
 
 struct ExtensionResult {
-    energy: i32,
+    energy: Energy,
     q_ext: usize,
     t_ext: usize,
     pairs: Option<SmallVec<[PairClass; 64]>>,
@@ -380,22 +379,14 @@ fn is_maximal(
 
     if q_start > seed_interval.start
         && t_start + len < target_trans.len()
-        && ScoringModel::seed_pair(
-            query_bases[q_start - 1],
-            target_trans[t_start + len],
-            seed_wobble,
-        )
+        && query_bases[q_start - 1].forms_pair(target_trans[t_start + len], seed_wobble)
     {
         return false;
     }
 
     if q_start + len < seed_interval.end
         && t_start > 0
-        && ScoringModel::seed_pair(
-            query_bases[q_start + len],
-            target_trans[t_start - 1],
-            seed_wobble,
-        )
+        && query_bases[q_start + len].forms_pair(target_trans[t_start - 1], seed_wobble)
     {
         return false;
     }
@@ -471,16 +462,20 @@ impl SearchHit {
             let t_match_end = t_start + len - 1;
             let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
             for i in 0..len {
-                seed_pairs.push(PairClass::from_bases(
+                seed_pairs.push(PairClass::from_view_bases(
                     query_bases[q_start + i],
-                    target_trans[t_match_end - i].complement(),
+                    target_trans[t_match_end - i],
                 ));
             }
             let left_pairs = left.pairs.as_deref().unwrap_or(&[]);
             let right_pairs = right.pairs.as_deref().unwrap_or(&[]);
             let start = left_pairs.len();
             (
-                Some(Alignment::new(left_pairs, &seed_pairs, right_pairs)),
+                Some(Alignment::from_parts(
+                    left_pairs,
+                    &seed_pairs,
+                    right_pairs,
+                )),
                 Some(start),
                 Some(start + len),
             )

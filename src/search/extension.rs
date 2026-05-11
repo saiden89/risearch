@@ -4,6 +4,7 @@ use crate::alignment::PairClass;
 use crate::dp::gotoh::Gotoh;
 use crate::dp::{is_valid_score, DpGrid, DpView, ExtendDir};
 use crate::dsm::ScoringModel;
+use crate::types::Energy;
 
 use super::ExtensionResult;
 
@@ -49,7 +50,7 @@ impl ExtensionEngine {
         };
         if view.is_empty() {
             return ExtensionResult {
-                energy: gotoh.terminal_bases(view.q_anchor_base(), view.t_anchor_base()),
+                energy: Energy(gotoh.terminal_bases(view.q_anchor_base(), view.t_anchor_base())),
                 q_ext: 0,
                 t_ext: 0,
                 pairs: None,
@@ -58,7 +59,7 @@ impl ExtensionEngine {
 
         let result = gotoh.extend(view, &mut self.grid);
         ExtensionResult {
-            energy: result.energy,
+            energy: Energy(result.energy),
             q_ext: result.q_idx,
             t_ext: result.t_idx,
             pairs: (include_alignment && (result.q_idx > 0 || result.t_idx > 0))

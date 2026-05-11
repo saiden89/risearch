@@ -308,13 +308,10 @@ mod tests {
 
     #[test]
     fn pairing_distinguishes_seed_and_extension_modes() {
-        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
-
-        assert!(model.is_pair(Base::G, Base::G));
-        assert!(model.is_pair(Base::G, Base::A));
-        assert!(!ScoringModel::seed_pair(Base::G, Base::A, false));
-        assert!(ScoringModel::seed_pair(Base::G, Base::A, true));
+        assert!(Base::G.forms_pair(Base::G, true));
+        assert!(Base::G.forms_pair(Base::A, true));
+        assert!(!Base::G.forms_pair(Base::A, false));
+        assert!(Base::G.forms_pair(Base::A, true));
     }
 
     #[test]
@@ -341,7 +338,7 @@ mod tests {
     fn energy_conversion_roundtrips() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
-        let energy = model.hit_energy(33016, 0, 0, 0);
+        let energy = model.binding_energy(Energy(33016), 0);
         assert!((energy.to_kcal() - 2.8264).abs() < 0.001);
     }
 

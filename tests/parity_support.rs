@@ -20,7 +20,7 @@ fn make_hit(
 ) -> SearchHit {
     let len = q_end.saturating_sub(q_start).max(1);
     let seed: Vec<PairClass> = (0..len).map(|_| PairClass::Canonical).collect();
-    let alignment = Alignment::new(&[], &seed, &[]);
+    let alignment = Alignment::from_parts(&[], &seed, &[]);
 
     SearchHit {
         query_idx: 0,

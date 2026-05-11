@@ -25,6 +25,12 @@ impl PairClass {
         }
     }
 
+    /// Classify pairing between a query base and a transformed target-view base.
+    #[inline]
+    pub const fn from_view_bases(query: Base, target_view: Base) -> Self {
+        Self::from_bases(query, target_view.complement())
+    }
+
     pub const fn symbol(self) -> char {
         match self {
             Self::Canonical => 'P',
@@ -60,11 +66,15 @@ pub struct Alignment {
 }
 
 impl Alignment {
-    pub fn new(left: &[PairClass], seed: &[PairClass], right: &[PairClass]) -> Self {
-        let mut steps = SmallVec::with_capacity(left.len() + seed.len() + right.len());
-        steps.extend_from_slice(left);
-        steps.extend_from_slice(seed);
-        steps.extend_from_slice(right);
+    pub fn from_steps(steps: SmallVec<[PairClass; 128]>) -> Self {
+        Self { steps }
+    }
+
+    pub fn from_parts(prefix: &[PairClass], core: &[PairClass], suffix: &[PairClass]) -> Self {
+        let mut steps = SmallVec::with_capacity(prefix.len() + core.len() + suffix.len());
+        steps.extend_from_slice(prefix);
+        steps.extend_from_slice(core);
+        steps.extend_from_slice(suffix);
         Self { steps }
     }
 
@@ -88,7 +98,7 @@ impl Alignment {
                 'Q' => PairClass::QueryBulge,
                 _ => PairClass::Mismatch,
             })
-            .collect::<Vec<_>>();
-        Self::new(&[], &steps, &[])
+            .collect();
+        Self::from_steps(steps)
     }
 }
