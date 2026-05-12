@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use crate::config::SeedConfig;
-use crate::fastx::read_fasta_sequences;
+use crate::fastx::{read_and_validate_fasta, normalize_record};
 use crate::index::io::validate_readable_file;
 use crate::index::sa::SuffixArray;
 use crate::index::store::SA_CHAR_PADDING;
@@ -16,6 +16,12 @@ use crate::types::Base;
 
 pub trait RegistryEntry {
     fn name(&self) -> &str;
+}
+
+impl RegistryEntry for String {
+    fn name(&self) -> &str {
+        self.as_str()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -97,7 +103,7 @@ pub struct Query {
 }
 
 impl Query {
-    fn from_parts(name: String, sequence: Sequence, config: &SeedConfig) -> Result<Self> {
+    fn from_parts(id: String, sequence: Sequence, config: &SeedConfig) -> Result<Self> {
         let q_len = sequence.len();
 
         // Compute N-prefix for O(1) N-checking
@@ -115,14 +121,14 @@ impl Query {
         // Compute seed interval once and fail early at boundary if invalid.
         let (start1, end1, min_seed_len) = config
             .resolve(q_len)
-            .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
+            .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", id, err))?;
         let seed_interval = (start1 - 1)..end1;
         let max_seed_len = seed_interval.end.saturating_sub(seed_interval.start);
         let seed_sequence =
             Sequence::from(sequence[seed_interval.start..seed_interval.end].to_vec());
 
         Ok(Self {
-            name,
+            name: id,
             sequence,
             seed_sequence,
             seed_interval,
@@ -255,88 +261,30 @@ impl QueryRegistry {
 fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     validate_readable_file(path)?;
 
-    let sequences = read_fasta_sequences(path).context("Failed to read FASTA sequences")?;
+    let sequences = read_and_validate_fasta(path)?;
     if sequences.is_empty() {
         bail!("No sequences found in input file: {}", path.display());
-    }
-
-    let mut seen = HashSet::with_capacity(sequences.len());
-    for (id, _) in &sequences {
-        if id.trim().is_empty() {
-            bail!("Encountered empty FASTA record id in {}", path.display());
-        }
-        if !seen.insert(id.clone()) {
-            bail!("Duplicate FASTA record id '{}' in {}", id, path.display());
-        }
     }
 
     Ok(sequences)
 }
 
-fn normalize_record(id: String, seq: Vec<u8>) -> Result<Option<(String, Sequence)>> {
-    let (seq_norm, stats) = Sequence::normalize(&id, &seq)
-        .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
-
-    if seq_norm.is_empty() {
-        log::warn!(
-            "Skipping empty sequence after normalization: '{}' (removed_gaps={}, converted_to_n={})",
-            id,
-            stats.removed_gaps,
-            stats.converted_to_n
-        );
-        return Ok(None);
-    }
-
-    if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
-        log::debug!(
-            "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
-            id,
-            stats.removed_gaps,
-            stats.converted_to_n
-        );
-    }
-
-    Ok(Some((id, seq_norm)))
-}
-
 impl QueryRegistry {
-    pub fn from_fasta(path: &Path, config: &SeedConfig) -> Result<Self> {
-        Self::from_fastas(&[path], config).with_context(|| format!("in {}", path.display()))
-    }
-
-    /// Load queries from one or more FASTA files.
+    /// Load queries from a FASTA file.
     ///
-    /// Sequences are validated per-file (duplicate IDs within a file are
-    /// rejected) and then checked for cross-file duplicates before building
-    /// the registry. Query SA construction is parallelised via rayon over
-    /// the merged sequence list.
-    pub fn from_fastas(paths: &[&Path], config: &SeedConfig) -> Result<Self> {
-        if paths.is_empty() {
-            bail!("No query files provided");
-        }
+    /// Sequences are validated (duplicate IDs are rejected).
+    /// Query SA construction is parallelised via rayon.
+    pub fn from_fasta(path: &Path, config: &SeedConfig) -> Result<Self> {
+        let seqs = read_and_validate_sequences(path)
+            .with_context(|| format!("in {}", path.display()))?;
 
-        // Read and validate each file; collect all sequences into one vec.
-        let mut all_sequences: Vec<(String, Vec<u8>)> = Vec::new();
-        for path in paths {
-            let seqs = read_and_validate_sequences(path)?;
-            all_sequences.extend(seqs);
-        }
-
-        // Check for duplicate IDs across all files.
-        let mut seen = HashSet::with_capacity(all_sequences.len());
-        for (id, _) in &all_sequences {
-            if !seen.insert(id.as_str()) {
-                bail!("Duplicate FASTA record id '{}' across input files", id);
-            }
-        }
-
-        let maybe_entries: Vec<Option<Query>> = all_sequences
+        let maybe_entries: Vec<Option<Query>> = seqs
             .into_par_iter()
             .map(|(id, seq)| -> Result<Option<Query>> {
-                let Some((name, sequence)) = normalize_record(id, seq)? else {
+                let Some(sequence) = normalize_record(&id, &seq)? else {
                     return Ok(None);
                 };
-                Ok(Some(Query::from_parts(name, sequence, config)?))
+                Ok(Some(Query::from_parts(id, sequence, config)?))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -423,67 +371,6 @@ mod tests {
         f
     }
 
-    #[test]
-    fn from_fastas_single_file_matches_from_fasta() {
-        let f = temp_fasta(">seq1\nACGUACGU\n>seq2\nUUUUAAAA\n");
-        let cfg = seed_config();
-
-        let r1 = QueryRegistry::from_fasta(f.path(), &cfg).unwrap();
-        let r2 = QueryRegistry::from_fastas(&[f.path()], &cfg).unwrap();
-
-        assert_eq!(r1.len(), r2.len());
-        for i in 0..r1.len() {
-            assert_eq!(r1.get_name(i), r2.get_name(i));
-        }
-    }
-
-    #[test]
-    fn from_fastas_merges_two_files() {
-        let f1 = temp_fasta(">seq1\nACGUACGU\n");
-        let f2 = temp_fasta(">seq2\nUUUUAAAA\n");
-        let cfg = seed_config();
-
-        let registry = QueryRegistry::from_fastas(&[f1.path(), f2.path()], &cfg).unwrap();
-
-        assert_eq!(registry.len(), 2);
-        let names: Vec<&str> = (0..2).map(|i| registry.get_name(i)).collect();
-        assert!(names.contains(&"seq1") && names.contains(&"seq2"));
-    }
-
-    #[test]
-    fn from_fastas_preserves_order_across_files() {
-        let f1 = temp_fasta(">alpha\nACGUACGU\n");
-        let f2 = temp_fasta(">beta\nUUUUAAAA\n>gamma\nGGGGCCCC\n");
-        let cfg = seed_config();
-
-        let registry = QueryRegistry::from_fastas(&[f1.path(), f2.path()], &cfg).unwrap();
-
-        assert_eq!(registry.len(), 3);
-        assert_eq!(registry.get_name(0), "alpha");
-        assert_eq!(registry.get_name(1), "beta");
-        assert_eq!(registry.get_name(2), "gamma");
-    }
-
-    #[test]
-    fn from_fastas_rejects_cross_file_duplicates() {
-        let f1 = temp_fasta(">seq1\nACGUACGU\n");
-        let f2 = temp_fasta(">seq1\nUUUUAAAA\n");
-        let cfg = seed_config();
-
-        let result = QueryRegistry::from_fastas(&[f1.path(), f2.path()], &cfg);
-        assert!(result.is_err());
-        let msg = result.err().unwrap().to_string();
-        assert!(
-            msg.contains("Duplicate"),
-            "expected duplicate error, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn from_fastas_empty_paths_returns_error() {
-        let cfg = seed_config();
-        assert!(QueryRegistry::from_fastas(&[], &cfg).is_err());
-    }
 
     fn make_query_data(sequence: Sequence, seed_start: Option<i64>, seed_end: Option<i64>, seed_length: Option<i64>) -> Query {
         let cfg = SeedConfig {

@@ -609,22 +609,4 @@ mod tests {
             "no hits expected against a non-matching target"
         );
     }
-
-    #[test]
-    fn from_fastas_same_result_as_from_fasta() {
-        let root = workspace_root();
-        let query_path = root.join("tests/data/query.fa");
-        let target_path = root.join("tests/data/target.fa");
-
-        let (store, _tmp) = build_store(&target_path);
-        let config = test_config();
-
-        let all = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
-        let single = QueryRegistry::from_fastas(&[query_path.as_path()], &config.seed).unwrap();
-        assert_eq!(single.len(), all.len());
-
-        let hits_single = run_search_in_memory(&single, &store, &config).unwrap();
-        let hits_all = run_search_in_memory(&all, &store, &config).unwrap();
-        assert_eq!(hits_single.len(), hits_all.len());
-    }
 }

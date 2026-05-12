@@ -5,13 +5,14 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use memmap2::Mmap;
-use needletail::parse_fastx_file;
+use crate::fastx::{read_and_validate_fasta, normalize_record};
 
 use crate::index::io::validate_output_path;
 use crate::index::sa::SuffixArray;
 use crate::seed::SeedView;
 use crate::seq::Sequence;
 use crate::types::{Base, Strand};
+use crate::registry::Registry;
 
 // =============================================================================
 // FORMAT CONSTANTS
@@ -40,7 +41,7 @@ pub const SA_CHAR_PADDING: usize = 256;
 
 pub struct TargetStore {
     mmap: Mmap,
-    names: Vec<String>,
+    registry: Registry<String>,
     /// Start offset of each target block in global combined_seq.
     offsets: Vec<usize>,
     /// Original forward sequence length of each target.
@@ -69,51 +70,16 @@ impl TargetStore {
     pub fn build(input: &Path, output: &Path) -> Result<()> {
         validate_output_path(output)?;
 
-        let mut seen = HashSet::new();
         let mut targets: Vec<(String, u32, u64)> = Vec::new(); // (id, seq_len, global_offset)
         let mut combined_bases: Vec<Base> = Vec::new();
         let mut metadata_bytes = FILE_HEADER_BYTES;
 
-        let mut reader = parse_fastx_file(input)
-            .with_context(|| format!("Failed to open FASTA/FASTQ file: {}", input.display()))?;
+        let records = read_and_validate_fasta(input)?;
 
-        while let Some(record) = reader.next() {
-            let rec = record.with_context(|| {
-                format!(
-                    "Failed to parse FASTA/FASTQ record from {}",
-                    input.display()
-                )
-            })?;
-
-            let id = String::from_utf8_lossy(rec.id()).into_owned();
-            if id.trim().is_empty() {
-                bail!("Encountered empty FASTA record id in {}", input.display());
-            }
-            if !seen.insert(id.clone()) {
-                bail!("Duplicate FASTA record id '{}' in {}", id, input.display());
-            }
-
-            let (sequence, stats) = Sequence::normalize(&id, rec.seq().as_ref())
-                .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
-
-            if sequence.is_empty() {
-                log::warn!(
-                    "Skipping empty sequence after normalization: '{}' (removed_gaps={}, converted_to_n={})",
-                    id,
-                    stats.removed_gaps,
-                    stats.converted_to_n
-                );
+        for (id, raw_seq) in records {
+            let Some(sequence) = normalize_record(&id, &raw_seq)? else {
                 continue;
-            }
-
-            if stats.removed_gaps > 0 || stats.converted_to_n > 0 {
-                log::debug!(
-                    "Normalized sequence '{}': removed_gaps={}, converted_to_n={}",
-                    id,
-                    stats.removed_gaps,
-                    stats.converted_to_n
-                );
-            }
+            };
 
             let seq_len = u32::try_from(sequence.len())
                 .context("Target sequence length too large for u32")?;
@@ -263,7 +229,7 @@ impl TargetStore {
 
         Ok(Self {
             mmap,
-            names,
+            registry: Registry::new(names),
             offsets,
             seq_lens,
             seq_data_offset,
@@ -276,21 +242,21 @@ impl TargetStore {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.registry.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.registry.is_empty()
     }
 
     #[inline]
     pub fn get_name(&self, idx: usize) -> &str {
-        &self.names[idx]
+        self.registry.get_name(idx)
     }
 
     pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.names.iter().position(|n| n == name)
+        self.registry.index_of(name)
     }
 
     /// Get a seed-search view of the combined SA and sequence.
@@ -352,12 +318,12 @@ impl TargetStore {
     /// Returns `(name, fwd_transformed, rc_transformed, seq_len)` where each
     /// transformed slice is from the mmap-backed combined sequence.
     pub fn target_seqs(&self, idx: usize) -> Result<(&str, &[Base], &[Base], usize)> {
-        let target_count = self.names.len();
+        let target_count = self.len();
         if idx >= target_count {
             bail!("Target index out of bounds: {} >= {}", idx, target_count);
         }
 
-        let name = self.names[idx].as_str();
+        let name = self.get_name(idx);
         let seq_len = self.seq_lens[idx];
         let offset = self.offsets[idx];
         let combined_seq = self.combined_seq();
