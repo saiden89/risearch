@@ -101,7 +101,7 @@ pub fn run_search(
     let total = AtomicUsize::new(0);
 
     if opts.output.multifile {
-        std::fs::create_dir_all(output_path).with_context(|| {
+        fs_err::create_dir_all(output_path).with_context(|| {
             format!(
                 "Failed to create output directory {:?} for --multifile",
                 output_path
@@ -572,7 +572,7 @@ mod tests {
 
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         run_search(&queries, &store, &config, out.path()).unwrap();
-        let file_hit_count = std::fs::read_to_string(out.path())
+        let file_hit_count = fs_err::read_to_string(out.path())
             .unwrap()
             .lines()
             .filter(|line| !line.trim().is_empty())

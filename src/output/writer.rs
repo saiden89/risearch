@@ -102,7 +102,7 @@ impl OutputWriter {
             Box::new(std::io::stdout())
         } else {
             Box::new(
-                std::fs::File::create(output_path)
+                fs_err::File::create(output_path)
                     .with_context(|| format!("Failed to create output file {:?}", output_path))?,
             )
         };

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::fs::File;
+use fs_err::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -483,7 +483,7 @@ fn write_index_file(
     writer.flush().context("Failed to flush index file")?;
     drop(writer);
 
-    std::fs::rename(&tmp_path, output).with_context(|| {
+    fs_err::rename(&tmp_path, output).with_context(|| {
         format!(
             "Failed to finalize index file: {} -> {}",
             tmp_path.display(),
@@ -514,7 +514,7 @@ mod tests {
         let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
 
-        let mut fasta = std::fs::File::create(&fasta_path).unwrap();
+        let mut fasta = fs_err::File::create(&fasta_path).unwrap();
         writeln!(fasta, ">chrA\nACGUGA").unwrap();
         writeln!(fasta, ">chrB\nUUUGCA").unwrap();
         drop(fasta);
@@ -546,7 +546,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let bad_path = dir.path().join("bad.idx");
         // Must be at least FILE_HEADER_BYTES (16) to reach magic check
-        std::fs::write(&bad_path, b"not-a-valid-idx!").unwrap();
+        fs_err::write(&bad_path, b"not-a-valid-idx!").unwrap();
         match TargetStore::open(&bad_path) {
             Ok(_) => panic!("Expected invalid magic error"),
             Err(err) => assert!(err.to_string().contains("Invalid index magic")),
@@ -582,7 +582,7 @@ mod tests {
         let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
 
-        let mut fasta = std::fs::File::create(&fasta_path).unwrap();
+        let mut fasta = fs_err::File::create(&fasta_path).unwrap();
         writeln!(fasta, ">t1\nACGU").unwrap();
         writeln!(fasta, ">t2\nGGCC").unwrap();
         writeln!(fasta, ">t3\nAA").unwrap();

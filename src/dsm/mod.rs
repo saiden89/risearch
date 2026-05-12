@@ -201,7 +201,7 @@ fn validate_canonical_manifest_text(text: &str, data_root: &Path) -> Result<()> 
                 bail!("DSM '{}' has non-finite initiation", id);
             }
             let path = data_root.join(file);
-            let table_text = std::fs::read_to_string(&path).with_context(|| {
+            let table_text = fs_err::read_to_string(&path).with_context(|| {
                 format!("Failed to read canonical DSM table {}", path.display())
             })?;
             load_dsm_tsv_text(&table_text, initiation, invalid_transition, orientation)

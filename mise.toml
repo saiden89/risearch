@@ -1,12 +1,7 @@
 [tools]
 rust = "latest"
 cmake = "latest"
-codex = "latest"
+"cargo:cargo-edit" = "latest"
+"cargo:cargo-insta" = "latest"
+"cargo:cargo-outdated" = "latest"
 "cargo:cargo-show-asm" = "latest"
-
-
-# [env]
-# MISE_RUSTUP_HOME = "/tmp/{{env.USER}}/risearch/rustup"
-# MISE_CARGO_HOME = "/tmp/{{env.USER}}/risearch/cargo"
-# RUSTUP_HOME = "/tmp/{{env.USER}}/risearch/rustup"
-# CARGO_HOME = "/tmp/{{env.USER}}/risearch/cargo"

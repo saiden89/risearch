@@ -11,7 +11,7 @@ pub fn read_fasta_sequences(filename: impl AsRef<Path>) -> Result<FastaRecords> 
 
     // needletail reports an error for an empty file; for CLI UX it's nicer to
     // treat it as "no records" and let callers decide how to handle that.
-    let md = std::fs::metadata(filename_ref).with_context(|| {
+    let md = fs_err::metadata(filename_ref).with_context(|| {
         format!(
             "Failed to access FASTA/FASTQ file: {}",
             filename_ref.display()

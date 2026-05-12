@@ -141,7 +141,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
-        std::fs::write(&fasta_path, fasta).unwrap();
+        fs_err::write(&fasta_path, fasta).unwrap();
         TargetStore::build(&fasta_path, &index_path).unwrap();
         (TargetStore::open(&index_path).unwrap(), dir)
     }

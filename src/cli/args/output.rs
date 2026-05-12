@@ -64,6 +64,14 @@ impl TryFrom<OutputArgs> for OutputConfig {
             bail!("--multifile requires -o/--output to be a directory path; '-' (stdout) is not allowed.");
         }
 
+        if value.path.as_os_str() != "-" {
+            if let Some(parent) = value.path.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    bail!("output directory '{}' does not exist", parent.display());
+                }
+            }
+        }
+
         let codec = value
             .output_compress
             .unwrap_or_else(|| OutputCodec::from(value.path.as_path()));
