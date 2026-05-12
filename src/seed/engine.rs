@@ -66,9 +66,9 @@ impl<'a> SeedingEngine<'a> {
             self.tview,
             global_min,
             global_max,
-            config.mismatch.max_mismatches,
-            config.mismatch.min_prefix_matches,
-            config.mismatch.min_suffix_matches,
+            config.max_mismatches,
+            config.min_prefix_matches,
+            config.min_suffix_matches,
             &mut |m| self.materialize_seed_match(seeds_by_query, m),
         );
     }
@@ -130,7 +130,7 @@ fn remap(offsets: &[usize], global_pos: usize) -> Option<(usize, usize)> {
 mod tests {
     use std::io::Write;
 
-    use crate::config::{MismatchSpec, SeedConfig, SeedSpec};
+    use crate::config::SeedConfig;
     use crate::index::store::TargetStore;
     use crate::registry::QueryRegistry;
     use crate::types::Strand;
@@ -154,15 +154,15 @@ mod tests {
 
     #[test]
     fn collect_maps_seed_interval_back_to_full_query_coordinates() {
-        let config = SeedConfig::with_wobble(
-            SeedSpec::Interval {
-                start: 3,
-                end: 4,
-                length: Some(2),
-            },
-            MismatchSpec::exact(),
-            false,
-        );
+        let config = SeedConfig {
+            seed_start: Some(3),
+            seed_end: Some(4),
+            seed_length: Some(2),
+            seed_wobble: false,
+            max_mismatches: 0,
+            min_prefix_matches: 1,
+            min_suffix_matches: 0,
+        };
         let queries = build_queries(">q1\nGGAC\n", &config);
         let (targets, _dir) = build_store(">t1\nGU\n");
 
@@ -182,7 +182,15 @@ mod tests {
 
     #[test]
     fn collect_normalizes_reverse_strand_target_hits() {
-        let config = SeedConfig::with_wobble(SeedSpec::LengthOnly(2), MismatchSpec::exact(), false);
+        let config = SeedConfig {
+            seed_start: None,
+            seed_end: None,
+            seed_length: Some(2),
+            seed_wobble: false,
+            max_mismatches: 0,
+            min_prefix_matches: 1,
+            min_suffix_matches: 0,
+        };
         let queries = build_queries(">q1\nAC\n", &config);
         let (targets, _dir) = build_store(">t1\nAC\n");
 

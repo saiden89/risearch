@@ -12,18 +12,12 @@ pub struct ExtendArgs {
         default_value_t = 20
     )]
     pub max_extension: u8,
-    /// TODO: Banded search - limits the search for bulged matches.
-    /// In C: `-b band, --band=band` - Integer size of bands limiting bulge search.
-    /// The minimum size is 1; use seed option to avoid any bulge.
-    #[arg(long = "band", value_name = "BAND", hide = true)]
-    pub band: Option<u32>,
 }
 
 impl From<ExtendArgs> for ExtendConfig {
     fn from(value: ExtendArgs) -> Self {
         ExtendConfig {
             max_extension: value.max_extension,
-            band: value.band,
         }
     }
 }

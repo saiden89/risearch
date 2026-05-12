@@ -114,8 +114,7 @@ impl Query {
 
         // Compute seed interval once and fail early at boundary if invalid.
         let (start1, end1, min_seed_len) = config
-            .seed
-            .normalize(q_len)
+            .resolve(q_len)
             .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", name, err))?;
         let seed_interval = (start1 - 1)..end1;
         let max_seed_len = seed_interval.end.saturating_sub(seed_interval.start);
@@ -404,11 +403,18 @@ fn filter_seedable_query_suffixes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{MismatchSpec, SeedSpec};
     use std::io::Write;
 
     fn seed_config() -> SeedConfig {
-        SeedConfig::with_wobble(SeedSpec::LengthOnly(4), MismatchSpec::exact(), true)
+        SeedConfig {
+            seed_start: None,
+            seed_end: None,
+            seed_length: Some(4),
+            seed_wobble: true,
+            max_mismatches: 0,
+            min_prefix_matches: 1,
+            min_suffix_matches: 0,
+        }
     }
 
     fn temp_fasta(content: &str) -> tempfile::NamedTempFile {
@@ -479,20 +485,23 @@ mod tests {
         assert!(QueryRegistry::from_fastas(&[], &cfg).is_err());
     }
 
-    fn make_query_data(sequence: Sequence, seed: SeedSpec) -> Query {
-        let cfg = SeedConfig::with_wobble(seed, MismatchSpec::exact(), false);
+    fn make_query_data(sequence: Sequence, seed_start: Option<i64>, seed_end: Option<i64>, seed_length: Option<i64>) -> Query {
+        let cfg = SeedConfig {
+            seed_start,
+            seed_end,
+            seed_length,
+            seed_wobble: false,
+            max_mismatches: 0,
+            min_prefix_matches: 1,
+            min_suffix_matches: 0,
+        };
         Query::from_parts("q".into(), sequence, &cfg).expect("query data")
     }
 
     #[test]
     fn seed_sequence_matches_interval_slice() {
         let sequence = Sequence::from(vec![Base::A, Base::U, Base::G, Base::C, Base::A, Base::U]);
-        let seed = SeedSpec::Interval {
-            start: 2,
-            end: 5,
-            length: Some(2),
-        };
-        let query = make_query_data(sequence, seed.clone());
+        let query = make_query_data(sequence, Some(2), Some(5), Some(2));
 
         assert_eq!(query.seed_interval, 1..5);
         assert_eq!(query.min_seed_len, 2);
@@ -503,8 +512,7 @@ mod tests {
     #[test]
     fn seed_sequence_tracks_only_valid_interval_starts() {
         let sequence = Sequence::from(vec![Base::A, Base::G, Base::C, Base::U, Base::A]);
-        let seed = SeedSpec::LengthOnly(3);
-        let query = make_query_data(sequence, seed.clone());
+        let query = make_query_data(sequence, None, None, Some(3));
 
         assert_eq!(query.seed_interval, 0..5);
         assert_eq!(query.min_seed_len, 3);
@@ -516,7 +524,15 @@ mod tests {
     #[test]
     fn query_sa_keeps_only_suffixes_that_can_reach_min_seed_len() {
         let f = temp_fasta(">q1\nACGUACGUACGUACGUACGUAC\n>q2\nUGCAUGCAUGCAUGCAUGCAUG\n");
-        let cfg = SeedConfig::with_wobble(SeedSpec::LengthOnly(22), MismatchSpec::exact(), false);
+        let cfg = SeedConfig {
+            seed_start: None,
+            seed_end: None,
+            seed_length: Some(22),
+            seed_wobble: false,
+            max_mismatches: 0,
+            min_prefix_matches: 1,
+            min_suffix_matches: 0,
+        };
 
         let registry = QueryRegistry::from_fasta(f.path(), &cfg).unwrap();
         let view = registry.view();

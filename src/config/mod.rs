@@ -3,134 +3,6 @@ use clap::ValueEnum;
 use crate::types::{DsmId, Energy};
 
 // =============================================================================
-// SEED SPECIFICATION TYPES (moved from seed::spec)
-// =============================================================================
-
-/// Representation of the `-m` (mismatch) flag.
-///
-/// Format: `c[:ps[:pe]]` where:
-/// - `c` = max number of mismatches allowed in seed
-/// - `ps` = min number of consecutive matches required at seed start
-/// - `pe` = min number of consecutive matches required at seed end
-///
-/// Examples:
-/// - `-m 1`     allows 1 mismatch with 1-match protected ends (C-compatible)
-/// - `-m 1:3`   allows 1 mismatch with 3 matches at both ends
-/// - `-m 1:3:5` allows 1 mismatch with 3 matches at start and 5 at end
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct MismatchSpec {
-    /// Maximum number of mismatches allowed in seed
-    pub max_mismatches: usize,
-    /// Minimum consecutive matches at seed start (prefix, 5')
-    pub min_prefix_matches: usize,
-    /// Minimum consecutive matches at seed end (suffix, 3')
-    pub min_suffix_matches: usize,
-}
-
-impl MismatchSpec {
-    // TODO: Consider validating against seed length (e.g., prefix/suffix > seed_len)
-    // to avoid configurations that yield zero hits, while preserving C compatibility.
-    /// No mismatches allowed (exact matching)
-    pub const fn exact() -> Self {
-        Self {
-            max_mismatches: 0,
-            min_prefix_matches: 1,
-            min_suffix_matches: 0,
-        }
-    }
-
-    /// Create with specific parameters
-    pub const fn new(max: usize, min_prefix: usize, min_suffix: usize) -> Self {
-        Self {
-            max_mismatches: max,
-            min_prefix_matches: min_prefix,
-            min_suffix_matches: min_suffix,
-        }
-    }
-}
-
-/// Representation of the seed specification:
-/// - length only         => SeedSpec::LengthOnly(l)
-/// - interval            => SeedSpec::Interval { start, end, length: None }
-/// - interval + length   => SeedSpec::Interval { start, end, length: Some(l) }
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SeedSpec {
-    LengthOnly(i64),
-    Interval {
-        start: i64, // TODO: consider using RangeInclusive<i64>
-        end: i64,
-        length: Option<i64>, // None = full interval; Some = constrained seed length
-    },
-}
-
-impl SeedSpec {
-    /// Normalize to canonical form: (start, end, length)
-    ///
-    /// - Uses 1-based indexing for start/end (to match the original C implementation).
-    /// - query_len is the total length (n). Returned indices are in 1..=n.
-    /// - Returns Err(String) for invalid specs.
-    pub fn normalize(&self, query_len: usize) -> Result<(usize, usize, usize), String> {
-        let n = query_len as i64;
-        if n <= 0 {
-            return Err("query length must be positive".into());
-        }
-
-        match *self {
-            SeedSpec::LengthOnly(l) if l <= 0 => Err("Invalid seed length".into()),
-            SeedSpec::LengthOnly(l) => {
-                let length = l.min(n) as usize;
-                Ok((1, query_len, length))
-            }
-            SeedSpec::Interval { start, end, length } => {
-                // Validate sign consistency
-                let (s_pos, e_pos) = match (start.signum(), end.signum()) {
-                    // Both positive
-                    (1, 1) if end >= start && end <= n => (start as usize, end as usize),
-                    // Both negative
-                    (-1, -1) if end >= start && start >= -n => {
-                        let to_pos = |v: i64| -> usize {
-                            let x = v + 1; // Adjust negative index
-                            let r = (x + n) % n;
-                            if r == 0 {
-                                n as usize
-                            } else {
-                                r as usize
-                            }
-                        };
-                        (to_pos(start), to_pos(end))
-                    }
-                    // Mixed signs or invalid
-                    _ => return Err("Invalid seed interval: mixed sign".into()),
-                };
-
-                // Validate positions
-                if s_pos == 0 || e_pos == 0 {
-                    return Err("Invalid seed interval".into());
-                }
-
-                let interval_len = e_pos.saturating_sub(s_pos) + 1;
-                if interval_len == 0 {
-                    return Err("Invalid seed interval: empty".into());
-                }
-
-                let final_len = match length {
-                    Some(length) if length <= 0 => {
-                        return Err("Invalid seed length".into());
-                    }
-                    Some(length) if (length as usize) > interval_len => {
-                        return Err("Invalid seed length (exceeds interval)".into());
-                    }
-                    Some(length) => length as usize,
-                    None => interval_len,
-                };
-
-                Ok((s_pos, e_pos, final_len))
-            }
-        }
-    }
-}
-
-// =============================================================================
 // ENUMS (shared by config and CLI via clap derives)
 // =============================================================================
 
@@ -196,29 +68,89 @@ impl OutputCompression {
     }
 }
 
-// =============================================================================
-// CONFIG TYPES
-// =============================================================================
 
-/// Arguments for seed generation
-#[derive(Debug, Clone)]
+/// Arguments for seed generation.
+#[derive(Debug, Clone, Default)]
 pub struct SeedConfig {
-    /// Seed specification (length or interval)
-    pub seed: SeedSpec,
+    /// Seed interval start (1-based, can be negative). `None` = full query.
+    pub seed_start: Option<i64>,
+    /// Seed interval end (1-based, can be negative). `None` = full query.
+    pub seed_end: Option<i64>,
+    /// Seed length. In length-only mode this is the desired seed length.
+    /// In interval mode, `None` means use the full interval width.
+    pub seed_length: Option<i64>,
 
     /// Allow G-U wobble pairs when locating and maximizing seeds.
     pub seed_wobble: bool,
-
-    /// Mismatch specification used during seed search.
-    pub mismatch: MismatchSpec,
+    
+    /// Maximum number of mismatches allowed in seed.
+    pub max_mismatches: usize,
+    /// Minimum consecutive matches at seed start (prefix, 5').
+    pub min_prefix_matches: usize,
+    /// Minimum consecutive matches at seed end (suffix, 3').
+    pub min_suffix_matches: usize,
 }
 
+/// Default seed length when none is specified.
+pub const DEFAULT_SEED_LEN: i64 = 6;
+
 impl SeedConfig {
-    pub fn with_wobble(seed: SeedSpec, mismatch: MismatchSpec, seed_wobble: bool) -> Self {
-        Self {
-            seed,
-            seed_wobble,
-            mismatch,
+    /// Resolve this config's seed bounds against a specific query length.
+    pub fn resolve(&self, query_len: usize) -> Result<(usize, usize, usize), String> {
+        let n = query_len as i64;
+        if n <= 0 {
+            return Err("query length must be positive".into());
+        }
+
+        match (self.seed_start, self.seed_end) {
+            (None, None) => {
+                let effective_length = self.seed_length.unwrap_or(DEFAULT_SEED_LEN);
+                if effective_length <= 0 {
+                    return Err("Invalid seed length".into());
+                }
+                let length = effective_length.min(n) as usize;
+                Ok((1, query_len, length))
+            }
+            (Some(start), Some(end)) => {
+                let (s_pos, e_pos) = match (start.signum(), end.signum()) {
+                    (1, 1) if end >= start && end <= n => (start as usize, end as usize),
+                    (-1, -1) if end >= start && start >= -n => {
+                        let to_pos = |v: i64| -> usize {
+                            let x = v + 1;
+                            let r = (x + n) % n;
+                            if r == 0 {
+                                n as usize
+                            } else {
+                                r as usize
+                            }
+                        };
+                        (to_pos(start), to_pos(end))
+                    }
+                    _ => return Err("Invalid seed interval: mixed sign".into()),
+                };
+
+                if s_pos == 0 || e_pos == 0 {
+                    return Err("Invalid seed interval".into());
+                }
+
+                let interval_len = e_pos.saturating_sub(s_pos) + 1;
+                if interval_len == 0 {
+                    return Err("Invalid seed interval: empty".into());
+                }
+
+                let final_len = match self.seed_length {
+                    None => interval_len,
+                    // 0 or negative length explicitly requested -> use full interval
+                    Some(l) if l <= 0 => interval_len,
+                    Some(l) if (l as usize) > interval_len => {
+                        return Err("Invalid seed length (exceeds interval)".into())
+                    }
+                    Some(l) => l as usize,
+                };
+
+                Ok((s_pos, e_pos, final_len))
+            }
+            _ => Err("use seed_start + seed_end together, or neither".into()),
         }
     }
 }
@@ -236,10 +168,6 @@ pub struct ScoreConfig {
 pub struct ExtendConfig {
     /// Max extension length on the seed (do DP for max this length up- and downstream of seed)
     pub max_extension: u8,
-
-    // Placeholder flags from C implementation - not yet implemented
-    // (see cli/args for detailed documentation)
-    pub band: Option<u32>,
 }
 
 /// Hit acceptance and pruning policies.
@@ -263,12 +191,6 @@ pub struct SearchConfig {
     pub extend: ExtendConfig,
     pub filter: FilterConfig,
     pub output: OutputConfig,
-
-    // Placeholder flags from C implementation - not yet implemented
-    // (see cli/args for detailed documentation)
-    pub one_vs_one: bool,
-    pub three_prime_match: Option<String>,
-    pub five_prime_match: Option<String>,
 }
 
 #[derive(Debug, Clone)]

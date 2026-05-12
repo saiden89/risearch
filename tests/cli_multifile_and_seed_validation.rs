@@ -15,7 +15,7 @@ fn build_index(target_path: &Path, index_path: &Path) {
 }
 
 #[test]
-fn seed_length_zero_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+fn seed_length_zero_uses_full_interval() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nAAAA")?;
 
@@ -48,8 +48,7 @@ fn seed_length_zero_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
         .arg("--format")
         .arg("minimal")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("Invalid seed length"));
+        .success();
 
     Ok(())
 }

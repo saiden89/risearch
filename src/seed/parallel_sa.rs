@@ -345,7 +345,7 @@ fn binary_search(
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{MismatchSpec, SeedConfig, SeedSpec};
+    use crate::config::SeedConfig;
     use crate::index::sa::SuffixArray;
     use crate::seed::SeedView;
     use crate::seq::Sequence;
@@ -396,7 +396,15 @@ mod tests {
         let (q_sa, q_seq_padded, q_sa_len) = build_padded_sa(&q_seq);
         let (t_sa, t_seq_padded, t_sa_len) = build_padded_sa(&t_seq);
 
-        let cfg = SeedConfig::with_wobble(SeedSpec::LengthOnly(1), MismatchSpec::exact(), false);
+        let cfg = SeedConfig {
+            seed_start: None,
+            seed_end: None,
+            seed_length: Some(1),
+            seed_wobble: false,
+            max_mismatches: 0,
+            min_prefix_matches: 1,
+            min_suffix_matches: 0,
+        };
         let mut seen = std::collections::HashSet::new();
         let mut ctx = ParallelSaTraverser {
             q: SeedView {
@@ -415,9 +423,9 @@ mod tests {
             },
             min_len: 1,
             max_len: 2,
-            max_mm: cfg.mismatch.max_mismatches,
-            min_prefix: cfg.mismatch.min_prefix_matches,
-            min_suffix: cfg.mismatch.min_suffix_matches,
+            max_mm: cfg.max_mismatches,
+            min_prefix: cfg.min_prefix_matches,
+            min_suffix: cfg.min_suffix_matches,
             on_match: &mut |m| {
                 assert!(
                     seen.insert((

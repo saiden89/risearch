@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::dsm::DsmRegistry;
 use risearch::{
-    cli::args::seed_spec_from_args, run_search_in_memory, Energy, ExtendConfig,
-    FilterConfig, MismatchSpec, OutputCompression, OutputConfig, OutputFormat, QueryRegistry,
+    run_search_in_memory, Energy, ExtendConfig,
+    FilterConfig, OutputCompression, OutputConfig, OutputFormat, QueryRegistry,
     ScoreConfig, SearchConfig, SearchHit, SeedConfig, TargetStore,
 };
 
@@ -235,14 +235,15 @@ fn search(
     let dsm_id = DsmRegistry::parse_id(matrix)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
-    let seed = seed_spec_from_args(seed_start, seed_end, seed_length)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
-
     let config = SearchConfig {
         seed: SeedConfig {
-            seed,
+            seed_start,
+            seed_end,
+            seed_length,
             seed_wobble,
-            mismatch: MismatchSpec::new(mismatches, mismatch_prefix, mismatch_suffix),
+            max_mismatches: mismatches,
+            min_prefix_matches: mismatch_prefix,
+            min_suffix_matches: mismatch_suffix,
         },
         score: ScoreConfig {
             dsm_id,
@@ -252,7 +253,6 @@ fn search(
         },
         extend: ExtendConfig {
             max_extension,
-            band: None,
         },
         filter: FilterConfig {
             delta_g: Energy::try_from(energy_threshold)
@@ -266,9 +266,6 @@ fn search(
             compress: OutputCompression::None,
             multifile: false,
         },
-        one_vs_one: false,
-        three_prime_match: None,
-        five_prime_match: None,
     };
 
     let paths: Vec<&std::path::Path> = query_fasta.iter().map(|p| p.as_path()).collect();

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use risearch::config::{MismatchSpec, SeedConfig, SeedSpec};
+use risearch::config::SeedConfig;
 use risearch::registry::QueryRegistry;
 use risearch::seed::{SeedHit, SeedingEngine};
 use risearch::seq::Sequence;
@@ -106,10 +106,28 @@ fn seed_count(groups: &[(usize, Vec<SeedHit>)]) -> usize {
     groups.iter().map(|(_, seeds)| seeds.len()).sum()
 }
 
+fn exact_seed_config(seed_length: i64) -> SeedConfig {
+    SeedConfig {
+        seed_length: Some(seed_length),
+        min_prefix_matches: 1,
+        ..Default::default()
+    }
+}
+
+fn mismatch_seed_config(seed_length: i64, max_mm: usize, prefix: usize, suffix: usize, wobble: bool) -> SeedConfig {
+    SeedConfig {
+        seed_length: Some(seed_length),
+        seed_wobble: wobble,
+        max_mismatches: max_mm,
+        min_prefix_matches: prefix,
+        min_suffix_matches: suffix,
+        ..Default::default()
+    }
+}
+
 fn bench_seed_exact(c: &mut Criterion) {
     let mut group = c.benchmark_group("exact_target_scaling");
-    let seed_config =
-        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::exact(), false);
+    let seed_config = exact_seed_config(7);
 
     // Isolate exact seeding cost as target corpus size grows.
     for target_len in [1_000, 10_000, 100_000] {
@@ -137,11 +155,7 @@ fn bench_seed_mismatch(c: &mut Criterion) {
 
     // Measure how allowing more mismatches changes seed enumeration cost.
     for max_mm in [1, 2, 3, 4, 5] {
-        let seed_config = SeedConfig::with_wobble(
-            SeedSpec::LengthOnly(7),
-            MismatchSpec::new(max_mm, 2, 2),
-            false,
-        );
+        let seed_config = mismatch_seed_config(7, max_mm, 2, 2, false);
         let dataset = build_production_dataset(1, 22, 10_000, &seed_config);
 
         group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
@@ -165,11 +179,7 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
     // Approximate the common production-shaped case: multiple short queries
     // against one large target corpus with wobble-enabled mismatch seeding.
     for max_mm in [1, 2, 3, 4, 5] {
-        let seed_config = SeedConfig::with_wobble(
-            SeedSpec::LengthOnly(7),
-            MismatchSpec::new(max_mm, 2, 2),
-            true,
-        );
+        let seed_config = mismatch_seed_config(7, max_mm, 2, 2, true);
         let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
 
         group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
@@ -190,8 +200,7 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("query_scaling");
     group.sample_size(10);
 
-    let seed_config =
-        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
+    let seed_config = mismatch_seed_config(7, 1, 2, 2, true);
 
     // Hold target size fixed and measure how global query traversal scales
     // as more queries are packed into the combined query corpus.
@@ -221,11 +230,7 @@ fn bench_seed_long_mismatch(c: &mut Criterion) {
 
     // Stress test: 21nt seed on 22nt query with 2 mismatches.
     // This mirrors the scenario where C pulls ahead by 3x.
-    let seed_config = SeedConfig::with_wobble(
-        SeedSpec::LengthOnly(21),
-        MismatchSpec::new(2, 2, 2),
-        true,
-    );
+    let seed_config = mismatch_seed_config(21, 2, 2, 2, true);
     let dataset = build_production_dataset(1, 22, 100_000, &seed_config);
 
     group.bench_function("seed_21_mm_2_2", |b| {

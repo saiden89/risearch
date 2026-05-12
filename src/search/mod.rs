@@ -187,10 +187,10 @@ fn init_search<'a>(
     }
 
     info!(
-        "Starting search: {} queries x {} targets, seed={:?}, max_ext={}, delta_g={}",
+        "Starting search: {} queries x {} targets, seed_length={:?}, max_ext={}, delta_g={}",
         queries.len(),
         store.len(),
-        opts.seed.seed,
+        opts.seed.seed_length,
         opts.extend.max_extension,
         opts.filter.delta_g
     );
@@ -506,8 +506,8 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        ExtendConfig, FilterConfig, MismatchSpec, OutputCompression, OutputConfig, OutputFormat,
-        ScoreConfig, SeedConfig, SeedSpec,
+        ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat,
+        ScoreConfig, SeedConfig,
     };
     use crate::index::store::TargetStore;
     use crate::registry::QueryRegistry;
@@ -519,15 +519,22 @@ mod tests {
 
     fn test_config() -> SearchConfig {
         SearchConfig {
-            seed: SeedConfig::with_wobble(SeedSpec::LengthOnly(8), MismatchSpec::exact(), true),
+            seed: SeedConfig {
+                seed_start: None,
+                seed_end: None,
+                seed_length: Some(8),
+                seed_wobble: true,
+                max_mismatches: 0,
+                min_prefix_matches: 1,
+                min_suffix_matches: 0,
+            },
             score: ScoreConfig {
                 dsm_id: DsmId::from("t04"),
                 penalty: Energy::from_kcal(3.5),
                 temperature: 37,
             },
             extend: ExtendConfig {
-                max_extension: 10,
-                band: None,
+                max_extension: 20,
             },
             filter: FilterConfig {
                 delta_g: Energy::from_kcal(-10.0),
@@ -539,9 +546,6 @@ mod tests {
                 compress: OutputCompression::None,
                 multifile: false,
             },
-            one_vs_one: false,
-            three_prime_match: None,
-            five_prime_match: None,
         }
     }
 

@@ -3,8 +3,8 @@ use std::path::Path;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::{
-    ExtendConfig, FilterConfig, MismatchSpec, OutputCompression, OutputConfig, OutputFormat,
-    ScoreConfig, SearchConfig, SeedConfig, SeedSpec,
+    ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat,
+    ScoreConfig, SearchConfig, SeedConfig,
 };
 use risearch::registry::QueryRegistry;
 use risearch::search::{run_search, run_search_in_memory};
@@ -116,8 +116,7 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             temperature: 37,
         },
         extend: ExtendConfig {
-            max_extension: 0,
-            band: None,
+            max_extension: 20,
         },
         filter: FilterConfig {
             delta_g: Energy::from_kcal(f64::NEG_INFINITY),
@@ -129,9 +128,6 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             compress: OutputCompression::None,
             multifile: false,
         },
-        one_vs_one: false,
-        three_prime_match: None,
-        five_prime_match: None,
     }
 }
 
@@ -143,8 +139,15 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("prod_shaped");
     group.sample_size(10);
 
-    let seed_config =
-        SeedConfig::with_wobble(SeedSpec::LengthOnly(7), MismatchSpec::new(1, 2, 2), true);
+    let seed_config = SeedConfig {
+        seed_start: None,
+        seed_end: None,
+        seed_length: Some(7),
+        seed_wobble: true,
+        max_mismatches: 1,
+        min_prefix_matches: 2,
+        min_suffix_matches: 2,
+    };
     let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
     let args = make_search_config(&seed_config);
     let output_path = dataset.tmpdir.path().join("search.out");

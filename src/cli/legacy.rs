@@ -1,6 +1,6 @@
 use log::warn;
 
-use risearch::{OutputFormat, SeedSpec};
+use risearch::OutputFormat;
 
 use super::SearchArgs;
 
@@ -37,34 +37,26 @@ pub(crate) fn emit_legacy_warnings(args: &SearchArgs, legacy_target: bool) {
 
     // -m/--mismatch: warn with smart suggestion
     if let Some(spec) = &args.seed.mismatch_legacy {
-        let s = spec.0;
         warn!(
             "Legacy -m/--mismatch is deprecated; use --mismatch-max {} --mismatch-prefix {} --mismatch-suffix {}.",
-            s.max_mismatches, s.min_prefix_matches, s.min_suffix_matches
+            spec.max_mismatches, spec.min_prefix_matches, spec.min_suffix_matches
         );
     }
 
     // -s/--seed: warn with smart suggestion
     if let Some(spec) = &args.seed.seed_legacy {
-        let suggestion = match spec.0 {
-            SeedSpec::LengthOnly(len) => format!("--seed-length {}", len),
-            SeedSpec::Interval {
-                start,
-                end,
-                length: None,
-            } => {
+        let suggestion = match (spec.seed_start, spec.seed_end, spec.seed_length) {
+            (None, None, Some(len)) => format!("--seed-length {}", len),
+            (Some(start), Some(end), None) => {
                 format!("--seed-start {} --seed-end {}", start, end)
             }
-            SeedSpec::Interval {
-                start,
-                end,
-                length: Some(length),
-            } => {
+            (Some(start), Some(end), Some(length)) => {
                 format!(
                     "--seed-start {} --seed-end {} --seed-length {}",
                     start, end, length
                 )
             }
+            _ => "equivalent named flags".into(),
         };
         warn!("Legacy -s/--seed is deprecated; use {}.", suggestion);
     }
