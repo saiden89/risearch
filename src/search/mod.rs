@@ -560,8 +560,8 @@ mod tests {
     #[test]
     fn in_memory_matches_file_hit_count() {
         let root = workspace_root();
-        let query_path = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-        let target_path = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+        let query_path = root.join("tests/data/query.fa");
+        let target_path = root.join("tests/data/target.fa");
 
         let (store, _tmp) = build_store(&target_path);
         let mut config = test_config();
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn in_memory_empty_for_non_matching_target() {
         let root = workspace_root();
-        let query_path = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
+        let query_path = root.join("tests/data/query.fa");
 
         let mut target_file = tempfile::NamedTempFile::new().unwrap();
         write!(target_file, ">dummy\nAAAAAAAAAAAAAAAA\n").unwrap();
@@ -613,8 +613,8 @@ mod tests {
     #[test]
     fn from_fastas_same_result_as_from_fasta() {
         let root = workspace_root();
-        let query_path = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-        let target_path = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+        let query_path = root.join("tests/data/query.fa");
+        let target_path = root.join("tests/data/target.fa");
 
         let (store, _tmp) = build_store(&target_path);
         let config = test_config();

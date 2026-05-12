@@ -77,6 +77,18 @@ pub(crate) fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+use rstest::fixture;
+
+#[fixture]
+pub fn query_fa() -> PathBuf {
+    workspace_root().join("tests/data/query.fa")
+}
+
+#[fixture]
+pub fn target_fa() -> PathBuf {
+    workspace_root().join("tests/data/target.fa")
+}
+
 /// Returns (records after dedup, count before dedup)
 pub(crate) fn parse_output(
     output: &str,

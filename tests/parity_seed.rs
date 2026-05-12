@@ -3,20 +3,19 @@
 mod support;
 
 use rstest::rstest;
-use support::{workspace_root, ParityRunner};
+use std::path::PathBuf;
+use support::{ParityRunner, query_fa, target_fa};
 
 /// Main seed length × extension limit matrix.
 /// Tests all combinations on mirnas.fa vs RHOC.fa.
 #[rstest]
 fn length(
+    query_fa: PathBuf,
+    target_fa: PathBuf,
     #[values(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)] s: usize,
     #[values(0, 5, 10, 15, 20, 25, 30, 35, 40)] l: usize,
     #[values(false, true)] strict: bool,
 ) {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-
     let l_str = l.to_string();
     let s_str = s.to_string();
     let mut args = vec!["-l", &l_str, "-e", "100.0", "--seed-length", &s_str, "-p3"];
@@ -29,15 +28,17 @@ fn length(
     } else {
         format!("s{}_l{}", s, l)
     };
-    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &test_name, &args);
 }
 
 /// Seed interval: --seed-start/--seed-end
 #[rstest]
-fn interval(#[values("1:8", "1:12", "2:10", "1:15")] spec: &str, #[values(0, 10, 20)] l: usize) {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+fn interval(
+    query_fa: PathBuf,
+    target_fa: PathBuf,
+    #[values("1:8", "1:12", "2:10", "1:15")] spec: &str,
+    #[values(0, 10, 20)] l: usize,
+) {
 
     let l_str = l.to_string();
     let (start, end) = spec.split_once(':').unwrap();
@@ -54,19 +55,17 @@ fn interval(#[values("1:8", "1:12", "2:10", "1:15")] spec: &str, #[values(0, 10,
     ];
 
     let test_name = format!("interval_{}_l{}", spec.replace(':', "_"), l);
-    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &test_name, &args);
 }
 
 /// Seed interval with min length: --seed-start/--seed-end/--seed-length
 #[rstest]
 fn interval_with_length(
-    #[values("1:12/6", "2:10/5", "1:15/7")] spec: &str,
+    query_fa: PathBuf,
+    target_fa: PathBuf,
+    #[values("1:8/5", "1:12/6", "2:10/5", "1:15/8")] spec: &str,
     #[values(0, 10, 20)] l: usize,
 ) {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
-
     let l_str = l.to_string();
     let (start, rest) = spec.split_once(':').unwrap();
     let (end, len) = rest.split_once('/').unwrap();
@@ -85,5 +84,5 @@ fn interval_with_length(
     ];
 
     let test_name = format!("interval_{}_l{}", spec.replace([':', '/'], "_"), l);
-    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &test_name, &args);
 }

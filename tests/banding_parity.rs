@@ -6,14 +6,18 @@
 mod support;
 
 use rstest::rstest;
-use support::{workspace_root, ParityRunner};
+use std::path::PathBuf;
+use support::{ParityRunner, query_fa, target_fa};
 
 #[rstest]
 #[ignore]
-fn banded_soft(#[values(6, 8)] s: usize, #[values(10, 20)] l: usize, #[values(8, 12)] band: usize) {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+fn banded_soft(
+    query_fa: PathBuf,
+    target_fa: PathBuf,
+    #[values(6, 8)] s: usize,
+    #[values(10, 20)] l: usize,
+    #[values(8, 12)] band: usize,
+) {
 
     let l_str = l.to_string();
     let s_str = s.to_string();
@@ -35,15 +39,18 @@ fn banded_soft(#[values(6, 8)] s: usize, #[values(10, 20)] l: usize, #[values(8,
     ];
 
     let test_name = format!("band_soft_s{}_l{}_b{}", s, l, band);
-    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &test_name, &args);
 }
 
 #[rstest]
 #[ignore]
-fn banded_hard(#[values(6, 8)] s: usize, #[values(10, 20)] l: usize, #[values(8, 12)] band: usize) {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
+fn banded_hard(
+    query_fa: PathBuf,
+    target_fa: PathBuf,
+    #[values(6, 8)] s: usize,
+    #[values(10, 20)] l: usize,
+    #[values(8, 12)] band: usize,
+) {
 
     let l_str = l.to_string();
     let s_str = s.to_string();
@@ -65,5 +72,5 @@ fn banded_hard(#[values(6, 8)] s: usize, #[values(10, 20)] l: usize, #[values(8,
     ];
 
     let test_name = format!("band_hard_s{}_l{}_b{}", s, l, band);
-    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &test_name, &args);
 }

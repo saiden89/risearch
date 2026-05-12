@@ -3,17 +3,17 @@
 mod support;
 
 use rstest::rstest;
-use support::{workspace_root, ParityRunner};
+use std::path::PathBuf;
+use support::{ParityRunner, query_fa, target_fa};
 
 #[rstest]
 fn mismatch(
+    query_fa: PathBuf,
+    target_fa: PathBuf,
     #[values("1:0", "1:3", "2:2")] spec: &str,
     #[values(6, 8, 10)] s: usize,
     #[values(0, 10)] l: usize,
 ) {
-    let root = workspace_root();
-    let query = root.join("legacy_c/RIsearch2/test_suite/mirnas.fa");
-    let target = root.join("legacy_c/RIsearch2/test_suite/RHOC.fa");
 
     let l_str = l.to_string();
     let s_str = s.to_string();
@@ -30,5 +30,5 @@ fn mismatch(
     ];
 
     let test_name = format!("{}_s{}_l{}", spec.replace(':', "_"), s, l);
-    ParityRunner::new(&target).assert_pass(&query, &test_name, &args);
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &test_name, &args);
 }
