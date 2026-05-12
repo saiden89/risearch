@@ -23,7 +23,6 @@ mod parse;
 use parse::load_dsm_tsv_text;
 
 pub use model::ScoringModel;
-pub(crate) use model::RowLookup;
 
 pub(crate) type DsmTable = [[[[i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
 
@@ -321,11 +320,11 @@ mod tests {
     }
 
     #[test]
-    fn transition_score_returns_nonzero_for_valid_pairs() {
+    fn score_returns_nonzero_for_valid_pairs() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
-        let score = model.transition_score_bases(Base::A, Base::U, Base::A, Base::U);
-        let gap_score = model.transition_score_bases(Base::Gap, Base::A, Base::Gap, Base::A);
+        let score = model.score_bases(Base::A, Base::U, Base::A, Base::U);
+        let gap_score = model.score_bases(Base::Gap, Base::A, Base::Gap, Base::A);
         assert!(
             gap_score != 0 || score != 0,
             "At least one transition query should be non-zero"
@@ -336,7 +335,7 @@ mod tests {
     fn gg_cc_stack_is_strongest() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
-        let actual = model.transition_score_bases(Base::G, Base::G, Base::G, Base::G);
+        let actual = model.score_bases(Base::G, Base::G, Base::G, Base::G);
         assert_eq!(actual, 33016);
     }
 
@@ -358,8 +357,8 @@ mod tests {
                 for t1 in 0u8..6 {
                     for t2 in 0u8..6 {
                         assert_eq!(
-                            left.transition_score(q1, q2, t1, t2),
-                            right.transition_score(q2, q1, t2, t1),
+                            left.score(q1, q2, t1, t2),
+                            right.score(q2, q1, t2, t1),
                             "transpose mismatch at ({},{},{},{})",
                             q1,
                             q2,

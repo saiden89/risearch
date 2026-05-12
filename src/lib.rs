@@ -1,4 +1,5 @@
 pub mod alignment;
+pub mod adapter;
 pub mod cli {
     #[path = "args/mod.rs"]
     pub mod args;

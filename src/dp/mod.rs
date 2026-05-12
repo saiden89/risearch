@@ -4,10 +4,13 @@ use crate::types::Base;
 mod core;
 pub mod gotoh;
 mod init;
+pub mod scoring;
+
+pub use scoring::{GotohRowProfile, GotohScoring};
 use std::cmp::max;
 
-/// Maximum extension length for precomputed DP lookup arrays.
-/// Matches the typical max_ext parameter (100-200 bases).
+/// Maximum extension length for DP buffers.
+/// Matches the typical max_ext parameter (100-200 symbols).
 pub(crate) const MAX_EXT: usize = 256;
 
 /// DP runtime configuration derived from high-level search configs.
@@ -33,9 +36,8 @@ impl From<&ExtendConfig> for DpConfig {
 
 /// Extension direction — determines sequence indexing polarity.
 ///
-/// After scoring tables are built for each direction, extension direction
-/// only affects sequence coordinate arithmetic. Stacking order is resolved
-/// by the direction-canonical `Gotoh` tables.
+/// After the scoring source is established for a chosen direction, extension
+/// direction only affects sequence coordinate arithmetic.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExtendDir {
     Left,
@@ -59,15 +61,11 @@ pub enum TraceOp {
     GapT,
 }
 
-// =============================================================================
-// DP VIEW - Direction-aware sequence access (no scoring)
-// =============================================================================
-
 /// View into sequences for DP extension.
 ///
 /// Pure sequence/coordinate view — knows nothing about scoring or energy.
 /// It defines the extension window and how DP offsets map back to semantic
-/// query/target bases. Scoring-specific lookup indices are materialized once
+/// query/target bases. Rank-indexed symbols for scoring are materialized once
 /// in `Gotoh::extend`.
 pub struct DpView<'a> {
     query: &'a [Base],
@@ -151,6 +149,37 @@ impl<'a> DpView<'a> {
         // so any j < t_len maps to an in-bounds target position.
         unsafe { *self.target.get_unchecked(pos) }
     }
+
+    /// Extract sequences into DP-relative byte buffers.
+    ///
+    /// Panics if the buffers are shorter than `self.q_len` or `self.t_len`.
+    #[inline(always)]
+    pub fn fill_buffers(&self, q_buf: &mut [u8], t_buf: &mut [u8]) {
+        let (q_len, t_len) = (self.q_len, self.t_len);
+
+        match self.dir {
+            ExtendDir::Left => {
+                let q_src = &self.query[self.q_anchor + 1 - q_len..=self.q_anchor];
+                for (dst, src) in q_buf[..q_len].iter_mut().zip(q_src.iter().rev()) {
+                    *dst = src.as_u8();
+                }
+                let t_src = &self.target[self.t_anchor..self.t_anchor + t_len];
+                for (dst, src) in t_buf[..t_len].iter_mut().zip(t_src.iter()) {
+                    *dst = src.as_u8();
+                }
+            }
+            ExtendDir::Right => {
+                let q_src = &self.query[self.q_anchor..self.q_anchor + q_len];
+                for (dst, src) in q_buf[..q_len].iter_mut().zip(q_src.iter()) {
+                    *dst = src.as_u8();
+                }
+                let t_src = &self.target[self.t_anchor + 1 - t_len..=self.t_anchor];
+                for (dst, src) in t_buf[..t_len].iter_mut().zip(t_src.iter().rev()) {
+                    *dst = src.as_u8();
+                }
+            }
+        }
+    }
 }
 
 /// Negative infinity for the (max, +) semiring over DP scores.
@@ -165,10 +194,11 @@ pub(crate) fn is_valid_score(score: i32) -> bool {
     score > NEG_INF
 }
 
-/// Conservative upper bound on |score| from a single scoring table lookup.
-/// Tables use RIsearch3 score units (score = -kcal/mol * 10000). Worst case:
-/// TSV energy 20 kcal/mol (200k score) + penalty 50 kcal/mol (500k score) × 2 = 1.2M.
-/// Enforced at runtime in ScoringModel::from_source_table.
+/// Conservative upper bound on |score| from a single scoring transition.
+/// This is a DP arithmetic bound; scoring implementations must keep individual
+/// transition scores within it.
+/// Implementations of GotohScoring must ensure individual transitions
+/// do not exceed this bound to prevent overflow during DP accumulation.
 pub(crate) const MAX_ENERGY: i64 = 1_200_000;
 
 // Compile-time proof that NEG_INF arithmetic is safe for MAX_EXT.
@@ -218,15 +248,11 @@ impl BestScore {
     }
 }
 
-/// Compares and returns the maximum of two values.
+/// Compares and returns the maximum of three values.
 #[inline(always)]
 pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
     max(max(a, b), c)
 }
-
-// =============================================================================
-// DP GRID - Interleaved AoS layout for cache-friendly cell access
-// =============================================================================
 
 /// Single DP cell: all three state scores packed together.
 ///

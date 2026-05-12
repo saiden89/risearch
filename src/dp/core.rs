@@ -1,10 +1,11 @@
 use std::cmp::max;
 
 use crate::dp::gotoh::Gotoh;
+use crate::dp::scoring::{GotohRowProfile, GotohScoring};
 
 use super::{max3, BestScore, DpCell, DpGrid};
 
-impl Gotoh {
+impl<S: GotohScoring> Gotoh<S> {
     #[cfg_attr(feature = "prof", inline(never))]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn main_loop(
@@ -18,8 +19,8 @@ impl Gotoh {
     ) {
         // SAFETY: The entire block relies on these invariants established by
         // Gotoh::extend():
-        // - q_ptr valid for reads [0, q_len), values ∈ 0..6
-        // - t_ptr valid for reads [0, t_len), values ∈ 0..6
+        // - q_ptr valid for reads [0, q_len), values ∈ symbol index range
+        // - t_ptr valid for reads [0, t_len), values ∈ symbol index range
         // - grid allocated as (q_len+1) × (t_len+1), so all (i,j) with
         //   i ∈ 0..q_len, j ∈ 0..t_len are in-bounds
         unsafe {
@@ -30,11 +31,20 @@ impl Gotoh {
                 let prev_row_offset = (i - 1) * width;
                 let curr_row_offset = i * width;
 
-                let row = self.row_lookup(*q_ptr.add(i - 1), *q_ptr.add(i));
+                let row = self.scoring.row_profile(*q_ptr.add(i - 1), *q_ptr.add(i));
+                let match_ptr = row.match_ptr();
+                let close_qgap = row.close_query_gap_ptr();
+                let open_qgap = row.open_query_gap_ptr();
+                let close_tgap = row.close_target_gap_ptr();
+                let open_tgap = row.open_target_gap_ptr();
+                let extend_tgap = row.extend_target_gap_ptr();
+                let boundary = row.boundary_ptr();
+                let ext_qgap = row.ext_qgap();
+                let symbol_count = S::RowProfile::SYMBOL_COUNT;
 
                 // 1. Target Sequence Context
                 let mut tp = *t_ptr.add(2) as usize; // Target previous
-                let mut tc_ptr = t_ptr.add(3);       // Target current
+                let mut tc_ptr = t_ptr.add(3); // Target current
 
                 // 2. Previous Row Grid Context (Reads only)
                 let mut diag = *ptr.add(prev_row_offset + 2);
@@ -47,20 +57,18 @@ impl Gotoh {
                 for j in 3..t_len {
                     let up = *up_ptr;
                     let tc = *tc_ptr as usize;
+                    let tt = tp * symbol_count + tc;
 
                     let m = max3(
-                        diag.m + row.stack(tp, tc),
-                        diag.bq + row.close_query_gap(tc),
-                        diag.bt + row.close_target_gap(tp, tc),
+                        diag.m + *match_ptr.add(tt),
+                        diag.bq + *close_qgap.add(tc),
+                        diag.bt + *close_tgap.add(tt),
                     );
-                    let bq = max(up.m + row.open_query_gap(tc), up.bq + row.ext_qgap);
-                    let bt = max(
-                        left.m + row.open_target_gap(tp, tc),
-                        left.bt + row.extend_target_gap(tp, tc),
-                    );
+                    let bq = max(up.m + *open_qgap.add(tc * symbol_count), up.bq + ext_qgap);
+                    let bt = max(left.m + *open_tgap.add(tt), left.bt + *extend_tgap.add(tt));
                     let curr = DpCell { m, bq, bt };
 
-                    best.update_if_better(m, row.terminal(tc), i, j);
+                    best.update_if_better(m, *boundary.add(tc * symbol_count), i, j);
                     *curr_ptr = curr;
 
                     diag = up;

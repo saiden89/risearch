@@ -1,10 +1,11 @@
 use std::cmp::max;
 
 use crate::dp::gotoh::Gotoh;
+use crate::dp::scoring::GotohScoring;
 
 use super::{BestScore, DpCell, DpGrid};
 
-impl Gotoh {
+impl<S: GotohScoring> Gotoh<S> {
     /// Initialize DP boundary cells.
     ///
     /// Returns `true` when the main DP region (`i >= 3`, `j >= 3`) exists.
@@ -22,10 +23,11 @@ impl Gotoh {
     ) -> bool {
         let ptr = grid.as_mut_ptr();
         let width = grid.width();
+        let scoring = &self.scoring;
 
         debug_assert!(width > t_len, "matrix width too small for t_len");
 
-        // SAFETY: q_ptr valid for [0, q_len), t_ptr for [0, t_len), values in 0..6.
+        // SAFETY: q_ptr valid for [0, q_len), t_ptr for [0, t_len), values in symbol index range.
         // Grid is (q_len+1) x (t_len+1) via Gotoh::extend(). All writes below are
         // to cells (i, j) with i < q_len, j < t_len — within the allocation.
         unsafe {
@@ -34,9 +36,9 @@ impl Gotoh {
             let t0 = *t_ptr;
             let t1 = *t_ptr.add(1);
 
-            let bt01 = self.open_target_gap(q0, t0, t1);
-            let bq10 = self.open_query_gap(q0, q1, t0);
-            let m11 = self.stack(q0, q1, t0, t1);
+            let bt01 = scoring.open_target_gap(q0, t0, t1);
+            let bq10 = scoring.open_query_gap(q0, q1, t0);
+            let m11 = scoring.r#match(q0, q1, t0, t1);
 
             *ptr = DpCell {
                 m: 0,
@@ -54,16 +56,16 @@ impl Gotoh {
                 m: m11,
                 ..DpCell::EMPTY
             };
-            best.update_if_better(m11, self.terminal(q1, t1), 1, 1);
+            best.update_if_better(m11, scoring.boundary(q1, t1), 1, 1);
 
-            // --- Tiny-matrix path: no row/col 2 exists ---
+            // Tiny-matrix path: no row/col 2 exists
             if q_len <= 2 || t_len <= 2 {
                 let mut bt_prev = bt01;
                 let mut t_prev = t1;
                 for j in 2..t_len {
                     let tc = *t_ptr.add(j);
-                    let bt = bt_prev + self.extend_target_gap(t_prev, tc);
-                    let m1 = bt_prev + self.close_target_gap(q1, t_prev, tc);
+                    let bt = bt_prev + scoring.extend_target_gap(t_prev, tc);
+                    let m1 = bt_prev + scoring.close_target_gap(q1, t_prev, tc);
                     *ptr.add(j) = DpCell {
                         bt,
                         ..DpCell::EMPTY
@@ -72,7 +74,7 @@ impl Gotoh {
                         m: m1,
                         ..DpCell::EMPTY
                     };
-                    best.update_if_better(m1, self.terminal(q1, tc), 1, j);
+                    best.update_if_better(m1, scoring.boundary(q1, tc), 1, j);
                     bt_prev = bt;
                     t_prev = tc;
                 }
@@ -81,8 +83,8 @@ impl Gotoh {
                 let mut q_prev = q1;
                 for i in 2..q_len {
                     let qc = *q_ptr.add(i);
-                    let bq = bq_prev + self.extend_query_gap(q_prev, qc);
-                    let m1 = bq_prev + self.close_query_gap(q_prev, qc, t1);
+                    let bq = bq_prev + scoring.extend_query_gap(q_prev, qc);
+                    let m1 = bq_prev + scoring.close_query_gap(q_prev, qc, t1);
                     *ptr.add(i * width) = DpCell {
                         bq,
                         ..DpCell::EMPTY
@@ -91,7 +93,7 @@ impl Gotoh {
                         m: m1,
                         ..DpCell::EMPTY
                     };
-                    best.update_if_better(m1, self.terminal(qc, t1), i, 1);
+                    best.update_if_better(m1, scoring.boundary(qc, t1), i, 1);
                     bq_prev = bq;
                     q_prev = qc;
                 }
@@ -99,22 +101,22 @@ impl Gotoh {
                 return false;
             }
 
-            // --- Full path: q_len >= 3 and t_len >= 3 ---
+            // Full path: q_len >= 3 and t_len >= 3
             let q2 = *q_ptr.add(2);
             let t2 = *t_ptr.add(2);
 
             // 3x3 corner extension (5 remaining cells)
-            let bt02 = bt01 + self.extend_target_gap(t1, t2);
-            let m12 = bt01 + self.close_target_gap(q1, t1, t2);
-            let bt12 = m11 + self.open_target_gap(q1, t1, t2);
+            let bt02 = bt01 + scoring.extend_target_gap(t1, t2);
+            let m12 = bt01 + scoring.close_target_gap(q1, t1, t2);
+            let bt12 = m11 + scoring.open_target_gap(q1, t1, t2);
 
-            let bq20 = bq10 + self.extend_query_gap(q1, q2);
-            let m21 = bq10 + self.close_query_gap(q1, q2, t1);
-            let bq21 = m11 + self.open_query_gap(q1, q2, t1);
+            let bq20 = bq10 + scoring.extend_query_gap(q1, q2);
+            let m21 = bq10 + scoring.close_query_gap(q1, q2, t1);
+            let bq21 = m11 + scoring.open_query_gap(q1, q2, t1);
 
-            let m22 = m11 + self.stack(q1, q2, t1, t2);
-            let bq22 = m12 + self.open_query_gap(q1, q2, t2);
-            let bt22 = m21 + self.open_target_gap(q2, t1, t2);
+            let m22 = m11 + scoring.r#match(q1, q2, t1, t2);
+            let bq22 = m12 + scoring.open_query_gap(q1, q2, t2);
+            let bt22 = m21 + scoring.open_target_gap(q2, t1, t2);
 
             *ptr.add(2) = DpCell {
                 bt: bt02,
@@ -140,11 +142,11 @@ impl Gotoh {
                 bt: bt22,
             };
 
-            best.update_if_better(m12, self.terminal(q1, t2), 1, 2);
-            best.update_if_better(m21, self.terminal(q2, t1), 2, 1);
-            best.update_if_better(m22, self.terminal(q2, t2), 2, 2);
+            best.update_if_better(m12, scoring.boundary(q1, t2), 1, 2);
+            best.update_if_better(m21, scoring.boundary(q2, t1), 2, 1);
+            best.update_if_better(m22, scoring.boundary(q2, t2), 2, 2);
 
-            // --- Top-rows fused loop: rows 0, 1, 2 for j >= 3 ---
+            // Top-rows fused loop: rows 0, 1, 2 for j >= 3
             let mut bt0_prev = bt02;
             let mut m1_prev = m12;
             let mut bt1_prev = bt12;
@@ -154,21 +156,21 @@ impl Gotoh {
 
             for k in 3..t_len {
                 let tj = *t_ptr.add(k);
-                let ext_t = self.extend_target_gap(t_prev, tj);
+                let ext_t = scoring.extend_target_gap(t_prev, tj);
 
                 let bt0 = bt0_prev + ext_t;
-                let m1 = bt0_prev + self.close_target_gap(q1, t_prev, tj);
+                let m1 = bt0_prev + scoring.close_target_gap(q1, t_prev, tj);
                 let bt1 = max(
-                    m1_prev + self.open_target_gap(q1, t_prev, tj),
+                    m1_prev + scoring.open_target_gap(q1, t_prev, tj),
                     bt1_prev + ext_t,
                 );
                 let m2 = max(
-                    m1_prev + self.stack(q1, q2, t_prev, tj),
-                    bt1_prev + self.close_target_gap(q2, t_prev, tj),
+                    m1_prev + scoring.r#match(q1, q2, t_prev, tj),
+                    bt1_prev + scoring.close_target_gap(q2, t_prev, tj),
                 );
-                let bq2 = m1 + self.open_query_gap(q1, q2, tj);
+                let bq2 = m1 + scoring.open_query_gap(q1, q2, tj);
                 let bt2 = max(
-                    m2_prev + self.open_target_gap(q2, t_prev, tj),
+                    m2_prev + scoring.open_target_gap(q2, t_prev, tj),
                     bt2_prev + ext_t,
                 );
 
@@ -187,8 +189,8 @@ impl Gotoh {
                     bt: bt2,
                 };
 
-                best.update_if_better(m1, self.terminal(q1, tj), 1, k);
-                best.update_if_better(m2, self.terminal(q2, tj), 2, k);
+                best.update_if_better(m1, scoring.boundary(q1, tj), 1, k);
+                best.update_if_better(m2, scoring.boundary(q2, tj), 2, k);
 
                 bt0_prev = bt0;
                 m1_prev = m1;
@@ -198,7 +200,7 @@ impl Gotoh {
                 t_prev = tj;
             }
 
-            // --- Left-cols fused loop: cols 0, 1, 2 for i >= 3 ---
+            // Left-cols fused loop: cols 0, 1, 2 for i >= 3
             let mut bq0_prev = bq20;
             let mut m1_prev = m21;
             let mut bq1_prev = bq21;
@@ -208,21 +210,21 @@ impl Gotoh {
 
             for k in 3..q_len {
                 let qi = *q_ptr.add(k);
-                let ext_q = self.extend_query_gap(q_prev, qi);
+                let ext_q = scoring.extend_query_gap(q_prev, qi);
 
                 let bq0 = bq0_prev + ext_q;
-                let m1 = bq0_prev + self.close_query_gap(q_prev, qi, t1);
+                let m1 = bq0_prev + scoring.close_query_gap(q_prev, qi, t1);
                 let bq1 = max(
-                    m1_prev + self.open_query_gap(q_prev, qi, t1),
+                    m1_prev + scoring.open_query_gap(q_prev, qi, t1),
                     bq1_prev + ext_q,
                 );
                 let m2 = max(
-                    m1_prev + self.stack(q_prev, qi, t1, t2),
-                    bq1_prev + self.close_query_gap(q_prev, qi, t2),
+                    m1_prev + scoring.r#match(q_prev, qi, t1, t2),
+                    bq1_prev + scoring.close_query_gap(q_prev, qi, t2),
                 );
-                let bt2 = m1 + self.open_target_gap(qi, t1, t2);
+                let bt2 = m1 + scoring.open_target_gap(qi, t1, t2);
                 let bq2 = max(
-                    m2_prev + self.open_query_gap(q_prev, qi, t2),
+                    m2_prev + scoring.open_query_gap(q_prev, qi, t2),
                     bq2_prev + ext_q,
                 );
 
@@ -241,8 +243,8 @@ impl Gotoh {
                     bt: bt2,
                 };
 
-                best.update_if_better(m1, self.terminal(qi, t1), k, 1);
-                best.update_if_better(m2, self.terminal(qi, t2), k, 2);
+                best.update_if_better(m1, scoring.boundary(qi, t1), k, 1);
+                best.update_if_better(m2, scoring.boundary(qi, t2), k, 2);
 
                 bq0_prev = bq0;
                 m1_prev = m1;

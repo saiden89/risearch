@@ -1,110 +1,63 @@
-//! Gotoh 3-state DP recurrence: precomputed transition tables.
+//! Gotoh 3-state DP recurrence.
 //!
-//! All transitions are materialized at construction time from a `ScoringModel`.
-//! The DP core asks rank-byte transition questions, not arbitrary 4-base tensor
-//! lookups:
+//! This module implements the core DP engine for directional extension.
+//! The algorithm is agnostic to the underlying scoring data, interacting
+//! only through the [`GotohScoring`] trait.
 //!
-//! - `M`: continue the paired stack, close a query gap, or close a target gap
+//! The DP core identifies three transition families:
+//! - `M`: continue the paired region, close a query gap, or close a target gap
 //! - `Bq`: open or extend a query gap
 //! - `Bt`: open or extend a target gap
 //!
 //! A mismatch is not its own transition family; it is simply an unfavorable
-//! `stack` score.
+//! paired transition score.
 //!
 //! # Index safety
 //!
 //! All index arguments to point-lookup and slice-accessor methods must be in
-//! `0..6` (valid DP lookup indices derived from the `#[repr(u8)]` `Base` enum).
-//! `Gotoh::extend()` materializes those dense indices once from the semantic
-//! `DpView` before entering the hot DP kernels.
+//! the valid symbol index range of the scoring source. `Gotoh::extend()`
+//! materializes those dense indices once from the semantic `DpView` before
+//! entering the hot DP kernels.
 
+use crate::dp::scoring::GotohScoring;
 use smallvec::SmallVec;
 
-use crate::dsm::{RowLookup, ScoringModel};
 use log::trace;
 
-use super::{is_valid_score, BestScore, DpGrid, DpView, ExtendDir, TraceOp, MAX_EXT};
+use super::{is_valid_score, BestScore, DpGrid, DpView, TraceOp, MAX_EXT};
 
 #[inline(always)]
 fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
     is_valid_score(pred) && val == pred + energy
 }
 
-/// Precomputed transition tables for the Gotoh 3-state DP.
+/// A Gotoh 3-state DP engine.
 ///
-/// Direction-agnostic: each instance corresponds to one `ScoringModel` orientation.
-pub struct Gotoh {
-    pub(crate) model: ScoringModel,
+/// Direction-agnostic: each instance corresponds to one orientation of the
+/// underlying scoring source.
+pub struct Gotoh<S: GotohScoring> {
+    pub(crate) scoring: S,
 }
 
-impl Gotoh {
-    /// Materialize all transition tables from a `ScoringModel`.
-    pub fn new(table: &ScoringModel) -> Self {
+impl<S: GotohScoring> Gotoh<S> {
+    /// Create a new Gotoh engine for the given scoring source.
+    pub fn new(scoring: &S) -> Self
+    where
+        S: Clone,
+    {
         Self {
-            model: table.clone(),
+            scoring: scoring.clone(),
         }
     }
 
-    /// Build a row-local lookup for the given (qp, qc) pair.
-    ///
-    /// # Safety
-    ///
-    /// `qp` and `qc` must be in `0..BASE_COUNT` (valid base rank indices).
+    /// Boundary penalty for the given symbol pair.
     #[inline(always)]
-    pub(crate) fn row_lookup(&self, qp: u8, qc: u8) -> RowLookup {
-        self.model.row_lookup(qp, qc)
-    }
-
-    /// M ← M transition score: continue the paired stack.
-    #[inline(always)]
-    pub(crate) fn stack(&self, qp: u8, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model.stack_score(qp, qc, tp, tc)
-    }
-
-    /// M ← Bq transition score: close a query gap and return to the stack.
-    #[inline(always)]
-    pub(crate) fn close_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
-        self.model.close_query_gap_score(qp, qc, tc)
-    }
-
-    /// M ← Bt transition score: close a target gap and return to the stack.
-    #[inline(always)]
-    pub(crate) fn close_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model.close_target_gap_score(qc, tp, tc)
-    }
-
-    /// Bq ← M transition score: open a query gap.
-    #[inline(always)]
-    pub(crate) fn open_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32 {
-        self.model.open_query_gap_score(qp, qc, tc)
-    }
-
-    /// Bq ← Bq transition score: extend a query gap.
-    #[inline(always)]
-    pub(crate) fn extend_query_gap(&self, qp: u8, qc: u8) -> i32 {
-        self.model.extend_query_gap_score(qp, qc)
-    }
-
-    /// Bt ← M transition score: open a target gap.
-    #[inline(always)]
-    pub(crate) fn open_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32 {
-        self.model.open_target_gap_score(qc, tp, tc)
-    }
-
-    /// Bt ← Bt transition score: extend a target gap.
-    #[inline(always)]
-    pub(crate) fn extend_target_gap(&self, tp: u8, tc: u8) -> i32 {
-        self.model.extend_target_gap_score(tp, tc)
-    }
-
-    /// Terminal (boundary) penalty.
-    #[inline(always)]
-    pub(crate) fn terminal(&self, qc: u8, tc: u8) -> i32 {
-        self.model.terminal_penalty(qc, tc)
+    pub fn boundary(&self, qc: u8, tc: u8) -> i32 {
+        self.scoring.boundary(qc, tc)
     }
 
     #[cfg_attr(feature = "prof", inline(never))]
-    /// Run DP forward pass over `view`, reusing caller-provided grid and buffers.
+    /// DP forward pass over `view`, reusing caller-provided grid and buffers.
     pub fn extend(
         &self,
         view: &DpView<'_>,
@@ -120,31 +73,14 @@ impl Gotoh {
             "DP view must define a non-empty window"
         );
 
-        let q_ptr = q_buf.as_mut_ptr();
-        let t_ptr = t_buf.as_mut_ptr();
+        view.fill_buffers(q_buf, t_buf);
 
-        match view.dir {
-            ExtendDir::Left => {
-                for i in 0..q_len {
-                    unsafe { *q_ptr.add(i) = view.query.get_unchecked(view.q_anchor - i).as_u8() };
-                }
-                for j in 0..t_len {
-                    unsafe { *t_ptr.add(j) = view.target.get_unchecked(view.t_anchor + j).as_u8() };
-                }
-            }
-            ExtendDir::Right => {
-                for i in 0..q_len {
-                    unsafe { *q_ptr.add(i) = view.query.get_unchecked(view.q_anchor + i).as_u8() };
-                }
-                for j in 0..t_len {
-                    unsafe { *t_ptr.add(j) = view.target.get_unchecked(view.t_anchor - j).as_u8() };
-                }
-            }
-        }
+        let q_ptr = q_buf.as_ptr();
+        let t_ptr = t_buf.as_ptr();
 
         let q0 = unsafe { *q_ptr };
         let t0 = unsafe { *t_ptr };
-        let mut best = BestScore::new(self.terminal(q0, t0));
+        let mut best = BestScore::new(self.scoring.boundary(q0, t0));
 
         if q_len <= 1 || t_len <= 1 {
             return best;
@@ -197,14 +133,14 @@ impl Gotoh {
                     let tj_prev = t_buf[j - 1];
                     let tj = t_buf[j];
 
-                    let stack = self.stack(qi_prev, qi, tj_prev, tj);
-                    let close_query_gap = self.close_query_gap(qi_prev, qi, tj);
-                    let close_target_gap = self.close_target_gap(qi, tj_prev, tj);
+                    let r#match = self.scoring.r#match(qi_prev, qi, tj_prev, tj);
+                    let close_query_gap = self.scoring.close_query_gap(qi_prev, qi, tj);
+                    let close_target_gap = self.scoring.close_target_gap(qi, tj_prev, tj);
 
                     i -= 1;
                     j -= 1;
 
-                    if is_transition(c.m, diag.m, stack) {
+                    if is_transition(c.m, diag.m, r#match) {
                         TraceOp::Paired
                     } else if is_transition(c.m, diag.bq, close_query_gap) {
                         TraceOp::GapQ
@@ -228,8 +164,8 @@ impl Gotoh {
                     let qi = q_buf[i];
                     let tj = t_buf[j];
 
-                    let open_query_gap = self.open_query_gap(qi_prev, qi, tj);
-                    let extend_query_gap = self.extend_query_gap(qi_prev, qi);
+                    let open_query_gap = self.scoring.open_query_gap(qi_prev, qi, tj);
+                    let extend_query_gap = self.scoring.extend_query_gap(qi_prev, qi);
 
                     i -= 1;
 
@@ -255,8 +191,8 @@ impl Gotoh {
                     let tj_prev = t_buf[j - 1];
                     let tj = t_buf[j];
 
-                    let open_target_gap = self.open_target_gap(qi, tj_prev, tj);
-                    let extend_target_gap = self.extend_target_gap(tj_prev, tj);
+                    let open_target_gap = self.scoring.open_target_gap(qi, tj_prev, tj);
+                    let extend_target_gap = self.scoring.extend_target_gap(tj_prev, tj);
 
                     j -= 1;
 

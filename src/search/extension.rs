@@ -1,5 +1,6 @@
 use smallvec::SmallVec;
 
+use crate::adapter::gotoh::GotohModel;
 use crate::alignment::PairClass;
 use crate::dp::gotoh::Gotoh;
 use crate::dp::{DpGrid, DpView, ExtendDir, TraceOp, MAX_EXT};
@@ -9,13 +10,13 @@ use crate::types::Energy;
 use super::ExtensionResult;
 
 /// Per-worker extension engine. Each worker owns one; `&mut` is safe because
-/// only mutable state (grid, buffers) is mutated — the Gotoh tables are read-only.
+/// only mutable state (grid, buffers) is mutated.
 pub(super) struct ExtensionEngine {
     grid: DpGrid,
     q_buf: [u8; MAX_EXT],
     t_buf: [u8; MAX_EXT],
-    gotoh_left: Gotoh,
-    gotoh_right: Gotoh,
+    gotoh_left: GotohModel,
+    gotoh_right: GotohModel,
 }
 
 impl ExtensionEngine {
@@ -39,7 +40,7 @@ impl ExtensionEngine {
         if view.is_empty() {
             return ExtensionResult {
                 energy: Energy(
-                    gotoh.terminal(view.q_anchor_base().as_u8(), view.t_anchor_base().as_u8()),
+                    gotoh.boundary(view.q_anchor_base().as_u8(), view.t_anchor_base().as_u8()),
                 ),
                 q_ext: 0,
                 t_ext: 0,

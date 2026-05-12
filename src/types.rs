@@ -61,7 +61,21 @@ impl Base {
         self as usize
     }
 
-    /// Convert to raw u8 byte representation.
+    /// Convert raw u8 byte representation back to Base.
+    #[inline]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Base::Gap,
+            1 => Base::A,
+            2 => Base::C,
+            3 => Base::G,
+            4 => Base::N,
+            5 => Base::U,
+            _ => panic!("invalid base rank {v}"),
+        }
+    }
+
+    /// Convert raw u8 byte representation.
     #[inline]
     pub const fn as_u8(self) -> u8 {
         self as u8
