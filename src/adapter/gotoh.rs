@@ -33,7 +33,7 @@ pub struct RowProfile {
 
 impl RowProfile {
     /// Build a row-local lookup for the given (qp, qc) pair.
-    /// 
+    ///
     /// `qp` and `qc` must be valid rank-indexed symbols for this scoring model.
     /// The scoring model must outlive the returned `RowProfile`.
     #[inline(always)]

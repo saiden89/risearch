@@ -4,7 +4,7 @@ mod support;
 
 use rstest::rstest;
 use std::path::PathBuf;
-use support::{ParityRunner, query_fa, target_fa};
+use support::{query_fa, target_fa, ParityRunner};
 
 #[rstest]
 fn mismatch(
@@ -14,7 +14,6 @@ fn mismatch(
     #[values(6, 8, 10)] s: usize,
     #[values(0, 10)] l: usize,
 ) {
-
     let l_str = l.to_string();
     let s_str = s.to_string();
     let args = [

@@ -98,7 +98,7 @@ impl ParityResult {
         &self,
         test_name: &str,
         query_registry: Option<&risearch::QueryRegistry>,
-        target_store: Option<&risearch::TargetStore>,
+        target_registry: Option<&risearch::TargetRegistry>,
     ) {
         use crate::support::table::{ParityKind, ParityTable, TableConfig};
         use std::collections::BTreeMap;
@@ -124,7 +124,7 @@ impl ParityResult {
                 kind,
                 config: TableConfig::default(),
                 query_registry,
-                target_store,
+                target_registry,
             };
             table.to_string()
         };

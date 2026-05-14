@@ -1,18 +1,19 @@
 use crate::config::SeedConfig;
-use crate::index::store::TargetStore;
+use crate::index::store::TargetRegistry;
 use crate::registry::QueryRegistry;
 
 use super::parallel_sa::{traverse, SeedMatch};
-use super::{SeedHit, SeedView};
+use super::SeedHit;
+use crate::index::RegistryView;
 
 pub struct SeedingEngine<'a> {
     queries: &'a QueryRegistry,
-    qview: SeedView<'a>,
-    tview: SeedView<'a>,
+    qview: RegistryView<'a>,
+    tview: RegistryView<'a>,
 }
 
 impl<'a> SeedingEngine<'a> {
-    pub fn new(queries: &'a QueryRegistry, targets: &'a TargetStore) -> Self {
+    pub fn new(queries: &'a QueryRegistry, targets: &'a TargetRegistry) -> Self {
         Self {
             queries,
             qview: queries.view(),
@@ -83,7 +84,11 @@ impl<'a> SeedingEngine<'a> {
             else {
                 continue;
             };
-            let Some(query_start) = self.queries.get(query_idx).map_seed_pos(query_local_pos, seed_len) else {
+            let Some(query_start) = self
+                .queries
+                .get(query_idx)
+                .map_seed_pos(query_local_pos, seed_len)
+            else {
                 continue;
             };
 
@@ -95,7 +100,7 @@ impl<'a> SeedingEngine<'a> {
                 else {
                     continue;
                 };
-                let Some((strand, target_start)) = TargetStore::map_target_pos(
+                let Some((strand, target_start)) = TargetRegistry::map_target_pos(
                     target_local_pos,
                     self.tview.seq_lens[target_idx],
                     seed_len,
@@ -131,19 +136,19 @@ mod tests {
     use std::io::Write;
 
     use crate::config::SeedConfig;
-    use crate::index::store::TargetStore;
+    use crate::index::store::TargetRegistry;
     use crate::registry::QueryRegistry;
     use crate::types::Strand;
 
     use super::*;
 
-    fn build_store(fasta: &str) -> (TargetStore, tempfile::TempDir) {
+    fn build_store(fasta: &str) -> (TargetRegistry, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
         fs_err::write(&fasta_path, fasta).unwrap();
-        TargetStore::build(&fasta_path, &index_path).unwrap();
-        (TargetStore::open(&index_path).unwrap(), dir)
+        TargetRegistry::build(&fasta_path, &index_path).unwrap();
+        (TargetRegistry::open(&index_path).unwrap(), dir)
     }
 
     fn build_queries(fasta: &str, config: &SeedConfig) -> QueryRegistry {

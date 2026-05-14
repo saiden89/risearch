@@ -22,12 +22,11 @@ use crate::alignment::{Alignment, PairClass};
 use crate::config::{OutputFormat, SearchConfig};
 use crate::dp::{DpConfig, DpView, ExtendDir};
 use crate::dsm::{DsmRegistry, ScoringModel};
-use crate::index::store::TargetStore;
+use crate::index::store::TargetRegistry;
 use crate::output::writer::{build_multifile_paths, HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
 use crate::seed::{SeedHit, SeedingEngine};
 use crate::types::{Base, Energy, Strand};
-
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -47,7 +46,7 @@ pub struct SearchHit {
 /// Run search collecting all hits into memory. Alignment data is always included.
 pub fn run_search_in_memory(
     queries: &QueryRegistry,
-    store: &TargetStore,
+    store: &TargetRegistry,
     opts: &SearchConfig,
 ) -> Result<Vec<SearchHit>> {
     let Some(ctx) = init_search(queries, store, opts)? else {
@@ -90,7 +89,7 @@ pub fn run_search_in_memory(
 /// Run search and write hits to `output_path` (or directory in multifile mode).
 pub fn run_search(
     queries: &QueryRegistry,
-    store: &TargetStore,
+    store: &TargetRegistry,
     opts: &SearchConfig,
     output_path: &Path,
 ) -> Result<()> {
@@ -156,7 +155,7 @@ pub fn run_search(
 
 struct SearchContext<'a> {
     queries: &'a QueryRegistry,
-    store: &'a TargetStore,
+    store: &'a TargetRegistry,
     opts: &'a SearchConfig,
     model: ScoringModel,
 }
@@ -164,7 +163,7 @@ struct SearchContext<'a> {
 impl<'a> SearchContext<'a> {
     fn new(
         queries: &'a QueryRegistry,
-        store: &'a TargetStore,
+        store: &'a TargetRegistry,
         opts: &'a SearchConfig,
         model: ScoringModel,
     ) -> Self {
@@ -179,7 +178,7 @@ impl<'a> SearchContext<'a> {
 
 fn init_search<'a>(
     queries: &'a QueryRegistry,
-    store: &'a TargetStore,
+    store: &'a TargetRegistry,
     opts: &'a SearchConfig,
 ) -> Result<Option<SearchContext<'a>>> {
     if store.is_empty() || queries.is_empty() {
@@ -195,8 +194,7 @@ fn init_search<'a>(
         opts.filter.delta_g
     );
 
-    let (initiation, source_table) =
-        DsmRegistry::load(&opts.score.dsm_id, opts.score.temperature)?;
+    let (initiation, source_table) = DsmRegistry::load(&opts.score.dsm_id, opts.score.temperature)?;
 
     let model = ScoringModel::new(&source_table, initiation, opts.score.penalty);
     Ok(Some(SearchContext::new(queries, store, opts, model)))
@@ -309,9 +307,9 @@ impl SearchWorker {
             return None;
         }
 
-        let duplex_score = self
-            .model
-            .ungapped_duplex_score(query_bases, target_trans, q_start, t_start, len);
+        let duplex_score =
+            self.model
+                .ungapped_duplex_score(query_bases, target_trans, q_start, t_start, len);
         let max_ext = DpConfig::from(&opts.extend).max_extension();
         let view_left = DpView::new(
             query_bases,
@@ -471,11 +469,7 @@ impl SearchHit {
             let right_pairs = right.pairs.as_deref().unwrap_or(&[]);
             let start = left_pairs.len();
             (
-                Some(Alignment::from_parts(
-                    left_pairs,
-                    &seed_pairs,
-                    right_pairs,
-                )),
+                Some(Alignment::from_parts(left_pairs, &seed_pairs, right_pairs)),
                 Some(start),
                 Some(start + len),
             )
@@ -506,10 +500,10 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat,
-        ScoreConfig, SeedConfig,
+        ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat, ScoreConfig,
+        SeedConfig,
     };
-    use crate::index::store::TargetStore;
+    use crate::index::store::TargetRegistry;
     use crate::registry::QueryRegistry;
     use crate::types::DsmId;
 
@@ -533,9 +527,7 @@ mod tests {
                 penalty: Energy::from_kcal(3.5),
                 temperature: 37,
             },
-            extend: ExtendConfig {
-                max_extension: 20,
-            },
+            extend: ExtendConfig { max_extension: 20 },
             filter: FilterConfig {
                 delta_g: Energy::from_kcal(-10.0),
                 seed_energy: Energy::from_kcal(0.0),
@@ -549,11 +541,11 @@ mod tests {
         }
     }
 
-    fn build_store(target_fa: &std::path::Path) -> (TargetStore, tempfile::TempDir) {
+    fn build_store(target_fa: &std::path::Path) -> (TargetRegistry, tempfile::TempDir) {
         let tmpdir = tempfile::tempdir().unwrap();
         let idx = tmpdir.path().join("target.idx");
-        TargetStore::build(target_fa, &idx).unwrap();
-        let store = TargetStore::open(&idx).unwrap();
+        TargetRegistry::build(target_fa, &idx).unwrap();
+        let store = TargetRegistry::open(&idx).unwrap();
         (store, tmpdir)
     }
 

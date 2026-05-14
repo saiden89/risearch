@@ -17,7 +17,7 @@ uv run python
 The Python package is very small:
 
 - `risearch.index(fasta, output)` builds a binary target index
-- `risearch.TargetStore.open(path)` opens that index for reuse
+- `risearch.TargetRegistry.open(path)` opens that index for reuse
 - `risearch.search(query_fasta, store, **kwargs)` runs the search and returns a Polars `DataFrame`
 
 The `search()` kwargs map to the canonical Rust-facing options:
@@ -47,7 +47,7 @@ query_fa = suite / "mirnas.fa"
 with tempfile.TemporaryDirectory() as tmp:
     idx = Path(tmp) / "RHOC.idx"
     risearch.index(target_fa, idx)
-    store = risearch.TargetStore.open(idx)
+    store = risearch.TargetRegistry.open(idx)
     df = risearch.search(query_fa, store, seed_length=8, energy_threshold=-10.0)
     print(df.shape)
     print(df.columns)

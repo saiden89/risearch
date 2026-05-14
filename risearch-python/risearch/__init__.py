@@ -3,7 +3,7 @@ import os
 import polars as pl
 
 from risearch._risearch import (
-    TargetStore,
+    TargetRegistry,
 )
 from risearch._risearch import (
     build_index as index,
@@ -20,4 +20,4 @@ def search(query_fasta, store, **kwargs) -> pl.DataFrame:
     return pl.from_arrow(result)
 
 
-__all__ = ["TargetStore", "index", "search"]
+__all__ = ["TargetRegistry", "index", "search"]

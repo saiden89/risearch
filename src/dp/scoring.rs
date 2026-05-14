@@ -9,7 +9,6 @@
 //!   for the hot inner loop (fixed `(qp, qc)` per row, varying `(tp, tc)` per column).
 //! - [`GotohScoring`]: Trait for point-lookup used in initialization and traceback.
 
-
 /// Point-lookup interface for DP scoring.
 ///
 /// Implementations must provide scores for all Gotoh 3-state transitions

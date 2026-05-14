@@ -1,98 +1,71 @@
-use std::collections::HashSet;
-use fs_err::File;
-use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
+use fs_err::File;
 use memmap2::Mmap;
-use crate::fastx::{read_and_validate_fasta, normalize_record};
 
+use crate::fastx::{normalize_record, read_and_validate_fasta};
 use crate::index::io::validate_output_path;
 use crate::index::sa::SuffixArray;
-use crate::seed::SeedView;
-use crate::seq::Sequence;
+use crate::index::view::RegistryView;
 use crate::types::{Base, Strand};
-use crate::registry::Registry;
 
-// =============================================================================
-// FORMAT CONSTANTS
-// =============================================================================
+const TARGET_REGISTRY_VERSION: u32 = 1;
 
-const FILE_MAGIC: [u8; 8] = *b"RSIDX6\0\0";
-
-/// Fixed file header: magic[8] + target_count[4] + reserved[4]
-const FILE_HEADER_BYTES: usize = 16;
-
-/// Per-target metadata entry: name_len[4] + seq_len[4] + offset[8]
-const META_ENTRY_FIXED_BYTES: usize = 16;
-
-const DATA_ALIGN: usize = 8;
-const ZERO_PAD: [u8; DATA_ALIGN] = [0u8; DATA_ALIGN];
-
-/// Number of zero-valued u64 entries appended after the real SA data.
-/// These act as sentinels so `sa[suffix_pos + offset]` never goes out of
-/// bounds during binary search character lookups, eliminating a branch
-/// in the innermost hot loop.
+/// Number of zero-valued entries appended after the real sequence and SA data.
+/// These sentinels keep `sa[suffix_pos + offset]` branchless in the seed hot path.
 pub const SA_CHAR_PADDING: usize = 256;
 
-// =============================================================================
-// PUBLIC TYPES
-// =============================================================================
-
-pub struct TargetStore {
+/// Runtime handle for a target index.
+///
+/// The mapped file contains a private rkyv `TargetStore`; this type owns the
+/// mmap lifetime and carries the small native sidecars needed by `RegistryView`.
+pub struct TargetRegistry {
     mmap: Mmap,
-    registry: Registry<String>,
-    /// Start offset of each target block in global combined_seq.
     offsets: Vec<usize>,
-    /// Original forward sequence length of each target.
     seq_lens: Vec<usize>,
-    /// Byte offset into mmap where the global combined_seq begins.
-    seq_data_offset: usize,
-    /// Total number of Base entries in global combined_seq (including padding).
-    seq_byte_count: usize,
-    /// Byte offset into mmap where the global combined_sa begins.
-    sa_data_offset: usize,
-    /// Total number of u64 entries in global combined_sa (including padding).
-    sa_entry_count: usize,
-    /// Number of real SA entries (excluding SA_CHAR_PADDING sentinels).
     sa_real_len: usize,
 }
 
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+struct TargetStore {
+    version: u32,
+    targets: Vec<TargetRecord>,
+    combined_seq: Vec<u8>,
+    combined_sa: Vec<u64>,
+}
 
-impl TargetStore {
-    /// Build a new RSIDX6 index from a FASTA file.
-    ///
-    /// Pipeline:
-    /// 1. Parse all FASTA records, normalize, complement
-    /// 2. Concatenate into global combined_seq with Gap separators
-    /// 3. Build single global SA
-    /// 4. Write flat binary: header -> metadata -> seq -> SA
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+struct TargetRecord {
+    name: String,
+    offset: u64,
+    seq_len: u64,
+}
+
+impl TargetRegistry {
+    /// Build a target index from a FASTA file and write it as an rkyv archive.
     pub fn build(input: &Path, output: &Path) -> Result<()> {
         validate_output_path(output)?;
 
-        let mut targets: Vec<(String, u32, u64)> = Vec::new(); // (id, seq_len, global_offset)
-        let mut combined_bases: Vec<Base> = Vec::new();
-        let mut metadata_bytes = FILE_HEADER_BYTES;
-
         let records = read_and_validate_fasta(input)?;
+        let mut targets = Vec::new();
+        let mut combined_bases = Vec::new();
 
         for (id, raw_seq) in records {
             let Some(sequence) = normalize_record(&id, &raw_seq)? else {
                 continue;
             };
 
-            let seq_len = u32::try_from(sequence.len())
-                .context("Target sequence length too large for u32")?;
+            let seq_len = sequence.len() as u64;
             let offset = combined_bases.len() as u64;
-            metadata_bytes = metadata_bytes
-                .checked_add(META_ENTRY_FIXED_BYTES + id.len())
-                .ok_or_else(|| anyhow!("Metadata size overflow while building index"))?;
-            targets.push((id, seq_len, offset));
 
-            // Store transformed sequence layout:
-            // fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
-            // where *_comp is complemented for canonical/wobble seed matching.
-            combined_bases.reserve(2 * seq_len as usize + 2);
+            targets.push(TargetRecord {
+                name: id,
+                offset,
+                seq_len,
+            });
+
+            combined_bases.reserve(2 * sequence.len() + 2);
             combined_bases.extend(sequence.iter().copied().map(Base::complement));
             combined_bases.push(Base::Gap);
             combined_bases.extend(sequence[..].iter().rev().copied());
@@ -106,23 +79,21 @@ impl TargetStore {
             );
         }
 
-        // Build single global SA directly from &[Base]
-        // (avoids cloning combined_bases and extra conversion allocations)
         let combined_sa = SuffixArray::try_from(combined_bases.as_slice())
             .context("Failed to build global suffix array")?;
 
-        // Append sentinels to seq/SA for branchless SA character lookup.
         combined_bases.resize(combined_bases.len() + SA_CHAR_PADDING, Base::Gap);
-        let mut padded_sa = combined_sa.into_inner();
-        padded_sa.resize(padded_sa.len() + SA_CHAR_PADDING, 0u64);
+        let mut combined_sa = combined_sa.into_inner();
+        combined_sa.resize(combined_sa.len() + SA_CHAR_PADDING, 0u64);
 
-        write_index_file(
-            output,
-            &targets,
-            metadata_bytes,
-            &combined_bases,
-            &padded_sa,
-        )
+        let store = TargetStore {
+            version: TARGET_REGISTRY_VERSION,
+            targets,
+            combined_seq: combined_bases.into_iter().map(Base::as_u8).collect(),
+            combined_sa,
+        };
+
+        write_target_registry(output, &store)
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -131,137 +102,43 @@ impl TargetStore {
         let mmap = unsafe { Mmap::map(&file) }
             .with_context(|| format!("Failed to memory-map index file: {}", path.display()))?;
 
-        let bytes = mmap.as_ref();
-        if bytes.len() < FILE_HEADER_BYTES {
-            bail!(
-                "Index file too small ({} bytes): {}",
-                bytes.len(),
-                path.display()
-            );
-        }
-
-        if bytes[..FILE_MAGIC.len()] != FILE_MAGIC {
-            bail!("Invalid index magic in {}", path.display());
-        }
-
-        let target_count =
-            u32::from_le_bytes(bytes[8..12].try_into().expect("header slice")) as usize;
-
-        // Parse per-target metadata
-        let mut cursor = FILE_HEADER_BYTES;
-        let mut names = Vec::with_capacity(target_count);
-        let mut seq_lens = Vec::with_capacity(target_count);
-        let mut offsets = Vec::with_capacity(target_count);
-
-        for _ in 0..target_count {
-            if cursor + META_ENTRY_FIXED_BYTES > bytes.len() {
-                bail!("Truncated metadata entry in {}", path.display());
-            }
-
-            let name_len =
-                u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().expect("name_len"))
-                    as usize;
-            let seq_len =
-                u32::from_le_bytes(bytes[cursor + 4..cursor + 8].try_into().expect("seq_len"))
-                    as usize;
-            let global_offset =
-                u64::from_le_bytes(bytes[cursor + 8..cursor + 16].try_into().expect("offset"))
-                    as usize;
-            cursor += META_ENTRY_FIXED_BYTES;
-
-            let name_end = cursor
-                .checked_add(name_len)
-                .ok_or_else(|| anyhow!("Name overflow in {}", path.display()))?;
-            if name_end > bytes.len() {
-                bail!("Truncated target name in {}", path.display());
-            }
-
-            let name = std::str::from_utf8(&bytes[cursor..name_end])
-                .context("Invalid UTF-8 in target name")?
-                .to_owned();
-            cursor = name_end;
-
-            names.push(name);
-            seq_lens.push(seq_len);
-            offsets.push(global_offset);
-        }
-
-        // Align to data section
-        cursor = align_up(cursor, DATA_ALIGN);
-
-        // Read seq_byte_count
-        if cursor + 8 > bytes.len() {
-            bail!("Truncated seq header in {}", path.display());
-        }
-        let seq_byte_count =
-            u64::from_le_bytes(bytes[cursor..cursor + 8].try_into().expect("seq count")) as usize;
-        let seq_data_offset = cursor + 8;
-        let seq_data_end = seq_data_offset
-            .checked_add(seq_byte_count)
-            .ok_or_else(|| anyhow!("Seq data overflow in {}", path.display()))?;
-        if seq_data_end > bytes.len() {
-            bail!("Truncated seq data in {}", path.display());
-        }
-
-        // Align to SA section
-        let sa_section_start = align_up(seq_data_end, DATA_ALIGN);
-        if sa_section_start + 8 > bytes.len() {
-            bail!("Truncated SA header in {}", path.display());
-        }
-        let sa_entry_count = u64::from_le_bytes(
-            bytes[sa_section_start..sa_section_start + 8]
-                .try_into()
-                .expect("sa count"),
-        ) as usize;
-        let sa_data_offset = sa_section_start + 8;
-        let sa_byte_count = sa_entry_count
-            .checked_mul(8)
-            .ok_or_else(|| anyhow!("SA data overflow in {}", path.display()))?;
-        let sa_data_end = sa_data_offset
-            .checked_add(sa_byte_count)
-            .ok_or_else(|| anyhow!("SA data overflow in {}", path.display()))?;
-        if sa_data_end > bytes.len() {
-            bail!("Truncated SA data in {}", path.display());
-        }
-
-        // Compute real SA length: total entries - padding
-        let sa_real_len = sa_entry_count.saturating_sub(SA_CHAR_PADDING);
+        let root = rkyv::access::<ArchivedTargetStore, rkyv::rancor::Error>(mmap.as_ref())
+            .with_context(|| format!("Invalid target index archive: {}", path.display()))?;
+        let (offsets, seq_lens, sa_real_len) = validate_store(root, path)?;
 
         Ok(Self {
             mmap,
-            registry: Registry::new(names),
             offsets,
             seq_lens,
-            seq_data_offset,
-            seq_byte_count,
-            sa_data_offset,
-            sa_entry_count,
             sa_real_len,
         })
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.registry.len()
+        self.root().targets.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.registry.is_empty()
+        self.root().targets.is_empty()
     }
 
     #[inline]
     pub fn get_name(&self, idx: usize) -> &str {
-        self.registry.get_name(idx)
+        self.root().targets[idx].name.as_str()
     }
 
     pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.registry.index_of(name)
+        self.root()
+            .targets
+            .iter()
+            .position(|target| target.name.as_str() == name)
     }
 
     /// Get a seed-search view of the combined SA and sequence.
-    pub fn view(&self) -> SeedView<'_> {
-        SeedView {
+    pub fn view(&self) -> RegistryView<'_> {
+        RegistryView {
             combined_seq: self.combined_seq(),
             combined_sa: self.combined_sa(),
             sa_real_len: self.sa_real_len,
@@ -317,138 +194,55 @@ impl TargetStore {
     ///
     /// Returns `(name, fwd_transformed, rc_transformed, seq_len)` where each
     /// transformed slice is from the mmap-backed combined sequence.
-    pub fn target_seqs(&self, idx: usize) -> Result<(&str, &[Base], &[Base], usize)> {
-        let target_count = self.len();
-        if idx >= target_count {
-            bail!("Target index out of bounds: {} >= {}", idx, target_count);
-        }
-
+    ///
+    /// # Panics
+    /// Panics if `idx >= self.len()`.
+    pub fn target_seqs(&self, idx: usize) -> (&str, &[Base], &[Base], usize) {
         let name = self.get_name(idx);
         let seq_len = self.seq_lens[idx];
         let offset = self.offsets[idx];
         let combined_seq = self.combined_seq();
-
-        // Layout within global: fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap
         let fwd_end = offset + seq_len;
-        let rc_start = offset + seq_len + 1;
+        let rc_start = fwd_end + 1;
         let rc_end = rc_start + seq_len;
-
-        if rc_end > combined_seq.len() {
-            bail!(
-                "Target '{}' sequence data out of bounds (offset={}, seq_len={}, total={})",
-                name,
-                offset,
-                seq_len,
-                combined_seq.len()
-            );
-        }
-
-        Ok((
+        (
             name,
             &combined_seq[offset..fwd_end],
             &combined_seq[rc_start..rc_end],
             seq_len,
-        ))
+        )
+    }
+
+    #[inline]
+    fn root(&self) -> &ArchivedTargetStore {
+        // SAFETY: `open` validates the archive before constructing `TargetRegistry`.
+        unsafe { rkyv::access_unchecked::<ArchivedTargetStore>(self.mmap.as_ref()) }
     }
 
     #[inline]
     fn combined_seq(&self) -> &[Base] {
-        let bytes = self.mmap.as_ref();
-        // SAFETY: Base is #[repr(u8)] and seq_data_offset/seq_byte_count are validated on open.
-        unsafe {
-            std::slice::from_raw_parts(
-                bytes[self.seq_data_offset..].as_ptr().cast::<Base>(),
-                self.seq_byte_count,
-            )
-        }
+        let bytes = self.root().combined_seq.as_slice();
+        // SAFETY: build path only writes Base::as_u8() values; discriminants are always valid.
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<Base>(), bytes.len()) }
     }
 
     #[inline]
     fn combined_sa(&self) -> &[u64] {
-        let bytes = self.mmap.as_ref();
-        // SAFETY: u64 alignment guaranteed by DATA_ALIGN=8 padding in writer.
-        unsafe {
-            std::slice::from_raw_parts(
-                bytes[self.sa_data_offset..].as_ptr().cast::<u64>(),
-                self.sa_entry_count,
-            )
-        }
+        archived_u64_as_native(self.root().combined_sa.as_slice())
     }
 }
 
-fn write_index_file(
-    output: &Path,
-    targets: &[(String, u32, u64)],
-    metadata_bytes: usize,
-    seq: &[Base],
-    sa: &[u64],
-) -> Result<()> {
+fn write_target_registry(output: &Path, store: &TargetStore) -> Result<()> {
     let output_name = output
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "target.idx".to_string());
     let tmp_path = output.with_file_name(format!("{output_name}.tmp"));
 
-    let file = File::create(&tmp_path)
-        .with_context(|| format!("Failed to create temp index file: {}", tmp_path.display()))?;
-    // Use 8 MiB buffer for bulk sequential writes (default 8 KiB is too small).
-    let mut writer = BufWriter::with_capacity(8 << 20, file);
-
-    let target_count = u32::try_from(targets.len()).context("Target count exceeds u32::MAX")?;
-
-    // Header: magic[8] + target_count[4] + reserved[4]
-    writer
-        .write_all(&FILE_MAGIC)
-        .context("Failed to write magic")?;
-    writer
-        .write_all(&target_count.to_le_bytes())
-        .context("Failed to write target count")?;
-    writer
-        .write_all(&0u32.to_le_bytes())
-        .context("Failed to write reserved field")?;
-
-    // Per-target metadata
-    for (id, seq_len, offset) in targets.iter() {
-        let name_bytes = id.as_bytes();
-        let name_len =
-            u32::try_from(name_bytes.len()).context("Target name length exceeds u32::MAX")?;
-        writer.write_all(&name_len.to_le_bytes())?;
-        writer.write_all(&seq_len.to_le_bytes())?;
-        writer.write_all(&offset.to_le_bytes())?;
-        writer.write_all(name_bytes)?;
-    }
-
-    // Pad to 8-byte alignment
-    let aligned_cursor = align_up(metadata_bytes, DATA_ALIGN);
-    let pad_len = aligned_cursor - metadata_bytes;
-    if pad_len > 0 {
-        writer.write_all(&ZERO_PAD[..pad_len])?;
-    }
-
-    // Global combined_seq: count[8] + data
-    let seq_byte_count = seq.len() as u64;
-    writer.write_all(&seq_byte_count.to_le_bytes())?;
-    // SAFETY: Base is #[repr(u8)], so &[Base] is layout-compatible with &[u8].
-    let seq_bytes = unsafe { std::slice::from_raw_parts(seq.as_ptr().cast::<u8>(), seq.len()) };
-    writer.write_all(seq_bytes)?;
-
-    // Pad to 8-byte alignment before SA
-    let after_seq = aligned_cursor + 8 + seq.len();
-    let sa_start = align_up(after_seq, DATA_ALIGN);
-    let sa_pad = sa_start - after_seq;
-    if sa_pad > 0 {
-        writer.write_all(&ZERO_PAD[..sa_pad])?;
-    }
-
-    // Global combined_sa: count[8] + data
-    let sa_entry_count = sa.len() as u64;
-    writer.write_all(&sa_entry_count.to_le_bytes())?;
-    let sa_bytes = unsafe { std::slice::from_raw_parts(sa.as_ptr().cast::<u8>(), sa.len() * 8) };
-    writer.write_all(sa_bytes)?;
-
-    writer.flush().context("Failed to flush index file")?;
-    drop(writer);
-
+    let bytes =
+        rkyv::to_bytes::<rkyv::rancor::Error>(store).context("Failed to serialize target index")?;
+    fs_err::write(&tmp_path, bytes.as_slice())
+        .with_context(|| format!("Failed to write target index: {}", tmp_path.display()))?;
     fs_err::rename(&tmp_path, output).with_context(|| {
         format!(
             "Failed to finalize index file: {} -> {}",
@@ -456,14 +250,101 @@ fn write_index_file(
             output.display()
         )
     })?;
-
     Ok(())
 }
 
+fn validate_store(
+    root: &ArchivedTargetStore,
+    path: &Path,
+) -> Result<(Vec<usize>, Vec<usize>, usize)> {
+    if root.version.to_native() != TARGET_REGISTRY_VERSION {
+        bail!(
+            "Unsupported target index version {} in {}",
+            root.version.to_native(),
+            path.display()
+        );
+    }
+
+    let seq = root.combined_seq.as_slice();
+    let sa = root.combined_sa.as_slice();
+    if seq.len() < SA_CHAR_PADDING || sa.len() < SA_CHAR_PADDING {
+        bail!("Target index missing sentinel padding: {}", path.display());
+    }
+    if seq.len() != sa.len() {
+        bail!(
+            "Target index sequence/SA length mismatch (seq={}, sa={}): {}",
+            seq.len(),
+            sa.len(),
+            path.display()
+        );
+    }
+    let real_len = sa.len() - SA_CHAR_PADDING;
+    let mut offsets = Vec::with_capacity(root.targets.len());
+    let mut seq_lens = Vec::with_capacity(root.targets.len());
+    let mut expected_offset = 0usize;
+
+    for target in root.targets.iter() {
+        let name = target.name.as_str();
+        let offset = usize::try_from(target.offset.to_native())
+            .context("Target offset does not fit in usize")?;
+        let seq_len = target.seq_len.to_native() as usize;
+
+        if offset != expected_offset {
+            bail!(
+                "Non-contiguous target offset for '{}' (got {}, expected {}) in {}",
+                name,
+                offset,
+                expected_offset,
+                path.display()
+            );
+        }
+
+        let block_len = seq_len
+            .checked_mul(2)
+            .and_then(|len| len.checked_add(2))
+            .ok_or_else(|| anyhow!("Target '{}' block length overflow", name))?;
+        let block_end = offset
+            .checked_add(block_len)
+            .ok_or_else(|| anyhow!("Target '{}' block offset overflow", name))?;
+        if block_end > real_len {
+            bail!(
+                "Target '{}' block exceeds sequence data (end={}, real_len={}) in {}",
+                name,
+                block_end,
+                real_len,
+                path.display()
+            );
+        }
+
+        offsets.push(offset);
+        seq_lens.push(seq_len);
+        expected_offset = block_end;
+    }
+
+    if expected_offset != real_len {
+        bail!(
+            "Target blocks cover {} bases but index has {} real bases in {}",
+            expected_offset,
+            real_len,
+            path.display()
+        );
+    }
+
+    Ok((offsets, seq_lens, real_len))
+}
+
+#[cfg(target_endian = "little")]
 #[inline]
-fn align_up(value: usize, align: usize) -> usize {
-    debug_assert!(align.is_power_of_two());
-    (value + (align - 1)) & !(align - 1)
+fn archived_u64_as_native(values: &[rkyv::primitive::ArchivedU64]) -> &[u64] {
+    // SAFETY: rkyv's aligned little-endian archived u64 is a transparent-sized,
+    // 8-aligned wrapper over native u64 bytes on little-endian targets.
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u64>(), values.len()) }
+}
+
+#[cfg(not(target_endian = "little"))]
+#[inline]
+fn archived_u64_as_native(_values: &[rkyv::primitive::ArchivedU64]) -> &[u64] {
+    panic!("mmap-backed target indexes currently require a little-endian target")
 }
 
 #[cfg(test)]
@@ -472,7 +353,9 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::TargetStore;
+    use super::{
+        write_target_registry, TargetRecord, TargetRegistry, TargetStore, TARGET_REGISTRY_VERSION,
+    };
 
     #[test]
     fn roundtrip_build_open_target_view() {
@@ -485,21 +368,19 @@ mod tests {
         writeln!(fasta, ">chrB\nUUUGCA").unwrap();
         drop(fasta);
 
-        TargetStore::build(&fasta_path, &index_path).unwrap();
-        let store = TargetStore::open(&index_path).unwrap();
+        TargetRegistry::build(&fasta_path, &index_path).unwrap();
+        let store = TargetRegistry::open(&index_path).unwrap();
         let expected = [("chrA", 6usize), ("chrB", 6usize)];
         assert_eq!(store.len(), expected.len());
 
-        // Verify target view is accessible
         let target = store.view();
         assert_eq!(target.offsets.len(), store.len());
         assert_eq!(target.seq_lens.len(), store.len());
         assert!(target.sa_real_len > 0);
 
-        // Verify target_seqs for each target
         for (i, (expected_name, expected_seq_len)) in expected.iter().enumerate().take(store.len())
         {
-            let (name, fwd, rc, seq_len) = store.target_seqs(i).unwrap();
+            let (name, fwd, rc, seq_len) = store.target_seqs(i);
             assert_eq!(name, *expected_name);
             assert_eq!(seq_len, *expected_seq_len);
             assert_eq!(fwd.len(), *expected_seq_len);
@@ -508,36 +389,66 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_invalid_magic() {
+    fn open_rejects_invalid_archive() {
         let dir = tempdir().unwrap();
         let bad_path = dir.path().join("bad.idx");
-        // Must be at least FILE_HEADER_BYTES (16) to reach magic check
-        fs_err::write(&bad_path, b"not-a-valid-idx!").unwrap();
-        match TargetStore::open(&bad_path) {
-            Ok(_) => panic!("Expected invalid magic error"),
-            Err(err) => assert!(err.to_string().contains("Invalid index magic")),
+        fs_err::write(&bad_path, b"not-a-valid-rkyv-archive").unwrap();
+        match TargetRegistry::open(&bad_path) {
+            Ok(_) => panic!("Expected invalid archive error"),
+            Err(err) => assert!(err.to_string().contains("Invalid target index archive")),
+        }
+    }
+
+    #[test]
+    fn open_rejects_unsupported_version() {
+        let dir = tempdir().unwrap();
+        let index_path = dir.path().join("targets.idx");
+        let store = tiny_store(999);
+
+        write_target_registry(&index_path, &store).unwrap();
+
+        match TargetRegistry::open(&index_path) {
+            Ok(_) => panic!("Expected unsupported version error"),
+            Err(err) => assert!(err.to_string().contains("Unsupported target index version")),
+        }
+    }
+
+    #[test]
+    fn open_rejects_missing_sa_padding() {
+        let dir = tempdir().unwrap();
+        let index_path = dir.path().join("targets.idx");
+        let mut store = tiny_store(TARGET_REGISTRY_VERSION);
+        store.combined_sa.pop();
+
+        write_target_registry(&index_path, &store).unwrap();
+
+        match TargetRegistry::open(&index_path) {
+            Ok(_) => panic!("Expected padding/length error"),
+            Err(err) => assert!(err.to_string().contains("sequence/SA length mismatch")),
         }
     }
 
     #[test]
     fn map_target_pos_normalizes_into_strand_view() {
-        use super::TargetStore;
         use crate::types::Strand;
 
         let seq_len = 5;
         let seed_len = 2;
 
         assert_eq!(
-            TargetStore::map_target_pos(1, seq_len, seed_len),
+            TargetRegistry::map_target_pos(1, seq_len, seed_len),
             Some((Strand::Reverse, 2))
         );
         assert_eq!(
-            TargetStore::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
+            TargetRegistry::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
             Some((Strand::Forward, 1))
         );
-        assert_eq!(TargetStore::map_target_pos(seq_len, seq_len, seed_len), None);
         assert_eq!(
-            TargetStore::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
+            TargetRegistry::map_target_pos(seq_len, seq_len, seed_len),
+            None
+        );
+        assert_eq!(
+            TargetRegistry::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
             None
         );
     }
@@ -554,11 +465,10 @@ mod tests {
         writeln!(fasta, ">t3\nAA").unwrap();
         drop(fasta);
 
-        TargetStore::build(&fasta_path, &index_path).unwrap();
-        let store = TargetStore::open(&index_path).unwrap();
+        TargetRegistry::build(&fasta_path, &index_path).unwrap();
+        let store = TargetRegistry::open(&index_path).unwrap();
         let target = store.view();
 
-        // Verify offsets are contiguous: offset[i+1] = offset[i] + 2*seq_len[i] + 2
         for i in 0..store.len() - 1 {
             let expected_next = target.offsets[i] + 2 * target.seq_lens[i] + 2;
             assert_eq!(
@@ -567,6 +477,24 @@ mod tests {
                 "Offset mismatch at target {}",
                 i
             );
+        }
+    }
+
+    fn tiny_store(version: u32) -> TargetStore {
+        let mut combined_seq = vec![1, 0, 1, 0];
+        combined_seq.resize(combined_seq.len() + super::SA_CHAR_PADDING, 0);
+        let mut combined_sa = vec![0, 1, 2, 3];
+        combined_sa.resize(combined_sa.len() + super::SA_CHAR_PADDING, 0);
+
+        TargetStore {
+            version,
+            targets: vec![TargetRecord {
+                name: "t1".to_string(),
+                offset: 0,
+                seq_len: 1,
+            }],
+            combined_seq,
+            combined_sa,
         }
     }
 }

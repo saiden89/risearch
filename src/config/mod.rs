@@ -6,7 +6,6 @@ use crate::types::{DsmId, Energy};
 // ENUMS (shared by config and CLI via clap derives)
 // =============================================================================
 
-
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[clap(rename_all = "lowercase")]
 pub enum OutputFormat {
@@ -68,7 +67,6 @@ impl OutputCompression {
     }
 }
 
-
 /// Arguments for seed generation.
 #[derive(Debug, Clone, Default)]
 pub struct SeedConfig {
@@ -82,7 +80,7 @@ pub struct SeedConfig {
 
     /// Allow G-U wobble pairs when locating and maximizing seeds.
     pub seed_wobble: bool,
-    
+
     /// Maximum number of mismatches allowed in seed.
     pub max_mismatches: usize,
     /// Minimum consecutive matches at seed start (prefix, 5').

@@ -4,7 +4,7 @@ mod support;
 
 use rstest::rstest;
 use std::path::PathBuf;
-use support::{ParityRunner, query_fa, target_fa};
+use support::{query_fa, target_fa, ParityRunner};
 
 /// Main seed length × extension limit matrix.
 /// Tests all combinations on mirnas.fa vs RHOC.fa.
@@ -39,7 +39,6 @@ fn interval(
     #[values("1:8", "1:12", "2:10", "1:15")] spec: &str,
     #[values(0, 10, 20)] l: usize,
 ) {
-
     let l_str = l.to_string();
     let (start, end) = spec.split_once(':').unwrap();
     let args = [

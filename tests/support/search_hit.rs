@@ -5,7 +5,7 @@
 //! - `parse_bindingsite_output()`: Parse bindingsite output into `SearchHit`
 
 use risearch::alignment::Alignment;
-use risearch::index::store::TargetStore;
+use risearch::index::store::TargetRegistry;
 use risearch::registry::QueryRegistry;
 use risearch::types::{Energy, Strand};
 use risearch::SearchHit;
@@ -21,7 +21,8 @@ pub(crate) trait SearchHitExt {
 
     /// Group key for matching hits (query_idx:target_idx -> names).
     #[allow(dead_code)]
-    fn group_key(&self, query_registry: &QueryRegistry, target_store: &TargetStore) -> String;
+    fn group_key(&self, query_registry: &QueryRegistry, target_registry: &TargetRegistry)
+        -> String;
 
     /// Fingerprint string for comparison. None if no alignment data.
     fn fingerprint(&self) -> Option<String>;
@@ -45,11 +46,15 @@ impl SearchHitExt for SearchHit {
             && self.strand == other.strand
     }
 
-    fn group_key(&self, query_registry: &QueryRegistry, target_store: &TargetStore) -> String {
+    fn group_key(
+        &self,
+        query_registry: &QueryRegistry,
+        target_registry: &TargetRegistry,
+    ) -> String {
         format!(
             "{}:{}",
             query_registry.get_name(self.query_idx),
-            target_store.get_name(self.target_idx)
+            target_registry.get_name(self.target_idx)
         )
     }
 
@@ -94,14 +99,14 @@ impl SearchHitExt for SearchHit {
 pub(crate) fn parse_bindingsite_output(
     line: &str,
     query_registry: &QueryRegistry,
-    target_store: &TargetStore,
+    target_registry: &TargetRegistry,
 ) -> Option<SearchHit> {
     let fields: Vec<&str> = line.split('\t').collect();
     if fields.len() < 10 {
         return None;
     }
     let query_idx = query_registry.index_of(fields[0])?;
-    let target_idx = target_store.index_of(fields[3])?;
+    let target_idx = target_registry.index_of(fields[3])?;
 
     // Parse and strip seed markers from interaction
     let (interaction, seed_start, seed_end) = strip_c_markers(fields[8]);

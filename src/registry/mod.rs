@@ -1,16 +1,15 @@
 use anyhow::{anyhow, bail, Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::ops::Range;
 use std::path::Path;
 
 use crate::config::SeedConfig;
-use crate::fastx::{read_and_validate_fasta, normalize_record};
+use crate::fastx::{normalize_record, read_and_validate_fasta};
 use crate::index::io::validate_readable_file;
 use crate::index::sa::SuffixArray;
 use crate::index::store::SA_CHAR_PADDING;
-use crate::seed::SeedView;
+use crate::index::RegistryView;
 use crate::seq::Sequence;
 use crate::types::Base;
 
@@ -247,8 +246,8 @@ impl QueryRegistry {
         self.inner.iter()
     }
 
-    pub fn view(&self) -> SeedView<'_> {
-        SeedView {
+    pub fn view(&self) -> RegistryView<'_> {
+        RegistryView {
             combined_seq: &self.combined_seed_seq,
             combined_sa: &self.combined_sa,
             sa_real_len: self.len,
@@ -275,8 +274,8 @@ impl QueryRegistry {
     /// Sequences are validated (duplicate IDs are rejected).
     /// Query SA construction is parallelised via rayon.
     pub fn from_fasta(path: &Path, config: &SeedConfig) -> Result<Self> {
-        let seqs = read_and_validate_sequences(path)
-            .with_context(|| format!("in {}", path.display()))?;
+        let seqs =
+            read_and_validate_sequences(path).with_context(|| format!("in {}", path.display()))?;
 
         let maybe_entries: Vec<Option<Query>> = seqs
             .into_par_iter()
@@ -293,7 +292,7 @@ impl QueryRegistry {
             bail!("All sequences were empty after normalization");
         }
 
-        // Build combined seed sequence and SA (mirrors TargetStore::build_from_fasta).
+        // Build combined seed sequence and SA (mirrors TargetRegistry::build_from_fasta).
         let mut combined_seed_seq: Vec<Base> = Vec::new();
         let mut offsets: Vec<usize> = Vec::with_capacity(entries.len());
         let mut seed_seq_lens: Vec<usize> = Vec::with_capacity(entries.len());
@@ -353,26 +352,18 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn seed_config() -> SeedConfig {
-        SeedConfig {
-            seed_start: None,
-            seed_end: None,
-            seed_length: Some(4),
-            seed_wobble: true,
-            max_mismatches: 0,
-            min_prefix_matches: 1,
-            min_suffix_matches: 0,
-        }
-    }
-
     fn temp_fasta(content: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(content.as_bytes()).unwrap();
         f
     }
 
-
-    fn make_query_data(sequence: Sequence, seed_start: Option<i64>, seed_end: Option<i64>, seed_length: Option<i64>) -> Query {
+    fn make_query_data(
+        sequence: Sequence,
+        seed_start: Option<i64>,
+        seed_end: Option<i64>,
+        seed_length: Option<i64>,
+    ) -> Query {
         let cfg = SeedConfig {
             seed_start,
             seed_end,

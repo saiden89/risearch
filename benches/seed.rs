@@ -7,7 +7,7 @@ use risearch::registry::QueryRegistry;
 use risearch::seed::{SeedHit, SeedingEngine};
 use risearch::seq::Sequence;
 use risearch::types::Base;
-use risearch::TargetStore;
+use risearch::TargetRegistry;
 use tempfile::TempDir;
 
 struct SimpleLcg {
@@ -40,7 +40,7 @@ impl SimpleLcg {
 struct ProductionSeedDataset {
     _tmpdir: TempDir,
     queries: QueryRegistry,
-    store: TargetStore,
+    store: TargetRegistry,
 }
 
 fn generate_sequence(len: usize, seed: u64) -> Sequence {
@@ -92,8 +92,8 @@ fn build_production_dataset(
     write_fasta(&targets_path, "t", &targets);
 
     let queries = QueryRegistry::from_fasta(&queries_path, seed_config).expect("query registry");
-    TargetStore::build(&targets_path, &index_path).expect("build target index");
-    let store = TargetStore::open(&index_path).expect("open target index");
+    TargetRegistry::build(&targets_path, &index_path).expect("build target index");
+    let store = TargetRegistry::open(&index_path).expect("open target index");
 
     ProductionSeedDataset {
         _tmpdir: tmpdir,
@@ -114,7 +114,13 @@ fn exact_seed_config(seed_length: i64) -> SeedConfig {
     }
 }
 
-fn mismatch_seed_config(seed_length: i64, max_mm: usize, prefix: usize, suffix: usize, wobble: bool) -> SeedConfig {
+fn mismatch_seed_config(
+    seed_length: i64,
+    max_mm: usize,
+    prefix: usize,
+    suffix: usize,
+    wobble: bool,
+) -> SeedConfig {
     SeedConfig {
         seed_length: Some(seed_length),
         seed_wobble: wobble,
@@ -137,10 +143,9 @@ fn bench_seed_exact(c: &mut Criterion) {
             &target_len,
             |b, _| {
                 b.iter(|| {
-                    let seeds = SeedingEngine::new(
-                        black_box(&dataset.queries),
-                        black_box(&dataset.store),
-                    ).run(black_box(&seed_config));
+                    let seeds =
+                        SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
+                            .run(black_box(&seed_config));
                     black_box(seed_count(&seeds));
                 });
             },
@@ -160,10 +165,9 @@ fn bench_seed_mismatch(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
             b.iter(|| {
-                let seeds = SeedingEngine::new(
-                    black_box(&dataset.queries),
-                    black_box(&dataset.store),
-                ).run(black_box(&seed_config));
+                let seeds =
+                    SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
+                        .run(black_box(&seed_config));
                 black_box(seed_count(&seeds));
             });
         });
@@ -184,10 +188,9 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(max_mm), &max_mm, |b, _| {
             b.iter(|| {
-                let seeds = SeedingEngine::new(
-                    black_box(&dataset.queries),
-                    black_box(&dataset.store),
-                ).run(black_box(&seed_config));
+                let seeds =
+                    SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
+                        .run(black_box(&seed_config));
                 black_box(seed_count(&seeds));
             });
         });
@@ -211,10 +214,9 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
             &query_count,
             |b, _| {
                 b.iter(|| {
-                    let seeds = SeedingEngine::new(
-                        black_box(&dataset.queries),
-                        black_box(&dataset.store),
-                    ).run(black_box(&seed_config));
+                    let seeds =
+                        SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
+                            .run(black_box(&seed_config));
                     black_box(seed_count(&seeds));
                 });
             },
@@ -235,10 +237,8 @@ fn bench_seed_long_mismatch(c: &mut Criterion) {
 
     group.bench_function("seed_21_mm_2_2", |b| {
         b.iter(|| {
-            let seeds = SeedingEngine::new(
-                black_box(&dataset.queries),
-                black_box(&dataset.store),
-            ).run(black_box(&seed_config));
+            let seeds = SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
+                .run(black_box(&seed_config));
             black_box(seed_count(&seeds));
         });
     });

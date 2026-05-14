@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use log::{debug, info, trace};
 
-use risearch::{search, QueryRegistry, SearchConfig, TargetStore};
+use risearch::{search, QueryRegistry, SearchConfig, TargetRegistry};
 
 use crate::cli::legacy::emit_legacy_warnings;
 use crate::cli::{Cli, Commands, SearchArgs};
@@ -29,7 +29,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 
 fn cmd_index(input: &Path, output: &Path) -> Result<()> {
     info!("Creating index: {:?} -> {:?}", input, output);
-    TargetStore::build(input, output).context("Failed to write index file")?;
+    TargetRegistry::build(input, output).context("Failed to write index file")?;
     info!("Index saved to {:?}", output);
     Ok(())
 }
@@ -49,7 +49,7 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
     info!("Loaded {} queries", queries.len());
 
     debug!("Loading target index from {:?}", target_path);
-    let targets = TargetStore::open(target_path).context("Failed to load index")?;
+    let targets = TargetRegistry::open(target_path).context("Failed to load index")?;
     trace!("Index loaded: {} targets", targets.len());
 
     debug!("Starting search...");

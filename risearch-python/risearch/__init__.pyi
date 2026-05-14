@@ -3,11 +3,11 @@ from typing import Optional
 
 import polars as pl
 
-class TargetStore:
-    """In-memory index of target sequences for RNA-RNA interaction search."""
+class TargetRegistry:
+    """Mmap-backed target index for RNA-RNA interaction search."""
 
     @staticmethod
-    def open(path: str | os.PathLike) -> "TargetStore":
+    def open(path: str | os.PathLike) -> "TargetRegistry":
         """Load a pre-built index from disk."""
         ...
 
@@ -30,7 +30,7 @@ def index(
 
 def search(
     query_fasta: str | os.PathLike | list[str | os.PathLike],
-    store: TargetStore,
+    store: TargetRegistry,
     *,
     seed_length: Optional[int] = None,
     seed_start: Optional[int] = None,
@@ -67,7 +67,7 @@ def search(
     query_fasta:
         FASTA file containing query sequences.
     store:
-        Pre-loaded target index (from ``TargetStore.open()``).
+        Pre-loaded target index (from ``TargetRegistry.open()``).
     seed_length:
         Seed length (default: 6). Use alone for length-only mode, or combine
         with ``seed_start``/``seed_end`` to fix the length within an interval.

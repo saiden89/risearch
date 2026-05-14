@@ -143,8 +143,6 @@ impl FromStr for LegacySeedSpec {
     }
 }
 
-
-
 /// Arguments for seed generation
 #[derive(clap::Args, Debug, Clone)]
 pub struct SeedArgs {
@@ -242,7 +240,8 @@ impl SeedArgs {
             (Some(s), Some(e), length) => Ok((Some(s), Some(e), length)),
             (None, None, length) => Ok((None, None, length)),
             _ => Err(
-                "use seed_length alone, or seed_start + seed_end (optionally with seed_length)".into(),
+                "use seed_length alone, or seed_start + seed_end (optionally with seed_length)"
+                    .into(),
             ),
         }
     }
@@ -256,8 +255,7 @@ impl TryFrom<SeedArgs> for config::SeedConfig {
             || value.seed_end.is_some()
             || value.seed_length.is_some()
         {
-            value.resolve_seed_bounds()
-                .map_err(Error::msg)?
+            value.resolve_seed_bounds().map_err(Error::msg)?
         } else {
             value
                 .seed_legacy
@@ -315,41 +313,84 @@ mod tests {
     #[test]
     fn parses_mismatch_cli_specs() {
         let m = LegacyMismatchSpec::from_str("1").expect("parse");
-        assert_eq!((m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches), (1, 1, 1));
+        assert_eq!(
+            (m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches),
+            (1, 1, 1)
+        );
 
         let m = LegacyMismatchSpec::from_str("1:3").expect("parse");
-        assert_eq!((m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches), (1, 3, 3));
+        assert_eq!(
+            (m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches),
+            (1, 3, 3)
+        );
 
         let m = LegacyMismatchSpec::from_str("1:3:5").expect("parse");
-        assert_eq!((m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches), (1, 3, 5));
+        assert_eq!(
+            (m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches),
+            (1, 3, 5)
+        );
 
         assert!(LegacyMismatchSpec::from_str("1:2:3:4").is_err());
     }
 
-    fn test_args_mismatch(max: Option<usize>, prefix: Option<usize>, suffix: Option<usize>) -> Result<(usize, usize, usize), String> {
+    fn test_args_mismatch(
+        max: Option<usize>,
+        prefix: Option<usize>,
+        suffix: Option<usize>,
+    ) -> Result<(usize, usize, usize), String> {
         let args = SeedArgs {
-            seed_legacy: None, seed_start: None, seed_end: None, seed_length: None,
-            no_seed_wobble: false, no_guseed_legacy: false, mismatch_legacy: None,
-            mismatch_max: max, mismatch_prefix: prefix, mismatch_suffix: suffix,
+            seed_legacy: None,
+            seed_start: None,
+            seed_end: None,
+            seed_length: None,
+            no_seed_wobble: false,
+            no_guseed_legacy: false,
+            mismatch_legacy: None,
+            mismatch_max: max,
+            mismatch_prefix: prefix,
+            mismatch_suffix: suffix,
         };
         args.resolve_mismatches()
     }
 
-    fn test_args_seed(start: Option<i64>, end: Option<i64>, length: Option<i64>) -> Result<(Option<i64>, Option<i64>, Option<i64>), String> {
+    fn test_args_seed(
+        start: Option<i64>,
+        end: Option<i64>,
+        length: Option<i64>,
+    ) -> Result<(Option<i64>, Option<i64>, Option<i64>), String> {
         let args = SeedArgs {
-            seed_legacy: None, seed_start: start, seed_end: end, seed_length: length,
-            no_seed_wobble: false, no_guseed_legacy: false, mismatch_legacy: None,
-            mismatch_max: None, mismatch_prefix: None, mismatch_suffix: None,
+            seed_legacy: None,
+            seed_start: start,
+            seed_end: end,
+            seed_length: length,
+            no_seed_wobble: false,
+            no_guseed_legacy: false,
+            mismatch_legacy: None,
+            mismatch_max: None,
+            mismatch_prefix: None,
+            mismatch_suffix: None,
         };
         args.resolve_seed_bounds()
     }
 
     #[test]
     fn builds_mismatch_from_named_args() {
-        assert_eq!(test_args_mismatch(None, None, None).expect("parse"), (0, 1, 0));
-        assert_eq!(test_args_mismatch(Some(1), None, None).expect("parse"), (1, 1, 1));
-        assert_eq!(test_args_mismatch(Some(1), Some(3), None).expect("parse"), (1, 3, 3));
-        assert_eq!(test_args_mismatch(Some(1), Some(3), Some(5)).expect("parse"), (1, 3, 5));
+        assert_eq!(
+            test_args_mismatch(None, None, None).expect("parse"),
+            (0, 1, 0)
+        );
+        assert_eq!(
+            test_args_mismatch(Some(1), None, None).expect("parse"),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            test_args_mismatch(Some(1), Some(3), None).expect("parse"),
+            (1, 3, 3)
+        );
+        assert_eq!(
+            test_args_mismatch(Some(1), Some(3), Some(5)).expect("parse"),
+            (1, 3, 5)
+        );
     }
 
     #[test]

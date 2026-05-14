@@ -163,7 +163,8 @@ fn bench_throughput(c: &mut Criterion) {
                             ExtendDir::Left,
                             black_box(len),
                         );
-                        let result = gotoh_left.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
+                        let result =
+                            gotoh_left.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -202,7 +203,8 @@ fn bench_throughput(c: &mut Criterion) {
                             ExtendDir::Right,
                             black_box(len),
                         );
-                        let result = gotoh_right.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
+                        let result =
+                            gotoh_right.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -270,7 +272,8 @@ fn bench_many_extensions(c: &mut Criterion) {
                         ExtendDir::Left,
                         black_box(30),
                     );
-                    let left_result = gotoh_left.extend(black_box(&left_view), &mut grid, &mut q_buf, &mut t_buf);
+                    let left_result =
+                        gotoh_left.extend(black_box(&left_view), &mut grid, &mut q_buf, &mut t_buf);
                     total_score = total_score.wrapping_add(left_result.energy);
 
                     // Right extension
@@ -282,7 +285,12 @@ fn bench_many_extensions(c: &mut Criterion) {
                         ExtendDir::Right,
                         black_box(30),
                     );
-                    let right_result = gotoh_right.extend(black_box(&right_view), &mut grid, &mut q_buf, &mut t_buf);
+                    let right_result = gotoh_right.extend(
+                        black_box(&right_view),
+                        &mut grid,
+                        &mut q_buf,
+                        &mut t_buf,
+                    );
                     total_score = total_score.wrapping_add(right_result.energy);
                 }
             }

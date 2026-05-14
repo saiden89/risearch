@@ -3,16 +3,16 @@ use std::path::Path;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::{
-    ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat,
-    ScoreConfig, SearchConfig, SeedConfig,
+    ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat, ScoreConfig,
+    SearchConfig, SeedConfig,
 };
 use risearch::registry::QueryRegistry;
 use risearch::search::{run_search, run_search_in_memory};
-use risearch::Energy;
 use risearch::seed::{SeedHit, SeedingEngine};
 use risearch::seq::Sequence;
 use risearch::types::{Base, DsmId};
-use risearch::TargetStore;
+use risearch::Energy;
+use risearch::TargetRegistry;
 use tempfile::TempDir;
 
 struct SimpleLcg {
@@ -45,7 +45,7 @@ impl SimpleLcg {
 struct ProductionSearchDataset {
     tmpdir: TempDir,
     queries: QueryRegistry,
-    store: TargetStore,
+    store: TargetRegistry,
 }
 
 fn generate_sequence(len: usize, seed: u64) -> Sequence {
@@ -97,8 +97,8 @@ fn build_production_dataset(
     write_fasta(&targets_path, "t", &targets);
 
     let queries = QueryRegistry::from_fasta(&queries_path, seed_config).expect("query registry");
-    TargetStore::build(&targets_path, &index_path).expect("build target index");
-    let store = TargetStore::open(&index_path).expect("open target index");
+    TargetRegistry::build(&targets_path, &index_path).expect("build target index");
+    let store = TargetRegistry::open(&index_path).expect("open target index");
 
     ProductionSearchDataset {
         tmpdir,
@@ -115,9 +115,7 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             penalty: Energy::from_kcal(0.0),
             temperature: 37,
         },
-        extend: ExtendConfig {
-            max_extension: 20,
-        },
+        extend: ExtendConfig { max_extension: 20 },
         filter: FilterConfig {
             delta_g: Energy::from_kcal(f64::NEG_INFINITY),
             seed_energy: Energy::from_kcal(0.0),
@@ -158,10 +156,8 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
 
     group.bench_with_input(BenchmarkId::new("collect", case), &case, |b, _| {
         b.iter(|| {
-            let seeds = SeedingEngine::new(
-                black_box(&dataset.queries),
-                black_box(&dataset.store),
-            ).run(black_box(&seed_config));
+            let seeds = SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
+                .run(black_box(&seed_config));
             black_box(seed_count(&seeds));
         });
     });

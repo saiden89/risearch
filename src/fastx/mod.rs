@@ -27,7 +27,7 @@ pub fn read_and_validate_fasta(filename: impl AsRef<Path>) -> Result<FastaRecord
             filename_ref.display()
         )
     })?;
-    
+
     let mut records = Vec::new();
     let mut seen = HashSet::new();
 
@@ -38,15 +38,22 @@ pub fn read_and_validate_fasta(filename: impl AsRef<Path>) -> Result<FastaRecord
                 filename_ref.display()
             )
         })?;
-        
+
         let id = String::from_utf8_lossy(rec.id()).into_owned();
         if id.trim().is_empty() {
-            bail!("Encountered empty FASTA record id in {}", filename_ref.display());
+            bail!(
+                "Encountered empty FASTA record id in {}",
+                filename_ref.display()
+            );
         }
         if !seen.insert(id.clone()) {
-            bail!("Duplicate FASTA record id '{}' in {}", id, filename_ref.display());
+            bail!(
+                "Duplicate FASTA record id '{}' in {}",
+                id,
+                filename_ref.display()
+            );
         }
-        
+
         let seq = rec.seq().to_vec();
         records.push((id, seq));
     }

@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use crate::types::Base;
 
-use super::SeedView;
+use crate::index::RegistryView;
 
 /// A raw seed candidate emitted by the parallel SA traversal.
 #[derive(Debug, Clone)]
@@ -15,8 +15,8 @@ pub(super) struct SeedMatch {
 }
 
 pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
-    q: SeedView<'_>,
-    t: SeedView<'_>,
+    q: RegistryView<'_>,
+    t: RegistryView<'_>,
     min_len: usize,
     max_len: usize,
     max_mm: usize,
@@ -45,8 +45,8 @@ pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
 }
 
 struct ParallelSaTraverser<'a, F: FnMut(SeedMatch)> {
-    q: SeedView<'a>,
-    t: SeedView<'a>,
+    q: RegistryView<'a>,
+    t: RegistryView<'a>,
     min_len: usize,
     max_len: usize,
     max_mm: usize,
@@ -296,7 +296,7 @@ const MATCHABLE_BUCKETS: [(usize, Base); 4] = [
 /// Sub-interval for slot `k` is `bounds[k]..bounds[k+1]`.
 /// Callers that search only matchable RNA bases should skip the `N` bucket (slot 3).
 #[inline(always)]
-fn partition(view: SeedView<'_>, start: usize, end: usize, depth: usize) -> [usize; 6] {
+fn partition(view: RegistryView<'_>, start: usize, end: usize, depth: usize) -> [usize; 6] {
     if start >= end {
         return [start; 6];
     }
@@ -324,7 +324,7 @@ fn partition(view: SeedView<'_>, start: usize, end: usize, depth: usize) -> [usi
 /// Binary search for leftmost position where character at `depth` >= `target`.
 #[inline(always)]
 fn binary_search(
-    view: SeedView<'_>,
+    view: RegistryView<'_>,
     mut start: usize,
     mut end: usize,
     depth: usize,
@@ -347,7 +347,7 @@ fn binary_search(
 mod tests {
     use crate::config::SeedConfig;
     use crate::index::sa::SuffixArray;
-    use crate::seed::SeedView;
+    use crate::index::RegistryView;
     use crate::seq::Sequence;
     use crate::types::Base;
 
@@ -371,7 +371,7 @@ mod tests {
         let seq_bases = vec![Base::A, Base::G, Base::C, Base::U];
         let seq = Sequence::from(seq_bases);
         let (padded_sa, padded_seq, real_len) = build_padded_sa(&seq);
-        let view = SeedView {
+        let view = RegistryView {
             combined_seq: &padded_seq,
             combined_sa: &padded_sa,
             sa_real_len: real_len,
@@ -407,14 +407,14 @@ mod tests {
         };
         let mut seen = std::collections::HashSet::new();
         let mut ctx = ParallelSaTraverser {
-            q: SeedView {
+            q: RegistryView {
                 combined_seq: &q_seq_padded,
                 combined_sa: &q_sa,
                 sa_real_len: q_sa_len,
                 offsets: &[],
                 seq_lens: &[],
             },
-            t: SeedView {
+            t: RegistryView {
                 combined_seq: &t_seq_padded,
                 combined_sa: &t_sa,
                 sa_real_len: t_sa_len,

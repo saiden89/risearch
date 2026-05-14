@@ -11,9 +11,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::dsm::DsmRegistry;
 use risearch::{
-    run_search_in_memory, Energy, ExtendConfig,
-    FilterConfig, OutputCompression, OutputConfig, OutputFormat, QueryRegistry,
-    ScoreConfig, SearchConfig, SearchHit, SeedConfig, TargetStore,
+    run_search_in_memory, Energy, ExtendConfig, FilterConfig, OutputCompression, OutputConfig,
+    OutputFormat, QueryRegistry, ScoreConfig, SearchConfig, SearchHit, SeedConfig, TargetRegistry,
 };
 
 // =============================================================================
@@ -125,17 +124,17 @@ impl PySearchResult {
 }
 
 // =============================================================================
-// PyTargetStore
+// PyTargetRegistry
 // =============================================================================
 
-/// An in-memory index of target sequences for RNA-RNA interaction search.
+/// An mmap-backed target index for RNA-RNA interaction search.
 ///
 /// Build once with `build_index()`, then reuse across many `search()` calls.
-#[pyclass(name = "TargetStore")]
-pub struct PyTargetStore(TargetStore);
+#[pyclass(name = "TargetRegistry")]
+pub struct PyTargetRegistry(TargetRegistry);
 
 #[pymethods]
-impl PyTargetStore {
+impl PyTargetRegistry {
     /// Load a pre-built index from disk.
     ///
     /// Parameters
@@ -144,12 +143,12 @@ impl PyTargetStore {
     ///     Path to the `.idx` file produced by `build_index()`.
     #[staticmethod]
     fn open(path: PathBuf) -> PyResult<Self> {
-        let store = TargetStore::open(&path)?;
-        Ok(PyTargetStore(store))
+        let store = TargetRegistry::open(&path)?;
+        Ok(PyTargetRegistry(store))
     }
 
     fn __repr__(&self) -> String {
-        format!("TargetStore(targets={})", self.0.len())
+        format!("TargetRegistry(targets={})", self.0.len())
     }
 }
 
@@ -172,7 +171,7 @@ impl PyTargetStore {
 /// may run concurrently.
 #[pyfunction]
 fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> {
-    py.allow_threads(|| TargetStore::build(&fasta, &output))?;
+    py.allow_threads(|| TargetRegistry::build(&fasta, &output))?;
     Ok(())
 }
 
@@ -182,8 +181,8 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
 /// ----------
 /// query_fasta : list[str | os.PathLike]
 ///     One or more FASTA files containing query sequences.
-/// store : TargetStore
-///     Pre-loaded target index (from `TargetStore.open()`).
+/// store : TargetRegistry
+///     Pre-loaded target index (from `TargetRegistry.open()`).
 ///
 /// Returns
 /// -------
@@ -216,7 +215,7 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
 fn search(
     py: Python<'_>,
     query_fasta: Vec<PathBuf>,
-    store: &PyTargetStore,
+    store: &PyTargetRegistry,
     seed_length: Option<i64>,
     seed_start: Option<i64>,
     seed_end: Option<i64>,
@@ -251,9 +250,7 @@ fn search(
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
             temperature,
         },
-        extend: ExtendConfig {
-            max_extension,
-        },
+        extend: ExtendConfig { max_extension },
         filter: FilterConfig {
             delta_g: Energy::try_from(energy_threshold)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
@@ -283,7 +280,7 @@ fn search(
 
 #[pymodule]
 fn _risearch(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyTargetStore>()?;
+    m.add_class::<PyTargetRegistry>()?;
     m.add_function(wrap_pyfunction!(build_index, m)?)?;
     m.add_function(wrap_pyfunction!(search, m)?)?;
     Ok(())

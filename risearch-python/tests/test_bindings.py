@@ -34,11 +34,11 @@ def target_index(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def store(target_index):
-    return risearch.TargetStore.open(target_index)
+    return risearch.TargetRegistry.open(target_index)
 
 
 # ---------------------------------------------------------------------------
-# index / TargetStore.open
+# index / TargetRegistry.open
 # ---------------------------------------------------------------------------
 
 
@@ -48,7 +48,7 @@ def test_index_creates_file(tmp_path):
     assert idx.exists() and idx.stat().st_size > 0
 
 
-def test_target_store_repr_shows_count(store):
+def test_target_registry_repr_shows_count(store):
     assert "targets=" in repr(store)
     count = int(repr(store).split("targets=")[1].rstrip(")"))
     assert count > 0

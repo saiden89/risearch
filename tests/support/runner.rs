@@ -5,7 +5,7 @@
 
 use log::info;
 use risearch::cli::args::SearchArgs;
-use risearch::{run_search, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetStore};
+use risearch::{run_search, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetRegistry};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,7 +24,7 @@ struct NoIndex;
 /// Marker for an indexed Rust runner.
 struct Indexed {
     index_path: PathBuf,
-    target_store: TargetStore,
+    target_registry: TargetRegistry,
 }
 
 // =============================================================================
@@ -62,14 +62,16 @@ impl RustRunner<NoIndex> {
             }
         };
 
-        risearch::TargetStore::build(&self.target_path, &index_path).expect("build store index");
-        let target_store = risearch::TargetStore::open(&index_path).expect("open target store");
+        risearch::TargetRegistry::build(&self.target_path, &index_path)
+            .expect("build target index");
+        let target_registry =
+            risearch::TargetRegistry::open(&index_path).expect("open target registry");
 
         RustRunner {
             target_path: self.target_path,
             state: Indexed {
                 index_path,
-                target_store,
+                target_registry,
             },
         }
     }
@@ -87,7 +89,7 @@ impl RustRunner<Indexed> {
         let tmp = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         run_search(
             &query_registry,
-            &self.state.target_store,
+            &self.state.target_registry,
             &search_args,
             tmp.path(),
         )
@@ -99,7 +101,7 @@ impl RustRunner<Indexed> {
             )
         });
         let rust_out = fs::read_to_string(tmp.path()).expect("read output");
-        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_store);
+        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_registry);
         (hits, query_registry)
     }
 
@@ -164,7 +166,7 @@ impl ParityRunner {
         let c_args = translate_args_for_c(&args_ref);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
-        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_store);
+        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_registry);
 
         (rust_hits, c_hits, query_registry)
     }
@@ -190,7 +192,7 @@ impl ParityRunner {
         result.log_details_with_context(
             test_name,
             Some(&query_registry),
-            Some(&self.rust.state.target_store),
+            Some(&self.rust.state.target_registry),
         );
 
         if !result.is_pass(*TEST_PARITY_MODE) {
