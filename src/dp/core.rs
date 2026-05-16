@@ -40,7 +40,6 @@ impl<S: GotohScoring> Gotoh<S> {
                 let extend_tgap = row.extend_target_gap_ptr();
                 let boundary = row.boundary_ptr();
                 let ext_qgap = row.ext_qgap();
-                let symbol_count = S::RowProfile::SYMBOL_COUNT;
 
                 // 1. Target Sequence Context
                 let mut tp = *t_ptr.add(2) as usize; // Target previous
@@ -57,18 +56,21 @@ impl<S: GotohScoring> Gotoh<S> {
                 for j in 3..t_len {
                     let up = *up_ptr;
                     let tc = *tc_ptr as usize;
-                    let tt = tp * symbol_count + tc;
+                    let tt = tp * S::RowProfile::SYMBOL_COUNT + tc;
 
                     let m = max3(
                         diag.m + *match_ptr.add(tt),
                         diag.bq + *close_qgap.add(tc),
                         diag.bt + *close_tgap.add(tt),
                     );
-                    let bq = max(up.m + *open_qgap.add(tc * symbol_count), up.bq + ext_qgap);
+                    let bq = max(
+                        up.m + *open_qgap.add(tc * S::RowProfile::SYMBOL_COUNT),
+                        up.bq + ext_qgap,
+                    );
                     let bt = max(left.m + *open_tgap.add(tt), left.bt + *extend_tgap.add(tt));
                     let curr = DpCell { m, bq, bt };
 
-                    best.update_if_better(m, *boundary.add(tc * symbol_count), i, j);
+                    best.update_if_better(m, *boundary.add(tc * S::RowProfile::SYMBOL_COUNT), i, j);
                     *curr_ptr = curr;
 
                     diag = up;
