@@ -221,4 +221,45 @@ impl<S: GotohScoring> Gotoh<S> {
 mod tests {
     // Note: Integration tests for the DP algorithm (parity with legacy RIsearch)
     // are located in the /tests directory.
+
+    use super::is_transition;
+    use crate::dp::NEG_INF;
+
+    /// `is_transition` must reject a predecessor whose state is unreachable
+    /// (NEG_INF sentinel), even when the arithmetic identity coincidentally
+    /// holds. Without the `is_valid_score(pred)` guard, traceback could
+    /// follow a phantom predecessor through the NEG_INF region.
+    ///
+    /// Catches the `&& → ||` mutation surfaced by cargo-mutants on this fn.
+    #[test]
+    fn is_transition_rejects_invalid_pred_with_coincidental_arithmetic() {
+        let energy = 100;
+        let val = NEG_INF + energy;
+        // pred is NEG_INF (invalid). val happens to equal pred + energy.
+        // Under `&& `: returns false (invalid pred fails the guard).
+        // Under `||`: would return true (arithmetic check matches).
+        assert!(
+            !is_transition(val, NEG_INF, energy),
+            "is_transition must reject invalid predecessor regardless of arithmetic"
+        );
+    }
+
+    #[test]
+    fn is_transition_accepts_valid_pred_with_matching_arithmetic() {
+        // Normal happy path: pred reachable, arithmetic matches → true.
+        assert!(is_transition(150, 50, 100));
+    }
+
+    #[test]
+    fn is_transition_rejects_valid_pred_with_mismatched_arithmetic() {
+        // Pred reachable but arithmetic doesn't match → false.
+        // Catches mutations that drop the `==` check.
+        assert!(!is_transition(151, 50, 100));
+    }
+
+    #[test]
+    fn is_transition_rejects_invalid_pred_with_mismatched_arithmetic() {
+        // Both conditions fail → false. Baseline correctness check.
+        assert!(!is_transition(0, NEG_INF, 100));
+    }
 }
