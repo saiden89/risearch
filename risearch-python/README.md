@@ -12,6 +12,24 @@ uv run python
 
 `uv run` will build/install the local `risearch` package into the project venv as needed.
 
+## Legacy CPU / Rosetta install
+
+For older x86-64 CPUs or x86-64 Python running under Rosetta on Apple Silicon,
+install the compatibility Polars runtime through the `lts-cpu` extra:
+
+```bash
+uv sync --extra lts-cpu
+```
+
+For published wheels, the equivalent pip form is:
+
+```bash
+pip install "risearch[lts-cpu]"
+```
+
+This extra uses Polars' `rtcompat` runtime, so the Python module is still
+imported as `polars`.
+
 ## What the binding exposes
 
 The Python package is very small:
