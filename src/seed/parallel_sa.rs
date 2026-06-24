@@ -24,7 +24,7 @@ pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
     min_suffix: usize,
     on_match: &mut F,
 ) {
-    if q.sa_real_len == 0 || t.sa_real_len == 0 || min_len > max_len {
+    if min_len > max_len {
         return;
     }
 
@@ -297,6 +297,9 @@ const MATCHABLE_BUCKETS: [(usize, Base); 4] = [
 /// Callers that search only matchable RNA bases should skip the `N` bucket (slot 3).
 #[inline(always)]
 fn partition(view: RegistryView<'_>, start: usize, end: usize, depth: usize) -> [usize; 6] {
+    // Empty (or exhausted) interval: every boundary collapses to `start`, so all
+    // sub-intervals are empty and the caller's traversal branch terminates. This
+    // is what makes an empty SA range safe without a separate guard at entry.
     if start >= end {
         return [start; 6];
     }

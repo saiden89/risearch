@@ -41,10 +41,6 @@ impl<'a> SeedingEngine<'a> {
     /// it, holding no per-query backlog. Bounded-memory callers buffer and drain
     /// inside `on_seed` rather than materializing all seeds up front.
     pub fn run_streaming<F: FnMut(SeedHit)>(&self, config: &SeedConfig, mut on_seed: F) {
-        if self.qview.sa_real_len == 0 {
-            return;
-        }
-
         let Some((global_min, global_max)) = self.global_seed_bounds() else {
             return;
         };
