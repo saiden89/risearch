@@ -21,28 +21,39 @@ impl<'a> SeedingEngine<'a> {
         }
     }
 
+    /// Collect every seed grouped by query, materializing them all in memory.
+    ///
+    /// Convenience wrapper over [`run_streaming`](Self::run_streaming) for the
+    /// in-memory path. The file-output path streams instead, to bound RAM.
     pub fn run(&self, config: &SeedConfig) -> Vec<(usize, Vec<SeedHit>)> {
-        if self.qview.sa_real_len == 0 {
-            return Vec::new();
-        }
-
-        let Some((global_min, global_max)) = self.global_seed_bounds() else {
-            return Vec::new();
-        };
-
         let mut seeds_by_query: Vec<Vec<SeedHit>> =
             (0..self.queries.len()).map(|_| Vec::new()).collect();
-        if config.seed_wobble {
-            self.traverse::<true>(config, global_min, global_max, &mut seeds_by_query);
-        } else {
-            self.traverse::<false>(config, global_min, global_max, &mut seeds_by_query);
-        }
+        self.run_streaming(config, |seed| seeds_by_query[seed.query_idx].push(seed));
 
         seeds_by_query
             .into_iter()
             .enumerate()
             .filter_map(|(qi, seeds)| (!seeds.is_empty()).then_some((qi, seeds)))
             .collect()
+    }
+
+    /// Stream each seed to `on_seed` as the single combined-SA traversal emits
+    /// it, holding no per-query backlog. Bounded-memory callers buffer and drain
+    /// inside `on_seed` rather than materializing all seeds up front.
+    pub fn run_streaming<F: FnMut(SeedHit)>(&self, config: &SeedConfig, mut on_seed: F) {
+        if self.qview.sa_real_len == 0 {
+            return;
+        }
+
+        let Some((global_min, global_max)) = self.global_seed_bounds() else {
+            return;
+        };
+
+        if config.seed_wobble {
+            self.traverse::<true, F>(config, global_min, global_max, &mut on_seed);
+        } else {
+            self.traverse::<false, F>(config, global_min, global_max, &mut on_seed);
+        }
     }
 
     fn global_seed_bounds(&self) -> Option<(usize, usize)> {
@@ -55,12 +66,12 @@ impl<'a> SeedingEngine<'a> {
         (global_min <= global_max).then_some((global_min, global_max))
     }
 
-    fn traverse<const WOBBLE: bool>(
+    fn traverse<const WOBBLE: bool, F: FnMut(SeedHit)>(
         &self,
         config: &SeedConfig,
         global_min: usize,
         global_max: usize,
-        seeds_by_query: &mut [Vec<SeedHit>],
+        on_seed: &mut F,
     ) {
         traverse::<WOBBLE, _>(
             self.qview,
@@ -70,11 +81,11 @@ impl<'a> SeedingEngine<'a> {
             config.max_mismatches,
             config.min_prefix_matches,
             config.min_suffix_matches,
-            &mut |m| self.materialize_seed_match(seeds_by_query, m),
+            &mut |m| self.emit_seed_match(on_seed, m),
         );
     }
 
-    fn materialize_seed_match(&self, seeds_by_query: &mut [Vec<SeedHit>], raw_match: SeedMatch) {
+    fn emit_seed_match<F: FnMut(SeedHit)>(&self, on_seed: &mut F, raw_match: SeedMatch) {
         let seed_len = raw_match.seed_len;
         for &query_sa_pos in
             &self.qview.combined_sa[raw_match.query_interval.start..raw_match.query_interval.end]
@@ -108,7 +119,7 @@ impl<'a> SeedingEngine<'a> {
                     continue;
                 };
 
-                seeds_by_query[query_idx].push(SeedHit {
+                on_seed(SeedHit {
                     query_idx,
                     query_start,
                     target_idx,

@@ -86,6 +86,11 @@ pub fn run_search_in_memory(
     Ok(hits)
 }
 
+/// Maximum seeds buffered before a parallel extend + write drain. Caps peak
+/// RAM at roughly `SEED_BUFFER_CAP * size_of::<SeedHit>()` (~100 MB) regardless
+/// of total hit count, instead of materializing every seed up front.
+const SEED_BUFFER_CAP: usize = 1 << 21; // ~2.1M seeds
+
 /// Run search and write hits to `output_path` (or directory in multifile mode).
 pub fn run_search(
     queries: &QueryRegistry,
@@ -96,7 +101,6 @@ pub fn run_search(
     let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(());
     };
-    let seed_groups = SeedingEngine::new(ctx.queries, ctx.store).run(&ctx.opts.seed);
     let total = AtomicUsize::new(0);
 
     if opts.output.multifile {
@@ -108,48 +112,112 @@ pub fn run_search(
         })?;
         let ext = opts.output.compress.extension();
         let paths = build_multifile_paths(queries, output_path, ext);
+        // One lazily-opened writer per query, held open for the whole search so
+        // a query's seeds can be appended across successive drains.
+        let writers: Vec<Mutex<Option<OutputWriter>>> =
+            (0..queries.len()).map(|_| Mutex::new(None)).collect();
 
-        seed_groups.into_par_iter().try_for_each_init(
-            || {
-                (
-                    SearchWorker::new(ctx.opts, &ctx.model),
-                    HitFormatter::new(ctx.opts.output.format),
-                )
-            },
-            |(worker, fmt), (qi, seeds)| -> Result<()> {
-                let (emitted, chunks) = worker.process_query_seeds(&ctx, qi, &seeds, fmt)?;
-                if !chunks.is_empty() {
-                    let mut w = OutputWriter::new(&ctx.opts.output, &paths[qi])?;
-                    write_chunks(&mut w, &chunks)?;
-                    w.flush_all()?;
-                }
-                total.fetch_add(emitted, Ordering::Relaxed);
-                Ok(())
-            },
-        )?;
+        let emit = |qi: usize, chunks: &[OutputChunk]| -> Result<()> {
+            if chunks.is_empty() {
+                return Ok(());
+            }
+            let mut guard = writers[qi].lock().unwrap();
+            if guard.is_none() {
+                *guard = Some(OutputWriter::new(&ctx.opts.output, &paths[qi])?);
+            }
+            write_chunks(guard.as_mut().unwrap(), chunks)
+        };
+        stream_search(&ctx, &total, &emit)?;
+
+        for writer in writers {
+            if let Some(mut writer) = writer.into_inner().unwrap() {
+                writer.flush_all()?;
+            }
+        }
     } else {
         let writer = Mutex::new(OutputWriter::new(&opts.output, output_path)?);
 
-        seed_groups.into_par_iter().try_for_each_init(
-            || {
-                (
-                    SearchWorker::new(ctx.opts, &ctx.model),
-                    HitFormatter::new(ctx.opts.output.format),
-                )
-            },
-            |(worker, fmt), (qi, seeds)| -> Result<()> {
-                let (emitted, chunks) = worker.process_query_seeds(&ctx, qi, &seeds, fmt)?;
-                write_chunks(&mut *writer.lock().unwrap(), &chunks)?;
-                total.fetch_add(emitted, Ordering::Relaxed);
-                Ok(())
-            },
-        )?;
+        let emit = |_qi: usize, chunks: &[OutputChunk]| -> Result<()> {
+            write_chunks(&mut writer.lock().unwrap(), chunks)
+        };
+        stream_search(&ctx, &total, &emit)?;
 
         writer.into_inner().unwrap().flush_all()?;
     }
 
     let total = total.load(Ordering::Relaxed);
     info!("Search complete: {} hits", total);
+    Ok(())
+}
+
+/// Drive the combined-SA traversal, buffering emitted seeds and draining them in
+/// bounded batches so peak memory stays flat in the number of hits. `write`
+/// receives `(query_idx, chunks)` and is called from the parallel drain, so it
+/// must be `Sync` (e.g. guard a shared writer with a `Mutex`).
+fn stream_search<W>(ctx: &SearchContext<'_>, total: &AtomicUsize, write: &W) -> Result<()>
+where
+    W: Fn(usize, &[OutputChunk]) -> Result<()> + Sync,
+{
+    let engine = SeedingEngine::new(ctx.queries, ctx.store);
+    let mut buffer: Vec<SeedHit> = Vec::with_capacity(SEED_BUFFER_CAP);
+    // The traversal callback can't return a Result; stash the first drain error
+    // and stop buffering once it is set (the traversal still runs to completion).
+    let mut pending: Result<()> = Ok(());
+
+    engine.run_streaming(&ctx.opts.seed, |seed| {
+        if pending.is_err() {
+            return;
+        }
+        buffer.push(seed);
+        if buffer.len() >= SEED_BUFFER_CAP {
+            pending = drain_batch(ctx, &mut buffer, total, write);
+        }
+    });
+    pending?;
+
+    drain_batch(ctx, &mut buffer, total, write)
+}
+
+/// Extend, format, and write one buffered batch of seeds in parallel, then clear
+/// it. Seeds are grouped by query first so each `process_query_seeds` call (and
+/// its chunk buffering) operates on a single query, exactly like the in-memory
+/// path; a query split across batches simply appends to its open writer.
+fn drain_batch<W>(
+    ctx: &SearchContext<'_>,
+    buffer: &mut Vec<SeedHit>,
+    total: &AtomicUsize,
+    write: &W,
+) -> Result<()>
+where
+    W: Fn(usize, &[OutputChunk]) -> Result<()> + Sync,
+{
+    if buffer.is_empty() {
+        return Ok(());
+    }
+
+    buffer.sort_unstable_by_key(|seed| seed.query_idx);
+    let groups: Vec<&[SeedHit]> = buffer.chunk_by(|a, b| a.query_idx == b.query_idx).collect();
+
+    let counts = groups
+        .par_iter()
+        .map_init(
+            || {
+                (
+                    SearchWorker::new(ctx.opts, &ctx.model),
+                    HitFormatter::new(ctx.opts.output.format),
+                )
+            },
+            |(worker, fmt), &group| -> Result<usize> {
+                let qi = group[0].query_idx;
+                let (emitted, chunks) = worker.process_query_seeds(ctx, qi, group, fmt)?;
+                write(qi, &chunks)?;
+                Ok(emitted)
+            },
+        )
+        .collect::<Result<Vec<usize>>>()?;
+
+    total.fetch_add(counts.iter().sum(), Ordering::Relaxed);
+    buffer.clear();
     Ok(())
 }
 
@@ -599,6 +667,73 @@ mod tests {
         assert!(
             hits.is_empty(),
             "no hits expected against a non-matching target"
+        );
+    }
+
+    /// Drain batching must change only output ORDER, never the hit set/count:
+    /// running the seed stream through `drain_batch` as one batch vs. many
+    /// (a query's seeds scattered across several drains) yields the same hits.
+    /// Drives `drain_batch` directly — the batch buffer is the natural seam, so
+    /// production code needs no test-only buffer-cap parameter.
+    #[test]
+    fn drain_batching_preserves_hit_set() {
+        let root = workspace_root();
+        let query_path = root.join("tests/data/query.fa");
+        let target_path = root.join("tests/data/target.fa");
+        let (store, _tmp) = build_store(&target_path);
+
+        let mut config = test_config();
+        config.output.format = OutputFormat::Minimal; // one line per hit
+        let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
+
+        let ctx = init_search(&queries, &store, &config)
+            .unwrap()
+            .expect("non-empty inputs");
+
+        // Every seed the traversal emits, flattened; how we batch it is the
+        // variable under test.
+        let seeds: Vec<SeedHit> = SeedingEngine::new(ctx.queries, ctx.store)
+            .run(&ctx.opts.seed)
+            .into_iter()
+            .flat_map(|(_, group)| group)
+            .collect();
+        assert!(!seeds.is_empty(), "fixture must yield seeds");
+
+        // Drain a sequence of batches, accumulating all emitted bytes, and
+        // return the sorted non-empty output lines.
+        let drain_into_lines = |batches: &[&[SeedHit]]| -> Vec<String> {
+            let sink = Mutex::new(Vec::<u8>::new());
+            let total = AtomicUsize::new(0);
+            for batch in batches {
+                let mut buffer = batch.to_vec();
+                drain_batch(&ctx, &mut buffer, &total, &|_qi, chunks| {
+                    let mut out = sink.lock().unwrap();
+                    for chunk in chunks {
+                        out.extend_from_slice(&chunk.data);
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            }
+            let mut lines: Vec<String> = String::from_utf8(sink.into_inner().unwrap())
+                .unwrap()
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect();
+            lines.sort();
+            lines
+        };
+
+        let one_batch = drain_into_lines(&[&seeds]);
+        let third = seeds.len() / 3 + 1;
+        let split: Vec<&[SeedHit]> = seeds.chunks(third).collect();
+        let many_batches = drain_into_lines(&split);
+
+        assert!(!one_batch.is_empty(), "fixture must yield hits");
+        assert_eq!(
+            one_batch, many_batches,
+            "drain batching must not change the hit set (order-insensitive)"
         );
     }
 }
