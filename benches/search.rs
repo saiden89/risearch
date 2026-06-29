@@ -117,7 +117,10 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
         },
         extend: ExtendConfig { max_extension: 20 },
         filter: FilterConfig {
-            delta_g: Energy::from_kcal(f64::NEG_INFINITY),
+            // Saturating reject-all floor: DP still runs for every seed, hits
+            // stay un-recorded (matching the old NEG_INFINITY intent) without
+            // routing a non-finite value through Energy::from_kcal.
+            delta_g: Energy::MIN,
             seed_energy: Energy::from_kcal(0.0),
             no_max_prune: false,
         },

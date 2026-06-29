@@ -211,6 +211,11 @@ pub struct Energy(pub(crate) i32);
 impl Energy {
     pub const SCALE: f64 = 10000.0;
 
+    /// Most-negative threshold. `energy <= Energy::MIN` is ~never true, so used
+    /// as a filter bound it records nothing — the integer-domain stand-in for
+    /// a `-inf` threshold (which `from_kcal` rightly rejects as non-finite).
+    pub const MIN: Energy = Energy(i32::MIN);
+
     /// Create Energy from a value in kcal/mol. Panics if the value is non-finite or overflows.
     /// Use this for trusted internal constants and tests.
     pub fn from_kcal(kcal: f64) -> Self {
