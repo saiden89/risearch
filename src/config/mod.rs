@@ -179,6 +179,11 @@ pub struct FilterConfig {
 
     /// Disable maximality check (allows redundant seeds)
     pub no_max_prune: bool,
+
+    /// Report every maximal seed as its own hit. When unset (the default),
+    /// hits whose extension resolves to the same final bounding box are
+    /// collapsed to the single lowest-energy alignment.
+    pub no_dedup: bool,
 }
 
 /// Options that apply to the `search` subcommand

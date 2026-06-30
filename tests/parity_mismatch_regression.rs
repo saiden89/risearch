@@ -64,6 +64,7 @@ fn test_release_c_strict_m1_seed17_first_pos_mismatch() -> Result<(), Box<dyn st
         .arg("--mismatch-suffix")
         .arg("0")
         .arg("--no-seed-wobble")
+        .arg("--no-dedup")
         .arg("-j")
         .arg("1")
         .arg("-e")

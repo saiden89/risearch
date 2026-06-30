@@ -7,9 +7,6 @@ use std::path::Path;
 use crate::config::SeedConfig;
 use crate::fastx::{normalize_record, read_and_validate_fasta};
 use crate::index::io::validate_readable_file;
-use crate::index::sa::SuffixArray;
-use crate::index::store::SA_CHAR_PADDING;
-use crate::index::RegistryView;
 use crate::seq::Sequence;
 use crate::types::Base;
 
@@ -87,7 +84,7 @@ pub struct Query {
     name: String,
     /// Full forward sequence used for extension and output
     sequence: Sequence,
-    /// Seed-interval slice used by the combined seeding suffix array
+    /// Seed-interval slice; the per-query seeding suffix array is built from this
     seed_sequence: Sequence,
     /// Pre-computed normalized seed interval bounds on the full query
     pub(crate) seed_interval: Range<usize>,
@@ -198,23 +195,12 @@ impl RegistryEntry for Query {
     }
 }
 
-/// Registry of queries with a combined suffix array for efficient seed search.
-///
-/// Individual `Query` entries hold per-query metadata (sequence, seed interval,
-/// N-prefix). The combined SA/sequence enables a single recursive traversal
-/// across all queries × all targets, avoiding redundant target-side partitioning.
+/// Registry of queries. Each `Query` carries its own metadata (sequence, seed
+/// interval, N-prefix); the per-query suffix array used for seeding is built
+/// on demand inside the seeding worker (see `seed::engine::SeedingEngine::seed_query`),
+/// so the registry holds no combined query SA.
 pub struct QueryRegistry {
     inner: Registry<Query>,
-    /// Concatenated seed sequences with Gap separators + SA_CHAR_PADDING sentinels.
-    combined_seed_seq: Vec<Base>,
-    /// Global SA over combined_seed_seq + SA_CHAR_PADDING sentinel zeros.
-    combined_sa: Vec<u64>,
-    /// Number of real SA entries (excluding padding).
-    len: usize,
-    /// Start offset of each query's seed sequence in combined_seed_seq.
-    offsets: Vec<usize>,
-    /// Length of each query's seed sequence.
-    seed_seq_lens: Vec<usize>,
 }
 
 impl QueryRegistry {
@@ -244,16 +230,6 @@ impl QueryRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = (usize, &Query)> {
         self.inner.iter()
-    }
-
-    pub fn view(&self) -> RegistryView<'_> {
-        RegistryView {
-            combined_seq: &self.combined_seed_seq,
-            combined_sa: &self.combined_sa,
-            sa_real_len: self.len,
-            offsets: &self.offsets,
-            seq_lens: &self.seed_seq_lens,
-        }
     }
 }
 
@@ -292,71 +268,15 @@ impl QueryRegistry {
             bail!("All sequences were empty after normalization");
         }
 
-        // Build combined seed sequence and SA (mirrors TargetRegistry::build_from_fasta).
-        let mut combined_seed_seq: Vec<Base> = Vec::new();
-        let mut offsets: Vec<usize> = Vec::with_capacity(entries.len());
-        let mut seed_seq_lens: Vec<usize> = Vec::with_capacity(entries.len());
-
-        for query in &entries {
-            offsets.push(combined_seed_seq.len());
-            seed_seq_lens.push(query.seed_sequence().len());
-            combined_seed_seq.extend_from_slice(query.seed_sequence());
-            combined_seed_seq.push(Base::Gap);
-        }
-
-        let combined_sa_raw = SuffixArray::try_from(combined_seed_seq.as_slice())
-            .context("Failed to build combined query SA")?;
-        let mut combined_sa = filter_seedable_query_suffixes(
-            combined_sa_raw.into_inner(),
-            &entries,
-            &offsets,
-            &seed_seq_lens,
-        );
-        let sa_real_len = combined_sa.len();
-
-        // Pad both for branchless SA character lookup.
-        combined_seed_seq.resize(combined_seed_seq.len() + SA_CHAR_PADDING, Base::Gap);
-        combined_sa.resize(combined_sa.len() + SA_CHAR_PADDING, 0u64);
-
         Ok(Self {
             inner: Registry::new(entries),
-            combined_seed_seq,
-            combined_sa,
-            len: sa_real_len,
-            offsets,
-            seed_seq_lens,
         })
     }
-}
-
-fn filter_seedable_query_suffixes(
-    sa: Vec<u64>,
-    entries: &[Query],
-    offsets: &[usize],
-    seed_seq_lens: &[usize],
-) -> Vec<u64> {
-    sa.into_iter()
-        .filter(|&suffix_pos| {
-            let suffix_pos = suffix_pos as usize;
-            let query_idx = offsets.partition_point(|&offset| offset <= suffix_pos) - 1;
-            let min_seed_len = entries[query_idx].min_seed_len;
-            let seed_seq_len = seed_seq_lens[query_idx];
-            let local_pos = suffix_pos - offsets[query_idx];
-            min_seed_len * 2 <= seed_seq_len + 1 || local_pos + min_seed_len <= seed_seq_len
-        })
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-
-    fn temp_fasta(content: &str) -> tempfile::NamedTempFile {
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        f.write_all(content.as_bytes()).unwrap();
-        f
-    }
 
     fn make_query_data(
         sequence: Sequence,
@@ -397,30 +317,5 @@ mod tests {
         assert_eq!(query.max_seed_len, 5);
         assert_eq!(query.seed_sequence().len(), 5);
         assert_eq!(query.seed_sequence(), query.sequence());
-    }
-
-    #[test]
-    fn query_sa_keeps_only_suffixes_that_can_reach_min_seed_len() {
-        let f = temp_fasta(">q1\nACGUACGUACGUACGUACGUAC\n>q2\nUGCAUGCAUGCAUGCAUGCAUG\n");
-        let cfg = SeedConfig {
-            seed_start: None,
-            seed_end: None,
-            seed_length: Some(22),
-            seed_wobble: false,
-            max_mismatches: 0,
-            min_prefix_matches: 1,
-            min_suffix_matches: 0,
-        };
-
-        let registry = QueryRegistry::from_fasta(f.path(), &cfg).unwrap();
-        let view = registry.view();
-
-        assert_eq!(view.sa_real_len, 2);
-        let mut starts: Vec<usize> = view.combined_sa[..view.sa_real_len]
-            .iter()
-            .map(|&pos| pos as usize)
-            .collect();
-        starts.sort_unstable();
-        assert_eq!(starts, vec![0, 23]);
     }
 }

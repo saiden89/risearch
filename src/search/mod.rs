@@ -1,10 +1,12 @@
 //! Search module - finds miRNA-target interactions.
 //!
-//! Pipeline:
-//! 1) Parallel iteration over queries (global SA traversal per query)
-//! 2) Seed enumeration across all targets via single SA traversal
-//! 3) Optional extension of each seed
-//! 4) Materialize and emit final hits
+//! Pipeline (parallel over queries; each query is processed end-to-end by one
+//! worker):
+//! 1) Build the query's own suffix array, traverse it against the shared target
+//!    SA to enumerate seeds
+//! 2) Extend each seed (DP) into a final hit
+//! 3) Collapse hits that share a final bounding box to the lowest-energy one
+//!    (unless `--no-dedup`), then format and emit
 
 mod extension;
 
@@ -12,9 +14,9 @@ use anyhow::{Context, Result};
 use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use self::extension::ExtensionEngine;
@@ -52,8 +54,9 @@ pub fn run_search_in_memory(
     let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(Vec::new());
     };
-    let seeds = SeedingEngine::new(ctx.queries, ctx.store).run(&ctx.opts.seed);
+    let seeds = SeedingEngine::new(ctx.queries, ctx.store).run(&ctx.opts.seed)?;
 
+    let dedup = !ctx.opts.filter.no_dedup;
     let hits: Vec<SearchHit> = seeds
         .into_par_iter()
         .flat_map_iter(|(qi, seeds)| {
@@ -61,37 +64,120 @@ pub fn run_search_in_memory(
             let query = &ctx.queries.entries()[qi];
             let query_seq = query.sequence();
             let seed_interval = query.seed_interval.clone();
-            seeds.into_iter().filter_map(move |seed| {
-                let target_idx = seed.target_idx;
-                let (t_fwd, t_rc, target_len) = ctx.store.target_slices(target_idx);
-                let target_trans = match seed.strand {
-                    Strand::Forward => t_fwd,
-                    Strand::Reverse => t_rc,
-                };
+            let produced: Vec<SearchHit> = seeds
+                .into_iter()
+                .filter_map(|seed| {
+                    let target_idx = seed.target_idx;
+                    let (t_fwd, t_rc, target_len) = ctx.store.target_slices(target_idx);
+                    let target_trans = match seed.strand {
+                        Strand::Forward => t_fwd,
+                        Strand::Reverse => t_rc,
+                    };
 
-                worker.build_hit_from_seed(
-                    ctx.opts,
-                    qi,
-                    query_seq,
-                    seed_interval.clone(),
-                    true,
-                    target_len,
-                    &seed,
-                    target_trans,
-                )
-            })
+                    worker.build_hit_from_seed(
+                        ctx.opts,
+                        qi,
+                        query_seq,
+                        seed_interval.clone(),
+                        true,
+                        target_len,
+                        &seed,
+                        target_trans,
+                    )
+                })
+                .collect();
+            // Dedup is exact per query: every box-mate of `qi` is in `produced`.
+            let group = if dedup { dedup_hits(produced) } else { produced };
+            group.into_iter()
         })
         .collect();
 
     Ok(hits)
 }
 
-/// Maximum seeds buffered before a parallel extend + write drain. Caps peak
-/// RAM at roughly `SEED_BUFFER_CAP * size_of::<SeedHit>()` (~100 MB) regardless
-/// of total hit count, instead of materializing every seed up front.
-const SEED_BUFFER_CAP: usize = 1 << 21; // ~2.1M seeds
+/// Key identifying one final bounding box: a `(query, target, strand)` plus the
+/// extended span. Overlapping seeds that converge on the same box collapse to
+/// one row under [`hit_is_better`].
+#[derive(PartialEq, Eq, Hash)]
+struct BoxKey {
+    query_idx: usize,
+    target_idx: usize,
+    strand: Strand,
+    q_start: usize,
+    q_end: usize,
+    t_start: usize,
+    t_end: usize,
+}
+
+impl BoxKey {
+    fn of(hit: &SearchHit) -> Self {
+        Self {
+            query_idx: hit.query_idx,
+            target_idx: hit.target_idx,
+            strand: hit.strand,
+            q_start: hit.q_start,
+            q_end: hit.q_end,
+            t_start: hit.t_start,
+            t_end: hit.t_end,
+        }
+    }
+}
+
+/// Deterministic total order: a candidate beats the incumbent iff it has a more
+/// negative energy, or — on an exact energy tie — a lexicographically smaller
+/// pairing fingerprint. Both terms are pure functions of a hit's own fields, so
+/// the surviving set is independent of insertion/scheduling order. (The tie-break
+/// only distinguishes alignment-printing formats; Minimal rows that tie on energy
+/// are output-identical regardless of which wins.)
+fn hit_is_better(candidate: &SearchHit, current: &SearchHit) -> bool {
+    use std::cmp::Ordering;
+    match candidate.energy.cmp(&current.energy) {
+        Ordering::Less => true,
+        Ordering::Greater => false,
+        Ordering::Equal => fingerprint_cmp(candidate, current) == Ordering::Less,
+    }
+}
+
+/// Lexicographic compare of the two hits' pairing fingerprints without
+/// allocating. Note `PairClass`'s own variant order differs from `symbol()`
+/// order, so compare the mapped symbol chars. A missing alignment is an empty
+/// fingerprint, which sorts before any non-empty one.
+fn fingerprint_cmp(a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
+    fn syms(hit: &SearchHit) -> impl Iterator<Item = char> + '_ {
+        hit.alignment
+            .iter()
+            .flat_map(|a| a.steps().iter().map(|p| p.symbol()))
+    }
+    syms(a).cmp(syms(b))
+}
+
+/// Collapse hits sharing a [`BoxKey`] to the single best one. Caller guarantees
+/// all hits belong to one query, so this is globally exact for that query.
+fn dedup_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    use std::collections::hash_map::Entry;
+    let mut best: HashMap<BoxKey, SearchHit> = HashMap::with_capacity(hits.len());
+    for hit in hits {
+        match best.entry(BoxKey::of(&hit)) {
+            Entry::Occupied(mut e) => {
+                if hit_is_better(&hit, e.get()) {
+                    e.insert(hit);
+                }
+            }
+            Entry::Vacant(e) => {
+                e.insert(hit);
+            }
+        }
+    }
+    best.into_values().collect()
+}
 
 /// Run search and write hits to `output_path` (or directory in multifile mode).
+///
+/// Parallelizes over queries: each rayon worker owns one query end-to-end —
+/// seed it against the shared target SA, extend, format, and write its block —
+/// then frees its per-query state. Peak RAM is bounded by the concurrent
+/// workers' per-query state, not the total hit count. Output line order is not
+/// stable across runs (the hit set is); callers needing order must sort.
 pub fn run_search(
     queries: &QueryRegistry,
     store: &TargetRegistry,
@@ -101,9 +187,16 @@ pub fn run_search(
     let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(());
     };
-    let total = AtomicUsize::new(0);
+    let engine = SeedingEngine::new(ctx.queries, ctx.store);
 
-    if opts.output.multifile {
+    let init = || {
+        (
+            SearchWorker::new(ctx.opts, &ctx.model),
+            HitFormatter::new(ctx.opts.output.format),
+        )
+    };
+
+    let counts: Vec<usize> = if opts.output.multifile {
         fs_err::create_dir_all(output_path).with_context(|| {
             format!(
                 "Failed to create output directory {:?} for --multifile",
@@ -112,113 +205,57 @@ pub fn run_search(
         })?;
         let ext = opts.output.compress.extension();
         let paths = build_multifile_paths(queries, output_path, ext);
-        // One lazily-opened writer per query, held open for the whole search so
-        // a query's seeds can be appended across successive drains.
-        let writers: Vec<Mutex<Option<OutputWriter>>> =
-            (0..queries.len()).map(|_| Mutex::new(None)).collect();
 
-        let emit = |qi: usize, chunks: &[OutputChunk]| -> Result<()> {
-            if chunks.is_empty() {
-                return Ok(());
-            }
-            let mut guard = writers[qi].lock().unwrap();
-            if guard.is_none() {
-                *guard = Some(OutputWriter::new(&ctx.opts.output, &paths[qi])?);
-            }
-            write_chunks(guard.as_mut().unwrap(), chunks)
-        };
-        stream_search(&ctx, &total, &emit)?;
-
-        for writer in writers {
-            if let Some(mut writer) = writer.into_inner().unwrap() {
-                writer.flush_all()?;
-            }
-        }
+        (0..ctx.queries.len())
+            .into_par_iter()
+            .map_init(init, |(worker, fmt), qi| -> Result<usize> {
+                let (emitted, chunks) = process_one_query(&ctx, &engine, worker, qi, fmt)?;
+                // One writer per query (matches RIsearch2); no file for an
+                // empty query.
+                if !chunks.is_empty() {
+                    let mut writer = OutputWriter::new(&ctx.opts.output, &paths[qi])?;
+                    write_chunks(&mut writer, &chunks)?;
+                    writer.flush_all()?;
+                }
+                Ok(emitted)
+            })
+            .collect::<Result<Vec<usize>>>()?
     } else {
         let writer = Mutex::new(OutputWriter::new(&opts.output, output_path)?);
 
-        let emit = |_qi: usize, chunks: &[OutputChunk]| -> Result<()> {
-            write_chunks(&mut writer.lock().unwrap(), chunks)
-        };
-        stream_search(&ctx, &total, &emit)?;
+        let counts = (0..ctx.queries.len())
+            .into_par_iter()
+            .map_init(init, |(worker, fmt), qi| -> Result<usize> {
+                let (emitted, chunks) = process_one_query(&ctx, &engine, worker, qi, fmt)?;
+                // Format off-lock; take the writer once to append this query's
+                // block (one bulk write per query).
+                write_chunks(&mut writer.lock().unwrap(), &chunks)?;
+                Ok(emitted)
+            })
+            .collect::<Result<Vec<usize>>>()?;
 
         writer.into_inner().unwrap().flush_all()?;
-    }
+        counts
+    };
 
-    let total = total.load(Ordering::Relaxed);
+    let total: usize = counts.iter().sum();
     info!("Search complete: {} hits", total);
     Ok(())
 }
 
-/// Drive the combined-SA traversal, buffering emitted seeds and draining them in
-/// bounded batches so peak memory stays flat in the number of hits. `write`
-/// receives `(query_idx, chunks)` and is called from the parallel drain, so it
-/// must be `Sync` (e.g. guard a shared writer with a `Mutex`).
-fn stream_search<W>(ctx: &SearchContext<'_>, total: &AtomicUsize, write: &W) -> Result<()>
-where
-    W: Fn(usize, &[OutputChunk]) -> Result<()> + Sync,
-{
-    let engine = SeedingEngine::new(ctx.queries, ctx.store);
-    let mut buffer: Vec<SeedHit> = Vec::with_capacity(SEED_BUFFER_CAP);
-    // The traversal callback can't return a Result; stash the first drain error
-    // and stop buffering once it is set (the traversal still runs to completion).
-    let mut pending: Result<()> = Ok(());
-
-    engine.run_streaming(&ctx.opts.seed, |seed| {
-        if pending.is_err() {
-            return;
-        }
-        buffer.push(seed);
-        if buffer.len() >= SEED_BUFFER_CAP {
-            pending = drain_batch(ctx, &mut buffer, total, write);
-        }
-    });
-    pending?;
-
-    drain_batch(ctx, &mut buffer, total, write)
-}
-
-/// Extend, format, and write one buffered batch of seeds in parallel, then clear
-/// it. Seeds are grouped by query first so each `process_query_seeds` call (and
-/// its chunk buffering) operates on a single query, exactly like the in-memory
-/// path; a query split across batches simply appends to its open writer.
-fn drain_batch<W>(
+/// Seed one query against the shared target SA, then extend + format its hits.
+/// All of a query's seeds are produced and consumed here, so the worker owns the
+/// query end-to-end.
+fn process_one_query(
     ctx: &SearchContext<'_>,
-    buffer: &mut Vec<SeedHit>,
-    total: &AtomicUsize,
-    write: &W,
-) -> Result<()>
-where
-    W: Fn(usize, &[OutputChunk]) -> Result<()> + Sync,
-{
-    if buffer.is_empty() {
-        return Ok(());
-    }
-
-    buffer.sort_unstable_by_key(|seed| seed.query_idx);
-    let groups: Vec<&[SeedHit]> = buffer.chunk_by(|a, b| a.query_idx == b.query_idx).collect();
-
-    let counts = groups
-        .par_iter()
-        .map_init(
-            || {
-                (
-                    SearchWorker::new(ctx.opts, &ctx.model),
-                    HitFormatter::new(ctx.opts.output.format),
-                )
-            },
-            |(worker, fmt), &group| -> Result<usize> {
-                let qi = group[0].query_idx;
-                let (emitted, chunks) = worker.process_query_seeds(ctx, qi, group, fmt)?;
-                write(qi, &chunks)?;
-                Ok(emitted)
-            },
-        )
-        .collect::<Result<Vec<usize>>>()?;
-
-    total.fetch_add(counts.iter().sum(), Ordering::Relaxed);
-    buffer.clear();
-    Ok(())
+    engine: &SeedingEngine<'_>,
+    worker: &mut SearchWorker,
+    qi: usize,
+    fmt: &mut HitFormatter,
+) -> Result<(usize, Vec<OutputChunk>)> {
+    let mut seeds: Vec<SeedHit> = Vec::new();
+    engine.seed_query(qi, &ctx.opts.seed, |seed| seeds.push(seed))?;
+    worker.process_query_seeds(ctx, qi, &seeds, fmt)
 }
 
 struct SearchContext<'a> {
@@ -294,21 +331,21 @@ impl SearchWorker {
         let query_name = ctx.queries.get_name(query_idx);
         let query_seq = query.sequence();
         let seed_interval = query.seed_interval.clone();
+        let dedup = !ctx.opts.filter.no_dedup;
+        // Build alignments only for formats that print them. Dedup's energy
+        // tie-break can consult the alignment, but it only changes WHICH tied hit
+        // survives — and tied hits share a box and energy, so a Minimal row is
+        // identical whichever wins. So Minimal needs no alignment even under dedup.
         let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
-        let mut chunks = Vec::new();
-        let mut local_hits = 0usize;
-        let mut last_target_idx = None::<usize>;
-        let mut cached_t_name = None;
 
+        let mut hits = Vec::new();
         for seed in seeds {
-            let target_idx = seed.target_idx;
-            let (t_fwd, t_rc, target_len) = ctx.store.target_slices(target_idx);
+            let (t_fwd, t_rc, target_len) = ctx.store.target_slices(seed.target_idx);
             let target_trans = match seed.strand {
                 Strand::Forward => t_fwd,
                 Strand::Reverse => t_rc,
             };
-
-            let Some(hit) = self.build_hit_from_seed(
+            if let Some(hit) = self.build_hit_from_seed(
                 ctx.opts,
                 query_idx,
                 query_seq,
@@ -317,33 +354,26 @@ impl SearchWorker {
                 target_len,
                 seed,
                 target_trans,
-            ) else {
-                continue;
-            };
-
-            if last_target_idx != Some(target_idx) {
-                cached_t_name = Some(ctx.store.get_name(hit.target_idx));
-                last_target_idx = Some(target_idx);
-            }
-
-            if let Some(chunk) = format.add_hit(
-                &hit,
-                query_name,
-                query_seq,
-                cached_t_name.unwrap(),
-                t_fwd,
-                t_rc,
             ) {
-                chunks.push(chunk);
+                hits.push(hit);
             }
-            local_hits += 1;
+        }
+        if dedup {
+            hits = dedup_hits(hits);
         }
 
+        let mut chunks = Vec::new();
+        for hit in &hits {
+            let (t_fwd, t_rc, _) = ctx.store.target_slices(hit.target_idx);
+            let t_name = ctx.store.get_name(hit.target_idx);
+            if let Some(chunk) = format.add_hit(hit, query_name, query_seq, t_name, t_fwd, t_rc) {
+                chunks.push(chunk);
+            }
+        }
         if let Some(chunk) = format.flush() {
             chunks.push(chunk);
         }
-
-        Ok((local_hits, chunks))
+        Ok((hits.len(), chunks))
     }
 
     fn build_hit_from_seed(
@@ -600,6 +630,7 @@ mod tests {
                 delta_g: Energy::from_kcal(-10.0),
                 seed_energy: Energy::from_kcal(0.0),
                 no_max_prune: false,
+                no_dedup: false,
             },
             output: OutputConfig {
                 format: OutputFormat::Detailed,
@@ -670,70 +701,103 @@ mod tests {
         );
     }
 
-    /// Drain batching must change only output ORDER, never the hit set/count:
-    /// running the seed stream through `drain_batch` as one batch vs. many
-    /// (a query's seeds scattered across several drains) yields the same hits.
-    /// Drives `drain_batch` directly — the batch buffer is the natural seam, so
-    /// production code needs no test-only buffer-cap parameter.
-    #[test]
-    fn drain_batching_preserves_hit_set() {
-        let root = workspace_root();
-        let query_path = root.join("tests/data/query.fa");
-        let target_path = root.join("tests/data/target.fa");
-        let (store, _tmp) = build_store(&target_path);
-
-        let mut config = test_config();
-        config.output.format = OutputFormat::Minimal; // one line per hit
-        let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
-
-        let ctx = init_search(&queries, &store, &config)
+    fn run_to_lines(
+        config: &SearchConfig,
+        queries: &QueryRegistry,
+        store: &TargetRegistry,
+    ) -> Vec<String> {
+        let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
+        run_search(queries, store, config, out.path()).unwrap();
+        fs_err::read_to_string(out.path())
             .unwrap()
-            .expect("non-empty inputs");
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 
-        // Every seed the traversal emits, flattened; how we batch it is the
-        // variable under test.
-        let seeds: Vec<SeedHit> = SeedingEngine::new(ctx.queries, ctx.store)
-            .run(&ctx.opts.seed)
-            .into_iter()
-            .flat_map(|(_, group)| group)
-            .collect();
-        assert!(!seeds.is_empty(), "fixture must yield seeds");
+    /// Split a Minimal-format row into (box key, energy). Energy is always the
+    /// last tab field; everything before it identifies the bounding box.
+    fn split_box_energy(line: &str) -> (&str, f64) {
+        let (key, energy) = line.rsplit_once('\t').unwrap();
+        (key, energy.parse().unwrap())
+    }
 
-        // Drain a sequence of batches, accumulating all emitted bytes, and
-        // return the sorted non-empty output lines.
-        let drain_into_lines = |batches: &[&[SeedHit]]| -> Vec<String> {
-            let sink = Mutex::new(Vec::<u8>::new());
-            let total = AtomicUsize::new(0);
-            for batch in batches {
-                let mut buffer = batch.to_vec();
-                drain_batch(&ctx, &mut buffer, &total, &|_qi, chunks| {
-                    let mut out = sink.lock().unwrap();
-                    for chunk in chunks {
-                        out.extend_from_slice(&chunk.data);
+    fn mm2_minimal_fixture() -> (TargetRegistry, tempfile::TempDir, QueryRegistry, SearchConfig) {
+        let root = workspace_root();
+        let (store, tmp) = build_store(&root.join("tests/data/target.fa"));
+        let mut config = test_config();
+        config.output.format = OutputFormat::Minimal;
+        // Parameters that produce overlapping-seed box collisions on this
+        // fixture (~33% redundant rows): short seed, mismatches, wide window,
+        // permissive energy.
+        config.seed.seed_length = Some(6);
+        config.seed.max_mismatches = 2;
+        config.extend.max_extension = 30;
+        config.filter.delta_g = Energy::from_kcal(-5.0);
+        let queries =
+            QueryRegistry::from_fasta(&root.join("tests/data/query.fa"), &config.seed).unwrap();
+        (store, tmp, queries, config)
+    }
+
+    /// Default dedup keeps exactly one row per bounding box, and that row carries
+    /// the minimum energy among the box's collapsed candidates. `--no-dedup`
+    /// reproduces the full per-seed row set.
+    #[test]
+    fn dedup_keeps_one_min_energy_row_per_box() {
+        use std::collections::{HashMap, HashSet};
+        let (store, _tmp, queries, config) = mm2_minimal_fixture();
+
+        let mut nodedup = config.clone();
+        nodedup.filter.no_dedup = true;
+        let raw = run_to_lines(&nodedup, &queries, &store);
+        let dedup = run_to_lines(&config, &queries, &store);
+
+        assert!(!dedup.is_empty(), "fixture must yield hits");
+        assert!(dedup.len() < raw.len(), "dedup must remove overlapping rows");
+
+        let mut min_energy: HashMap<String, f64> = HashMap::new();
+        for l in &raw {
+            let (k, e) = split_box_energy(l);
+            min_energy
+                .entry(k.to_string())
+                .and_modify(|m| {
+                    if e < *m {
+                        *m = e;
                     }
-                    Ok(())
                 })
-                .unwrap();
-            }
-            let mut lines: Vec<String> = String::from_utf8(sink.into_inner().unwrap())
-                .unwrap()
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(str::to_string)
-                .collect();
-            lines.sort();
-            lines
-        };
+                .or_insert(e);
+        }
 
-        let one_batch = drain_into_lines(&[&seeds]);
-        let third = seeds.len() / 3 + 1;
-        let split: Vec<&[SeedHit]> = seeds.chunks(third).collect();
-        let many_batches = drain_into_lines(&split);
-
-        assert!(!one_batch.is_empty(), "fixture must yield hits");
+        let mut seen = HashSet::new();
+        for l in &dedup {
+            let (k, e) = split_box_energy(l);
+            assert!(seen.insert(k.to_string()), "duplicate box survived dedup: {k}");
+            assert!(
+                (e - min_energy[k]).abs() < 1e-9,
+                "kept energy {e} is not the box minimum {} for {k}",
+                min_energy[k]
+            );
+        }
         assert_eq!(
-            one_batch, many_batches,
-            "drain batching must not change the hit set (order-insensitive)"
+            seen.len(),
+            min_energy.len(),
+            "dedup must keep exactly one row per distinct box"
         );
+    }
+
+    /// The deduped set must be stable across runs. `dedup_hits` drains a HashMap,
+    /// so a tie-break that depended on hash/iteration order would surface here as
+    /// run-to-run drift (two HashMaps use different random seeds). Locks the
+    /// order-independence parity tests can't (parity is pinned to `--no-dedup`).
+    #[test]
+    fn dedup_result_is_deterministic() {
+        let (store, _tmp, queries, config) = mm2_minimal_fixture();
+        let mut a = run_to_lines(&config, &queries, &store);
+        let mut b = run_to_lines(&config, &queries, &store);
+        a.sort();
+        b.sort();
+        assert!(!a.is_empty(), "fixture must yield hits");
+        assert_eq!(a, b, "deduped set must not depend on hash/iteration order");
     }
 }

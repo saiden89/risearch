@@ -211,6 +211,7 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
     max_extension = 20,
     seed_energy = 0.0,
     no_max_prune = false,
+    no_dedup = false,
 ))]
 fn search(
     py: Python<'_>,
@@ -230,6 +231,7 @@ fn search(
     max_extension: u8,
     seed_energy: f64,
     no_max_prune: bool,
+    no_dedup: bool,
 ) -> PyResult<PySearchResult> {
     let dsm_id = DsmRegistry::parse_id(matrix)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -257,6 +259,7 @@ fn search(
             seed_energy: Energy::try_from(seed_energy)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
             no_max_prune,
+            no_dedup,
         },
         output: OutputConfig {
             format: OutputFormat::Detailed,

@@ -123,6 +123,7 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             delta_g: Energy::MIN,
             seed_energy: Energy::from_kcal(0.0),
             no_max_prune: false,
+            no_dedup: false,
         },
         output: OutputConfig {
             format: OutputFormat::Minimal,

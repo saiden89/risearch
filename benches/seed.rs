@@ -145,7 +145,7 @@ fn bench_seed_exact(c: &mut Criterion) {
                 b.iter(|| {
                     let seeds =
                         SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                            .run(black_box(&seed_config));
+                            .run(black_box(&seed_config)).unwrap();
                     black_box(seed_count(&seeds));
                 });
             },
@@ -167,7 +167,7 @@ fn bench_seed_mismatch(c: &mut Criterion) {
             b.iter(|| {
                 let seeds =
                     SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                        .run(black_box(&seed_config));
+                        .run(black_box(&seed_config)).unwrap();
                 black_box(seed_count(&seeds));
             });
         });
@@ -190,7 +190,7 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
             b.iter(|| {
                 let seeds =
                     SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                        .run(black_box(&seed_config));
+                        .run(black_box(&seed_config)).unwrap();
                 black_box(seed_count(&seeds));
             });
         });
@@ -216,7 +216,7 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
                 b.iter(|| {
                     let seeds =
                         SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                            .run(black_box(&seed_config));
+                            .run(black_box(&seed_config)).unwrap();
                     black_box(seed_count(&seeds));
                 });
             },
@@ -238,7 +238,7 @@ fn bench_seed_long_mismatch(c: &mut Criterion) {
     group.bench_function("seed_21_mm_2_2", |b| {
         b.iter(|| {
             let seeds = SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                .run(black_box(&seed_config));
+                .run(black_box(&seed_config)).unwrap();
             black_box(seed_count(&seeds));
         });
     });

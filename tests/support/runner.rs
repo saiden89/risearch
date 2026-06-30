@@ -159,7 +159,12 @@ impl ParityRunner {
     ) {
         let args = legacy_parity_args(args);
         let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-        let search_args = parse_search_args(&args_ref);
+        let mut search_args = parse_search_args(&args_ref);
+        // Parity is defined against the per-seed row set: C never dedups, and the
+        // harness's `parse_output` only collapses exact (coord+energy) duplicates,
+        // not best-per-box. So the Rust side must also skip bounding-box dedup
+        // here, or it would emit fewer rows than C for converging seeds.
+        search_args.filter.no_dedup = true;
         let (rust_hits, query_registry) = self.rust.search(query, &search_args);
 
         // Translate args to C format
