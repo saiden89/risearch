@@ -92,6 +92,10 @@ impl<'a> SeedingEngine<'a> {
         let mut sa = SuffixArray::try_from(seed)
             .with_context(|| format!("building suffix array for query '{}'", query.name()))?
             .into_inner();
+        // Drop query suffixes too short to reach min_seed_len. They emit nothing
+        // anyway; skipping them avoids wasted target-SA descent.
+        let max_valid_start = seed.len().saturating_sub(query.min_seed_len);
+        sa.retain(|&p| (p as usize) <= max_valid_start);
         let sa_real_len = sa.len();
         let mut seq = seed.to_vec();
         seq.resize(seq.len() + SA_CHAR_PADDING, Base::Gap);
