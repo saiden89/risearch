@@ -196,7 +196,7 @@ mod tests {
         let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
         fs_err::write(&fasta_path, fasta).unwrap();
-        TargetRegistry::build(&fasta_path, &index_path).unwrap();
+        TargetRegistry::build(&fasta_path, &index_path, None).unwrap();
         (TargetRegistry::open(&index_path).unwrap(), dir)
     }
 

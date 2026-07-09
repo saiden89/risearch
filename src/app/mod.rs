@@ -14,7 +14,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
     match &cli.command {
         Commands::Index(cmd) => {
             init_runtime(cli.verbose, cli.jobs)?;
-            cmd_index(&cmd.input, &cmd.output)
+            cmd_index(&cmd.input, &cmd.output, cli.jobs)
         }
         Commands::Search(cmd) => {
             init_runtime(cli.verbose, cli.jobs)?;
@@ -27,9 +27,9 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 // COMMAND HANDLERS
 // =============================================================================
 
-fn cmd_index(input: &Path, output: &Path) -> Result<()> {
+fn cmd_index(input: &Path, output: &Path, threads: Option<usize>) -> Result<()> {
     info!("Creating index: {:?} -> {:?}", input, output);
-    TargetRegistry::build(input, output).context("Failed to write index file")?;
+    TargetRegistry::build(input, output, threads).context("Failed to write index file")?;
     info!("Index saved to {:?}", output);
     Ok(())
 }
@@ -63,17 +63,22 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
 // INITIALIZATION
 // =============================================================================
 
-fn init_runtime(verbosity: u8, threads: usize) -> Result<()> {
+fn init_runtime(verbosity: u8, threads: Option<usize>) -> Result<()> {
     init_logging(verbosity);
     init_thread_pool(threads)
 }
 
-fn init_thread_pool(threads: usize) -> Result<()> {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
+fn init_thread_pool(threads: Option<usize>) -> Result<()> {
+    let mut builder = rayon::ThreadPoolBuilder::new();
+    // Only pin the count when the user passed one; otherwise let rayon read
+    // RAYON_NUM_THREADS and fall back to all cores on its own.
+    if let Some(n) = threads {
+        builder = builder.num_threads(n);
+    }
+    builder
         .build_global()
         .context("Failed to initialize thread pool")?;
-    debug!("Thread pool: {} threads", threads);
+    debug!("Thread pool: {} threads", rayon::current_num_threads());
     Ok(())
 }
 

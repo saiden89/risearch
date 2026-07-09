@@ -62,7 +62,7 @@ impl RustRunner<NoIndex> {
             }
         };
 
-        risearch::TargetRegistry::build(&self.target_path, &index_path)
+        risearch::TargetRegistry::build(&self.target_path, &index_path, None)
             .expect("build target index");
         let target_registry =
             risearch::TargetRegistry::open(&index_path).expect("open target registry");

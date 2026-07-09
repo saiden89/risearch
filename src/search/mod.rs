@@ -643,7 +643,7 @@ mod tests {
     fn build_store(target_fa: &std::path::Path) -> (TargetRegistry, tempfile::TempDir) {
         let tmpdir = tempfile::tempdir().unwrap();
         let idx = tmpdir.path().join("target.idx");
-        TargetRegistry::build(target_fa, &idx).unwrap();
+        TargetRegistry::build(target_fa, &idx, None).unwrap();
         let store = TargetRegistry::open(&idx).unwrap();
         (store, tmpdir)
     }

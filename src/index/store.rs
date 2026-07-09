@@ -44,7 +44,10 @@ struct TargetRecord {
 
 impl TargetRegistry {
     /// Build a target index from a FASTA file and write it as an rkyv archive.
-    pub fn build(input: &Path, output: &Path) -> Result<()> {
+    ///
+    /// `threads` controls suffix-array construction parallelism; see
+    /// [`SuffixArray::build`]. `None` (or `Some(0)`) means auto.
+    pub fn build(input: &Path, output: &Path, threads: Option<usize>) -> Result<()> {
         validate_output_path(output)?;
 
         let records = read_and_validate_fasta(input)?;
@@ -79,7 +82,7 @@ impl TargetRegistry {
             );
         }
 
-        let combined_sa = SuffixArray::try_from(combined_bases.as_slice())
+        let combined_sa = SuffixArray::build(combined_bases.as_slice(), threads)
             .context("Failed to build global suffix array")?;
 
         combined_bases.resize(combined_bases.len() + SA_CHAR_PADDING, Base::Gap);
@@ -368,7 +371,7 @@ mod tests {
         writeln!(fasta, ">chrB\nUUUGCA").unwrap();
         drop(fasta);
 
-        TargetRegistry::build(&fasta_path, &index_path).unwrap();
+        TargetRegistry::build(&fasta_path, &index_path, None).unwrap();
         let store = TargetRegistry::open(&index_path).unwrap();
         let expected = [("chrA", 6usize), ("chrB", 6usize)];
         assert_eq!(store.len(), expected.len());
@@ -465,7 +468,7 @@ mod tests {
         writeln!(fasta, ">t3\nAA").unwrap();
         drop(fasta);
 
-        TargetRegistry::build(&fasta_path, &index_path).unwrap();
+        TargetRegistry::build(&fasta_path, &index_path, None).unwrap();
         let store = TargetRegistry::open(&index_path).unwrap();
         let target = store.view();
 

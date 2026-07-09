@@ -29,10 +29,9 @@ impl Deref for SuffixArray {
     }
 }
 
-impl TryFrom<&[Base]> for SuffixArray {
-    type Error = Error;
-
-    fn try_from(bases: &[Base]) -> Result<Self, Self::Error> {
+impl SuffixArray {
+    /// Build a suffix array over `bases`.
+    pub fn build(bases: &[Base], threads: Option<usize>) -> Result<Self, Error> {
         // SAFETY: Base is #[repr(u8)] and its enum discriminants perfectly
         // match the required suffix array lexicographical sort order.
         let sort_bytes: &[u8] =
@@ -40,18 +39,29 @@ impl TryFrom<&[Base]> for SuffixArray {
 
         // Build the suffix array. Use OpenMP if feature is enabled.
         #[cfg(feature = "openmp")]
-        let sa_raw = SuffixArrayConstruction::for_text(sort_bytes)
-            .in_owned_buffer()
-            .multi_threaded(libsais::ThreadCount::openmp_default())
-            .run()
-            .map_err(|e| anyhow!("{e:?}"))?;
+        let sa_raw = {
+            // Only n >= 1 reaches `fixed()`, which panics on 0; `Some(0)`/`None`
+            // fold into the auto arm. Cap at u16::MAX, the libsais count width.
+            let thread_count = match threads {
+                Some(n) if n > 0 => libsais::ThreadCount::fixed(n.min(u16::MAX as usize) as u16),
+                _ => libsais::ThreadCount::openmp_default(),
+            };
+            SuffixArrayConstruction::for_text(sort_bytes)
+                .in_owned_buffer()
+                .multi_threaded(thread_count)
+                .run()
+                .map_err(|e| anyhow!("{e:?}"))?
+        };
 
         #[cfg(not(feature = "openmp"))]
-        let sa_raw = SuffixArrayConstruction::for_text(sort_bytes)
-            .in_owned_buffer()
-            .single_threaded()
-            .run()
-            .map_err(|e| anyhow!("{e:?}"))?;
+        let sa_raw = {
+            let _ = threads; // thread count only applies with the `openmp` feature
+            SuffixArrayConstruction::for_text(sort_bytes)
+                .in_owned_buffer()
+                .single_threaded()
+                .run()
+                .map_err(|e| anyhow!("{e:?}"))?
+        };
 
         // Extract the SA vec
         let mut sa: Vec<i64> = sa_raw.into_vec();
@@ -77,5 +87,15 @@ impl TryFrom<&[Base]> for SuffixArray {
         };
 
         Ok(Self(positions))
+    }
+}
+
+impl TryFrom<&[Base]> for SuffixArray {
+    type Error = Error;
+
+    /// Cheap default-path conversion; builds with `threads = None` (auto).
+    /// Callers that need to control parallelism should use [`SuffixArray::build`].
+    fn try_from(bases: &[Base]) -> Result<Self, Self::Error> {
+        Self::build(bases, None)
     }
 }

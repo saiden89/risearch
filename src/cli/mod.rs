@@ -21,16 +21,16 @@ pub(crate) struct Cli {
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
     pub(crate) verbose: u8,
 
-    /// Set number of parallel jobs (global)
+    /// Number of parallel jobs (global). Overrides the
+    /// RAYON_NUM_THREADS / OMP_NUM_THREADS env vars.
     #[arg(
         short = 'j',
         long = "jobs",
         alias = "threads",
         value_name = "N",
-        default_value_t = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         global = true
     )]
-    pub(crate) jobs: usize,
+    pub(crate) jobs: Option<usize>,
 
     #[command(subcommand)]
     pub(crate) command: Commands,
