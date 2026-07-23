@@ -10,7 +10,7 @@
 
 mod extension;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
@@ -22,7 +22,7 @@ use std::sync::Mutex;
 use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
 use crate::config::{OutputFormat, SearchConfig};
-use crate::dp::{DpConfig, DpView, ExtendDir};
+use crate::dp::{DpConfig, DpView, ExtendDir, MAX_EXT};
 use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetRegistry;
 use crate::output::writer::{build_multifile_paths, HitFormatter, OutputChunk, OutputWriter};
@@ -290,12 +290,37 @@ fn init_search<'a>(
         return Ok(None);
     }
 
+    // Unlimited extension (`-l -1`) promises to span the whole query, but the DP
+    // buffers cap each side at MAX_EXT. Refuse rather than silently clamp: a
+    // query longer than the cap cannot be served as requested. (Mirrors clap
+    // rejecting an explicit `-l > MAX_EXT`.)
+    if opts.extend.max_extension < 0 {
+        for (_, q) in queries.iter() {
+            let n = q.sequence().len();
+            if n > MAX_EXT {
+                bail!(
+                    "query '{}' is {} nt; `-l -1` cannot extend across it ({} nt cap). \
+                     Pass an explicit `-l <={}` to accept the cap, or shorten the query.",
+                    q.name(),
+                    n,
+                    MAX_EXT,
+                    MAX_EXT
+                );
+            }
+        }
+    }
+
+    let max_ext = if opts.extend.max_extension < 0 {
+        format!("unlimited(<={MAX_EXT})")
+    } else {
+        opts.extend.max_extension.to_string()
+    };
     info!(
         "Starting search: {} queries x {} targets, seed_length={:?}, max_ext={}, delta_g={}",
         queries.len(),
         store.len(),
         opts.seed.seed_length,
-        opts.extend.max_extension,
+        max_ext,
         opts.filter.delta_g
     );
 
@@ -408,14 +433,16 @@ impl SearchWorker {
         let duplex_score =
             self.model
                 .ungapped_duplex_score(query_bases, target_trans, q_start, t_start, len);
-        let max_ext = DpConfig::from(&opts.extend).max_extension();
+        let dp_cfg = DpConfig::from(&opts.extend);
+        let ext_left = dp_cfg.side_cap(q_start + 1);
+        let ext_right = dp_cfg.side_cap(query_bases.len() - (q_start + len - 1));
         let view_left = DpView::new(
             query_bases,
             target_trans,
             q_start,
             t_match_end,
             ExtendDir::Left,
-            max_ext,
+            ext_left,
         );
         let left = self.extension.extend(&view_left, include_alignment);
 
@@ -425,7 +452,7 @@ impl SearchWorker {
             q_start + len - 1,
             t_start,
             ExtendDir::Right,
-            max_ext,
+            ext_right,
         );
         let right = self.extension.extend(&view_right, include_alignment);
         let nt_count = left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len;

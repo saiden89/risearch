@@ -164,8 +164,10 @@ pub struct ScoreConfig {
 /// Arguments for extension strategy.
 #[derive(Debug, Clone)]
 pub struct ExtendConfig {
-    /// Max extension length on the seed (do DP for max this length up- and downstream of seed)
-    pub max_extension: u8,
+    /// Max extension length on the seed (do DP for max this length up- and downstream of seed).
+    /// Negative = unlimited: extend across the whole query. Queries longer than
+    /// MAX_EXT per side are rejected rather than silently clamped.
+    pub max_extension: i32,
 }
 
 /// Hit acceptance and pruning policies.
