@@ -17,6 +17,7 @@ pub(crate) const MAX_EXT: usize = 256;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DpConfig {
     max_extension: usize,
+    unlimited: bool,
 }
 
 impl DpConfig {
@@ -24,12 +25,33 @@ impl DpConfig {
     pub(crate) const fn max_extension(self) -> usize {
         self.max_extension
     }
+
+    /// Extension window for one side of a seed, given the query bases available
+    /// there. Under `-l -1` the window follows the query (capped at MAX_EXT so
+    /// the DP buffers can't overflow); otherwise it's the fixed configured length.
+    #[inline(always)]
+    pub(crate) fn side_cap(self, query_avail: usize) -> usize {
+        if self.unlimited {
+            query_avail.min(MAX_EXT)
+        } else {
+            self.max_extension
+        }
+    }
 }
 
 impl From<&ExtendConfig> for DpConfig {
     fn from(extend: &ExtendConfig) -> Self {
-        Self {
-            max_extension: usize::from(extend.max_extension).min(MAX_EXT),
+        if extend.max_extension < 0 {
+            // Pre-size the grid to the ceiling so unlimited runs skip the regrow.
+            Self {
+                max_extension: MAX_EXT,
+                unlimited: true,
+            }
+        } else {
+            Self {
+                max_extension: (extend.max_extension as usize).min(MAX_EXT),
+                unlimited: false,
+            }
         }
     }
 }
@@ -329,5 +351,29 @@ impl DpGrid {
     #[inline(always)]
     pub(super) fn width(&self) -> usize {
         self.width
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ExtendConfig;
+
+    fn cfg(max_extension: i32) -> DpConfig {
+        DpConfig::from(&ExtendConfig { max_extension })
+    }
+
+    #[test]
+    fn side_cap_fixed_ignores_query_unlimited_follows_it() {
+        // Fixed window: independent of available query bases.
+        assert_eq!(cfg(20).side_cap(5), 20);
+        assert_eq!(cfg(20).side_cap(1000), 20);
+        // Unlimited (`-l -1`): follows the query, capped at the buffer ceiling.
+        assert_eq!(cfg(-1).side_cap(30), 30);
+        assert_eq!(cfg(-1).side_cap(MAX_EXT + 100), MAX_EXT);
+        // Buffer-safety invariant: never exceeds MAX_EXT on any path.
+        for m in [-1, 0, 20, 300] {
+            assert!(cfg(m).side_cap(usize::MAX) <= MAX_EXT);
+        }
     }
 }
