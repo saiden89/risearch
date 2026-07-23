@@ -14,6 +14,9 @@ pub(super) struct SeedMatch {
     pub seed_len: usize,
 }
 
+// Cohesive traversal parameters: query/target views plus the seed-length and
+// mismatch bounds that drive the SA descent; grouping would only obscure them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
     q: RegistryView<'_>,
     t: RegistryView<'_>,
@@ -307,17 +310,17 @@ fn partition(view: RegistryView<'_>, start: usize, end: usize, depth: usize) -> 
     let mut out = [0usize; 6];
     if end - start <= LINEAR_PARTITION_CUTOFF {
         let mut i = start;
-        for slot in 0..5 {
+        for (slot, out_slot) in out.iter_mut().enumerate().take(5) {
             let target = (slot + 1) as u8;
             while i < end && unsafe { view.sa_base_unchecked(i, depth).as_u8() } < target {
                 i += 1;
             }
-            out[slot] = i;
+            *out_slot = i;
         }
     } else {
-        for slot in 0..5 {
+        for (slot, out_slot) in out.iter_mut().enumerate().take(5) {
             let target = (slot + 1) as u8;
-            out[slot] = binary_search(view, start, end, depth, target);
+            *out_slot = binary_search(view, start, end, depth, target);
         }
     }
     out[5] = end;

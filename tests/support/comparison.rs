@@ -265,10 +265,9 @@ impl ParityResult {
         let coord_matched = self.rust_better.len() + self.rust_worse.len() + self.co_optimal.len();
 
         let pct = |n: usize, total: usize| -> String {
-            if total == 0 {
-                "0%".into()
-            } else {
-                format!("{}%", n * 100 / total)
+            match (n * 100).checked_div(total) {
+                Some(v) => format!("{}%", v),
+                None => "0%".into(),
             }
         };
 

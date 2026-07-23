@@ -33,10 +33,10 @@ pub enum Base {
 }
 
 /// Base → uppercase ASCII byte
-static BASE_TO_UPPER: [u8; 6] = [b'-', b'A', b'C', b'G', b'N', b'U'];
+static BASE_TO_UPPER: [u8; 6] = *b"-ACGNU";
 
 /// Base → lowercase ASCII byte (for to_byte())
-static BASE_TO_BYTE: [u8; 6] = [b'-', b'a', b'c', b'g', b'n', b'u'];
+static BASE_TO_BYTE: [u8; 6] = *b"-acgnu";
 
 impl TryFrom<char> for Base {
     type Error = String;

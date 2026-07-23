@@ -2,6 +2,9 @@ use crate::config;
 use anyhow::Error;
 use std::str::FromStr;
 
+/// Resolved (seed_start, seed_end, seed_length) bounds from CLI parsing.
+type SeedBounds = (Option<i64>, Option<i64>, Option<i64>);
+
 /// Legacy CLI parser boundary for `-m/--mismatch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LegacyMismatchSpec {
@@ -235,7 +238,7 @@ impl SeedArgs {
         }
     }
 
-    fn resolve_seed_bounds(&self) -> Result<(Option<i64>, Option<i64>, Option<i64>), String> {
+    fn resolve_seed_bounds(&self) -> Result<SeedBounds, String> {
         match (self.seed_start, self.seed_end, self.seed_length) {
             (Some(s), Some(e), length) => Ok((Some(s), Some(e), length)),
             (None, None, length) => Ok((None, None, length)),
@@ -287,7 +290,7 @@ impl TryFrom<SeedArgs> for config::SeedConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{LegacyMismatchSpec, LegacySeedSpec, SeedArgs};
+    use super::{LegacyMismatchSpec, LegacySeedSpec, SeedArgs, SeedBounds};
     use std::str::FromStr;
 
     #[test]
@@ -357,7 +360,7 @@ mod tests {
         start: Option<i64>,
         end: Option<i64>,
         length: Option<i64>,
-    ) -> Result<(Option<i64>, Option<i64>, Option<i64>), String> {
+    ) -> Result<SeedBounds, String> {
         let args = SeedArgs {
             seed_legacy: None,
             seed_start: start,

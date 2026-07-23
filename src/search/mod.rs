@@ -401,6 +401,9 @@ impl SearchWorker {
         Ok((hits.len(), chunks))
     }
 
+    // Cohesive per-seed extension inputs (query/target buffers, seed interval,
+    // and output flags); bundling them would only add indirection.
+    #[allow(clippy::too_many_arguments)]
     fn build_hit_from_seed(
         &mut self,
         opts: &SearchConfig,
@@ -555,6 +558,9 @@ impl SearchHit {
         )
     }
 
+    // Cohesive hit-assembly inputs (query/target buffers, seed, both extension
+    // results, and energy); bundling them would only add indirection.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         query_idx: usize,
         query_bases: &[Base],
