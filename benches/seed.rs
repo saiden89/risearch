@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::SeedConfig;
 use risearch::registry::QueryRegistry;
 use risearch::seed::{SeedHit, SeedingEngine};
@@ -145,7 +147,8 @@ fn bench_seed_exact(c: &mut Criterion) {
                 b.iter(|| {
                     let seeds =
                         SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                            .run(black_box(&seed_config)).unwrap();
+                            .run(black_box(&seed_config))
+                            .unwrap();
                     black_box(seed_count(&seeds));
                 });
             },
@@ -167,7 +170,8 @@ fn bench_seed_mismatch(c: &mut Criterion) {
             b.iter(|| {
                 let seeds =
                     SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                        .run(black_box(&seed_config)).unwrap();
+                        .run(black_box(&seed_config))
+                        .unwrap();
                 black_box(seed_count(&seeds));
             });
         });
@@ -190,7 +194,8 @@ fn bench_seed_prod_shaped_mismatch(c: &mut Criterion) {
             b.iter(|| {
                 let seeds =
                     SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                        .run(black_box(&seed_config)).unwrap();
+                        .run(black_box(&seed_config))
+                        .unwrap();
                 black_box(seed_count(&seeds));
             });
         });
@@ -216,7 +221,8 @@ fn bench_seed_query_scaling(c: &mut Criterion) {
                 b.iter(|| {
                     let seeds =
                         SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                            .run(black_box(&seed_config)).unwrap();
+                            .run(black_box(&seed_config))
+                            .unwrap();
                     black_box(seed_count(&seeds));
                 });
             },
@@ -238,7 +244,8 @@ fn bench_seed_long_mismatch(c: &mut Criterion) {
     group.bench_function("seed_21_mm_2_2", |b| {
         b.iter(|| {
             let seeds = SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                .run(black_box(&seed_config)).unwrap();
+                .run(black_box(&seed_config))
+                .unwrap();
             black_box(seed_count(&seeds));
         });
     });

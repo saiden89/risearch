@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "risearch"
-version = "0.0.0-alpha.1"
+dynamic = ["version"]
 requires-python = ">=3.10"
 description = "Python bindings for risearch RNA-RNA interaction search"
 dependencies = ["polars>=1.0"]
@@ -12,6 +12,8 @@ dependencies = ["polars>=1.0"]
 [project.optional-dependencies]
 lts-cpu = ["polars[rtcompat]>=1.34"]
 
+[dependency-groups]
+dev = ["pytest", "maturin"]
+
 [tool.maturin]
 module-name = "risearch._risearch"
-features = ["pyo3/extension-module", "pyo3/abi3-py310"]

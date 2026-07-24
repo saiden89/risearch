@@ -180,15 +180,16 @@ def test_split_files_match_full_file(store, tmp_path):
 
 
 def test_seed_start_without_end_raises(store):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="seed_start"):
         risearch.search(QUERY_FA, store, seed_start=2)
 
 
-def test_invalid_seed_pairing_raises(store):
-    with pytest.raises(ValueError, match="seed_pairing"):
-        risearch.search(QUERY_FA, store, seed_pairing="invalid")
+def test_strict_seed_returns_fewer_or_equal_hits(store):
+    wobble = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=True)
+    strict = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=False)
+    assert len(strict) <= len(wobble)
 
 
 def test_invalid_matrix_raises(store):
-    with pytest.raises(ValueError, match="matrix"):
+    with pytest.raises(ValueError, match="DSM id"):
         risearch.search(QUERY_FA, store, matrix="t05")

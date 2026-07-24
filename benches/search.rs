@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::config::{
     ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat, ScoreConfig,
     SearchConfig, SeedConfig,
@@ -161,7 +163,8 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::new("collect", case), &case, |b, _| {
         b.iter(|| {
             let seeds = SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                .run(black_box(&seed_config));
+                .run(black_box(&seed_config))
+                .unwrap();
             black_box(seed_count(&seeds));
         });
     });

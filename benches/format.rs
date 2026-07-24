@@ -1,4 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::alignment::{Alignment, PairClass};
 use risearch::config::OutputFormat;
 use risearch::output::format::format_hit_into;

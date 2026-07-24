@@ -1,7 +1,7 @@
 target/
 *.so
 *.pyd
-uv.lock
+__pycache__/
 *.log
 *.fa
 *.fasta
@@ -10,6 +10,7 @@ uv.lock
 *.txt
 *.idx
 *.sh
+!.github/scripts/*.sh
 *.json
 legacy_c/RIsearch2/bin/
 legacy_c/risearch3_src/

@@ -1,4 +1,3 @@
-use std::ffi::CString;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -118,8 +117,7 @@ impl PySearchResult {
         let reader = RecordBatchIterator::new(std::iter::once(Ok(batch)), self.schema.clone());
         let stream = FFI_ArrowArrayStream::new(Box::new(reader));
 
-        let name = CString::new("arrow_array_stream").unwrap();
-        PyCapsule::new(py, stream, Some(name))
+        PyCapsule::new_with_value(py, stream, c"arrow_array_stream")
     }
 }
 
@@ -171,7 +169,7 @@ impl PyTargetRegistry {
 /// may run concurrently.
 #[pyfunction]
 fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> {
-    py.allow_threads(|| TargetRegistry::build(&fasta, &output))?;
+    py.detach(|| TargetRegistry::build(&fasta, &output, None))?;
     Ok(())
 }
 
@@ -213,6 +211,9 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
     no_max_prune = false,
     no_dedup = false,
 ))]
+// Binding surface: each argument maps to a documented Python keyword parameter,
+// so the flat signature is the public API and grouping would break it.
+#[allow(clippy::too_many_arguments)]
 fn search(
     py: Python<'_>,
     query_fasta: Vec<PathBuf>,
@@ -228,7 +229,7 @@ fn search(
     matrix: &str,
     penalty: f64,
     temperature: i32,
-    max_extension: u8,
+    max_extension: i32,
     seed_energy: f64,
     no_max_prune: bool,
     no_dedup: bool,
@@ -248,16 +249,15 @@ fn search(
         },
         score: ScoreConfig {
             dsm_id,
-            penalty: Energy::try_from(penalty)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
+            penalty: Energy::try_from(penalty).map_err(pyo3::exceptions::PyValueError::new_err)?,
             temperature,
         },
         extend: ExtendConfig { max_extension },
         filter: FilterConfig {
             delta_g: Energy::try_from(energy_threshold)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
+                .map_err(pyo3::exceptions::PyValueError::new_err)?,
             seed_energy: Energy::try_from(seed_energy)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?,
+                .map_err(pyo3::exceptions::PyValueError::new_err)?,
             no_max_prune,
             no_dedup,
         },
@@ -269,9 +269,10 @@ fn search(
     };
 
     let paths: Vec<&std::path::Path> = query_fasta.iter().map(|p| p.as_path()).collect();
-    let queries = QueryRegistry::from_fastas(&paths, &config.seed)?;
+    let queries = QueryRegistry::from_fastas(&paths, &config.seed)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
-    let hits = py.allow_threads(|| run_search_in_memory(&queries, &store.0, &config))?;
+    let hits = py.detach(|| run_search_in_memory(&queries, &store.0, &config))?;
     let schema = search_result_schema().clone();
     let batch = hits_to_record_batch(hits, &schema);
     Ok(PySearchResult::new(batch, schema))

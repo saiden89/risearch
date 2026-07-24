@@ -1,4 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::dp::gotoh::Gotoh;
 use risearch::dp::{DpGrid, DpView, ExtendDir};
 use risearch::dsm::{DsmRegistry, ScoringModel};

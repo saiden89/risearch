@@ -39,33 +39,21 @@ def search(
     mismatches: int = 0,
     mismatch_prefix: int = 1,
     mismatch_suffix: int = 0,
-    seed_pairing: str = "allow_wobble",
+    seed_wobble: bool = True,
     matrix: str = "t04",
     penalty: float = 3.5,
+    temperature: int = 37,
     max_extension: int = 20,
     seed_energy: float = 0.0,
     no_max_prune: bool = False,
+    no_dedup: bool = False,
 ) -> pl.DataFrame:
-    """Return a Polars DataFrame with one row per hit.
-
-    Columns
-    -------
-    query_idx : UInt32
-    target_idx : UInt32
-    q_start : UInt32
-    q_end : UInt32
-    t_start : UInt32
-    t_end : UInt32
-    strand : String  — "+" or "-"
-    energy : Float64 — kcal/mol
-    alignment : String (nullable) — fingerprint e.g. "PPWW..."
-    """
     """Search for RNA-RNA interactions between queries and an indexed target set.
 
     Parameters
     ----------
     query_fasta:
-        FASTA file containing query sequences.
+        FASTA file (or list of files) containing query sequences.
     store:
         Pre-loaded target index (from ``TargetRegistry.open()``).
     seed_length:
@@ -85,22 +73,32 @@ def search(
         Minimum consecutive matches required at the seed 5' end.
     mismatch_suffix:
         Minimum consecutive matches required at the seed 3' end.
-    seed_pairing:
-        Seed pairing mode: ``"allow_wobble"`` (default) or ``"strict"``.
+    seed_wobble:
+        Allow G·U wobble pairs in the seed (default: True). Set False for
+        strict Watson-Crick seed pairing.
     matrix:
         Energy parameter set: ``"t04"`` (Turner 2004) or ``"t99"`` (Turner 1999).
     penalty:
         Per-nucleotide penalty in kcal/mol.
+    temperature:
+        Folding temperature in °C (default: 37).
     max_extension:
         Maximum number of bases to extend the seed in each direction via DP.
+        Negative means unlimited (extend across the whole query).
     seed_energy:
         Energy-per-length threshold for filtering seeds before extension.
     no_max_prune:
         Disable the maximality check (keeps redundant sub-maximal seeds).
+    no_dedup:
+        Disable bounding-box deduplication of overlapping hits.
 
     Returns
     -------
-    list[SearchHit]
-        All hits passing the energy threshold. Order is not guaranteed.
+    pl.DataFrame
+        One row per hit. Order is not guaranteed. Columns:
+        ``query_idx`` (UInt32), ``target_idx`` (UInt32),
+        ``q_start`` / ``q_end`` / ``t_start`` / ``t_end`` (UInt32),
+        ``strand`` (String, "+"/"-"), ``energy`` (Float64, kcal/mol),
+        ``alignment`` (String, nullable — fingerprint e.g. "PPWW...").
     """
     ...

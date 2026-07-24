@@ -42,10 +42,10 @@ The `search()` kwargs map to the canonical Rust-facing options:
 
 - `seed_length`, `seed_start`, `seed_end`
 - `mismatches`, `mismatch_prefix`, `mismatch_suffix`
-- `seed_pairing`
-- `matrix`, `penalty`
+- `seed_wobble`
+- `matrix`, `penalty`, `temperature`
 - `max_extension`
-- `energy_threshold`, `seed_energy`, `no_max_prune`
+- `energy_threshold`, `seed_energy`, `no_max_prune`, `no_dedup`
 
 ## Smoke test
 
