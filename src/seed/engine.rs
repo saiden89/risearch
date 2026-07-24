@@ -24,7 +24,7 @@ impl<'a> SeedingEngine<'a> {
     }
 
     /// Collect every seed grouped by query, materializing them all in memory.
-    /// Convenience wrapper over [`run_streaming`](Self::run_streaming) used by the
+    /// Convenience wrapper over the crate-internal `run_streaming` used by the
     /// in-memory / Python search path.
     pub fn run(&self, config: &SeedConfig) -> Result<Vec<(usize, Vec<SeedHit>)>> {
         let mut seeds_by_query: Vec<Vec<SeedHit>> =
