@@ -360,7 +360,10 @@ mod tests {
     use crate::config::ExtendConfig;
 
     fn cfg(max_extension: i32) -> DpConfig {
-        DpConfig::from(&ExtendConfig { max_extension })
+        DpConfig::from(&ExtendConfig {
+            max_extension,
+            build_alignment: true,
+        })
     }
 
     #[test]

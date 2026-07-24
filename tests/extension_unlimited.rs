@@ -58,7 +58,10 @@ fn config(max_extension: i32) -> SearchConfig {
             penalty: Energy::from_kcal(0.0),
             temperature: 37,
         },
-        extend: ExtendConfig { max_extension },
+        extend: ExtendConfig {
+            max_extension,
+            build_alignment: true,
+        },
         filter: FilterConfig {
             delta_g: Energy::from_kcal(-8.0),
             seed_energy: Energy::from_kcal(0.0),

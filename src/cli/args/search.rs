@@ -29,12 +29,17 @@ impl TryFrom<SearchArgs> for config::SearchConfig {
     type Error = Error;
 
     fn try_from(value: SearchArgs) -> Result<Self, Self::Error> {
+        let output: config::OutputConfig = value.output.try_into()?;
+        let mut extend: config::ExtendConfig = value.extend.into();
+        // Only the alignment-printing formats read the alignment back.
+        extend.build_alignment = output.format != config::OutputFormat::Minimal;
+
         Ok(config::SearchConfig {
             seed: value.seed.try_into()?,
             score: value.score.into(),
-            extend: value.extend.into(),
+            extend,
             filter: value.filter.into(),
-            output: value.output.try_into()?,
+            output,
         })
     }
 }

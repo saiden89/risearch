@@ -117,7 +117,10 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             penalty: Energy::from_kcal(0.0),
             temperature: 37,
         },
-        extend: ExtendConfig { max_extension: 20 },
+        extend: ExtendConfig {
+            max_extension: 20,
+            build_alignment: false,
+        },
         filter: FilterConfig {
             // Saturating reject-all floor: DP still runs for every seed, hits
             // stay un-recorded (matching the old NEG_INFINITY intent) without

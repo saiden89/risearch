@@ -253,7 +253,10 @@ fn search(
             penalty: Energy::try_from(penalty).map_err(pyo3::exceptions::PyValueError::new_err)?,
             temperature,
         },
-        extend: ExtendConfig { max_extension },
+        extend: ExtendConfig {
+            max_extension,
+            build_alignment: true,
+        },
         filter: FilterConfig {
             delta_g: Energy::try_from(energy_threshold)
                 .map_err(pyo3::exceptions::PyValueError::new_err)?,

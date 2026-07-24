@@ -168,6 +168,14 @@ pub struct ExtendConfig {
     /// Negative = unlimited: extend across the whole query. Queries longer than
     /// MAX_EXT per side are rejected rather than silently clamped.
     pub max_extension: i32,
+
+    /// Record the pairing alignment during DP traceback, populating
+    /// [`SearchHit::alignment`](crate::SearchHit). Off skips that work entirely.
+    ///
+    /// Dedup's tie-break compares fingerprints, so with this off a different
+    /// member of an energy-tied bounding box may survive. Tied hits share a box
+    /// and an energy, so every other field is identical either way.
+    pub build_alignment: bool,
 }
 
 /// Hit acceptance and pruning policies.

@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{OutputFormat, SearchConfig};
+use crate::config::SearchConfig;
 use crate::dp::{DpConfig, DpView, ExtendDir, MAX_EXT};
 use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetRegistry;
@@ -45,7 +45,7 @@ pub struct SearchHit {
     pub alignment: Option<Alignment>,
 }
 
-/// Run search collecting all hits into memory. Alignment data is always included.
+/// Run search collecting all hits into memory.
 pub fn run_search_in_memory(
     queries: &QueryRegistry,
     store: &TargetRegistry,
@@ -57,6 +57,7 @@ pub fn run_search_in_memory(
     let seeds = SeedingEngine::new(ctx.queries, ctx.store).run(&ctx.opts.seed)?;
 
     let dedup = !ctx.opts.filter.no_dedup;
+    let include_alignment = ctx.opts.extend.build_alignment;
     let hits: Vec<SearchHit> = seeds
         .into_par_iter()
         .flat_map_iter(|(qi, seeds)| {
@@ -79,7 +80,7 @@ pub fn run_search_in_memory(
                         qi,
                         query_seq,
                         seed_interval.clone(),
-                        true,
+                        include_alignment,
                         target_len,
                         &seed,
                         target_trans,
@@ -361,11 +362,7 @@ impl SearchWorker {
         let query_seq = query.sequence();
         let seed_interval = query.seed_interval.clone();
         let dedup = !ctx.opts.filter.no_dedup;
-        // Build alignments only for formats that print them. Dedup's energy
-        // tie-break can consult the alignment, but it only changes WHICH tied hit
-        // survives — and tied hits share a box and energy, so a Minimal row is
-        // identical whichever wins. So Minimal needs no alignment even under dedup.
-        let include_alignment = ctx.opts.output.format != OutputFormat::Minimal;
+        let include_alignment = ctx.opts.extend.build_alignment;
 
         let mut hits = Vec::new();
         for seed in seeds {
@@ -667,7 +664,10 @@ mod tests {
                 penalty: Energy::from_kcal(3.5),
                 temperature: 37,
             },
-            extend: ExtendConfig { max_extension: 20 },
+            extend: ExtendConfig {
+                max_extension: 20,
+                build_alignment: true,
+            },
             filter: FilterConfig {
                 delta_g: Energy::from_kcal(-10.0),
                 seed_energy: Energy::from_kcal(0.0),
@@ -698,6 +698,9 @@ mod tests {
         let (store, _tmp) = build_store(target_f.path());
         let mut config = test_config();
         config.output.format = OutputFormat::Minimal;
+        // Mirror what the CLI derives for Minimal, so this also covers dedup's
+        // empty-fingerprint (first-wins) tie-break.
+        config.extend.build_alignment = false;
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
         let hits = run_search_in_memory(&queries, &store, &config).unwrap();
@@ -773,6 +776,7 @@ mod tests {
         let (store, tmp) = build_store(target_f.path());
         let mut config = test_config();
         config.output.format = OutputFormat::Minimal;
+        config.extend.build_alignment = false;
         // Parameters that produce overlapping-seed box collisions on this
         // fixture (~33% redundant rows): short seed, mismatches, wide window,
         // permissive energy.

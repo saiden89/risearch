@@ -22,6 +22,7 @@ impl From<ExtendArgs> for ExtendConfig {
     fn from(value: ExtendArgs) -> Self {
         ExtendConfig {
             max_extension: value.max_extension,
+            build_alignment: true,
         }
     }
 }
