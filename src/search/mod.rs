@@ -87,7 +87,11 @@ pub fn run_search_in_memory(
                 })
                 .collect();
             // Dedup is exact per query: every box-mate of `qi` is in `produced`.
-            let group = if dedup { dedup_hits(produced) } else { produced };
+            let group = if dedup {
+                dedup_hits(produced)
+            } else {
+                produced
+            };
             group.into_iter()
         })
         .collect();
@@ -627,7 +631,6 @@ impl SearchHit {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
-    use std::path::PathBuf;
 
     use super::*;
     use crate::config::{
@@ -638,8 +641,14 @@ mod tests {
     use crate::registry::QueryRegistry;
     use crate::types::DsmId;
 
-    fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    const QUERY_FA: &str = include_str!("../../tests/data/query.fa");
+    const TARGET_FA: &str = include_str!("../../tests/data/target.fa");
+
+    fn fixture(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new().suffix(".fa").tempfile().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
     }
 
     fn test_config() -> SearchConfig {
@@ -683,14 +692,13 @@ mod tests {
 
     #[test]
     fn in_memory_matches_file_hit_count() {
-        let root = workspace_root();
-        let query_path = root.join("tests/data/query.fa");
-        let target_path = root.join("tests/data/target.fa");
+        let query_f = fixture(QUERY_FA);
+        let target_f = fixture(TARGET_FA);
 
-        let (store, _tmp) = build_store(&target_path);
+        let (store, _tmp) = build_store(target_f.path());
         let mut config = test_config();
         config.output.format = OutputFormat::Minimal;
-        let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
+        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
         let hits = run_search_in_memory(&queries, &store, &config).unwrap();
 
@@ -711,8 +719,7 @@ mod tests {
 
     #[test]
     fn in_memory_empty_for_non_matching_target() {
-        let root = workspace_root();
-        let query_path = root.join("tests/data/query.fa");
+        let query_f = fixture(QUERY_FA);
 
         let mut target_file = tempfile::NamedTempFile::new().unwrap();
         write!(target_file, ">dummy\nAAAAAAAAAAAAAAAA\n").unwrap();
@@ -725,7 +732,7 @@ mod tests {
             },
             ..test_config()
         };
-        let queries = QueryRegistry::from_fasta(&query_path, &config.seed).unwrap();
+        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
         let hits = run_search_in_memory(&queries, &store, &config).unwrap();
 
         assert!(
@@ -756,9 +763,14 @@ mod tests {
         (key, energy.parse().unwrap())
     }
 
-    fn mm2_minimal_fixture() -> (TargetRegistry, tempfile::TempDir, QueryRegistry, SearchConfig) {
-        let root = workspace_root();
-        let (store, tmp) = build_store(&root.join("tests/data/target.fa"));
+    fn mm2_minimal_fixture() -> (
+        TargetRegistry,
+        tempfile::TempDir,
+        QueryRegistry,
+        SearchConfig,
+    ) {
+        let target_f = fixture(TARGET_FA);
+        let (store, tmp) = build_store(target_f.path());
         let mut config = test_config();
         config.output.format = OutputFormat::Minimal;
         // Parameters that produce overlapping-seed box collisions on this
@@ -768,8 +780,8 @@ mod tests {
         config.seed.max_mismatches = 2;
         config.extend.max_extension = 30;
         config.filter.delta_g = Energy::from_kcal(-5.0);
-        let queries =
-            QueryRegistry::from_fasta(&root.join("tests/data/query.fa"), &config.seed).unwrap();
+        let query_f = fixture(QUERY_FA);
+        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
         (store, tmp, queries, config)
     }
 
@@ -787,7 +799,10 @@ mod tests {
         let dedup = run_to_lines(&config, &queries, &store);
 
         assert!(!dedup.is_empty(), "fixture must yield hits");
-        assert!(dedup.len() < raw.len(), "dedup must remove overlapping rows");
+        assert!(
+            dedup.len() < raw.len(),
+            "dedup must remove overlapping rows"
+        );
 
         let mut min_energy: HashMap<String, f64> = HashMap::new();
         for l in &raw {
@@ -805,7 +820,10 @@ mod tests {
         let mut seen = HashSet::new();
         for l in &dedup {
             let (k, e) = split_box_energy(l);
-            assert!(seen.insert(k.to_string()), "duplicate box survived dedup: {k}");
+            assert!(
+                seen.insert(k.to_string()),
+                "duplicate box survived dedup: {k}"
+            );
             assert!(
                 (e - min_energy[k]).abs() < 1e-9,
                 "kept energy {e} is not the box minimum {} for {k}",
