@@ -1,0 +1,247 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --locked --workspace --all-targets --features prof -- -D warnings
+
+      - name: Build openmp feature
+        run: cargo build --locked -p risearch --features openmp
+
+      - name: docs
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p risearch --all-features
+
+  actions-lint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.88.0"
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: cargo check on MSRV
+        run: cargo check --locked --workspace --all-targets --all-features
+
+  minimal-versions:
+    name: Minimal versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-minimal-versions
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+        with:
+          tool: cargo-hack,cargo-minimal-versions
+
+      # No --locked: the tool regenerates the lock down to the declared minimums.
+      - name: Check direct-minimal-versions
+        run: cargo minimal-versions check --direct --no-dev-deps -p risearch
+
+  test-linux:
+    name: Test ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # C-oracle build deps: cmake (libdivsufsort), libpcre3-dev (-lpcre),
+      # zlib1g-dev (-lz), build-essential (gcc/make).
+      - name: Install C-oracle system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libpcre3-dev zlib1g-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+        with:
+          tool: nextest
+
+      # Builds legacy_c/RIsearch2/bin/{risearch2.x,risearch2.dbg.x}, which the
+      # parity integration tests auto-detect.
+      - name: Build C oracle (RIsearch2)
+        run: bash .github/scripts/build-c-oracle.sh
+
+      - name: Verify C-oracle binaries exist
+        run: |
+          set -euo pipefail
+          missing=0
+          for bin in \
+            legacy_c/RIsearch2/bin/risearch2.x \
+            legacy_c/RIsearch2/bin/risearch2.dbg.x; do
+            if [ -x "$bin" ]; then
+              echo "Found C-oracle binary: $bin"
+            else
+              echo "::error::Required C-oracle binary missing or not executable: $bin"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::C oracle build did not produce the required binaries; parity tests cannot run."
+            exit 1
+          fi
+
+      - name: Run tests
+        run: cargo nextest run --locked --workspace --exclude risearch-python
+
+      - name: Run doctests
+        run: cargo test --locked --workspace --exclude risearch-python --doc
+
+  test-macos:
+    name: Test macOS
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+        with:
+          tool: nextest
+
+      # Print the skip list at runtime so it is never silent (rationale in
+      # .github/CI.md). The C oracle is not built on macOS, so its parity binaries
+      # run only in the ubuntu `test-linux` job.
+      - name: Log excluded oracle parity binaries
+        run: |
+          echo "macOS job: the C oracle is NOT built here (fragile OpenMP/gcc/PCRE under Apple clang)."
+          echo "The following oracle-dependent test binaries are EXCLUDED from this job"
+          echo "(they run in the ubuntu 'test-linux' job, which builds the C oracle):"
+          echo "  - parity_seed"
+          echo "  - parity_seed_prune_regression"
+          echo "  - parity_extension"
+          echo "  - parity_dsm"
+          echo "  - parity_mismatch"
+          echo "  - parity_mismatch_regression"
+          echo "  - parity_wobble"
+          echo "  - parity_debug"
+
+      # Exclude all EIGHT oracle-dependent binaries via exact `binary(=...)`
+      # matchers (explicit, not nextest's substring default). Includes the two
+      # *_regression binaries, which also drive the oracle — see .github/CI.md.
+      - name: Run tests
+        run: >
+          cargo nextest run --locked --workspace --exclude risearch-python
+          -E 'not (binary(=parity_seed) | binary(=parity_seed_prune_regression) | binary(=parity_extension) | binary(=parity_dsm) | binary(=parity_mismatch) | binary(=parity_mismatch_regression) | binary(=parity_wobble) | binary(=parity_debug))'
+
+      - name: Run doctests
+        run: cargo test --locked --workspace --exclude risearch-python --doc
+
+  test-wheel:
+    name: Wheel install test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build abi3 wheel
+        run: uv run --no-project --with maturin maturin build -m risearch-python/Cargo.toml --out dist
+
+      - name: Install wheel and test
+        run: |
+          set -euo pipefail
+          uv venv
+          uv pip install ./dist/*.whl pytest polars
+          .venv/bin/python -m pytest risearch-python/tests -q

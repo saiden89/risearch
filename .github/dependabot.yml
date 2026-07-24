@@ -1,0 +1,37 @@
+version: 2
+
+updates:
+  # Rust workspace (root Cargo.toml + members).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used by ci.yml and release.yml.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions-all:
+        patterns:
+          - "*"
+
+  # Python bindings (uv project: uv.lock + PEP 735 dependency-groups).
+  - package-ecosystem: uv
+    directory: "/risearch-python"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      uv-minor-patch:
+        update-types:
+          - minor
+          - patch
