@@ -4,6 +4,7 @@ updates:
   # Rust workspace (root Cargo.toml + members).
   - package-ecosystem: cargo
     directory: "/"
+    versioning-strategy: auto
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
