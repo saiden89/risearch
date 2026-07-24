@@ -10,7 +10,7 @@ description = "Python bindings for risearch RNA-RNA interaction search"
 dependencies = ["polars>=1.0"]
 
 [project.optional-dependencies]
-lts-cpu = ["polars[rtcompat]>=1.34"]
+lts-cpu = ["polars[rtcompat]>=1.43.0"]
 
 [dependency-groups]
 dev = ["pytest", "maturin"]
