@@ -1,7 +1,13 @@
 [tools]
+act = "latest"
 rust = "latest"
 cmake = "latest"
+
 "cargo:cargo-edit" = "latest"
+"cargo:cargo-hack" = "latest"
 "cargo:cargo-insta" = "latest"
+"cargo:cargo-minimal-versions" = "latest"
+"cargo:cargo-msrv" = "latest"
+"cargo:cargo-nextest" = "latest"
 "cargo:cargo-outdated" = "latest"
 "cargo:cargo-show-asm" = "latest"
