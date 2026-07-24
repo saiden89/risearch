@@ -3,7 +3,8 @@ use std::sync::{Arc, OnceLock};
 
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use arrow_array::{
-    ArrayRef, Float64Array, RecordBatch, RecordBatchIterator, StringArray, UInt32Array,
+    ArrayRef, Float64Array, LargeStringArray, RecordBatch, RecordBatchIterator, StringArray,
+    UInt32Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use pyo3::prelude::*;
@@ -30,7 +31,7 @@ fn search_result_schema() -> &'static SchemaRef {
             Field::new("t_end", DataType::UInt32, false),
             Field::new("strand", DataType::Utf8, false),
             Field::new("energy", DataType::Float64, false),
-            Field::new("alignment", DataType::Utf8, true),
+            Field::new("alignment", DataType::LargeUtf8, true),
         ]))
     })
 }
@@ -68,7 +69,7 @@ fn hits_to_record_batch(hits: Vec<SearchHit>, schema: &SchemaRef) -> RecordBatch
         Arc::new(UInt32Array::from(t_end)),
         Arc::new(StringArray::from(strand)),
         Arc::new(Float64Array::from(energy)),
-        Arc::new(StringArray::from(alignment)),
+        Arc::new(LargeStringArray::from(alignment)),
     ];
 
     RecordBatch::try_new(schema.clone(), columns).expect("column count and types match schema")
