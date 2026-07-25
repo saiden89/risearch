@@ -1,18 +1,18 @@
+use std::fmt::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use arrow_array::builder::{Float64Builder, LargeStringBuilder, StringBuilder, UInt32Builder};
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
-use arrow_array::{
-    ArrayRef, Float64Array, LargeStringArray, RecordBatch, RecordBatchIterator, StringArray,
-    UInt32Array,
-};
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::dsm::DsmRegistry;
 use risearch::{
-    run_search_in_memory, Energy, ExtendConfig, FilterConfig, OutputCompression, OutputConfig,
-    OutputFormat, QueryRegistry, ScoreConfig, SearchConfig, SearchHit, SeedConfig, TargetRegistry,
+    run_search_streaming, Energy, ExtendConfig, FilterConfig, HitConsumer, OutputCompression,
+    OutputConfig, OutputFormat, QueryRegistry, ScoreConfig, SearchConfig, SearchHit, SeedConfig,
+    TargetRegistry,
 };
 
 // =============================================================================
@@ -36,43 +36,71 @@ fn search_result_schema() -> &'static SchemaRef {
     })
 }
 
-fn hits_to_record_batch(hits: Vec<SearchHit>, schema: &SchemaRef) -> RecordBatch {
-    let n = hits.len();
-    let mut query_idx = Vec::with_capacity(n);
-    let mut target_idx = Vec::with_capacity(n);
-    let mut q_start = Vec::with_capacity(n);
-    let mut q_end = Vec::with_capacity(n);
-    let mut t_start = Vec::with_capacity(n);
-    let mut t_end = Vec::with_capacity(n);
-    let mut strand: Vec<String> = Vec::with_capacity(n);
-    let mut energy = Vec::with_capacity(n);
-    let mut alignment: Vec<Option<String>> = Vec::with_capacity(n);
+#[derive(Default)]
+struct HitColumns {
+    query_idx: UInt32Builder,
+    target_idx: UInt32Builder,
+    q_start: UInt32Builder,
+    q_end: UInt32Builder,
+    t_start: UInt32Builder,
+    t_end: UInt32Builder,
+    strand: StringBuilder,
+    energy: Float64Builder,
+    alignment: LargeStringBuilder,
+}
 
-    for h in hits {
-        query_idx.push(h.query_idx as u32);
-        target_idx.push(h.target_idx as u32);
-        q_start.push(h.q_start as u32);
-        q_end.push(h.q_end as u32);
-        t_start.push(h.t_start as u32);
-        t_end.push(h.t_end as u32);
-        strand.push(h.strand.to_string());
-        energy.push(f64::from(h.energy));
-        alignment.push(h.alignment.as_ref().map(|a| a.fingerprint()));
+/// Appends each query's hits straight into the Arrow columns as that query
+/// finishes, so the full hit set is never materialized at once.
+#[derive(Default)]
+struct ArrowConsumer(Mutex<HitColumns>);
+
+impl ArrowConsumer {
+    fn into_batch(self, schema: &SchemaRef) -> RecordBatch {
+        let mut c = self.0.into_inner().unwrap();
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(c.query_idx.finish()),
+            Arc::new(c.target_idx.finish()),
+            Arc::new(c.q_start.finish()),
+            Arc::new(c.q_end.finish()),
+            Arc::new(c.t_start.finish()),
+            Arc::new(c.t_end.finish()),
+            Arc::new(c.strand.finish()),
+            Arc::new(c.energy.finish()),
+            Arc::new(c.alignment.finish()),
+        ];
+        RecordBatch::try_new(schema.clone(), columns).expect("column count and types match schema")
     }
+}
 
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(UInt32Array::from(query_idx)),
-        Arc::new(UInt32Array::from(target_idx)),
-        Arc::new(UInt32Array::from(q_start)),
-        Arc::new(UInt32Array::from(q_end)),
-        Arc::new(UInt32Array::from(t_start)),
-        Arc::new(UInt32Array::from(t_end)),
-        Arc::new(StringArray::from(strand)),
-        Arc::new(Float64Array::from(energy)),
-        Arc::new(LargeStringArray::from(alignment)),
-    ];
-
-    RecordBatch::try_new(schema.clone(), columns).expect("column count and types match schema")
+impl HitConsumer for ArrowConsumer {
+    fn consume(&self, _query_idx: usize, hits: Vec<SearchHit>) -> anyhow::Result<()> {
+        let mut strand_buf = [0u8; 4];
+        let mut c = self.0.lock().unwrap();
+        for h in &hits {
+            c.query_idx.append_value(h.query_idx as u32);
+            c.target_idx.append_value(h.target_idx as u32);
+            c.q_start.append_value(h.q_start as u32);
+            c.q_end.append_value(h.q_end as u32);
+            c.t_start.append_value(h.t_start as u32);
+            c.t_end.append_value(h.t_end as u32);
+            c.strand
+                .append_value(char::from(h.strand).encode_utf8(&mut strand_buf));
+            c.energy.append_value(f64::from(h.energy));
+            match &h.alignment {
+                // Write the fingerprint's symbols straight into the builder
+                // instead of through `Alignment::fingerprint`'s String: this runs
+                // under the shared lock. `append_value("")` closes the value.
+                Some(a) => {
+                    for &p in a.steps() {
+                        let _ = c.alignment.write_char(p.symbol());
+                    }
+                    c.alignment.append_value("");
+                }
+                None => c.alignment.append_null(),
+            }
+        }
+        Ok(())
+    }
 }
 
 // =============================================================================
@@ -276,10 +304,10 @@ fn search(
     let queries = QueryRegistry::from_fastas(&paths, &config.seed)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
-    let hits = py.detach(|| run_search_in_memory(&queries, &store.0, &config))?;
+    let consumer = ArrowConsumer::default();
+    py.detach(|| run_search_streaming(&queries, &store.0, &config, &consumer))?;
     let schema = search_result_schema().clone();
-    let batch = hits_to_record_batch(hits, &schema);
-    Ok(PySearchResult::new(batch, schema))
+    Ok(PySearchResult::new(consumer.into_batch(&schema), schema))
 }
 
 // =============================================================================

@@ -1450,6 +1450,7 @@ dependencies = [
 name = "risearch-python"
 version = "3.0.0-alpha.1"
 dependencies = [
+ "anyhow",
  "arrow-array",
  "arrow-schema",
  "clap",

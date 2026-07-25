@@ -6,7 +6,7 @@
 //!    SA to enumerate seeds
 //! 2) Extend each seed (DP) into a final hit
 //! 3) Collapse hits that share a final bounding box to the lowest-energy one
-//!    (unless `--no-dedup`), then format and emit
+//!    (unless `--no-dedup`), then hand the query's hits to a [`HitConsumer`]
 
 mod extension;
 
@@ -16,7 +16,7 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use self::extension::ExtensionEngine;
@@ -46,58 +46,52 @@ pub struct SearchHit {
 }
 
 /// Run search collecting all hits into memory.
+///
+/// Retains every hit by contract; peak RAM therefore scales with the hit count.
+/// Hits come back grouped by query in ascending `query_idx`; order within a
+/// query is not stable across runs.
 pub fn run_search_in_memory(
     queries: &QueryRegistry,
     store: &TargetRegistry,
     opts: &SearchConfig,
 ) -> Result<Vec<SearchHit>> {
-    let Some(ctx) = init_search(queries, store, opts)? else {
-        return Ok(Vec::new());
-    };
-    let seeds = SeedingEngine::new(ctx.queries, ctx.store).run(&ctx.opts.seed)?;
+    let consumer = VecConsumer::default();
+    run_search_streaming(queries, store, opts, &consumer)?;
+    Ok(consumer.into_hits())
+}
 
-    let dedup = !ctx.opts.filter.no_dedup;
-    let include_alignment = ctx.opts.extend.build_alignment;
-    let hits: Vec<SearchHit> = seeds
-        .into_par_iter()
-        .flat_map_iter(|(qi, seeds)| {
-            let mut worker = SearchWorker::new(ctx.opts, &ctx.model);
-            let query = &ctx.queries.entries()[qi];
-            let query_seq = query.sequence();
-            let seed_interval = query.seed_interval.clone();
-            let produced: Vec<SearchHit> = seeds
-                .into_iter()
-                .filter_map(|seed| {
-                    let target_idx = seed.target_idx;
-                    let (t_fwd, t_rc, target_len) = ctx.store.target_slices(target_idx);
-                    let target_trans = match seed.strand {
-                        Strand::Forward => t_fwd,
-                        Strand::Reverse => t_rc,
-                    };
+/// Where a search's hits go.
+///
+/// The driver runs the seed -> extend -> dedup pipeline and hands each query's
+/// surviving hits to one of these; the destination (one text file, one file per
+/// query, Arrow columns) is entirely the implementor's business.
+///
+/// `consume` is called at most once per `query_idx`, from a rayon worker, in
+/// arbitrary order — hence `&self` plus interior mutability. Lock once per call,
+/// never per hit, and do any expensive conversion before taking the lock.
+pub trait HitConsumer: Sync {
+    fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()>;
+}
 
-                    worker.build_hit_from_seed(
-                        ctx.opts,
-                        qi,
-                        query_seq,
-                        seed_interval.clone(),
-                        include_alignment,
-                        target_len,
-                        &seed,
-                        target_trans,
-                    )
-                })
-                .collect();
-            // Dedup is exact per query: every box-mate of `qi` is in `produced`.
-            let group = if dedup {
-                dedup_hits(produced)
-            } else {
-                produced
-            };
-            group.into_iter()
-        })
-        .collect();
+#[derive(Default)]
+struct VecConsumer(Mutex<Vec<(usize, Vec<SearchHit>)>>);
 
-    Ok(hits)
+impl VecConsumer {
+    /// Sorting restores the ascending-`query_idx` grouping callers relied on
+    /// when the in-memory path collected through rayon's order-preserving
+    /// `collect`; queries arrive here in completion order.
+    fn into_hits(self) -> Vec<SearchHit> {
+        let mut groups = self.0.into_inner().unwrap();
+        groups.sort_unstable_by_key(|(query_idx, _)| *query_idx);
+        groups.into_iter().flat_map(|(_, hits)| hits).collect()
+    }
+}
+
+impl HitConsumer for VecConsumer {
+    fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
+        self.0.lock().unwrap().push((query_idx, hits));
+        Ok(())
+    }
 }
 
 /// Key identifying one final bounding box: a `(query, target, strand)` plus the
@@ -179,10 +173,11 @@ fn dedup_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
 /// Run search and write hits to `output_path` (or directory in multifile mode).
 ///
 /// Parallelizes over queries: each rayon worker owns one query end-to-end —
-/// seed it against the shared target SA, extend, format, and write its block —
-/// then frees its per-query state. Peak RAM is bounded by the concurrent
-/// workers' per-query state, not the total hit count. Output line order is not
-/// stable across runs (the hit set is); callers needing order must sort.
+/// seed it against the shared target SA, extend, dedup — then hands the hits to
+/// the text consumer and frees its per-query state. Peak RAM is bounded by the
+/// concurrent workers' per-query state, not the total hit count. Output line
+/// order is not stable across runs (the hit set is); callers needing order must
+/// sort.
 pub fn run_search(
     queries: &QueryRegistry,
     store: &TargetRegistry,
@@ -192,75 +187,124 @@ pub fn run_search(
     let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(());
     };
-    let engine = SeedingEngine::new(ctx.queries, ctx.store);
+    // Construct the destination only after validation: creating it earlier would
+    // truncate an existing output file before a rejected config could abort.
+    let consumer = TextConsumer::new(&ctx, output_path)?;
+    let total = drive(&ctx, &consumer)?;
+    consumer.flush()?;
 
-    let init = || {
-        (
-            SearchWorker::new(ctx.opts, &ctx.model),
-            HitFormatter::new(ctx.opts.output.format),
-        )
-    };
-
-    let counts: Vec<usize> = if opts.output.multifile {
-        fs_err::create_dir_all(output_path).with_context(|| {
-            format!(
-                "Failed to create output directory {:?} for --multifile",
-                output_path
-            )
-        })?;
-        let ext = opts.output.compress.extension();
-        let paths = build_multifile_paths(queries, output_path, ext);
-
-        (0..ctx.queries.len())
-            .into_par_iter()
-            .map_init(init, |(worker, fmt), qi| -> Result<usize> {
-                let (emitted, chunks) = process_one_query(&ctx, &engine, worker, qi, fmt)?;
-                // One writer per query (matches RIsearch2); no file for an
-                // empty query.
-                if !chunks.is_empty() {
-                    let mut writer = OutputWriter::new(&ctx.opts.output, &paths[qi])?;
-                    write_chunks(&mut writer, &chunks)?;
-                    writer.flush_all()?;
-                }
-                Ok(emitted)
-            })
-            .collect::<Result<Vec<usize>>>()?
-    } else {
-        let writer = Mutex::new(OutputWriter::new(&opts.output, output_path)?);
-
-        let counts = (0..ctx.queries.len())
-            .into_par_iter()
-            .map_init(init, |(worker, fmt), qi| -> Result<usize> {
-                let (emitted, chunks) = process_one_query(&ctx, &engine, worker, qi, fmt)?;
-                // Format off-lock; take the writer once to append this query's
-                // block (one bulk write per query).
-                write_chunks(&mut writer.lock().unwrap(), &chunks)?;
-                Ok(emitted)
-            })
-            .collect::<Result<Vec<usize>>>()?;
-
-        writer.into_inner().unwrap().flush_all()?;
-        counts
-    };
-
-    let total: usize = counts.iter().sum();
     info!("Search complete: {} hits", total);
     Ok(())
 }
 
-/// Seed one query against the shared target SA, then extend + format its hits.
-/// All of a query's seeds are produced and consumed here, so the worker owns the
-/// query end-to-end.
-fn process_one_query(
-    ctx: &SearchContext<'_>,
-    engine: &SeedingEngine<'_>,
-    worker: &mut SearchWorker,
-    qi: usize,
-    fmt: &mut HitFormatter,
-) -> Result<(usize, Vec<OutputChunk>)> {
-    let mut seeds: Vec<SeedHit> = Vec::new();
-    engine.seed_query(qi, &ctx.opts.seed, |seed| seeds.push(seed))?;
-    worker.process_query_seeds(ctx, qi, &seeds, fmt)
+/// Run search, handing each query's hits to `consumer` as they are produced.
+pub fn run_search_streaming(
+    queries: &QueryRegistry,
+    store: &TargetRegistry,
+    opts: &SearchConfig,
+    consumer: &dyn HitConsumer,
+) -> Result<()> {
+    let Some(ctx) = init_search(queries, store, opts)? else {
+        return Ok(());
+    };
+    drive(&ctx, consumer)?;
+    Ok(())
+}
+
+/// Parallel over queries: seed, extend, dedup, hand off. Returns the total hit
+/// count.
+fn drive(ctx: &SearchContext<'_>, consumer: &dyn HitConsumer) -> Result<usize> {
+    let engine = SeedingEngine::new(ctx.queries, ctx.store);
+    let counts: Vec<usize> = (0..ctx.queries.len())
+        .into_par_iter()
+        .map_init(
+            || SearchWorker::new(ctx.opts, &ctx.model),
+            |worker, qi| -> Result<usize> {
+                let hits = worker.query_hits(ctx, &engine, qi)?;
+                let emitted = hits.len();
+                consumer.consume(qi, hits)?;
+                Ok(emitted)
+            },
+        )
+        .collect::<Result<Vec<usize>>>()?;
+    Ok(counts.iter().sum())
+}
+
+enum TextDest {
+    Single(Mutex<OutputWriter>),
+    /// Paths for every query, assigned up front: `_1` collision suffixes are
+    /// handed out in query-index order, so naming them lazily would make
+    /// filenames depend on rayon scheduling.
+    Multi(Vec<PathBuf>),
+}
+
+/// Writes each query's hits as text. Must live and die inside the call that
+/// drives the search: gzip/zstd write their trailer when the `OutputWriter`
+/// drops, not on `flush`.
+struct TextConsumer<'a> {
+    ctx: &'a SearchContext<'a>,
+    dest: TextDest,
+}
+
+impl<'a> TextConsumer<'a> {
+    fn new(ctx: &'a SearchContext<'a>, output_path: &Path) -> Result<Self> {
+        let dest = if ctx.opts.output.multifile {
+            fs_err::create_dir_all(output_path).with_context(|| {
+                format!(
+                    "Failed to create output directory {:?} for --multifile",
+                    output_path
+                )
+            })?;
+            let ext = ctx.opts.output.compress.extension();
+            TextDest::Multi(build_multifile_paths(ctx.queries, output_path, ext))
+        } else {
+            TextDest::Single(Mutex::new(OutputWriter::new(
+                &ctx.opts.output,
+                output_path,
+            )?))
+        };
+        Ok(Self { ctx, dest })
+    }
+
+    fn flush(&self) -> Result<()> {
+        match &self.dest {
+            TextDest::Single(writer) => writer.lock().unwrap().flush_all(),
+            // Multifile flushed each query's writer as it closed it.
+            TextDest::Multi(_) => Ok(()),
+        }
+    }
+}
+
+impl HitConsumer for TextConsumer<'_> {
+    fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
+        if hits.is_empty() {
+            return Ok(());
+        }
+        let q_name = self.ctx.queries.get_name(query_idx);
+        let q_seq = self.ctx.queries.entries()[query_idx].sequence();
+        let mut fmt = HitFormatter::new(self.ctx.opts.output.format);
+        let mut chunks = Vec::new();
+        for hit in &hits {
+            let (t_fwd, t_rc, _) = self.ctx.store.target_slices(hit.target_idx);
+            let t_name = self.ctx.store.get_name(hit.target_idx);
+            if let Some(chunk) = fmt.add_hit(hit, q_name, q_seq, t_name, t_fwd, t_rc) {
+                chunks.push(chunk);
+            }
+        }
+        chunks.extend(fmt.flush());
+
+        // Formatting above is off-lock; the shared writer is taken once, for this
+        // query's whole block (one bulk write per query).
+        match &self.dest {
+            TextDest::Single(writer) => write_chunks(&mut writer.lock().unwrap(), &chunks),
+            // One writer per query (matches RIsearch2).
+            TextDest::Multi(paths) => {
+                let mut writer = OutputWriter::new(&self.ctx.opts.output, &paths[query_idx])?;
+                write_chunks(&mut writer, &chunks)?;
+                writer.flush_all()
+            }
+        }
+    }
 }
 
 struct SearchContext<'a> {
@@ -350,22 +394,19 @@ impl SearchWorker {
         }
     }
 
-    fn process_query_seeds(
+    fn query_hits(
         &mut self,
         ctx: &SearchContext<'_>,
+        engine: &SeedingEngine<'_>,
         query_idx: usize,
-        seeds: &[SeedHit],
-        format: &mut HitFormatter,
-    ) -> Result<(usize, Vec<OutputChunk>)> {
+    ) -> Result<Vec<SearchHit>> {
         let query = &ctx.queries.entries()[query_idx];
-        let query_name = ctx.queries.get_name(query_idx);
         let query_seq = query.sequence();
         let seed_interval = query.seed_interval.clone();
-        let dedup = !ctx.opts.filter.no_dedup;
         let include_alignment = ctx.opts.extend.build_alignment;
 
         let mut hits = Vec::new();
-        for seed in seeds {
+        engine.seed_query(query_idx, &ctx.opts.seed, |seed| {
             let (t_fwd, t_rc, target_len) = ctx.store.target_slices(seed.target_idx);
             let target_trans = match seed.strand {
                 Strand::Forward => t_fwd,
@@ -378,28 +419,18 @@ impl SearchWorker {
                 seed_interval.clone(),
                 include_alignment,
                 target_len,
-                seed,
+                &seed,
                 target_trans,
             ) {
                 hits.push(hit);
             }
-        }
-        if dedup {
-            hits = dedup_hits(hits);
-        }
-
-        let mut chunks = Vec::new();
-        for hit in &hits {
-            let (t_fwd, t_rc, _) = ctx.store.target_slices(hit.target_idx);
-            let t_name = ctx.store.get_name(hit.target_idx);
-            if let Some(chunk) = format.add_hit(hit, query_name, query_seq, t_name, t_fwd, t_rc) {
-                chunks.push(chunk);
-            }
-        }
-        if let Some(chunk) = format.flush() {
-            chunks.push(chunk);
-        }
-        Ok((hits.len(), chunks))
+        })?;
+        // Dedup is exact per query: every box-mate of `query_idx` is in `hits`.
+        Ok(if ctx.opts.filter.no_dedup {
+            hits
+        } else {
+            dedup_hits(hits)
+        })
     }
 
     // Cohesive per-seed extension inputs (query/target buffers, seed interval,
@@ -716,7 +747,11 @@ mod tests {
         assert_eq!(
             hits.len(),
             file_hit_count,
-            "run_search_in_memory and file output must report the same hit count"
+            "text output must emit exactly one line per retained hit"
+        );
+        assert!(
+            hits.windows(2).all(|w| w[0].query_idx <= w[1].query_idx),
+            "in-memory hits must stay grouped in ascending query_idx"
         );
     }
 
@@ -742,6 +777,102 @@ mod tests {
             hits.is_empty(),
             "no hits expected against a non-matching target"
         );
+    }
+
+    /// Zero-hit behaviour differs by topology and neither branch is covered by a
+    /// CLI test: multifile creates no file at all, single-file truncates the
+    /// output to nothing.
+    #[test]
+    fn zero_hit_run_writes_empty_file_but_no_multifile_entry() {
+        let query_f = fixture(QUERY_FA);
+        let mut target_file = tempfile::NamedTempFile::new().unwrap();
+        write!(target_file, ">dummy\nAAAAAAAAAAAAAAAA\n").unwrap();
+        let (store, _tmp) = build_store(target_file.path());
+
+        let mut config = test_config();
+        config.filter.delta_g = Energy::from_kcal(-100.0);
+        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+
+        let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
+        fs_err::write(out.path(), b"stale").unwrap();
+        run_search(&queries, &store, &config, out.path()).unwrap();
+        assert_eq!(fs_err::metadata(out.path()).unwrap().len(), 0);
+
+        config.output.multifile = true;
+        let dir = tempfile::tempdir().unwrap();
+        run_search(&queries, &store, &config, dir.path()).unwrap();
+        assert_eq!(fs_err::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// Multifile addresses its writers by index (`paths[query_idx]`) while queries
+    /// that produce nothing get no file at all, so a query dropping out in the
+    /// middle must not shift the others' rows into the wrong file.
+    #[test]
+    fn multifile_writes_each_querys_rows_to_its_own_file() {
+        let query_f = fixture(">q1\nAAAA\n>q2\nCCCC\n>q3\nAAAAA\n");
+        let target_f = fixture(">t\nUUUUUUUU\n");
+        let (store, _tmp) = build_store(target_f.path());
+
+        let mut config = test_config();
+        config.output.format = OutputFormat::Minimal;
+        config.output.multifile = true;
+        config.extend.build_alignment = false;
+        config.extend.max_extension = 0;
+        config.seed.seed_length = Some(4);
+        config.filter.delta_g = Energy::from_kcal(100.0);
+        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        run_search(&queries, &store, &config, dir.path()).unwrap();
+
+        let mut files: Vec<(String, String)> = fs_err::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+                (stem, fs_err::read_to_string(&path).unwrap())
+            })
+            .collect();
+        files.sort();
+
+        let stems: Vec<&str> = files.iter().map(|(stem, _)| stem.as_str()).collect();
+        assert_eq!(stems, ["q1", "q3"], "only queries with hits get a file");
+        for (stem, body) in &files {
+            assert!(!body.trim().is_empty(), "{stem} file is empty");
+            for line in body.lines() {
+                assert_eq!(
+                    line.split('\t').next().unwrap(),
+                    stem,
+                    "row landed in the wrong query's file"
+                );
+            }
+        }
+    }
+
+    /// The [`HitConsumer`] contract the in-tree consumers depend on: every query
+    /// is consumed exactly once, and every hit in a batch carries the
+    /// `query_idx` handed alongside it (multifile picks its file from that index,
+    /// single-file looks up the query's name and sequence).
+    #[test]
+    fn streaming_consumes_each_query_once_with_matching_hit_indices() {
+        #[derive(Default)]
+        struct Spy(Mutex<Vec<usize>>);
+
+        impl HitConsumer for Spy {
+            fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
+                assert!(hits.iter().all(|hit| hit.query_idx == query_idx));
+                self.0.lock().unwrap().push(query_idx);
+                Ok(())
+            }
+        }
+
+        let (store, _tmp, queries, config) = mm2_minimal_fixture();
+        let spy = Spy::default();
+        run_search_streaming(&queries, &store, &config, &spy).unwrap();
+
+        let mut seen = spy.0.into_inner().unwrap();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..queries.len()).collect::<Vec<_>>());
     }
 
     fn run_to_lines(

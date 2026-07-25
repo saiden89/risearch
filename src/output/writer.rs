@@ -79,12 +79,15 @@ impl HitFormatter {
         OutputChunk { data, hits }
     }
 
+    /// Final chunk for this formatter. Unlike [`Self::take_chunk`] it hands over
+    /// the buffer instead of swapping in a fresh one, so a formatter that is
+    /// dropped after flushing does not allocate a chunk-sized buffer it never
+    /// fills.
     pub fn flush(&mut self) -> Option<OutputChunk> {
-        if self.chunk_hits > 0 {
-            Some(self.take_chunk())
-        } else {
-            None
-        }
+        (self.chunk_hits > 0).then(|| OutputChunk {
+            data: std::mem::take(&mut self.chunk_data),
+            hits: std::mem::replace(&mut self.chunk_hits, 0),
+        })
     }
 }
 

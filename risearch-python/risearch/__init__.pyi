@@ -95,7 +95,8 @@ def search(
     Returns
     -------
     pl.DataFrame
-        One row per hit. Order is not guaranteed. Columns:
+        One row per hit. Row order is not guaranteed and varies between runs on
+        identical input; sort explicitly if you need a stable order. Columns:
         ``query_idx`` (UInt32), ``target_idx`` (UInt32),
         ``q_start`` / ``q_end`` / ``t_start`` / ``t_end`` (UInt32),
         ``strand`` (String, "+"/"-"), ``energy`` (Float64, kcal/mol),
