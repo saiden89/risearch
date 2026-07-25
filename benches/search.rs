@@ -9,12 +9,13 @@ use risearch::config::{
     SearchConfig, SeedConfig,
 };
 use risearch::registry::QueryRegistry;
-use risearch::search::{run_search, run_search_in_memory};
+use risearch::search::run_search;
 use risearch::seed::{SeedHit, SeedingEngine};
 use risearch::seq::Sequence;
 use risearch::types::{Base, DsmId};
 use risearch::Energy;
 use risearch::TargetRegistry;
+use risearch::{TextSink, VecSink};
 use tempfile::TempDir;
 
 struct SimpleLcg {
@@ -178,13 +179,15 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
         &case,
         |b, _| {
             b.iter(|| {
-                let hits = run_search_in_memory(
+                let sink = VecSink::default();
+                run_search(
                     black_box(&dataset.queries),
                     black_box(&dataset.store),
                     black_box(&args),
+                    &sink,
                 )
                 .expect("run search in memory");
-                black_box(hits.len());
+                black_box(sink.into_hits().len());
             });
         },
     );
@@ -192,11 +195,18 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
     // Bench the end-to-end search path including output writing.
     group.bench_with_input(BenchmarkId::new("run_search", case), &case, |b, _| {
         b.iter(|| {
+            let sink = TextSink::new(
+                &dataset.queries,
+                &dataset.store,
+                &args.output,
+                output_path.as_path(),
+            )
+            .expect("open bench output");
             run_search(
                 black_box(&dataset.queries),
                 black_box(&dataset.store),
                 black_box(&args),
-                black_box(output_path.as_path()),
+                &sink,
             )
             .expect("run search");
         });

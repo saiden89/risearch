@@ -28,6 +28,6 @@ pub use config::{
     ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat, ScoreConfig,
     SearchConfig, SeedConfig,
 };
-pub use search::{run_search, run_search_in_memory, run_search_streaming, HitSink, SearchHit};
+pub use search::{run_search, HitSink, SearchHit, TextSink, VecSink};
 pub use seed::SeedHit;
 pub use types::DsmId;

@@ -10,9 +10,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::dsm::DsmRegistry;
 use risearch::{
-    run_search_streaming, Energy, ExtendConfig, FilterConfig, HitSink, OutputCompression,
-    OutputConfig, OutputFormat, QueryRegistry, ScoreConfig, SearchConfig, SearchHit, SeedConfig,
-    TargetRegistry,
+    run_search, Energy, ExtendConfig, FilterConfig, HitSink, OutputCompression, OutputConfig,
+    OutputFormat, QueryRegistry, ScoreConfig, SearchConfig, SearchHit, SeedConfig, TargetRegistry,
 };
 
 // =============================================================================
@@ -305,7 +304,7 @@ fn search(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let sink = ArrowSink::default();
-    py.detach(|| run_search_streaming(&queries, &store.0, &config, &sink))?;
+    py.detach(|| run_search(&queries, &store.0, &config, &sink))?;
     let schema = search_result_schema().clone();
     Ok(PySearchResult::new(sink.into_batch(&schema), schema))
 }

@@ -5,7 +5,9 @@
 
 use log::info;
 use risearch::cli::args::SearchArgs;
-use risearch::{run_search, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetRegistry};
+use risearch::{
+    run_search, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetRegistry, TextSink,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -87,22 +89,62 @@ impl RustRunner<Indexed> {
         search_args.output.format = OutputFormat::BindingSite;
 
         let tmp = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
-        run_search(
-            &query_registry,
-            &self.state.target_registry,
-            &search_args,
-            tmp.path(),
-        )
-        .unwrap_or_else(|e| {
-            panic!(
-                "search failed for query {} against target {}: {e}",
-                query_path.display(),
-                self.target_path.display()
+        // Sink scoped so it drops before the read: compression trailers are
+        // written on drop, not on flush.
+        {
+            let sink = TextSink::new(
+                &query_registry,
+                &self.state.target_registry,
+                &search_args.output,
+                tmp.path(),
             )
-        });
+            .expect("open parity output");
+            run_search(
+                &query_registry,
+                &self.state.target_registry,
+                &search_args,
+                &sink,
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "search failed for query {} against target {}: {e}",
+                    query_path.display(),
+                    self.target_path.display()
+                )
+            });
+        }
         let rust_out = fs::read_to_string(tmp.path()).expect("read output");
         let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_registry);
         (hits, query_registry)
+    }
+
+    /// Raw output text in whatever format `args` selects.
+    ///
+    /// Unlike [`Self::search`] this does not force binding-site columns, so the
+    /// caller can compare rendered output (e.g. detailed alignment blocks).
+    fn search_text(&self, query_path: &Path, args: &SearchConfig) -> String {
+        let query_registry =
+            QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
+        let tmp = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
+        {
+            let sink = TextSink::new(
+                &query_registry,
+                &self.state.target_registry,
+                &args.output,
+                tmp.path(),
+            )
+            .expect("open parity output");
+            run_search(&query_registry, &self.state.target_registry, args, &sink).unwrap_or_else(
+                |e| {
+                    panic!(
+                        "search failed for query {} against target {}: {e}",
+                        query_path.display(),
+                        self.target_path.display()
+                    )
+                },
+            );
+        }
+        fs::read_to_string(tmp.path()).expect("read output")
     }
 
     /// Get the index path.
@@ -214,6 +256,27 @@ impl ParityRunner {
             );
         }
     }
+
+    /// Raw `(rust, c)` output text for a run that renders alignment blocks.
+    ///
+    /// Row order is not stable on either side, so the caller must compare the
+    /// blocks as a keyed set rather than diffing the text.
+    fn rendered_texts(&self, query: &Path, args: &[&str]) -> (String, String) {
+        assert!(
+            args.contains(&"-p1"),
+            "rendered-output parity needs -p1 so both implementations emit alignment blocks"
+        );
+        let args = legacy_parity_args(args);
+        let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut search_args = parse_search_args(&args_ref);
+        // Same rationale as `compare`: C never dedups, so neither may Rust.
+        search_args.filter.no_dedup = true;
+        let rust_out = self.rust.search_text(query, &search_args);
+
+        let c_args = translate_args_for_c(&args_ref);
+        let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
+        (rust_out, self.c.search(query, &c_args_ref))
+    }
 }
 
 // =============================================================================
@@ -261,6 +324,11 @@ impl SingleSeqRunner {
     /// Run comparison and assert parity passes.
     pub(crate) fn assert_pass(&self, test_name: &str, args: &[&str]) {
         self.runner.assert_pass(&self.query_path, test_name, args);
+    }
+
+    /// Raw `(rust, c)` output text for a `-p1` run.
+    pub(crate) fn rendered_texts(&self, args: &[&str]) -> (String, String) {
+        self.runner.rendered_texts(&self.query_path, args)
     }
 }
 

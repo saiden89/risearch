@@ -54,7 +54,8 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
 
     debug!("Starting search...");
 
-    search::run_search(&queries, &targets, &opts, output_path)?;
+    let sink = search::TextSink::new(&queries, &targets, &opts.output, output_path)?;
+    search::run_search(&queries, &targets, &opts, &sink)?;
     info!("Done");
     Ok(())
 }

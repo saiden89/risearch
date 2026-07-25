@@ -31,8 +31,8 @@ use risearch::config::{
     SeedConfig,
 };
 use risearch::{
-    run_search_in_memory, DsmId, Energy, QueryRegistry, SearchConfig, SearchHit, Strand,
-    TargetRegistry,
+    run_search, DsmId, Energy, QueryRegistry, SearchConfig, SearchHit, Strand, TargetRegistry,
+    VecSink,
 };
 
 // =============================================================================
@@ -94,12 +94,12 @@ fn search_or_err(query: &str, target: &str, max_extension: i32) -> Result<Vec<Se
     let store = TargetRegistry::open(&idx).unwrap();
     let queries = QueryRegistry::from_fasta(&query_fa, &cfg.seed).unwrap();
 
-    run_search_in_memory(&queries, &store, &cfg)
-        .map(|mut hits| {
-            hits.sort_by(cmp_hit);
-            hits
-        })
-        .map_err(|e| e.to_string())
+    let sink = VecSink::default();
+    run_search(&queries, &store, &cfg, &sink).map_err(|e| e.to_string())?;
+
+    let mut hits = sink.into_hits();
+    hits.sort_by(cmp_hit);
+    Ok(hits)
 }
 
 fn search_seqs(query: &str, target: &str, max_extension: i32) -> Vec<SearchHit> {

@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
-use crate::config::SearchConfig;
+use crate::config::{OutputConfig, SearchConfig};
 use crate::dp::{DpConfig, DpView, ExtendDir, MAX_EXT};
 use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetRegistry;
@@ -56,22 +56,6 @@ pub struct SearchHit {
     pub alignment: Option<Alignment>,
 }
 
-/// Run search collecting all hits into memory.
-///
-/// Retains every hit by contract; peak RAM therefore scales with the hit count.
-/// Order is arbitrary and not stable across runs: queries complete in whatever
-/// order the workers finish, and the dedup pass drains a `HashMap`. Sort if you
-/// need a stable order.
-pub fn run_search_in_memory(
-    queries: &QueryRegistry,
-    store: &TargetRegistry,
-    opts: &SearchConfig,
-) -> Result<Vec<SearchHit>> {
-    let sink = VecSink::default();
-    run_search_streaming(queries, store, opts, &sink)?;
-    Ok(sink.0.into_inner().unwrap())
-}
-
 /// Where a search's hits go.
 ///
 /// The driver runs the seed -> extend -> dedup pipeline and hands each query's
@@ -83,10 +67,27 @@ pub fn run_search_in_memory(
 /// never per hit, and do any expensive conversion before taking the lock.
 pub trait HitSink: Sync {
     fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()>;
+
+    /// Finalize the destination. The driver calls this once every query has been
+    /// consumed and the search succeeded — including when no hits arrived at all,
+    /// which is what lets a zero-hit run truncate a stale output file. A run with
+    /// nothing to search (empty target or query set) returns without consuming or
+    /// flushing anything.
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
+/// Collects every hit into one `Vec`. Peak RAM scales with the hit count, so
+/// prefer a sink that writes through for large searches.
 #[derive(Default)]
-struct VecSink(Mutex<Vec<SearchHit>>);
+pub struct VecSink(Mutex<Vec<SearchHit>>);
+
+impl VecSink {
+    pub fn into_hits(self) -> Vec<SearchHit> {
+        self.0.into_inner().unwrap()
+    }
+}
 
 impl HitSink for VecSink {
     fn consume(&self, _query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
@@ -171,108 +172,133 @@ fn dedup_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
     best.into_values().collect()
 }
 
-/// Run search and write hits to `output_path` (or directory in multifile mode).
+/// Run search, handing every query's hits to `sink` as they are produced.
+/// Returns the number of hits handed over.
 ///
 /// Parallelizes over queries: each rayon worker owns one query end-to-end —
 /// seed it against the shared target SA, extend, dedup — then hands the hits to
-/// the text sink and frees its per-query state. Peak RAM is bounded by the
-/// concurrent workers' per-query state, not the total hit count. Output line
-/// order is not stable across runs (the hit set is); callers needing order must
-/// sort.
+/// the sink and frees its per-query state. Peak RAM is therefore bounded by the
+/// concurrent workers' per-query state plus whatever the sink retains, not by the
+/// total hit count.
+///
+/// Queries arrive at the sink in completion order, and hits within a query in
+/// `HashMap` order, so nothing about the output order is stable across runs. The
+/// hit *set* is. Callers needing an order must sort.
+///
+/// The config is validated before any query runs, so a sink that defers touching
+/// its destination until first use will not have disturbed it if this returns an
+/// error.
 pub fn run_search(
     queries: &QueryRegistry,
     store: &TargetRegistry,
     opts: &SearchConfig,
-    output_path: &Path,
-) -> Result<()> {
-    let Some(ctx) = init_search(queries, store, opts)? else {
-        return Ok(());
-    };
-    // Construct the destination only after validation: creating it earlier would
-    // truncate an existing output file before a rejected config could abort.
-    let sink = TextSink::new(&ctx, output_path)?;
-    let total = drive(&ctx, &sink)?;
-    sink.flush()?;
-
-    info!("Search complete: {} hits", total);
-    Ok(())
-}
-
-/// Run search, handing each query's hits to `sink` as they are produced.
-pub fn run_search_streaming(
-    queries: &QueryRegistry,
-    store: &TargetRegistry,
-    opts: &SearchConfig,
     sink: &dyn HitSink,
-) -> Result<()> {
+) -> Result<usize> {
     let Some(ctx) = init_search(queries, store, opts)? else {
-        return Ok(());
+        // Deliberately not flushed: an empty store or query set leaves the
+        // destination untouched, where a zero-hit run truncates it.
+        return Ok(0);
     };
-    drive(&ctx, sink)?;
-    Ok(())
-}
-
-/// Parallel over queries: seed, extend, dedup, hand off. Returns the total hit
-/// count.
-fn drive(ctx: &SearchContext<'_>, sink: &dyn HitSink) -> Result<usize> {
     let engine = SeedingEngine::new(ctx.queries, ctx.store);
     let counts: Vec<usize> = (0..ctx.queries.len())
         .into_par_iter()
         .map_init(
             || SearchWorker::new(ctx.opts, &ctx.model),
             |worker, qi| -> Result<usize> {
-                let hits = worker.query_hits(ctx, &engine, qi)?;
+                let hits = worker.query_hits(&ctx, &engine, qi)?;
                 let emitted = hits.len();
                 sink.consume(qi, hits)?;
                 Ok(emitted)
             },
         )
         .collect::<Result<Vec<usize>>>()?;
-    Ok(counts.iter().sum())
+    sink.flush()?;
+
+    let total = counts.iter().sum();
+    info!("Search complete: {} hits", total);
+    Ok(total)
 }
 
 enum TextDest {
-    Single(Mutex<OutputWriter>),
-    /// Paths for every query, assigned up front: `_1` collision suffixes are
-    /// handed out in query-index order, so naming them lazily would make
-    /// filenames depend on rayon scheduling.
-    Multi(Vec<PathBuf>),
+    /// One writer for the whole run, opened on first use. Constructing it eagerly
+    /// would truncate an existing output file before [`run_search`] had a chance
+    /// to reject the config.
+    Single {
+        path: PathBuf,
+        writer: Mutex<Option<OutputWriter>>,
+    },
+    /// One writer per query, each created on first use. Paths are assigned up
+    /// front: `_1` collision suffixes are handed out in query-index order, so
+    /// naming them lazily would make filenames depend on rayon scheduling.
+    Multi { dir: PathBuf, paths: Vec<PathBuf> },
 }
 
-/// Writes each query's hits as text. Must live and die inside the call that
-/// drives the search: gzip/zstd write their trailer when the `OutputWriter`
-/// drops, not on `flush`.
-struct TextSink<'a> {
-    ctx: &'a SearchContext<'a>,
+/// Creates the multifile directory on first use, for the same reason the
+/// single-file writer opens lazily. Idempotent, and races benignly between
+/// workers.
+fn ensure_dir(dir: &Path) -> Result<()> {
+    fs_err::create_dir_all(dir)
+        .with_context(|| format!("Failed to create output directory {dir:?} for --multifile"))
+}
+
+/// Opens the single-file writer on first use. A run that produced no hits still
+/// arrives here from `flush`, which is what truncates the output to nothing.
+/// Idempotent by design: reopening would `File::create` over a run's own output.
+fn open_single<'g>(
+    output: &OutputConfig,
+    path: &Path,
+    slot: &'g mut Option<OutputWriter>,
+) -> Result<&'g mut OutputWriter> {
+    if slot.is_none() {
+        *slot = Some(OutputWriter::new(output, path)?);
+    }
+    Ok(slot.as_mut().expect("just populated"))
+}
+
+/// Writes each query's hits as text, to one file or one file per query.
+///
+/// Destinations open on demand, so constructing this touches nothing a failed
+/// search would need to leave intact: a config that [`run_search`] rejects
+/// neither truncates an existing output file nor creates the `--multifile`
+/// directory. gzip and zstd write their trailer when the `OutputWriter` drops
+/// rather than on flush, so drop the sink only after the search returns.
+pub struct TextSink<'a> {
+    queries: &'a QueryRegistry,
+    store: &'a TargetRegistry,
+    output: &'a OutputConfig,
     dest: TextDest,
 }
 
 impl<'a> TextSink<'a> {
-    fn new(ctx: &'a SearchContext<'a>, output_path: &Path) -> Result<Self> {
-        let dest = if ctx.opts.output.multifile {
-            fs_err::create_dir_all(output_path).with_context(|| {
-                format!(
-                    "Failed to create output directory {:?} for --multifile",
-                    output_path
-                )
-            })?;
-            let ext = ctx.opts.output.compress.extension();
-            TextDest::Multi(build_multifile_paths(ctx.queries, output_path, ext))
+    /// `output_path` is a file, or a directory when `output.multifile` is set.
+    ///
+    /// `queries` and `store` must be the same registries later passed to
+    /// [`run_search`]: `consume` indexes them by the driver's `query_idx`, so a
+    /// different pair silently attributes rows to the wrong sequences.
+    pub fn new(
+        queries: &'a QueryRegistry,
+        store: &'a TargetRegistry,
+        output: &'a OutputConfig,
+        output_path: &Path,
+    ) -> Result<Self> {
+        let dest = if output.multifile {
+            let ext = output.compress.extension();
+            TextDest::Multi {
+                dir: output_path.to_path_buf(),
+                paths: build_multifile_paths(queries, output_path, ext),
+            }
         } else {
-            TextDest::Single(Mutex::new(OutputWriter::new(
-                &ctx.opts.output,
-                output_path,
-            )?))
+            TextDest::Single {
+                path: output_path.to_path_buf(),
+                writer: Mutex::new(None),
+            }
         };
-        Ok(Self { ctx, dest })
-    }
-
-    fn flush(&self) -> Result<()> {
-        match &self.dest {
-            TextDest::Single(writer) => writer.lock().unwrap().flush_all(),
-            // Multifile flushed each query's writer as it closed it.
-            TextDest::Multi(_) => Ok(()),
-        }
+        Ok(Self {
+            queries,
+            store,
+            output,
+            dest,
+        })
     }
 }
 
@@ -281,13 +307,13 @@ impl HitSink for TextSink<'_> {
         if hits.is_empty() {
             return Ok(());
         }
-        let q_name = self.ctx.queries.get_name(query_idx);
-        let q_seq = self.ctx.queries.entries()[query_idx].sequence();
-        let mut fmt = HitFormatter::new(self.ctx.opts.output.format);
+        let q_name = self.queries.get_name(query_idx);
+        let q_seq = self.queries.entries()[query_idx].sequence();
+        let mut fmt = HitFormatter::new(self.output.format);
         let mut chunks = Vec::new();
         for hit in &hits {
-            let (t_fwd, t_rc, _) = self.ctx.store.target_slices(hit.target_idx);
-            let t_name = self.ctx.store.get_name(hit.target_idx);
+            let (t_fwd, t_rc, _) = self.store.target_slices(hit.target_idx);
+            let t_name = self.store.get_name(hit.target_idx);
             if let Some(chunk) = fmt.add_hit(hit, q_name, q_seq, t_name, t_fwd, t_rc) {
                 chunks.push(chunk);
             }
@@ -297,13 +323,29 @@ impl HitSink for TextSink<'_> {
         // Formatting above is off-lock; the shared writer is taken once, for this
         // query's whole block (one bulk write per query).
         match &self.dest {
-            TextDest::Single(writer) => write_chunks(&mut writer.lock().unwrap(), &chunks),
+            TextDest::Single { path, writer } => {
+                let mut slot = writer.lock().unwrap();
+                write_chunks(open_single(self.output, path, &mut slot)?, &chunks)
+            }
             // One writer per query (matches RIsearch2).
-            TextDest::Multi(paths) => {
-                let mut writer = OutputWriter::new(&self.ctx.opts.output, &paths[query_idx])?;
+            TextDest::Multi { dir, paths } => {
+                ensure_dir(dir)?;
+                let mut writer = OutputWriter::new(self.output, &paths[query_idx])?;
                 write_chunks(&mut writer, &chunks)?;
                 writer.flush_all()
             }
+        }
+    }
+
+    fn flush(&self) -> Result<()> {
+        match &self.dest {
+            TextDest::Single { path, writer } => {
+                let mut slot = writer.lock().unwrap();
+                open_single(self.output, path, &mut slot)?.flush_all()
+            }
+            // Each query's writer was flushed as it was closed; a run that
+            // produced no hits at all still owes the caller the directory.
+            TextDest::Multi { dir, .. } => ensure_dir(dir),
         }
     }
 }
@@ -718,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn in_memory_matches_file_hit_count() {
+    fn text_output_emits_one_line_per_hit() {
         let query_f = fixture(QUERY_FA);
         let target_f = fixture(TARGET_FA);
 
@@ -730,10 +772,8 @@ mod tests {
         config.extend.build_alignment = false;
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
-        let hits = run_search_in_memory(&queries, &store, &config).unwrap();
-
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
-        run_search(&queries, &store, &config, out.path()).unwrap();
+        let hits = run_to_path(&queries, &store, &config, out.path());
         let file_hit_count = fs_err::read_to_string(out.path())
             .unwrap()
             .lines()
@@ -741,14 +781,13 @@ mod tests {
             .count();
 
         assert_eq!(
-            hits.len(),
-            file_hit_count,
+            hits, file_hit_count,
             "text output must emit exactly one line per retained hit"
         );
     }
 
     #[test]
-    fn in_memory_empty_for_non_matching_target() {
+    fn no_hits_against_non_matching_target() {
         let query_f = fixture(QUERY_FA);
 
         let mut target_file = tempfile::NamedTempFile::new().unwrap();
@@ -763,12 +802,9 @@ mod tests {
             ..test_config()
         };
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
-        let hits = run_search_in_memory(&queries, &store, &config).unwrap();
+        let hits = run_search(&queries, &store, &config, &VecSink::default()).unwrap();
 
-        assert!(
-            hits.is_empty(),
-            "no hits expected against a non-matching target"
-        );
+        assert_eq!(hits, 0, "no hits expected against a non-matching target");
     }
 
     /// Zero-hit behaviour differs by topology and neither branch is covered by a
@@ -787,13 +823,35 @@ mod tests {
 
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         fs_err::write(out.path(), b"stale").unwrap();
-        run_search(&queries, &store, &config, out.path()).unwrap();
+        run_to_path(&queries, &store, &config, out.path());
         assert_eq!(fs_err::metadata(out.path()).unwrap().len(), 0);
 
         config.output.multifile = true;
-        let dir = tempfile::tempdir().unwrap();
-        run_search(&queries, &store, &config, dir.path()).unwrap();
-        assert_eq!(fs_err::read_dir(dir.path()).unwrap().count(), 0);
+        let tmp = tempfile::tempdir().unwrap();
+        // Not pre-created, so this also pins that the directory itself is made.
+        let dir = tmp.path().join("multi");
+        run_to_path(&queries, &store, &config, &dir);
+        assert_eq!(fs_err::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    /// The sink is built before the search validates the config, so it must not
+    /// touch its destination until the driver hands it something.
+    #[test]
+    fn rejected_config_leaves_no_multifile_directory() {
+        let query_f = fixture(&format!(">longq\n{}\n", "A".repeat(MAX_EXT + 1)));
+        let target_f = fixture(TARGET_FA);
+        let (store, _tmp) = build_store(target_f.path());
+
+        let mut config = test_config();
+        config.output.multifile = true;
+        config.extend.max_extension = -1;
+        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("multi");
+        let sink = TextSink::new(&queries, &store, &config.output, &dir).unwrap();
+        assert!(run_search(&queries, &store, &config, &sink).is_err());
+        assert!(!dir.exists());
     }
 
     /// Multifile addresses its writers by index (`paths[query_idx]`) while queries
@@ -815,7 +873,7 @@ mod tests {
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        run_search(&queries, &store, &config, dir.path()).unwrap();
+        run_to_path(&queries, &store, &config, dir.path());
 
         let mut files: Vec<(String, String)> = fs_err::read_dir(dir.path())
             .unwrap()
@@ -860,11 +918,24 @@ mod tests {
 
         let (store, _tmp, queries, config) = mm2_minimal_fixture();
         let spy = Spy::default();
-        run_search_streaming(&queries, &store, &config, &spy).unwrap();
+        run_search(&queries, &store, &config, &spy).unwrap();
 
         let mut seen = spy.0.into_inner().unwrap();
         seen.sort_unstable();
         assert_eq!(seen, (0..queries.len()).collect::<Vec<_>>());
+    }
+
+    /// Search into a text file at `path` (a directory under `--multifile`),
+    /// returning the hit count. The sink dies here, so the caller reads a file
+    /// whose compression trailer is already written.
+    fn run_to_path(
+        queries: &QueryRegistry,
+        store: &TargetRegistry,
+        config: &SearchConfig,
+        path: &std::path::Path,
+    ) -> usize {
+        let sink = TextSink::new(queries, store, &config.output, path).unwrap();
+        run_search(queries, store, config, &sink).unwrap()
     }
 
     fn run_to_lines(
@@ -873,7 +944,7 @@ mod tests {
         store: &TargetRegistry,
     ) -> Vec<String> {
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
-        run_search(queries, store, config, out.path()).unwrap();
+        run_to_path(queries, store, config, out.path());
         fs_err::read_to_string(out.path())
             .unwrap()
             .lines()
