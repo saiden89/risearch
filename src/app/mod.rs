@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use log::{debug, info, trace};
 
-use risearch::{search, QueryRegistry, SearchConfig, TargetRegistry};
+use risearch::{output, search, QueryRegistry, SearchConfig, TargetRegistry};
 
 use crate::cli::legacy::emit_legacy_warnings;
 use crate::cli::{Cli, Commands, SearchArgs};
@@ -54,7 +54,7 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
 
     debug!("Starting search...");
 
-    let sink = search::TextSink::new(&queries, &targets, &opts.output, output_path)?;
+    let sink = output::TextSink::new(&queries, &targets, &opts.output, output_path)?;
     search::run_search(&queries, &targets, &opts, &sink)?;
     info!("Done");
     Ok(())

@@ -10,22 +10,20 @@
 
 mod extension;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use log::info;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use self::extension::ExtensionEngine;
 use crate::alignment::{Alignment, PairClass};
-use crate::config::{OutputConfig, SearchConfig};
+use crate::config::SearchConfig;
 use crate::dp::{DpConfig, DpView, ExtendDir, MAX_EXT};
 use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetRegistry;
-use crate::output::writer::{build_multifile_paths, HitFormatter, OutputChunk, OutputWriter};
 use crate::registry::QueryRegistry;
 use crate::seed::{SeedHit, SeedingEngine};
 use crate::types::{Base, Energy, Strand};
@@ -217,137 +215,6 @@ pub fn run_search(
     let total = counts.iter().sum();
     info!("Search complete: {} hits", total);
     Ok(total)
-}
-
-enum TextDest {
-    /// One writer for the whole run, opened on first use. Constructing it eagerly
-    /// would truncate an existing output file before [`run_search`] had a chance
-    /// to reject the config.
-    Single {
-        path: PathBuf,
-        writer: Mutex<Option<OutputWriter>>,
-    },
-    /// One writer per query, each created on first use. Paths are assigned up
-    /// front: `_1` collision suffixes are handed out in query-index order, so
-    /// naming them lazily would make filenames depend on rayon scheduling.
-    Multi { dir: PathBuf, paths: Vec<PathBuf> },
-}
-
-/// Creates the multifile directory on first use, for the same reason the
-/// single-file writer opens lazily. Idempotent, and races benignly between
-/// workers.
-fn ensure_dir(dir: &Path) -> Result<()> {
-    fs_err::create_dir_all(dir)
-        .with_context(|| format!("Failed to create output directory {dir:?} for --multifile"))
-}
-
-/// Opens the single-file writer on first use. A run that produced no hits still
-/// arrives here from `flush`, which is what truncates the output to nothing.
-/// Idempotent by design: reopening would `File::create` over a run's own output.
-fn open_single<'g>(
-    output: &OutputConfig,
-    path: &Path,
-    slot: &'g mut Option<OutputWriter>,
-) -> Result<&'g mut OutputWriter> {
-    if slot.is_none() {
-        *slot = Some(OutputWriter::new(output, path)?);
-    }
-    Ok(slot.as_mut().expect("just populated"))
-}
-
-/// Writes each query's hits as text, to one file or one file per query.
-///
-/// Destinations open on demand, so constructing this touches nothing a failed
-/// search would need to leave intact: a config that [`run_search`] rejects
-/// neither truncates an existing output file nor creates the `--multifile`
-/// directory. gzip and zstd write their trailer when the `OutputWriter` drops
-/// rather than on flush, so drop the sink only after the search returns.
-pub struct TextSink<'a> {
-    queries: &'a QueryRegistry,
-    store: &'a TargetRegistry,
-    output: &'a OutputConfig,
-    dest: TextDest,
-}
-
-impl<'a> TextSink<'a> {
-    /// `output_path` is a file, or a directory when `output.multifile` is set.
-    ///
-    /// `queries` and `store` must be the same registries later passed to
-    /// [`run_search`]: `consume` indexes them by the driver's `query_idx`, so a
-    /// different pair silently attributes rows to the wrong sequences.
-    pub fn new(
-        queries: &'a QueryRegistry,
-        store: &'a TargetRegistry,
-        output: &'a OutputConfig,
-        output_path: &Path,
-    ) -> Result<Self> {
-        let dest = if output.multifile {
-            let ext = output.compress.extension();
-            TextDest::Multi {
-                dir: output_path.to_path_buf(),
-                paths: build_multifile_paths(queries, output_path, ext),
-            }
-        } else {
-            TextDest::Single {
-                path: output_path.to_path_buf(),
-                writer: Mutex::new(None),
-            }
-        };
-        Ok(Self {
-            queries,
-            store,
-            output,
-            dest,
-        })
-    }
-}
-
-impl HitSink for TextSink<'_> {
-    fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
-        if hits.is_empty() {
-            return Ok(());
-        }
-        let q_name = self.queries.get_name(query_idx);
-        let q_seq = self.queries.entries()[query_idx].sequence();
-        let mut fmt = HitFormatter::new(self.output.format);
-        let mut chunks = Vec::new();
-        for hit in &hits {
-            let (t_fwd, t_rc, _) = self.store.target_slices(hit.target_idx);
-            let t_name = self.store.get_name(hit.target_idx);
-            if let Some(chunk) = fmt.add_hit(hit, q_name, q_seq, t_name, t_fwd, t_rc) {
-                chunks.push(chunk);
-            }
-        }
-        chunks.extend(fmt.flush());
-
-        // Formatting above is off-lock; the shared writer is taken once, for this
-        // query's whole block (one bulk write per query).
-        match &self.dest {
-            TextDest::Single { path, writer } => {
-                let mut slot = writer.lock().unwrap();
-                write_chunks(open_single(self.output, path, &mut slot)?, &chunks)
-            }
-            // One writer per query (matches RIsearch2).
-            TextDest::Multi { dir, paths } => {
-                ensure_dir(dir)?;
-                let mut writer = OutputWriter::new(self.output, &paths[query_idx])?;
-                write_chunks(&mut writer, &chunks)?;
-                writer.flush_all()
-            }
-        }
-    }
-
-    fn flush(&self) -> Result<()> {
-        match &self.dest {
-            TextDest::Single { path, writer } => {
-                let mut slot = writer.lock().unwrap();
-                open_single(self.output, path, &mut slot)?.flush_all()
-            }
-            // Each query's writer was flushed as it was closed; a run that
-            // produced no hits at all still owes the caller the directory.
-            TextDest::Multi { dir, .. } => ensure_dir(dir),
-        }
-    }
 }
 
 struct SearchContext<'a> {
@@ -553,13 +420,6 @@ impl SearchWorker {
     }
 }
 
-fn write_chunks(writer: &mut OutputWriter, chunks: &[OutputChunk]) -> Result<()> {
-    for chunk in chunks {
-        writer.write_chunk(chunk)?;
-    }
-    Ok(())
-}
-
 struct ExtensionResult {
     energy: Energy,
     q_ext: usize,
@@ -704,6 +564,7 @@ mod tests {
         SeedConfig,
     };
     use crate::index::store::TargetRegistry;
+    use crate::output::TextSink;
     use crate::registry::QueryRegistry;
     use crate::types::DsmId;
 

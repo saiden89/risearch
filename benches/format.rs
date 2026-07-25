@@ -41,7 +41,6 @@ fn bench_format_hit(c: &mut Criterion) {
         OutputFormat::Cigar,
         OutputFormat::BindingSite,
     ] {
-        let mut itoa = itoa::Buffer::new();
         let mut out = Vec::with_capacity(1024);
 
         group.bench_with_input(
@@ -52,7 +51,6 @@ fn bench_format_hit(c: &mut Criterion) {
                     out.clear();
                     format_hit_into(
                         &mut out,
-                        &mut itoa,
                         &hit,
                         "test_query",
                         &q_seq,

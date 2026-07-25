@@ -47,7 +47,6 @@ impl<'a> TsvLine<'a> {
 #[allow(clippy::too_many_arguments)]
 pub fn format_hit_into(
     out: &mut Vec<u8>,
-    itoa: &mut itoa::Buffer,
     hit: &SearchHit,
     q_name: &str,
     q_seq: &[Base],
@@ -56,6 +55,9 @@ pub fn format_hit_into(
     t_rc: &[Base],
     format: OutputFormat,
 ) {
+    // Uninitialized 40-byte stack array; there is nothing to amortize by
+    // hoisting it to the caller.
+    let mut itoa = itoa::Buffer::new();
     let alignment = hit.alignment.as_ref();
     let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
     let flank_reserve = if format == OutputFormat::BindingSite {
@@ -70,7 +72,7 @@ pub fn format_hit_into(
     }
 
     let mut row = TsvLine::new(out);
-    write_base_fields(&mut row, itoa, hit, q_name, t_name);
+    write_base_fields(&mut row, &mut itoa, hit, q_name, t_name);
     write_extended_fields(&mut row, hit, t_fwd, t_rc, format);
     row.finish();
 }

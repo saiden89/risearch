@@ -1,141 +1,141 @@
 use std::collections::HashSet;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use zstd::stream;
 
-use crate::config::{OutputCompression, OutputConfig, OutputFormat};
-use crate::registry::QueryRegistry;
-use crate::search::SearchHit;
+use crate::config::OutputCompression;
 
-use super::format::format_hit_into;
-
-const CHUNK_SIZE_THRESHOLD: usize = 64 * 1024;
-
-/// A batch of pre-formatted hit lines ready for writing.
-pub struct OutputChunk {
-    pub data: Vec<u8>,
-    pub hits: usize,
-}
-
-/// Formats `SearchHit`s into `OutputChunk`s, buffering to avoid excessive channel traffic.
-pub struct HitFormatter {
-    itoa: itoa::Buffer,
-    chunk_data: Vec<u8>,
-    chunk_hits: usize,
-    output_format: OutputFormat,
-}
-
-impl HitFormatter {
-    pub fn new(output_format: OutputFormat) -> Self {
-        Self {
-            itoa: itoa::Buffer::new(),
-            chunk_data: Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
-            chunk_hits: 0,
-            output_format,
-        }
-    }
-
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_hit(
-        &mut self,
-        hit: &SearchHit,
-        q_name: &str,
-        q_seq: &[crate::types::Base],
-        t_name: &str,
-        t_fwd: &[crate::types::Base],
-        t_rc: &[crate::types::Base],
-    ) -> Option<OutputChunk> {
-        format_hit_into(
-            &mut self.chunk_data,
-            &mut self.itoa,
-            hit,
-            q_name,
-            q_seq,
-            t_name,
-            t_fwd,
-            t_rc,
-            self.output_format,
-        );
-        self.chunk_hits += 1;
-
-        if self.chunk_data.len() >= CHUNK_SIZE_THRESHOLD {
-            Some(self.take_chunk())
-        } else {
-            None
-        }
-    }
-
-    pub fn take_chunk(&mut self) -> OutputChunk {
-        let data = std::mem::replace(
-            &mut self.chunk_data,
-            Vec::with_capacity(CHUNK_SIZE_THRESHOLD + 1024),
-        );
-        let hits = std::mem::replace(&mut self.chunk_hits, 0);
-        OutputChunk { data, hits }
-    }
-
-    /// Final chunk for this formatter. Unlike [`Self::take_chunk`] it hands over
-    /// the buffer instead of swapping in a fresh one, so a formatter that is
-    /// dropped after flushing does not allocate a chunk-sized buffer it never
-    /// fills.
-    pub fn flush(&mut self) -> Option<OutputChunk> {
-        (self.chunk_hits > 0).then(|| OutputChunk {
-            data: std::mem::take(&mut self.chunk_data),
-            hits: std::mem::replace(&mut self.chunk_hits, 0),
-        })
-    }
-}
-
-/// Owns the full lifecycle of a single output destination: path resolution,
-/// compression wrapping, buffering, writing, and flushing.
+/// Where a run's bytes go: one destination for everything, or one per key.
 ///
-/// Pass `-` as `output_path` to write to stdout.
-pub struct OutputWriter {
-    writer: Box<dyn Write + Send>,
+/// Routing is on an opaque `key`; this layer never learns what a key means. Both
+/// variants open their files on first write, so constructing an `OutputWriter`
+/// touches nothing — a caller whose config is later rejected leaves an existing
+/// output file untruncated and creates no directory.
+///
+/// gzip and zstd write their trailer when the underlying stream drops rather than
+/// on flush, so drop this only after the last write.
+pub enum OutputWriter {
+    /// Every key writes to the same stream, serialized. `-` means stdout.
+    Single {
+        path: PathBuf,
+        stream: Mutex<Option<Box<dyn Write + Send>>>,
+        compress: OutputCompression,
+    },
+    /// One file per key, opened and closed inside each write. Paths are supplied
+    /// up front so naming never depends on the order keys arrive in.
+    PerKey {
+        dir: PathBuf,
+        paths: Vec<PathBuf>,
+        compress: OutputCompression,
+    },
 }
 
 impl OutputWriter {
-    pub fn new(config: &OutputConfig, output_path: &Path) -> Result<Self> {
-        let inner: Box<dyn Write + Send> = if output_path == Path::new("-") {
-            Box::new(std::io::stdout())
-        } else {
-            Box::new(
-                fs_err::File::create(output_path)
-                    .with_context(|| format!("Failed to create output file {:?}", output_path))?,
-            )
-        };
+    /// One stream for every key, at `path` (`-` for stdout).
+    pub fn single(path: &Path, compress: OutputCompression) -> Self {
+        Self::Single {
+            path: path.to_path_buf(),
+            stream: Mutex::new(None),
+            compress,
+        }
+    }
 
-        let writer: Box<dyn Write + Send> = match config.compress {
-            OutputCompression::None => Box::new(BufWriter::with_capacity(256 * 1024, inner)),
-            OutputCompression::Gzip(level) => Box::new(BufWriter::with_capacity(
-                256 * 1024,
-                GzEncoder::new(inner, Compression::new(level as u32)),
-            )),
-            OutputCompression::Zstd(level) => {
-                let encoder = stream::write::Encoder::new(inner, level)
-                    .context("zstd encoder init failed")?
-                    .auto_finish();
-                Box::new(BufWriter::with_capacity(256 * 1024, encoder))
+    /// One file per key. `paths` is indexed by key, so it must cover every key
+    /// the caller will write.
+    pub fn per_key(dir: &Path, paths: Vec<PathBuf>, compress: OutputCompression) -> Self {
+        Self::PerKey {
+            dir: dir.to_path_buf(),
+            paths,
+            compress,
+        }
+    }
+
+    pub fn write_block(&self, key: usize, block: &[u8]) -> Result<()> {
+        match self {
+            Self::Single {
+                path,
+                stream,
+                compress,
+            } => {
+                let mut slot = stream.lock().unwrap();
+                open_stream(path, *compress, &mut slot)?
+                    .write_all(block)
+                    .context("Failed to write output")
             }
-        };
-
-        Ok(Self { writer })
+            Self::PerKey {
+                dir,
+                paths,
+                compress,
+            } => {
+                ensure_dir(dir)?;
+                let mut stream = open_path(&paths[key], *compress)?;
+                stream.write_all(block).context("Failed to write output")?;
+                stream.flush().context("Failed to flush output")
+            }
+        }
     }
 
-    pub fn write_chunk(&mut self, chunk: &OutputChunk) -> Result<()> {
-        self.writer
-            .write_all(&chunk.data)
-            .context("Failed to write output chunk")
+    /// Finalize. `Single` opens its stream even if nothing was ever written, which
+    /// is what truncates a stale output file after a run with no hits; `PerKey`
+    /// flushed each file as it closed it, but still owes the caller the directory.
+    pub fn finish(&self) -> Result<()> {
+        match self {
+            Self::Single {
+                path,
+                stream,
+                compress,
+            } => {
+                let mut slot = stream.lock().unwrap();
+                open_stream(path, *compress, &mut slot)?
+                    .flush()
+                    .context("Failed to flush output")
+            }
+            Self::PerKey { dir, .. } => ensure_dir(dir),
+        }
     }
+}
 
-    pub fn flush_all(&mut self) -> Result<()> {
-        self.writer.flush().context("Failed to flush output")
+/// Opens `path` on first use. Idempotent by design: reopening would `File::create`
+/// over bytes this run already wrote.
+fn open_stream<'s>(
+    path: &Path,
+    compress: OutputCompression,
+    slot: &'s mut Option<Box<dyn Write + Send>>,
+) -> Result<&'s mut Box<dyn Write + Send>> {
+    if slot.is_none() {
+        *slot = Some(open_path(path, compress)?);
     }
+    Ok(slot.as_mut().expect("just populated"))
+}
+
+fn open_path(path: &Path, compress: OutputCompression) -> Result<Box<dyn Write + Send>> {
+    let inner: Box<dyn Write + Send> = if path == Path::new("-") {
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(
+            fs_err::File::create(path)
+                .with_context(|| format!("Failed to create output file {:?}", path))?,
+        )
+    };
+
+    Ok(match compress {
+        OutputCompression::None => Box::new(BufWriter::with_capacity(256 * 1024, inner)),
+        OutputCompression::Gzip(level) => Box::new(BufWriter::with_capacity(
+            256 * 1024,
+            GzEncoder::new(inner, Compression::new(level as u32)),
+        )),
+        OutputCompression::Zstd(level) => {
+            let encoder = stream::write::Encoder::new(inner, level)
+                .context("zstd encoder init failed")?
+                .auto_finish();
+            Box::new(BufWriter::with_capacity(256 * 1024, encoder))
+        }
+    })
 }
 
 /// Replace characters that are unsafe in filenames and handle reserved names.
@@ -180,16 +180,23 @@ fn unique_filename_stem(stem: &str, used: &mut HashSet<String>) -> String {
     }
 }
 
-pub(crate) fn build_multifile_paths(
-    queries: &QueryRegistry,
+/// Creates the multifile output directory. Callers do this on first use rather
+/// than up front, so a config the search rejects leaves the filesystem alone.
+/// Idempotent, and races benignly between workers.
+fn ensure_dir(dir: &Path) -> Result<()> {
+    fs_err::create_dir_all(dir)
+        .with_context(|| format!("Failed to create output directory {dir:?} for --multifile"))
+}
+
+pub(crate) fn build_multifile_paths<'a>(
+    names: impl ExactSizeIterator<Item = &'a str>,
     output_dir: &Path,
     ext: &str,
 ) -> Vec<PathBuf> {
-    let mut used_stems: HashSet<String> = HashSet::with_capacity(queries.len());
-    let mut out: Vec<PathBuf> = Vec::with_capacity(queries.len());
+    let mut used_stems: HashSet<String> = HashSet::with_capacity(names.len());
+    let mut out: Vec<PathBuf> = Vec::with_capacity(names.len());
 
-    for query_idx in 0..queries.len() {
-        let name = queries.get_name(query_idx);
+    for name in names {
         let stem_raw = sanitize_filename(name);
         let stem = unique_filename_stem(&stem_raw, &mut used_stems);
         out.push(output_dir.join(format!("{stem}{ext}")));

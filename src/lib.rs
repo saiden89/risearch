@@ -28,6 +28,7 @@ pub use config::{
     ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat, ScoreConfig,
     SearchConfig, SeedConfig,
 };
-pub use search::{run_search, HitSink, SearchHit, TextSink, VecSink};
+pub use output::TextSink;
+pub use search::{run_search, HitSink, SearchHit, VecSink};
 pub use seed::SeedHit;
 pub use types::DsmId;
