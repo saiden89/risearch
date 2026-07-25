@@ -63,11 +63,17 @@ impl SearchHitExt for SearchHit {
     }
 
     fn seed_start(&self) -> Option<usize> {
-        self.seed_start
+        self.alignment
+            .as_ref()
+            .and_then(|a| a.seed())
+            .map(|s| s.start)
     }
 
     fn seed_end(&self) -> Option<usize> {
-        self.seed_end
+        self.alignment
+            .as_ref()
+            .and_then(|a| a.seed())
+            .map(|s| s.end)
     }
 
     fn fmt_coords(&self) -> String {
@@ -125,15 +131,15 @@ pub(crate) fn parse_bindingsite_output(
     let energy = Energy::from_kcal(fields[7].parse::<f64>().ok()?);
 
     // Create alignment from C interaction/target columns.
-    let alignment = Alignment::from_c_output(&interaction, &target_seq);
-    let (seed_start, seed_end) = match (seed_start, seed_end) {
+    let seed = match (seed_start, seed_end) {
         (Some(s), Some(e)) => {
             let s = s.min(interaction.len());
             let e = e.min(interaction.len()).max(s);
-            (Some(s), Some(e))
+            Some(s..e)
         }
-        _ => (None, None),
+        _ => None,
     };
+    let alignment = Alignment::from_c_output(&interaction, &target_seq, seed);
 
     Some(SearchHit {
         query_idx,
@@ -144,8 +150,6 @@ pub(crate) fn parse_bindingsite_output(
         t_end: t_end.saturating_sub(1),
         strand,
         energy,
-        seed_start,
-        seed_end,
         alignment: Some(alignment),
     })
 }

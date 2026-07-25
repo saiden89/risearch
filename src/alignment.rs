@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use smallvec::SmallVec;
 
 use crate::types::{Base, PairType};
@@ -63,11 +65,12 @@ impl PairClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alignment {
     steps: SmallVec<[PairClass; 128]>,
+    seed: Option<Range<usize>>,
 }
 
 impl Alignment {
-    pub fn from_steps(steps: SmallVec<[PairClass; 128]>) -> Self {
-        Self { steps }
+    pub fn from_steps(steps: SmallVec<[PairClass; 128]>, seed: Option<Range<usize>>) -> Self {
+        Self { steps, seed }
     }
 
     pub fn from_parts(prefix: &[PairClass], core: &[PairClass], suffix: &[PairClass]) -> Self {
@@ -75,7 +78,11 @@ impl Alignment {
         steps.extend_from_slice(prefix);
         steps.extend_from_slice(core);
         steps.extend_from_slice(suffix);
-        Self { steps }
+        let seed = prefix.len()..prefix.len() + core.len();
+        Self {
+            steps,
+            seed: Some(seed),
+        }
     }
 
     #[inline]
@@ -83,11 +90,17 @@ impl Alignment {
         &self.steps
     }
 
+    /// Span of the seed core within [`steps`](Self::steps).
+    #[inline]
+    pub fn seed(&self) -> Option<Range<usize>> {
+        self.seed.clone()
+    }
+
     pub fn fingerprint(&self) -> String {
         self.steps.iter().map(|&p| p.symbol()).collect()
     }
 
-    pub fn from_c_output(interaction: &str, _target_seq: &str) -> Self {
+    pub fn from_c_output(interaction: &str, _target_seq: &str, seed: Option<Range<usize>>) -> Self {
         let steps = interaction
             .chars()
             .map(|c| match c {
@@ -99,6 +112,6 @@ impl Alignment {
                 _ => PairClass::Mismatch,
             })
             .collect();
-        Self::from_steps(steps)
+        Self::from_steps(steps, seed)
     }
 }

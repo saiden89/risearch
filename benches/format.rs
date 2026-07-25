@@ -24,8 +24,6 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>, Vec<Base>) {
         t_end: 5,
         strand: Strand::Forward,
         energy: Energy::from_kcal(-10.5),
-        seed_start: Some(0),
-        seed_end: Some(6),
         alignment: Some(alignment),
     };
 

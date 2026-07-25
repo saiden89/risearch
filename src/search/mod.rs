@@ -40,8 +40,6 @@ pub struct SearchHit {
     pub t_end: usize,
     pub strand: Strand,
     pub energy: Energy,
-    pub seed_start: Option<usize>,
-    pub seed_end: Option<usize>,
     pub alignment: Option<Alignment>,
 }
 
@@ -619,7 +617,7 @@ impl SearchHit {
             final_t_start = tmp;
         }
 
-        let (alignment, seed_start, seed_end) = if include_alignment {
+        let alignment = if include_alignment {
             let t_match_end = t_start + len - 1;
             let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
             for i in 0..len {
@@ -628,16 +626,13 @@ impl SearchHit {
                     target_trans[t_match_end - i],
                 ));
             }
-            let left_pairs = left.pairs.as_deref().unwrap_or(&[]);
-            let right_pairs = right.pairs.as_deref().unwrap_or(&[]);
-            let start = left_pairs.len();
-            (
-                Some(Alignment::from_parts(left_pairs, &seed_pairs, right_pairs)),
-                Some(start),
-                Some(start + len),
-            )
+            Some(Alignment::from_parts(
+                left.pairs.as_deref().unwrap_or(&[]),
+                &seed_pairs,
+                right.pairs.as_deref().unwrap_or(&[]),
+            ))
         } else {
-            (None, None, None)
+            None
         };
 
         Self {
@@ -649,8 +644,6 @@ impl SearchHit {
             t_end: final_t_end,
             strand: seed.strand,
             energy,
-            seed_start,
-            seed_end,
             alignment,
         }
     }
