@@ -193,29 +193,6 @@ impl TargetRegistry {
         None
     }
 
-    /// Get per-target sequence slices for output/extension.
-    ///
-    /// Returns `(name, fwd_transformed, rc_transformed, seq_len)` where each
-    /// transformed slice is from the mmap-backed combined sequence.
-    ///
-    /// # Panics
-    /// Panics if `idx >= self.len()`.
-    pub fn target_seqs(&self, idx: usize) -> (&str, &[Base], &[Base], usize) {
-        let name = self.get_name(idx);
-        let seq_len = self.seq_lens[idx];
-        let offset = self.offsets[idx];
-        let combined_seq = self.combined_seq();
-        let fwd_end = offset + seq_len;
-        let rc_start = fwd_end + 1;
-        let rc_end = rc_start + seq_len;
-        (
-            name,
-            &combined_seq[offset..fwd_end],
-            &combined_seq[rc_start..rc_end],
-            seq_len,
-        )
-    }
-
     #[inline]
     fn root(&self) -> &ArchivedTargetStore {
         // SAFETY: `open` validates the archive before constructing `TargetRegistry`.
@@ -383,8 +360,8 @@ mod tests {
 
         for (i, (expected_name, expected_seq_len)) in expected.iter().enumerate().take(store.len())
         {
-            let (name, fwd, rc, seq_len) = store.target_seqs(i);
-            assert_eq!(name, *expected_name);
+            let (fwd, rc, seq_len) = store.target_slices(i);
+            assert_eq!(store.get_name(i), *expected_name);
             assert_eq!(seq_len, *expected_seq_len);
             assert_eq!(fwd.len(), *expected_seq_len);
             assert_eq!(rc.len(), *expected_seq_len);

@@ -333,7 +333,7 @@ fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'
 
 fn hit_target_bases<'a>(hit: &SearchHit, target_registry: &'a TargetRegistry) -> &'a [Base] {
     let t_idx = hit.target_idx;
-    let (_, t_fwd, t_rc, _) = target_registry.target_seqs(t_idx);
+    let (t_fwd, t_rc, _) = target_registry.target_slices(t_idx);
     match hit.strand {
         Strand::Forward => {
             let start = hit.t_start.min(t_fwd.len());
