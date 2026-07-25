@@ -6,7 +6,7 @@
 //!    SA to enumerate seeds
 //! 2) Extend each seed (DP) into a final hit
 //! 3) Collapse hits that share a final bounding box to the lowest-energy one
-//!    (unless `--no-dedup`), then hand the query's hits to a [`HitConsumer`]
+//!    (unless `--no-dedup`), then hand the query's hits to a [`HitSink`]
 
 mod extension;
 
@@ -30,6 +30,19 @@ use crate::registry::QueryRegistry;
 use crate::seed::{SeedHit, SeedingEngine};
 use crate::types::{Base, Energy, Strand};
 
+/// One accepted interaction: a span of a query paired against a span of a target.
+///
+/// Coordinates are 0-based and inclusive at both ends; the output formats add 1.
+/// `t_start`/`t_end` are forward-strand positions even for a `Reverse` hit, mapped
+/// back from the reverse-complement view the hit was found in, so both strands
+/// index the same target sequence.
+///
+/// Bases and names are not carried, only indices into the query and target
+/// registries. `query_bases` and `target_bases` slice the paired spans out of
+/// sequences the caller supplies.
+///
+/// `alignment` is populated only under [`ExtendConfig::build_alignment`](crate::ExtendConfig),
+/// and carries the seed's span within its own steps.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub query_idx: usize,
@@ -46,16 +59,17 @@ pub struct SearchHit {
 /// Run search collecting all hits into memory.
 ///
 /// Retains every hit by contract; peak RAM therefore scales with the hit count.
-/// Hits come back grouped by query in ascending `query_idx`; order within a
-/// query is not stable across runs.
+/// Order is arbitrary and not stable across runs: queries complete in whatever
+/// order the workers finish, and the dedup pass drains a `HashMap`. Sort if you
+/// need a stable order.
 pub fn run_search_in_memory(
     queries: &QueryRegistry,
     store: &TargetRegistry,
     opts: &SearchConfig,
 ) -> Result<Vec<SearchHit>> {
-    let consumer = VecConsumer::default();
-    run_search_streaming(queries, store, opts, &consumer)?;
-    Ok(consumer.into_hits())
+    let sink = VecSink::default();
+    run_search_streaming(queries, store, opts, &sink)?;
+    Ok(sink.0.into_inner().unwrap())
 }
 
 /// Where a search's hits go.
@@ -67,27 +81,16 @@ pub fn run_search_in_memory(
 /// `consume` is called at most once per `query_idx`, from a rayon worker, in
 /// arbitrary order — hence `&self` plus interior mutability. Lock once per call,
 /// never per hit, and do any expensive conversion before taking the lock.
-pub trait HitConsumer: Sync {
+pub trait HitSink: Sync {
     fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()>;
 }
 
 #[derive(Default)]
-struct VecConsumer(Mutex<Vec<(usize, Vec<SearchHit>)>>);
+struct VecSink(Mutex<Vec<SearchHit>>);
 
-impl VecConsumer {
-    /// Sorting restores the ascending-`query_idx` grouping callers relied on
-    /// when the in-memory path collected through rayon's order-preserving
-    /// `collect`; queries arrive here in completion order.
-    fn into_hits(self) -> Vec<SearchHit> {
-        let mut groups = self.0.into_inner().unwrap();
-        groups.sort_unstable_by_key(|(query_idx, _)| *query_idx);
-        groups.into_iter().flat_map(|(_, hits)| hits).collect()
-    }
-}
-
-impl HitConsumer for VecConsumer {
-    fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
-        self.0.lock().unwrap().push((query_idx, hits));
+impl HitSink for VecSink {
+    fn consume(&self, _query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
+        self.0.lock().unwrap().extend(hits);
         Ok(())
     }
 }
@@ -172,7 +175,7 @@ fn dedup_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
 ///
 /// Parallelizes over queries: each rayon worker owns one query end-to-end —
 /// seed it against the shared target SA, extend, dedup — then hands the hits to
-/// the text consumer and frees its per-query state. Peak RAM is bounded by the
+/// the text sink and frees its per-query state. Peak RAM is bounded by the
 /// concurrent workers' per-query state, not the total hit count. Output line
 /// order is not stable across runs (the hit set is); callers needing order must
 /// sort.
@@ -187,31 +190,31 @@ pub fn run_search(
     };
     // Construct the destination only after validation: creating it earlier would
     // truncate an existing output file before a rejected config could abort.
-    let consumer = TextConsumer::new(&ctx, output_path)?;
-    let total = drive(&ctx, &consumer)?;
-    consumer.flush()?;
+    let sink = TextSink::new(&ctx, output_path)?;
+    let total = drive(&ctx, &sink)?;
+    sink.flush()?;
 
     info!("Search complete: {} hits", total);
     Ok(())
 }
 
-/// Run search, handing each query's hits to `consumer` as they are produced.
+/// Run search, handing each query's hits to `sink` as they are produced.
 pub fn run_search_streaming(
     queries: &QueryRegistry,
     store: &TargetRegistry,
     opts: &SearchConfig,
-    consumer: &dyn HitConsumer,
+    sink: &dyn HitSink,
 ) -> Result<()> {
     let Some(ctx) = init_search(queries, store, opts)? else {
         return Ok(());
     };
-    drive(&ctx, consumer)?;
+    drive(&ctx, sink)?;
     Ok(())
 }
 
 /// Parallel over queries: seed, extend, dedup, hand off. Returns the total hit
 /// count.
-fn drive(ctx: &SearchContext<'_>, consumer: &dyn HitConsumer) -> Result<usize> {
+fn drive(ctx: &SearchContext<'_>, sink: &dyn HitSink) -> Result<usize> {
     let engine = SeedingEngine::new(ctx.queries, ctx.store);
     let counts: Vec<usize> = (0..ctx.queries.len())
         .into_par_iter()
@@ -220,7 +223,7 @@ fn drive(ctx: &SearchContext<'_>, consumer: &dyn HitConsumer) -> Result<usize> {
             |worker, qi| -> Result<usize> {
                 let hits = worker.query_hits(ctx, &engine, qi)?;
                 let emitted = hits.len();
-                consumer.consume(qi, hits)?;
+                sink.consume(qi, hits)?;
                 Ok(emitted)
             },
         )
@@ -239,12 +242,12 @@ enum TextDest {
 /// Writes each query's hits as text. Must live and die inside the call that
 /// drives the search: gzip/zstd write their trailer when the `OutputWriter`
 /// drops, not on `flush`.
-struct TextConsumer<'a> {
+struct TextSink<'a> {
     ctx: &'a SearchContext<'a>,
     dest: TextDest,
 }
 
-impl<'a> TextConsumer<'a> {
+impl<'a> TextSink<'a> {
     fn new(ctx: &'a SearchContext<'a>, output_path: &Path) -> Result<Self> {
         let dest = if ctx.opts.output.multifile {
             fs_err::create_dir_all(output_path).with_context(|| {
@@ -273,7 +276,7 @@ impl<'a> TextConsumer<'a> {
     }
 }
 
-impl HitConsumer for TextConsumer<'_> {
+impl HitSink for TextSink<'_> {
     fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
         if hits.is_empty() {
             return Ok(());
@@ -742,10 +745,6 @@ mod tests {
             file_hit_count,
             "text output must emit exactly one line per retained hit"
         );
-        assert!(
-            hits.windows(2).all(|w| w[0].query_idx <= w[1].query_idx),
-            "in-memory hits must stay grouped in ascending query_idx"
-        );
     }
 
     #[test]
@@ -842,7 +841,7 @@ mod tests {
         }
     }
 
-    /// The [`HitConsumer`] contract the in-tree consumers depend on: every query
+    /// The [`HitSink`] contract the in-tree sinks depend on: every query
     /// is consumed exactly once, and every hit in a batch carries the
     /// `query_idx` handed alongside it (multifile picks its file from that index,
     /// single-file looks up the query's name and sequence).
@@ -851,7 +850,7 @@ mod tests {
         #[derive(Default)]
         struct Spy(Mutex<Vec<usize>>);
 
-        impl HitConsumer for Spy {
+        impl HitSink for Spy {
             fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
                 assert!(hits.iter().all(|hit| hit.query_idx == query_idx));
                 self.0.lock().unwrap().push(query_idx);

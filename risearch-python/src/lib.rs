@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::dsm::DsmRegistry;
 use risearch::{
-    run_search_streaming, Energy, ExtendConfig, FilterConfig, HitConsumer, OutputCompression,
+    run_search_streaming, Energy, ExtendConfig, FilterConfig, HitSink, OutputCompression,
     OutputConfig, OutputFormat, QueryRegistry, ScoreConfig, SearchConfig, SearchHit, SeedConfig,
     TargetRegistry,
 };
@@ -52,9 +52,9 @@ struct HitColumns {
 /// Appends each query's hits straight into the Arrow columns as that query
 /// finishes, so the full hit set is never materialized at once.
 #[derive(Default)]
-struct ArrowConsumer(Mutex<HitColumns>);
+struct ArrowSink(Mutex<HitColumns>);
 
-impl ArrowConsumer {
+impl ArrowSink {
     fn into_batch(self, schema: &SchemaRef) -> RecordBatch {
         let mut c = self.0.into_inner().unwrap();
         let columns: Vec<ArrayRef> = vec![
@@ -72,7 +72,7 @@ impl ArrowConsumer {
     }
 }
 
-impl HitConsumer for ArrowConsumer {
+impl HitSink for ArrowSink {
     fn consume(&self, _query_idx: usize, hits: Vec<SearchHit>) -> anyhow::Result<()> {
         let mut strand_buf = [0u8; 4];
         let mut c = self.0.lock().unwrap();
@@ -304,10 +304,10 @@ fn search(
     let queries = QueryRegistry::from_fastas(&paths, &config.seed)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
-    let consumer = ArrowConsumer::default();
-    py.detach(|| run_search_streaming(&queries, &store.0, &config, &consumer))?;
+    let sink = ArrowSink::default();
+    py.detach(|| run_search_streaming(&queries, &store.0, &config, &sink))?;
     let schema = search_result_schema().clone();
-    Ok(PySearchResult::new(consumer.into_batch(&schema), schema))
+    Ok(PySearchResult::new(sink.into_batch(&schema), schema))
 }
 
 // =============================================================================
