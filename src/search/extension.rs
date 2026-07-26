@@ -70,6 +70,11 @@ impl ExtensionEngine {
     }
 }
 
+/// Resolve a traceback into pair classes, ordered 5'->3' along the query.
+///
+/// A traceback runs from `(end_i, end_j)` back to the anchor, which is ascending
+/// query coordinate for `Left` but descending for `Right` (`DpView` polarity), so
+/// the right-hand walk is reversed to hand `Alignment` one canonical order.
 fn map_trace_to_pairs(
     view: &DpView<'_>,
     ops: &[TraceOp],
@@ -81,9 +86,8 @@ fn map_trace_to_pairs(
     for &op in ops {
         match op {
             TraceOp::Paired => {
-                let q_base = view.q_base(i);
-                let t_base = view.t_base(j).complement();
-                out.push(PairClass::from_bases(q_base, t_base));
+                let target = view.t_base(j).complement();
+                out.push(PairClass::from_bases(view.q_base(i), target));
                 i -= 1;
                 j -= 1;
             }
@@ -96,6 +100,9 @@ fn map_trace_to_pairs(
                 j -= 1;
             }
         }
+    }
+    if view.dir() == ExtendDir::Right {
+        out.reverse();
     }
     out
 }

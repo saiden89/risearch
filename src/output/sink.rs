@@ -68,23 +68,13 @@ impl HitSink for TextSink<'_> {
             return Ok(());
         }
         let q_name = self.queries.get_name(query_idx);
-        let q_seq = self.queries.entries()[query_idx].sequence();
 
         // `format_hit_into` reserves per hit, so the buffer sizes itself.
         let mut block = Vec::new();
         for hit in &hits {
             let (t_fwd, t_rc, _) = self.store.target_slices(hit.target_idx);
             let t_name = self.store.get_name(hit.target_idx);
-            format_hit_into(
-                &mut block,
-                hit,
-                q_name,
-                q_seq,
-                t_name,
-                t_fwd,
-                t_rc,
-                self.format,
-            );
+            format_hit_into(&mut block, hit, q_name, t_name, t_fwd, t_rc, self.format);
         }
 
         // Rendering above is off-lock; the writer sees one bulk write per query.

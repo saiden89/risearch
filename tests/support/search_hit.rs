@@ -8,7 +8,7 @@ use risearch::alignment::Alignment;
 use risearch::index::store::TargetRegistry;
 use risearch::registry::QueryRegistry;
 use risearch::types::{Energy, Strand};
-use risearch::SearchHit;
+use risearch::{PairClass, SearchHit};
 
 // =============================================================================
 // EXTENSION TRAIT: Parity-testing helpers
@@ -116,7 +116,6 @@ pub(crate) fn parse_bindingsite_output(
 
     // Parse and strip seed markers from interaction
     let (interaction, seed_start, seed_end) = strip_c_markers(fields[8]);
-    let target_seq = strip_markers_simple(fields[9]);
 
     // Parse coordinates (C uses 1-based)
     let q_start: usize = fields[1].parse().ok()?;
@@ -130,18 +129,19 @@ pub(crate) fn parse_bindingsite_output(
     // Parse energy
     let energy = Energy::from_kcal(fields[7].parse::<f64>().ok()?);
 
-    // Create alignment from C interaction/target columns.
-    let seed = match (seed_start, seed_end) {
-        (Some(s), Some(e)) => {
-            let s = s.min(interaction.len());
-            let e = e.min(interaction.len()).max(s);
-            Some(s..e)
-        }
-        _ => None,
-    };
-    let alignment = Alignment::from_c_output(&interaction, &target_seq, seed);
+    let classes: Vec<PairClass> = interaction
+        .chars()
+        .map(|c| match c {
+            'P' => PairClass::Canonical,
+            'W' => PairClass::Wobble,
+            'U' => PairClass::Mismatch,
+            'T' => PairClass::TargetBulge,
+            'Q' => PairClass::QueryBulge,
+            _ => PairClass::Mismatch,
+        })
+        .collect();
 
-    Some(SearchHit {
+    let mut hit = SearchHit {
         query_idx,
         target_idx,
         q_start: q_start.saturating_sub(1),
@@ -150,8 +150,28 @@ pub(crate) fn parse_bindingsite_output(
         t_end: t_end.saturating_sub(1),
         strand,
         energy,
-        alignment: Some(alignment),
-    })
+        alignment: None,
+    };
+
+    // Resolve C's classes into columns against our own registries, reusing the
+    // hit's slice accessors rather than restating the reverse-strand remap.
+    let seed = match (seed_start, seed_end) {
+        (Some(s), Some(e)) => {
+            let s = s.min(classes.len());
+            Some(s..e.min(classes.len()).max(s))
+        }
+        _ => None,
+    };
+    let q_seq = query_registry.entries()[query_idx].sequence();
+    let (t_fwd, t_rc, _) = target_registry.target_slices(target_idx);
+    hit.alignment = Some(Alignment::from_classes(
+        &classes,
+        seed,
+        hit.query_bases(q_seq),
+        hit.target_bases(t_fwd, t_rc),
+    ));
+
+    Some(hit)
 }
 
 /// Strip y/x seed markers and extract seed range positions.
@@ -166,9 +186,4 @@ fn strip_c_markers(s: &str) -> (String, Option<usize>, Option<usize>) {
 
     let clean: String = s.chars().filter(|&c| c != 'y' && c != 'x').collect();
     (clean, seed_start, seed_end)
-}
-
-/// Strip y/x markers without tracking positions.
-fn strip_markers_simple(s: &str) -> String {
-    s.chars().filter(|&c| c != 'y' && c != 'x').collect()
 }

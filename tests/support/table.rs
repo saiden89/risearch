@@ -5,7 +5,6 @@
 
 use crate::support::search_hit::SearchHitExt;
 use risearch::index::store::TargetRegistry;
-use risearch::types::{Base, Strand};
 use risearch::{QueryRegistry, SearchHit};
 use tabled::{builder::Builder, settings::Style, Table, Tabled};
 
@@ -253,7 +252,7 @@ impl ParsedInteraction {
         target_registry: Option<&TargetRegistry>,
     ) -> Self {
         let chars: Vec<char> = target_registry
-            .and_then(|ts| aligned_target_track(hit, ts))
+            .and_then(|_| aligned_target_track(hit))
             .unwrap_or_default()
             .chars()
             .collect();
@@ -281,7 +280,7 @@ impl ParsedInteraction {
         query_registry: Option<&QueryRegistry>,
     ) -> Self {
         let chars: Vec<char> = query_registry
-            .and_then(|qr| aligned_query_track(hit, qr))
+            .and_then(|_| aligned_query_track(hit))
             .unwrap_or_default()
             .chars()
             .collect();
@@ -303,93 +302,16 @@ impl ParsedInteraction {
     }
 }
 
-fn hit_query_bases<'a>(hit: &SearchHit, query_registry: &'a QueryRegistry) -> &'a [Base] {
-    let q_seq = query_registry.get(hit.query_idx).sequence();
-    let seq_len = q_seq.len();
-    let consumed = hit
-        .alignment
-        .as_ref()
-        .map(|a| a.steps().iter().filter(|s| s.consumes_query()).count())
-        .unwrap_or(0);
-    if consumed == 0 || seq_len == 0 {
-        return &q_seq[0..0];
-    }
-    let candidates = [hit.q_start, hit.q_start.saturating_sub(1)];
-    let (start, _) = candidates
-        .iter()
-        .copied()
-        .map(|c| c.min(seq_len))
-        .map(|start| {
-            let expected_end = start.saturating_add(consumed.saturating_sub(1));
-            let score = expected_end.abs_diff(hit.q_end)
-                + expected_end.saturating_add(1).abs_diff(hit.q_end);
-            (start, score)
-        })
-        .min_by_key(|(_, score)| *score)
-        .unwrap_or((0, usize::MAX));
-    let end_excl = start.saturating_add(consumed).min(seq_len);
-    &q_seq[start..end_excl]
+fn aligned_query_track(hit: &SearchHit) -> Option<String> {
+    let cols = hit.alignment.as_ref()?.columns();
+    Some(cols.iter().map(|c| c.query.to_byte() as char).collect())
 }
 
-fn hit_target_bases<'a>(hit: &SearchHit, target_registry: &'a TargetRegistry) -> &'a [Base] {
-    let t_idx = hit.target_idx;
-    let (t_fwd, t_rc, _) = target_registry.target_slices(t_idx);
-    match hit.strand {
-        Strand::Forward => {
-            let start = hit.t_start.min(t_fwd.len());
-            let end_excl = hit.t_end.saturating_add(1).min(t_fwd.len());
-            if end_excl < start {
-                &t_fwd[0..0]
-            } else {
-                &t_fwd[start..end_excl]
-            }
-        }
-        Strand::Reverse => {
-            let len = t_fwd.len();
-            if len == 0 {
-                return &t_rc[0..0];
-            }
-            let rc_start = len.saturating_sub(hit.t_end.saturating_add(1));
-            let rc_end_incl = len.saturating_sub(hit.t_start.saturating_add(1));
-            let start = rc_start.min(t_rc.len());
-            let end_excl = rc_end_incl.saturating_add(1).min(t_rc.len());
-            if end_excl < start {
-                &t_rc[0..0]
-            } else {
-                &t_rc[start..end_excl]
-            }
-        }
-    }
+fn aligned_target_track(hit: &SearchHit) -> Option<String> {
+    let cols = hit.alignment.as_ref()?.columns();
+    Some(cols.iter().map(|c| c.target.to_byte() as char).collect())
 }
 
-fn build_track<F>(hit: &SearchHit, bases: &[Base], consumes: F) -> Option<String>
-where
-    F: Fn(risearch::PairClass) -> bool,
-{
-    let alignment = hit.alignment.as_ref()?;
-    let mut idx = 0usize;
-    let mut out = String::with_capacity(alignment.steps().len());
-    for &step in alignment.steps() {
-        if consumes(step) {
-            let b = bases.get(idx).copied().unwrap_or(Base::Gap);
-            out.push(b.to_byte() as char);
-            idx += 1;
-        } else {
-            out.push(Base::Gap.to_byte() as char);
-        }
-    }
-    Some(out)
-}
-
-fn aligned_query_track(hit: &SearchHit, query_registry: &QueryRegistry) -> Option<String> {
-    let q_bases = hit_query_bases(hit, query_registry);
-    build_track(hit, q_bases, |s| s.consumes_query())
-}
-
-fn aligned_target_track(hit: &SearchHit, target_registry: &TargetRegistry) -> Option<String> {
-    let t_bases = hit_target_bases(hit, target_registry);
-    build_track(hit, t_bases, |s| s.consumes_target())
-}
 
 // =============================================================================
 // PARITY TABLE

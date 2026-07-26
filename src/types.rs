@@ -119,7 +119,7 @@ impl Base {
         matches!(self, Base::A | Base::C | Base::G | Base::U)
     }
 
-    /// Classify pairing between two bases (in complement-transformed target space).
+    /// Classify pairing between two bases.
     ///
     /// Watson-Crick: A↔U, C↔G.  Wobble: G↔U.  Everything else: mismatch.
     #[inline(always)]
@@ -140,7 +140,7 @@ impl Base {
     }
 }
 
-/// Classification of a base pair in complement-transformed target space.
+/// Chemistry of a base pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairType {
     /// Watson-Crick: A↔U, C↔G

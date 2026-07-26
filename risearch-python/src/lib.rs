@@ -90,8 +90,8 @@ impl HitSink for ArrowSink {
                 // instead of through `Alignment::fingerprint`'s String: this runs
                 // under the shared lock. `append_value("")` closes the value.
                 Some(a) => {
-                    for &p in a.steps() {
-                        let _ = c.alignment.write_char(p.symbol());
+                    for col in a.columns() {
+                        let _ = c.alignment.write_char(col.class.symbol());
                     }
                     c.alignment.append_value("");
                 }

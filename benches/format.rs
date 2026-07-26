@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use risearch::alignment::{Alignment, PairClass};
+use risearch::alignment::Alignment;
 use risearch::config::OutputFormat;
 use risearch::output::format::format_hit_into;
 use risearch::search::SearchHit;
@@ -12,8 +12,7 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>, Vec<Base>) {
     let t_fwd = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
     let t_rc = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
 
-    let seed: Vec<PairClass> = (0..6).map(|_| PairClass::Canonical).collect();
-    let alignment = Alignment::from_parts(&[], &seed, &[]);
+    let alignment = Alignment::from_parts(&[], q_bases.len(), &[], &q_bases, &t_fwd);
 
     let hit = SearchHit {
         query_idx: 0,
@@ -31,7 +30,7 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>, Vec<Base>) {
 }
 
 fn bench_format_hit(c: &mut Criterion) {
-    let (hit, q_seq, t_fwd, t_rc) = setup_hit();
+    let (hit, _q_seq, t_fwd, t_rc) = setup_hit();
 
     let mut group = c.benchmark_group("hit_formatting");
 
@@ -53,7 +52,6 @@ fn bench_format_hit(c: &mut Criterion) {
                         &mut out,
                         &hit,
                         "test_query",
-                        &q_seq,
                         "test_target",
                         &t_fwd,
                         &t_rc,

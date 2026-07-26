@@ -14,6 +14,8 @@ pub enum PairClass {
 }
 
 impl PairClass {
+    /// `target` must be a real base. The index stores targets as the complement
+    /// of the strand the query binds to, so those need `.complement()` first.
     #[inline]
     pub const fn from_bases(query: Base, target: Base) -> Self {
         match (query, target) {
@@ -25,12 +27,6 @@ impl PairClass {
                 PairType::Mismatch => Self::Mismatch,
             },
         }
-    }
-
-    /// Classify pairing between a query base and a transformed target-view base.
-    #[inline]
-    pub const fn from_view_bases(query: Base, target_view: Base) -> Self {
-        Self::from_bases(query, target_view.complement())
     }
 
     pub const fn symbol(self) -> char {
@@ -62,56 +58,124 @@ impl PairClass {
     }
 }
 
+/// One rendered column: what the pair is, and the bases on either side.
+///
+/// `query` and `target` are real bases, `Base::Gap` on the side a bulge skips,
+/// so a formatter can emit a column without consulting a sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlignColumn {
+    pub class: PairClass,
+    pub query: Base,
+    pub target: Base,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alignment {
-    steps: SmallVec<[PairClass; 128]>,
+    columns: SmallVec<[AlignColumn; 128]>,
     seed: Option<Range<usize>>,
 }
 
 impl Alignment {
-    pub fn from_steps(steps: SmallVec<[PairClass; 128]>, seed: Option<Range<usize>>) -> Self {
-        Self { steps, seed }
+    /// Resolve flank classes and a gap-free core of `core_len` into columns.
+    ///
+    /// Every column's class must agree with its own bases, which is what pins the
+    /// flanks' order: a flank handed over reversed lands its classes on the wrong
+    /// bases. Checked under `debug_assertions`.
+    pub fn from_parts(
+        prefix: &[PairClass],
+        core_len: usize,
+        suffix: &[PairClass],
+        query: &[Base],
+        target: &[Base],
+    ) -> Self {
+        let classes = prefix
+            .iter()
+            .copied()
+            .map(Some)
+            .chain(std::iter::repeat_n(None, core_len))
+            .chain(suffix.iter().copied().map(Some));
+        let out = Self::resolve(
+            classes,
+            Some(prefix.len()..prefix.len() + core_len),
+            query,
+            target,
+        );
+        debug_assert!(
+            out.columns
+                .iter()
+                .all(|c| c.class == PairClass::from_bases(c.query, c.target)),
+            "alignment column disagrees with its own bases: {:?}",
+            out.columns
+        );
+        out
     }
 
-    pub fn from_parts(prefix: &[PairClass], core: &[PairClass], suffix: &[PairClass]) -> Self {
-        let mut steps = SmallVec::with_capacity(prefix.len() + core.len() + suffix.len());
-        steps.extend_from_slice(prefix);
-        steps.extend_from_slice(core);
-        steps.extend_from_slice(suffix);
-        let seed = prefix.len()..prefix.len() + core.len();
-        Self {
-            steps,
-            seed: Some(seed),
+    /// Resolve an alignment produced elsewhere, keeping its classes as given.
+    ///
+    /// Unlike [`Self::from_parts`] the classes are not re-derived: a foreign
+    /// aligner's chemistry is data to compare against, not an invariant to hold.
+    ///
+    /// Exists so the parity harness can populate [`SearchHit::alignment`] from
+    /// another implementation's output. Not part of the library's own pipeline.
+    ///
+    /// [`SearchHit::alignment`]: crate::SearchHit::alignment
+    #[doc(hidden)]
+    pub fn from_classes(
+        classes: &[PairClass],
+        seed: Option<Range<usize>>,
+        query: &[Base],
+        target: &[Base],
+    ) -> Self {
+        Self::resolve(classes.iter().copied().map(Some), seed, query, target)
+    }
+
+    /// Walk columns 5'->3' along the query, which is 3'->5' along the target.
+    /// The index holds the complement of the strand the query binds to, so stored
+    /// bases are complemented on the way in. A `None` class is derived, which only
+    /// works where the column is known to be gap-free.
+    fn resolve(
+        classes: impl Iterator<Item = Option<PairClass>>,
+        seed: Option<Range<usize>>,
+        query: &[Base],
+        target: &[Base],
+    ) -> Self {
+        let mut columns = SmallVec::new();
+        let (mut q, mut t) = (0usize, target.len());
+        for class in classes {
+            let query_base = if class.is_none_or(PairClass::consumes_query) {
+                let base = query.get(q).copied().unwrap_or(Base::Gap);
+                q += 1;
+                base
+            } else {
+                Base::Gap
+            };
+            let target_base = if class.is_none_or(PairClass::consumes_target) {
+                t = t.saturating_sub(1);
+                target.get(t).copied().unwrap_or(Base::Gap).complement()
+            } else {
+                Base::Gap
+            };
+            columns.push(AlignColumn {
+                class: class.unwrap_or(PairClass::from_bases(query_base, target_base)),
+                query: query_base,
+                target: target_base,
+            });
         }
+        Self { columns, seed }
     }
 
     #[inline]
-    pub fn steps(&self) -> &[PairClass] {
-        &self.steps
+    pub fn columns(&self) -> &[AlignColumn] {
+        &self.columns
     }
 
-    /// Span of the seed core within [`steps`](Self::steps).
+    /// Span of the seed core within [`columns`](Self::columns).
     #[inline]
     pub fn seed(&self) -> Option<Range<usize>> {
         self.seed.clone()
     }
 
     pub fn fingerprint(&self) -> String {
-        self.steps.iter().map(|&p| p.symbol()).collect()
-    }
-
-    pub fn from_c_output(interaction: &str, _target_seq: &str, seed: Option<Range<usize>>) -> Self {
-        let steps = interaction
-            .chars()
-            .map(|c| match c {
-                'P' => PairClass::Canonical,
-                'W' => PairClass::Wobble,
-                'U' => PairClass::Mismatch,
-                'T' => PairClass::TargetBulge,
-                'Q' => PairClass::QueryBulge,
-                _ => PairClass::Mismatch,
-            })
-            .collect();
-        Self::from_steps(steps, seed)
+        self.columns.iter().map(|c| c.class.symbol()).collect()
     }
 }

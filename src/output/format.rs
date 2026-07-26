@@ -44,12 +44,10 @@ impl<'a> TsvLine<'a> {
 }
 
 #[inline]
-#[allow(clippy::too_many_arguments)]
 pub fn format_hit_into(
     out: &mut Vec<u8>,
     hit: &SearchHit,
     q_name: &str,
-    q_seq: &[Base],
     t_name: &str,
     t_fwd: &[Base],
     t_rc: &[Base],
@@ -59,7 +57,7 @@ pub fn format_hit_into(
     // hoisting it to the caller.
     let mut itoa = itoa::Buffer::new();
     let alignment = hit.alignment.as_ref();
-    let steps_len = alignment.map(|a| a.steps().len()).unwrap_or(0);
+    let steps_len = alignment.map(|a| a.columns().len()).unwrap_or(0);
     let flank_reserve = if format == OutputFormat::BindingSite {
         2 * BINDING_SITE_FLANK_LEN
     } else {
@@ -68,7 +66,7 @@ pub fn format_hit_into(
     out.reserve(q_name.len() + t_name.len() + (steps_len * 2) + flank_reserve + 96);
 
     if format == OutputFormat::Detailed {
-        write_alignment_prelude(out, hit, q_seq, t_fwd, t_rc);
+        write_alignment_prelude(out, hit);
     }
 
     let mut row = TsvLine::new(out);
@@ -116,7 +114,7 @@ fn write_extended_fields(
     if format == OutputFormat::BindingSite {
         row.field_with(|buf| {
             if let Some(align) = alignment {
-                push_alignment_target_seq_bindingsite(buf, align, hit.target_bases(t_fwd, t_rc));
+                push_target_row(buf, align);
             }
         });
 
@@ -126,44 +124,21 @@ fn write_extended_fields(
     }
 }
 
-fn write_alignment_prelude(
-    out: &mut Vec<u8>,
-    hit: &SearchHit,
-    q_seq: &[Base],
-    t_fwd: &[Base],
-    t_rc: &[Base],
-) {
+fn write_alignment_prelude(out: &mut Vec<u8>, hit: &SearchHit) {
     let Some(align) = hit.alignment.as_ref() else {
         return;
     };
-    let q_bases = hit.query_bases(q_seq);
-    let t_bases = hit.target_bases(t_fwd, t_rc);
-
-    let mut q_idx = 0usize;
-    for &step in align.steps() {
-        if step.consumes_query() {
-            out.push(q_bases.get(q_idx).copied().unwrap_or(Base::Gap).to_byte());
-            q_idx += 1;
-        } else {
-            out.push(Base::Gap.to_byte());
-        }
+    for col in align.columns() {
+        out.push(col.query.to_byte());
     }
     out.push(b'\n');
 
-    for &p in align.steps() {
-        out.push(p.alignment_symbol() as u8);
+    for col in align.columns() {
+        out.push(col.class.alignment_symbol() as u8);
     }
     out.push(b'\n');
 
-    let mut t_idx = 0usize;
-    for &step in align.steps() {
-        if step.consumes_target() {
-            out.push(t_bases.get(t_idx).copied().unwrap_or(Base::Gap).to_byte());
-            t_idx += 1;
-        } else {
-            out.push(Base::Gap.to_byte());
-        }
-    }
+    push_target_row(out, align);
     out.push(b'\n');
 }
 
@@ -182,31 +157,15 @@ fn append_score_2dp(buf: &mut Vec<u8>, itoa: &mut itoa::Buffer, score: f64) {
 }
 
 fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
-    for &p in alignment.steps() {
-        buf.push(p.symbol() as u8);
+    for col in alignment.columns() {
+        buf.push(col.class.symbol() as u8);
     }
 }
 
-fn push_alignment_target_seq_bindingsite(
-    buf: &mut Vec<u8>,
-    alignment: &Alignment,
-    t_bases: &[Base],
-) {
-    let mut t_idx = t_bases.len();
-    for &step in alignment.steps().iter().rev() {
-        if step.consumes_target() {
-            t_idx = t_idx.saturating_sub(1);
-            buf.push(
-                t_bases
-                    .get(t_idx)
-                    .copied()
-                    .unwrap_or(Base::Gap)
-                    .complement()
-                    .to_byte(),
-            );
-        } else {
-            buf.push(b'-');
-        }
+/// The target row, shared by the detailed block and the binding-site column.
+fn push_target_row(buf: &mut Vec<u8>, alignment: &Alignment) {
+    for col in alignment.columns() {
+        buf.push(col.target.to_byte());
     }
 }
 

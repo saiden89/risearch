@@ -145,7 +145,7 @@ fn fingerprint_cmp(a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
     fn syms(hit: &SearchHit) -> impl Iterator<Item = char> + '_ {
         hit.alignment
             .iter()
-            .flat_map(|a| a.steps().iter().map(|p| p.symbol()))
+            .flat_map(|a| a.columns().iter().map(|c| c.class.symbol()))
     }
     syms(a).cmp(syms(b))
 }
@@ -458,11 +458,11 @@ fn is_maximal(
 const BINDING_SITE_FLANK_LEN: usize = 20;
 
 impl SearchHit {
-    pub(crate) fn query_bases<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
+    pub fn query_bases<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
         &q_seq[self.q_start..self.q_end + 1]
     }
 
-    pub(crate) fn target_bases<'a>(&self, t_fwd: &'a [Base], t_rc: &'a [Base]) -> &'a [Base] {
+    pub fn target_bases<'a>(&self, t_fwd: &'a [Base], t_rc: &'a [Base]) -> &'a [Base] {
         match self.strand {
             Strand::Forward => &t_fwd[self.t_start..self.t_end + 1],
             Strand::Reverse => {
@@ -498,8 +498,8 @@ impl SearchHit {
     #[allow(clippy::too_many_arguments)]
     fn new(
         query_idx: usize,
-        query_bases: &[Base],
-        target_trans: &[Base],
+        query: &[Base],
+        target: &[Base],
         seed: &SeedHit,
         left: &ExtensionResult,
         right: &ExtensionResult,
@@ -516,29 +516,23 @@ impl SearchHit {
         let mut final_t_start = t_start - right.t_ext;
         let mut final_t_end = t_start + len - 1 + left.t_ext;
 
+        // Resolve columns while the coordinates still address `target_trans`; the
+        // reverse-strand flip below moves them into the original target's frame.
+        let alignment = include_alignment.then(|| {
+            Alignment::from_parts(
+                left.pairs.as_deref().unwrap_or(&[]),
+                len,
+                right.pairs.as_deref().unwrap_or(&[]),
+                &query[final_q_start..=final_q_end],
+                &target[final_t_start..=final_t_end],
+            )
+        });
+
         if seed.strand == Strand::Reverse {
             let tmp = original_target_len - 1 - final_t_end;
             final_t_end = original_target_len - 1 - final_t_start;
             final_t_start = tmp;
         }
-
-        let alignment = if include_alignment {
-            let t_match_end = t_start + len - 1;
-            let mut seed_pairs: SmallVec<[PairClass; 64]> = SmallVec::with_capacity(len);
-            for i in 0..len {
-                seed_pairs.push(PairClass::from_view_bases(
-                    query_bases[q_start + i],
-                    target_trans[t_match_end - i],
-                ));
-            }
-            Some(Alignment::from_parts(
-                left.pairs.as_deref().unwrap_or(&[]),
-                &seed_pairs,
-                right.pairs.as_deref().unwrap_or(&[]),
-            ))
-        } else {
-            None
-        };
 
         Self {
             query_idx,
