@@ -246,7 +246,7 @@ fn validate_store(
 ) -> Result<(Vec<usize>, Vec<usize>, usize)> {
     if root.version.to_native() != TARGET_REGISTRY_VERSION {
         bail!(
-            "Unsupported target index version {} in {}; rebuild index",
+            "Unsupported target index version {} in {}; rebuild it with `risearch index`",
             root.version.to_native(),
             path.display()
         );
