@@ -2,6 +2,7 @@
 act = "latest"
 rust = "latest"
 cmake = "latest"
+lefthook = "latest"
 
 "cargo:cargo-edit" = "latest"
 "cargo:cargo-hack" = "latest"
