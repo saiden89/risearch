@@ -380,15 +380,18 @@ impl SearchWorker {
         );
         let query_left = &query[..=q_start];
         let target_left = &target[..=t_start];
-        let left = self
-            .extension
-            .extend(query_left, target_left, ExtendDir::Left, include_alignment);
+        let left =
+            self.extension
+                .extend(query_left, target_left, ExtendDir::Left, include_alignment);
 
         let query_right = &query[q_match_end..];
         let target_right = &target[t_match_end..];
-        let right = self
-            .extension
-            .extend(query_right, target_right, ExtendDir::Right, include_alignment);
+        let right = self.extension.extend(
+            query_right,
+            target_right,
+            ExtendDir::Right,
+            include_alignment,
+        );
         let nt_count = left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len;
         let stacking_stability = duplex_score + left.energy + right.energy;
         let energy = self.model.binding_energy(stacking_stability, nt_count);

@@ -205,7 +205,8 @@ fn bench_throughput(c: &mut Criterion) {
                         let start = std::time::Instant::now();
                         let q_len = load(&mut q_buf, black_box(from(&query, q_end, len)));
                         let t_len = load(&mut t_buf, black_box(from(&target, t_end, len)));
-                        let result = gotoh_right.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
+                        let result =
+                            gotoh_right.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -267,7 +268,8 @@ fn bench_many_extensions(c: &mut Criterion) {
                     // Left extension: the window is the 30 symbols before the anchor.
                     let q_len = load(&mut q_buf, black_box(before(query, q_start, 30)));
                     let t_len = load(&mut t_buf, black_box(before(target, t_start, 30)));
-                    let left_result = gotoh_left.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
+                    let left_result =
+                        gotoh_left.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
                     total_score = total_score.wrapping_add(left_result.score);
 
                     // Right extension: whatever remains after the anchor, up to 30.
