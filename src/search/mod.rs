@@ -18,10 +18,10 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Mutex;
 
-use self::extension::ExtensionEngine;
+use self::extension::{ExtendDir, ExtensionEngine};
 use crate::alignment::{Alignment, PairClass};
 use crate::config::SearchConfig;
-use crate::dp::{DpConfig, DpView, ExtendDir, MAX_EXT};
+use crate::dp::MAX_EXT;
 use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetRegistry;
 use crate::registry::QueryRegistry;
@@ -240,6 +240,12 @@ impl<'a> SearchContext<'a> {
     }
 }
 
+/// A negative `-l` is the unlimited sentinel: extend across the whole query
+/// rather than a fixed length.
+fn is_unlimited(max_extension: i32) -> bool {
+    max_extension < 0
+}
+
 fn init_search<'a>(
     queries: &'a QueryRegistry,
     store: &'a TargetRegistry,
@@ -253,7 +259,7 @@ fn init_search<'a>(
     // buffers cap each side at MAX_EXT. Refuse rather than silently clamp: a
     // query longer than the cap cannot be served as requested. (Mirrors clap
     // rejecting an explicit `-l > MAX_EXT`.)
-    if opts.extend.max_extension < 0 {
+    if is_unlimited(opts.extend.max_extension) {
         for (_, q) in queries.iter() {
             let n = q.sequence().len();
             if n > MAX_EXT {
@@ -269,7 +275,7 @@ fn init_search<'a>(
         }
     }
 
-    let max_ext = if opts.extend.max_extension < 0 {
+    let max_ext = if is_unlimited(opts.extend.max_extension) {
         format!("unlimited(<={MAX_EXT})")
     } else {
         opts.extend.max_extension.to_string()
@@ -296,10 +302,14 @@ struct SearchWorker {
 
 impl SearchWorker {
     fn new(opts: &SearchConfig, model: &ScoringModel) -> Self {
-        let dp_cfg = DpConfig::from(&opts.extend);
+        let max_window = if is_unlimited(opts.extend.max_extension) {
+            None
+        } else {
+            Some(opts.extend.max_extension as usize)
+        };
         let model = model.clone();
         Self {
-            extension: ExtensionEngine::new(dp_cfg.max_extension(), &model),
+            extension: ExtensionEngine::new(max_window, &model),
             model,
         }
     }
@@ -359,13 +369,7 @@ impl SearchWorker {
         let t_match_end = t_start + len - 1;
 
         if !opts.filter.no_max_prune
-            && !is_maximal(
-                seed,
-                query,
-                target,
-                &seed_interval,
-                opts.seed.seed_wobble,
-            )
+            && !is_maximal(seed, query, target, &seed_interval, opts.seed.seed_wobble)
         {
             return None;
         }
@@ -374,26 +378,17 @@ impl SearchWorker {
             &query[q_start..=q_match_end],
             &target[t_start..=t_match_end],
         );
-        let dp_cfg = DpConfig::from(&opts.extend);
         let query_left = &query[..=q_start];
         let target_left = &target[..=t_start];
-        let view_left = DpView::new(
-            query_left,
-            target_left,
-            ExtendDir::Left,
-            dp_cfg.side_cap(query_left.len()),
-        );
-        let left = self.extension.extend(&view_left, include_alignment);
+        let left = self
+            .extension
+            .extend(query_left, target_left, ExtendDir::Left, include_alignment);
 
         let query_right = &query[q_match_end..];
         let target_right = &target[t_match_end..];
-        let view_right = DpView::new(
-            query_right,
-            target_right,
-            ExtendDir::Right,
-            dp_cfg.side_cap(query_right.len()),
-        );
-        let right = self.extension.extend(&view_right, include_alignment);
+        let right = self
+            .extension
+            .extend(query_right, target_right, ExtendDir::Right, include_alignment);
         let nt_count = left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len;
         let stacking_stability = duplex_score + left.energy + right.energy;
         let energy = self.model.binding_energy(stacking_stability, nt_count);

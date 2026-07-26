@@ -60,15 +60,18 @@ impl<S: GotohScoring> Gotoh<S> {
 
                     let m = max3(
                         diag.m + *match_ptr.add(tt),
-                        diag.bq + *close_qgap.add(tc),
-                        diag.bt + *close_tgap.add(tt),
+                        diag.gap_q + *close_qgap.add(tc),
+                        diag.gap_t + *close_tgap.add(tt),
                     );
-                    let bq = max(
+                    let gap_q = max(
                         up.m + *open_qgap.add(tc * S::RowProfile::SYMBOL_COUNT),
-                        up.bq + ext_qgap,
+                        up.gap_q + ext_qgap,
                     );
-                    let bt = max(left.m + *open_tgap.add(tt), left.bt + *extend_tgap.add(tt));
-                    let curr = DpCell { m, bq, bt };
+                    let gap_t = max(
+                        left.m + *open_tgap.add(tt),
+                        left.gap_t + *extend_tgap.add(tt),
+                    );
+                    let curr = DpCell { m, gap_q, gap_t };
 
                     best.update_if_better(m, *boundary.add(tc * S::RowProfile::SYMBOL_COUNT), i, j);
                     *curr_ptr = curr;

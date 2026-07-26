@@ -1,4 +1,4 @@
-use crate::dp::MAX_ENERGY;
+use crate::dp::MAX_TRANSITION_SCORE;
 use crate::types::{Base, Energy, BASE_COUNT};
 
 use super::{flat_idx, DsmTable, DSM_FLAT_SIZE};
@@ -54,11 +54,11 @@ impl ScoringModel {
 
         for (i, &val) in table.iter().enumerate() {
             assert!(
-                (val as i64).unsigned_abs() <= MAX_ENERGY as u64,
-                "table entry {} = {} exceeds MAX_ENERGY bound {}",
+                (val as i64).unsigned_abs() <= MAX_TRANSITION_SCORE as u64,
+                "table entry {} = {} exceeds MAX_TRANSITION_SCORE bound {}",
                 i,
                 val,
-                MAX_ENERGY,
+                MAX_TRANSITION_SCORE,
             );
         }
 

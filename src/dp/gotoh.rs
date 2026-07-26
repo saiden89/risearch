@@ -5,30 +5,35 @@
 //! only through the [`GotohScoring`] trait.
 //!
 //! The DP core identifies three transition families:
-//! - `M`: continue the paired region, close a query gap, or close a target gap
-//! - `Bq`: open or extend a query gap
-//! - `Bt`: open or extend a target gap
+//! - `M`: continue the match run, close a query gap, or close a target gap
+//! - `GapQ`: open or extend a query gap
+//! - `GapT`: open or extend a target gap
 //!
 //! A mismatch is not its own transition family; it is simply an unfavorable
-//! paired transition score.
+//! match transition score.
+//!
+//! `GapQ`/`GapT` are the states written `Bq`/`Bt` (query/target bulge) in the
+//! RIsearch papers and the C implementation. They are gaps here because that is
+//! all the recurrence knows; a gap run is a *bulge* only because `GapQ` and
+//! `GapT` have no transition between them, so no two gap runs can be adjacent.
+//! Naming that conclusion is the search layer's job — see `PairClass`.
 //!
 //! # Index safety
 //!
 //! All index arguments to point-lookup and slice-accessor methods must be in
-//! the valid symbol index range of the scoring source. `Gotoh::extend()`
-//! materializes those dense indices once from the semantic `DpView` before
-//! entering the hot DP kernels.
+//! the valid symbol index range of the scoring source. Callers hand
+//! `Gotoh::extend()` the window already materialized as dense symbol indices.
 
 use crate::dp::scoring::GotohScoring;
 use smallvec::SmallVec;
 
 use log::trace;
 
-use super::{is_valid_score, BestScore, DpGrid, DpView, TraceOp, MAX_EXT};
+use super::{is_valid_score, BestScore, DpGrid, TraceOp, MAX_EXT, NEG_INF};
 
 #[inline(always)]
-fn is_transition(val: i32, pred: i32, energy: i32) -> bool {
-    is_valid_score(pred) && val == pred + energy
+fn is_transition(val: i32, pred: i32, score: i32) -> bool {
+    is_valid_score(pred) && val == pred + score
 }
 
 /// A Gotoh 3-state DP engine.
@@ -57,34 +62,36 @@ impl<S: GotohScoring> Gotoh<S> {
     }
 
     #[cfg_attr(feature = "prof", inline(never))]
-    /// DP forward pass over `view`, reusing caller-provided grid and buffers.
-    pub fn extend(
-        &self,
-        view: &DpView<'_>,
-        grid: &mut DpGrid,
-        q_buf: &mut [u8],
-        t_buf: &mut [u8],
-    ) -> BestScore {
-        let (q_len, t_len) = (view.q_len.min(MAX_EXT), view.t_len.min(MAX_EXT));
+    /// DP forward pass over one extension window, reusing the caller's grid.
+    ///
+    /// `q` and `t` hold rank-indexed symbols in DP order: position 0 is the
+    /// anchor column at the seed boundary. Neither may exceed [`MAX_EXT`] — the
+    /// NEG_INF drift proof is only valid within that bound.
+    pub fn extend(&self, q: &[u8], t: &[u8], grid: &mut DpGrid) -> BestScore {
+        let (q_len, t_len) = (q.len(), t.len());
 
-        trace!("{} q_len={} t_len={}", view.dir, q_len, t_len);
         debug_assert!(
-            q_len > 0 && t_len > 0,
-            "DP view must define a non-empty window"
+            q_len <= MAX_EXT && t_len <= MAX_EXT,
+            "DP window exceeds MAX_EXT: {q_len}x{t_len}"
         );
 
-        view.fill_buffers(q_buf, t_buf);
+        // A window of one column scores only its anchor pair, and an empty one has
+        // no anchor at all. Taking that branch first means the raw reads below are
+        // covered by a check the hot path already pays for.
+        if q_len <= 1 || t_len <= 1 {
+            return match (q.first(), t.first()) {
+                (Some(&q0), Some(&t0)) => BestScore::new(self.scoring.boundary(q0, t0)),
+                _ => BestScore::new(NEG_INF),
+            };
+        }
 
-        let q_ptr = q_buf.as_ptr();
-        let t_ptr = t_buf.as_ptr();
+        let q_ptr = q.as_ptr();
+        let t_ptr = t.as_ptr();
 
+        // SAFETY: both windows hold at least 2 symbols per the check above.
         let q0 = unsafe { *q_ptr };
         let t0 = unsafe { *t_ptr };
         let mut best = BestScore::new(self.scoring.boundary(q0, t0));
-
-        if q_len <= 1 || t_len <= 1 {
-            return best;
-        }
 
         grid.resize(t_len + 1, q_len + 1);
 
@@ -96,9 +103,8 @@ impl<S: GotohScoring> Gotoh<S> {
         self.main_loop(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
 
         trace!(
-            "{} result: energy={} q_idx={} t_idx={}",
-            view.dir,
-            best.energy,
+            "dp result: score={} q_idx={} t_idx={}",
+            best.score,
             best.q_idx,
             best.t_idx,
         );
@@ -110,28 +116,28 @@ impl<S: GotohScoring> Gotoh<S> {
     /// state-transition path.
     pub fn traceback(
         &self,
-        q_buf: &[u8],
-        t_buf: &[u8],
+        q: &[u8],
+        t: &[u8],
         grid: &DpGrid,
         end_i: usize,
         end_j: usize,
     ) -> SmallVec<[TraceOp; 64]> {
         let (mut i, mut j) = (end_i, end_j);
-        let mut state = TraceOp::Paired;
+        let mut state = TraceOp::Match;
         let mut out = SmallVec::new();
 
         while i > 0 || j > 0 {
             let next = match state {
-                TraceOp::Paired if i > 0 && j > 0 => {
-                    out.push(TraceOp::Paired);
+                TraceOp::Match if i > 0 && j > 0 => {
+                    out.push(TraceOp::Match);
 
                     let c = grid.get(i, j);
                     let diag = grid.get(i - 1, j - 1);
 
-                    let qi_prev = q_buf[i - 1];
-                    let qi = q_buf[i];
-                    let tj_prev = t_buf[j - 1];
-                    let tj = t_buf[j];
+                    let qi_prev = q[i - 1];
+                    let qi = q[i];
+                    let tj_prev = t[j - 1];
+                    let tj = t[j];
 
                     let r#match = self.scoring.r#match(qi_prev, qi, tj_prev, tj);
                     let close_query_gap = self.scoring.close_query_gap(qi_prev, qi, tj);
@@ -141,15 +147,15 @@ impl<S: GotohScoring> Gotoh<S> {
                     j -= 1;
 
                     if is_transition(c.m, diag.m, r#match) {
-                        TraceOp::Paired
-                    } else if is_transition(c.m, diag.bq, close_query_gap) {
+                        TraceOp::Match
+                    } else if is_transition(c.m, diag.gap_q, close_query_gap) {
                         TraceOp::GapQ
-                    } else if is_transition(c.m, diag.bt, close_target_gap) {
+                    } else if is_transition(c.m, diag.gap_t, close_target_gap) {
                         TraceOp::GapT
                     } else {
                         debug_assert!(
                             false,
-                            "traceback: no valid predecessor at ({i},{j}) in Paired state"
+                            "traceback: no valid predecessor at ({i},{j}) in Match state"
                         );
                         break;
                     }
@@ -160,18 +166,18 @@ impl<S: GotohScoring> Gotoh<S> {
                     let c = grid.get(i, j);
                     let up = grid.get(i - 1, j);
 
-                    let qi_prev = q_buf[i - 1];
-                    let qi = q_buf[i];
-                    let tj = t_buf[j];
+                    let qi_prev = q[i - 1];
+                    let qi = q[i];
+                    let tj = t[j];
 
                     let open_query_gap = self.scoring.open_query_gap(qi_prev, qi, tj);
                     let extend_query_gap = self.scoring.extend_query_gap(qi_prev, qi);
 
                     i -= 1;
 
-                    if is_transition(c.bq, up.m, open_query_gap) {
-                        TraceOp::Paired
-                    } else if is_transition(c.bq, up.bq, extend_query_gap) {
+                    if is_transition(c.gap_q, up.m, open_query_gap) {
+                        TraceOp::Match
+                    } else if is_transition(c.gap_q, up.gap_q, extend_query_gap) {
                         TraceOp::GapQ
                     } else {
                         debug_assert!(
@@ -187,18 +193,18 @@ impl<S: GotohScoring> Gotoh<S> {
                     let c = grid.get(i, j);
                     let left = grid.get(i, j - 1);
 
-                    let qi = q_buf[i];
-                    let tj_prev = t_buf[j - 1];
-                    let tj = t_buf[j];
+                    let qi = q[i];
+                    let tj_prev = t[j - 1];
+                    let tj = t[j];
 
                     let open_target_gap = self.scoring.open_target_gap(qi, tj_prev, tj);
                     let extend_target_gap = self.scoring.extend_target_gap(tj_prev, tj);
 
                     j -= 1;
 
-                    if is_transition(c.bt, left.m, open_target_gap) {
-                        TraceOp::Paired
-                    } else if is_transition(c.bt, left.bt, extend_target_gap) {
+                    if is_transition(c.gap_t, left.m, open_target_gap) {
+                        TraceOp::Match
+                    } else if is_transition(c.gap_t, left.gap_t, extend_target_gap) {
                         TraceOp::GapT
                     } else {
                         debug_assert!(
@@ -233,13 +239,13 @@ mod tests {
     /// Catches the `&& → ||` mutation surfaced by cargo-mutants on this fn.
     #[test]
     fn is_transition_rejects_invalid_pred_with_coincidental_arithmetic() {
-        let energy = 100;
-        let val = NEG_INF + energy;
-        // pred is NEG_INF (invalid). val happens to equal pred + energy.
+        let score = 100;
+        let val = NEG_INF + score;
+        // pred is NEG_INF (invalid). val happens to equal pred + score.
         // Under `&& `: returns false (invalid pred fails the guard).
         // Under `||`: would return true (arithmetic check matches).
         assert!(
-            !is_transition(val, NEG_INF, energy),
+            !is_transition(val, NEG_INF, score),
             "is_transition must reject invalid predecessor regardless of arithmetic"
         );
     }

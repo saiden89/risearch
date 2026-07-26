@@ -20,25 +20,25 @@ pub trait GotohScoring {
     /// Build a row-local lookup for the given (qp, qc) pair.
     fn row_profile(&self, qp: u8, qc: u8) -> Self::RowProfile;
 
-    /// M ← M transition score: continue the paired region.
+    /// M ← M transition score: continue the match run.
     fn r#match(&self, qp: u8, qc: u8, tp: u8, tc: u8) -> i32;
 
-    /// M ← Bq transition score: close a query gap and return to the pairing.
+    /// M ← GapQ transition score: close a query gap and return to matching.
     fn close_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32;
 
-    /// M ← Bt transition score: close a target gap and return to the pairing.
+    /// M ← GapT transition score: close a target gap and return to matching.
     fn close_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32;
 
-    /// Bq ← M transition score: open a query gap.
+    /// GapQ ← M transition score: open a query gap.
     fn open_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32;
 
-    /// Bq ← Bq transition score: extend a query gap.
+    /// GapQ ← GapQ transition score: extend a query gap.
     fn extend_query_gap(&self, qp: u8, qc: u8) -> i32;
 
-    /// Bt ← M transition score: open a target gap.
+    /// GapT ← M transition score: open a target gap.
     fn open_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32;
 
-    /// Bt ← Bt transition score: extend a target gap.
+    /// GapT ← GapT transition score: extend a target gap.
     fn extend_target_gap(&self, tp: u8, tc: u8) -> i32;
 
     /// Boundary transition score.

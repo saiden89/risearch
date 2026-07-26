@@ -1,5 +1,10 @@
-use crate::config::ExtendConfig;
-use crate::types::Base;
+//! Gotoh 3-state DP over an abstract symbol alphabet.
+//!
+//! The engine knows nothing about nucleotides or thermodynamics: a window
+//! arrives as dense `u8` symbol ranks in DP order, every score comes from a
+//! [`GotohScoring`] implementation, and results are plain `i32`. Orienting a
+//! duplex flank into a window, and reading energies back out of the scores, is
+//! the caller's job.
 
 mod core;
 pub mod gotoh;
@@ -9,176 +14,26 @@ pub mod scoring;
 pub use scoring::{GotohRowProfile, GotohScoring};
 use std::cmp::max;
 
-/// Maximum extension length for DP buffers.
-/// Matches the typical max_ext parameter (100-200 symbols).
-pub(crate) const MAX_EXT: usize = 256;
-
-/// DP runtime configuration derived from high-level search configs.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DpConfig {
-    max_extension: usize,
-    unlimited: bool,
-}
-
-impl DpConfig {
-    #[inline(always)]
-    pub(crate) const fn max_extension(self) -> usize {
-        self.max_extension
-    }
-
-    /// Extension window for one side of a seed, given the query bases available
-    /// there. Under `-l -1` the window follows the query (capped at MAX_EXT so
-    /// the DP buffers can't overflow); otherwise it's the fixed configured length.
-    #[inline(always)]
-    pub(crate) fn side_cap(self, query_avail: usize) -> usize {
-        if self.unlimited {
-            query_avail.min(MAX_EXT)
-        } else {
-            self.max_extension
-        }
-    }
-}
-
-impl From<&ExtendConfig> for DpConfig {
-    fn from(extend: &ExtendConfig) -> Self {
-        if extend.max_extension < 0 {
-            // Pre-size the grid to the ceiling so unlimited runs skip the regrow.
-            Self {
-                max_extension: MAX_EXT,
-                unlimited: true,
-            }
-        } else {
-            Self {
-                max_extension: (extend.max_extension as usize).min(MAX_EXT),
-                unlimited: false,
-            }
-        }
-    }
-}
-
-/// Extension direction — determines sequence indexing polarity.
+/// Maximum window length, per side, that [`gotoh::Gotoh::extend`] accepts.
 ///
-/// After the scoring source is established for a chosen direction, extension
-/// direction only affects sequence coordinate arithmetic.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ExtendDir {
-    Left,
-    Right,
-}
-
-impl std::fmt::Display for ExtendDir {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Left => write!(f, "[EXT_LEFT]"),
-            Self::Right => write!(f, "[EXT_RIGHT]"),
-        }
-    }
-}
+/// Matches the typical max_ext parameter (100-200 symbols). Public because it is
+/// a precondition of `extend`: the NEG_INF drift proof below is only valid
+/// within this bound.
+pub const MAX_EXT: usize = 256;
 
 /// One step in a Gotoh traceback: which DP state was active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceOp {
-    Paired,
+    Match,
     GapQ,
     GapT,
-}
-
-/// View into sequences for DP extension.
-///
-/// Pure sequence/coordinate view — knows nothing about scoring or energy.
-/// It defines the extension window and how DP offsets map back to semantic
-/// query/target bases. Rank-indexed symbols for scoring are materialized once
-/// in `Gotoh::extend`.
-///
-/// Query and target share one duplex-column frame: query bases run 5'→3' and
-/// physical target bases run 3'→5'. Both coordinates therefore decrease during
-/// left extension and increase during right extension.
-pub struct DpView<'a> {
-    query: &'a [Base],
-    target: &'a [Base],
-    dir: ExtendDir,
-    q_len: usize,
-    t_len: usize,
-}
-
-impl<'a> DpView<'a> {
-    /// Create a directional extension view from slices that start or end at
-    /// the seed boundary, depending on `dir`.
-    pub fn new(query: &'a [Base], target: &'a [Base], dir: ExtendDir, max_ext: usize) -> Self {
-        assert!(!query.is_empty() && !target.is_empty());
-        Self {
-            query,
-            target,
-            dir,
-            q_len: query.len().min(max_ext),
-            t_len: target.len().min(max_ext),
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.q_len == 0 || self.t_len == 0
-    }
-
-    #[inline(always)]
-    pub(crate) fn dir(&self) -> ExtendDir {
-        self.dir
-    }
-
-    #[inline(always)]
-    pub(crate) fn q_anchor_base(&self) -> Base {
-        self.q_base(0)
-    }
-
-    #[inline(always)]
-    pub(crate) fn t_anchor_base(&self) -> Base {
-        self.t_base(0)
-    }
-
-    /// Get query base at DP position i (0 = anchor).
-    #[inline(always)]
-    pub(crate) fn q_base(&self, i: usize) -> Base {
-        debug_assert!(i < self.query.len());
-        let pos = match self.dir {
-            ExtendDir::Left => self.query.len() - 1 - i,
-            ExtendDir::Right => i,
-        };
-        // SAFETY: slices are nonempty; callers use anchor 0 or i < q_len <= query.len().
-        unsafe { *self.query.get_unchecked(pos) }
-    }
-
-    /// Get target base at DP position j (0 = anchor).
-    #[inline(always)]
-    pub(crate) fn t_base(&self, j: usize) -> Base {
-        debug_assert!(j < self.target.len());
-        let pos = match self.dir {
-            ExtendDir::Left => self.target.len() - 1 - j,
-            ExtendDir::Right => j,
-        };
-        // SAFETY: slices are nonempty; callers use anchor 0 or j < t_len <= target.len().
-        unsafe { *self.target.get_unchecked(pos) }
-    }
-
-    /// Extract sequences into DP-relative byte buffers.
-    ///
-    /// Panics if the buffers are shorter than `self.q_len` or `self.t_len`.
-    #[inline(always)]
-    pub fn fill_buffers(&self, q_buf: &mut [u8], t_buf: &mut [u8]) {
-        let (q_len, t_len) = (self.q_len, self.t_len);
-        for (i, dst) in q_buf[..q_len].iter_mut().enumerate() {
-            *dst = self.q_base(i).as_u8();
-        }
-        for (i, dst) in t_buf[..t_len].iter_mut().enumerate() {
-            *dst = self.t_base(i).as_u8();
-        }
-    }
 }
 
 /// Negative infinity for the (max, +) semiring over DP scores.
 ///
 /// Must satisfy two invariants (enforced by compile-time assert below):
 /// 1. Invalid scores can never drift into valid range through accumulated adds
-/// 2. No i32 underflow from accumulated negative energy
+/// 2. No i32 underflow from accumulated negative scores
 const NEG_INF: i32 = -1_500_000_000;
 
 #[inline(always)]
@@ -187,16 +42,15 @@ pub(crate) fn is_valid_score(score: i32) -> bool {
 }
 
 /// Conservative upper bound on |score| from a single scoring transition.
-/// This is a DP arithmetic bound; scoring implementations must keep individual
-/// transition scores within it.
-/// Implementations of GotohScoring must ensure individual transitions
-/// do not exceed this bound to prevent overflow during DP accumulation.
-pub(crate) const MAX_ENERGY: i64 = 1_200_000;
+/// This is a DP arithmetic bound; implementations of [`GotohScoring`] must keep
+/// individual transition scores within it to prevent overflow during DP
+/// accumulation.
+pub(crate) const MAX_TRANSITION_SCORE: i64 = 1_200_000;
 
 // Compile-time proof that NEG_INF arithmetic is safe for MAX_EXT.
 const _: () = {
     // Longest path through MAX_EXT × MAX_EXT grid
-    let max_drift = 2 * MAX_EXT as i64 * MAX_ENERGY;
+    let max_drift = 2 * MAX_EXT as i64 * MAX_TRANSITION_SCORE;
     let neg_inf_abs = -(NEG_INF as i64);
 
     // Invalid scores must stay below valid range after max positive drift
@@ -214,15 +68,15 @@ const _: () = {
 /// Tracks the best scoring position found during DP extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BestScore {
-    pub energy: i32,
+    pub score: i32,
     pub q_idx: usize,
     pub t_idx: usize,
 }
 
 impl BestScore {
-    pub(super) fn new(energy: i32) -> Self {
+    pub(super) fn new(score: i32) -> Self {
         Self {
-            energy,
+            score,
             q_idx: 0,
             t_idx: 0,
         }
@@ -232,8 +86,8 @@ impl BestScore {
     #[inline(always)]
     pub(super) fn update_if_better(&mut self, val: i32, term: i32, q_idx: usize, t_idx: usize) {
         let curr = val + term;
-        if curr > self.energy {
-            self.energy = curr;
+        if curr > self.score {
+            self.score = curr;
             self.q_idx = q_idx;
             self.t_idx = t_idx;
         }
@@ -254,16 +108,16 @@ pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct DpCell {
-    pub(super) m: i32,  // Match/mismatch state
-    pub(super) bq: i32, // Query bulge (gap in target)
-    pub(super) bt: i32, // Target bulge (gap in query)
+    pub(super) m: i32,     // Match/mismatch state
+    pub(super) gap_q: i32, // Query-gap state: query symbols unpaired
+    pub(super) gap_t: i32, // Target-gap state: target symbols unpaired
 }
 
 impl DpCell {
     pub(super) const EMPTY: Self = Self {
         m: NEG_INF,
-        bq: NEG_INF,
-        bt: NEG_INF,
+        gap_q: NEG_INF,
+        gap_t: NEG_INF,
     };
 }
 
@@ -321,56 +175,5 @@ impl DpGrid {
     #[inline(always)]
     pub(super) fn width(&self) -> usize {
         self.width
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::ExtendConfig;
-
-    fn cfg(max_extension: i32) -> DpConfig {
-        DpConfig::from(&ExtendConfig {
-            max_extension,
-            build_alignment: true,
-        })
-    }
-
-    #[test]
-    fn side_cap_fixed_ignores_query_unlimited_follows_it() {
-        // Fixed window: independent of available query bases.
-        assert_eq!(cfg(20).side_cap(5), 20);
-        assert_eq!(cfg(20).side_cap(1000), 20);
-        // Unlimited (`-l -1`): follows the query, capped at the buffer ceiling.
-        assert_eq!(cfg(-1).side_cap(30), 30);
-        assert_eq!(cfg(-1).side_cap(MAX_EXT + 100), MAX_EXT);
-        // Buffer-safety invariant: never exceeds MAX_EXT on any path.
-        for m in [-1, 0, 20, 300] {
-            assert!(cfg(m).side_cap(usize::MAX) <= MAX_EXT);
-        }
-    }
-
-    #[test]
-    fn directional_views_walk_query_and_physical_target_together() {
-        let query = [Base::Gap, Base::A, Base::C, Base::G, Base::U];
-        let target = [Base::N, Base::U, Base::G, Base::C, Base::A, Base::Gap];
-        for (view, expected_q, expected_t) in [
-            (
-                DpView::new(&query[..4], &target[..5], ExtendDir::Left, 3),
-                [Base::G, Base::C, Base::A],
-                [Base::A, Base::C, Base::G],
-            ),
-            (
-                DpView::new(&query[1..], &target[2..], ExtendDir::Right, 3),
-                [Base::A, Base::C, Base::G],
-                [Base::G, Base::C, Base::A],
-            ),
-        ] {
-            let mut q_buf = [u8::MAX; 3];
-            let mut t_buf = [u8::MAX; 3];
-            view.fill_buffers(&mut q_buf, &mut t_buf);
-            assert_eq!(q_buf, expected_q.map(Base::as_u8));
-            assert_eq!(t_buf, expected_t.map(Base::as_u8));
-        }
     }
 }

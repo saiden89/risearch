@@ -2,9 +2,8 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use risearch::dp::gotoh::Gotoh;
-use risearch::dp::{DpGrid, DpView, ExtendDir};
+use risearch::dp::DpGrid;
 use risearch::dsm::{DsmRegistry, ScoringModel};
-use risearch::seq::Sequence;
 use risearch::types::{Base, DsmId, Energy};
 
 // ============================================================================
@@ -47,11 +46,41 @@ impl SimpleLcg {
 // SEQUENCE GENERATION
 // ============================================================================
 
-/// Generate a pseudo-random RNA sequence of given length.
-fn generate_sequence(len: usize, seed: u64) -> Sequence {
+/// Generate a pseudo-random RNA sequence as the dense symbol ranks the DP kernel
+/// consumes.
+///
+/// Orienting a flank into this form — reversing for a left extension — belongs to
+/// the search engine, so benches consume ranks directly rather than keeping a
+/// second copy of that polarity rule. Direction reaches the kernel only through
+/// the transposed scoring model.
+fn generate_ranks(len: usize, seed: u64) -> Vec<u8> {
     let mut rng = SimpleLcg::new(seed);
-    let bases: Vec<Base> = (0..len).map(|_| rng.next_base()).collect();
-    Sequence::from(bases)
+    (0..len).map(|_| rng.next_base().as_u8()).collect()
+}
+
+/// The `n` ranks ending at `anchor`, as a left extension's window would cover.
+/// Clamped at the sequence start so the window shrinks rather than panicking.
+fn before(src: &[u8], anchor: usize, n: usize) -> &[u8] {
+    &src[(anchor + 1).saturating_sub(n)..=anchor]
+}
+
+/// The `n` ranks starting at `anchor`, as a right extension's window would cover.
+/// Clamped at the sequence end so the window shrinks rather than panicking.
+fn from(src: &[u8], anchor: usize, n: usize) -> &[u8] {
+    let tail = &src[anchor..];
+    &tail[..tail.len().min(n)]
+}
+
+/// Copy a window of ranks into a reused DP buffer and return its length.
+///
+/// A forward `copy_from_slice`, not a reproduction of the engine's fill: the
+/// engine reads `Base` per byte and reverses for a left extension. Kept inside
+/// the timed region so an O(n) load is still charged against the O(n²) kernel,
+/// which is what these numbers are compared on.
+fn load(dst: &mut [u8], src: &[u8]) -> usize {
+    let len = src.len().min(dst.len());
+    dst[..len].copy_from_slice(&src[..len]);
+    len
 }
 
 // ============================================================================
@@ -67,23 +96,17 @@ fn bench_extend_left(c: &mut Criterion) {
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
-            let query = generate_sequence(100, 12345);
-            let target = generate_sequence(100, 54321);
-            let q_start = 50;
-            let t_start = 50;
+            let query = generate_ranks(100, 12345);
+            let target = generate_ranks(100, 54321);
 
             let mut grid = DpGrid::new(200);
             let mut q_buf = [0u8; 256];
             let mut t_buf = [0u8; 256];
 
             b.iter(|| {
-                let view = DpView::new(
-                    black_box(&query[..q_start + 1]),
-                    black_box(&target[..t_start + 1]),
-                    ExtendDir::Left,
-                    black_box(len),
-                );
-                let _ = gotoh.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
+                let q_len = load(&mut q_buf, black_box(&query[..len]));
+                let t_len = load(&mut t_buf, black_box(&target[..len]));
+                let _ = gotoh.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
             });
         });
     }
@@ -99,8 +122,8 @@ fn bench_extend_right(c: &mut Criterion) {
 
     for len in [10, 20, 30, 50].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(len), len, |b, &len| {
-            let query = generate_sequence(100, 12345);
-            let target = generate_sequence(100, 54321);
+            let query = generate_ranks(100, 12345);
+            let target = generate_ranks(100, 54321);
             let q_end = 49;
             let t_end = 49;
 
@@ -109,13 +132,9 @@ fn bench_extend_right(c: &mut Criterion) {
             let mut t_buf = [0u8; 256];
 
             b.iter(|| {
-                let view = DpView::new(
-                    black_box(&query[q_end..]),
-                    black_box(&target[t_end..]),
-                    ExtendDir::Right,
-                    black_box(len),
-                );
-                let _ = gotoh.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
+                let q_len = load(&mut q_buf, black_box(from(&query, q_end, len)));
+                let t_len = load(&mut t_buf, black_box(from(&target, t_end, len)));
+                let _ = gotoh.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
             });
         });
     }
@@ -139,10 +158,8 @@ fn bench_throughput(c: &mut Criterion) {
             BenchmarkId::new("extend_left_cells", len),
             len,
             |b, &len| {
-                let query = generate_sequence(100, 12345);
-                let target = generate_sequence(100, 54321);
-                let q_start = 50;
-                let t_start = 50;
+                let query = generate_ranks(100, 12345);
+                let target = generate_ranks(100, 54321);
 
                 let mut grid = DpGrid::new(200);
                 let mut q_buf = [0u8; 256];
@@ -153,14 +170,9 @@ fn bench_throughput(c: &mut Criterion) {
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let view = DpView::new(
-                            black_box(&query[..q_start + 1]),
-                            black_box(&target[..t_start + 1]),
-                            ExtendDir::Left,
-                            black_box(len),
-                        );
-                        let result =
-                            gotoh_left.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
+                        let q_len = load(&mut q_buf, black_box(&query[..len]));
+                        let t_len = load(&mut t_buf, black_box(&target[..len]));
+                        let result = gotoh_left.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -177,8 +189,8 @@ fn bench_throughput(c: &mut Criterion) {
             BenchmarkId::new("extend_right_cells", len),
             len,
             |b, &len| {
-                let query = generate_sequence(100, 12345);
-                let target = generate_sequence(100, 54321);
+                let query = generate_ranks(100, 12345);
+                let target = generate_ranks(100, 54321);
                 let q_end = 49;
                 let t_end = 49;
 
@@ -191,14 +203,9 @@ fn bench_throughput(c: &mut Criterion) {
 
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
-                        let view = DpView::new(
-                            black_box(&query[q_end..]),
-                            black_box(&target[t_end..]),
-                            ExtendDir::Right,
-                            black_box(len),
-                        );
-                        let result =
-                            gotoh_right.extend(black_box(&view), &mut grid, &mut q_buf, &mut t_buf);
+                        let q_len = load(&mut q_buf, black_box(from(&query, q_end, len)));
+                        let t_len = load(&mut t_buf, black_box(from(&target, t_end, len)));
+                        let result = gotoh_right.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
                         total_duration += start.elapsed();
 
                         // Ensure result is not optimized away
@@ -226,11 +233,11 @@ fn bench_many_extensions(c: &mut Criterion) {
     let gotoh_left = Gotoh::new(&left_model);
 
     group.bench_function("100_extensions_len30", |b| {
-        let queries: Vec<Sequence> = (0..10)
-            .map(|i| generate_sequence(100, 1000 + i as u64))
+        let queries: Vec<Vec<u8>> = (0..10)
+            .map(|i| generate_ranks(100, 1000 + i as u64))
             .collect();
-        let targets: Vec<Sequence> = (0..10)
-            .map(|i| generate_sequence(100, 5000 + i as u64))
+        let targets: Vec<Vec<u8>> = (0..10)
+            .map(|i| generate_ranks(100, 5000 + i as u64))
             .collect();
 
         let mut grid = DpGrid::new(200);
@@ -257,31 +264,18 @@ fn bench_many_extensions(c: &mut Criterion) {
                         target.len() - 1
                     };
 
-                    // Left extension
-                    let left_view = DpView::new(
-                        black_box(&query[..q_start + 1]),
-                        black_box(&target[..t_start + 1]),
-                        ExtendDir::Left,
-                        black_box(30),
-                    );
-                    let left_result =
-                        gotoh_left.extend(black_box(&left_view), &mut grid, &mut q_buf, &mut t_buf);
-                    total_score = total_score.wrapping_add(left_result.energy);
+                    // Left extension: the window is the 30 symbols before the anchor.
+                    let q_len = load(&mut q_buf, black_box(before(query, q_start, 30)));
+                    let t_len = load(&mut t_buf, black_box(before(target, t_start, 30)));
+                    let left_result = gotoh_left.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
+                    total_score = total_score.wrapping_add(left_result.score);
 
-                    // Right extension
-                    let right_view = DpView::new(
-                        black_box(&query[q_end..]),
-                        black_box(&target[t_end..]),
-                        ExtendDir::Right,
-                        black_box(30),
-                    );
-                    let right_result = gotoh_right.extend(
-                        black_box(&right_view),
-                        &mut grid,
-                        &mut q_buf,
-                        &mut t_buf,
-                    );
-                    total_score = total_score.wrapping_add(right_result.energy);
+                    // Right extension: whatever remains after the anchor, up to 30.
+                    let q_len = load(&mut q_buf, black_box(from(query, q_end, 30)));
+                    let t_len = load(&mut t_buf, black_box(from(target, t_end, 30)));
+                    let right_result =
+                        gotoh_right.extend(&q_buf[..q_len], &t_buf[..t_len], &mut grid);
+                    total_score = total_score.wrapping_add(right_result.score);
                 }
             }
 
