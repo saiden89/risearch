@@ -312,7 +312,6 @@ fn aligned_target_track(hit: &SearchHit) -> Option<String> {
     Some(cols.iter().map(|c| c.target.to_byte() as char).collect())
 }
 
-
 // =============================================================================
 // PARITY TABLE
 // =============================================================================
