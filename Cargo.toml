@@ -7,6 +7,7 @@ version = "3.0.0-alpha.1"
 rust-version = "1.88"
 
 [workspace.dependencies]
+anyhow = "1.0.46"
 clap = { version = "4", default-features = false, features = ["std", "help", "usage"] }
 
 [package]
@@ -22,7 +23,7 @@ openmp = ["libsais/openmp"]
 
 [dependencies]
 fs-err = "3"
-anyhow = "1.0.40"
+anyhow.workspace = true
 bytecheck = "0.8"
 clap = { workspace = true, features = ["derive"] }
 env_logger = { version = "0.11", features = ["color"] }
