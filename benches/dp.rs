@@ -78,10 +78,8 @@ fn bench_extend_left(c: &mut Criterion) {
 
             b.iter(|| {
                 let view = DpView::new(
-                    black_box(&query),
-                    black_box(&target),
-                    black_box(q_start),
-                    black_box(t_start),
+                    black_box(&query[..q_start + 1]),
+                    black_box(&target[..t_start + 1]),
                     ExtendDir::Left,
                     black_box(len),
                 );
@@ -112,10 +110,8 @@ fn bench_extend_right(c: &mut Criterion) {
 
             b.iter(|| {
                 let view = DpView::new(
-                    black_box(&query),
-                    black_box(&target),
-                    black_box(q_end),
-                    black_box(t_end),
+                    black_box(&query[q_end..]),
+                    black_box(&target[t_end..]),
                     ExtendDir::Right,
                     black_box(len),
                 );
@@ -158,10 +154,8 @@ fn bench_throughput(c: &mut Criterion) {
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
                         let view = DpView::new(
-                            black_box(&query),
-                            black_box(&target),
-                            black_box(q_start),
-                            black_box(t_start),
+                            black_box(&query[..q_start + 1]),
+                            black_box(&target[..t_start + 1]),
                             ExtendDir::Left,
                             black_box(len),
                         );
@@ -198,10 +192,8 @@ fn bench_throughput(c: &mut Criterion) {
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
                         let view = DpView::new(
-                            black_box(&query),
-                            black_box(&target),
-                            black_box(q_end),
-                            black_box(t_end),
+                            black_box(&query[q_end..]),
+                            black_box(&target[t_end..]),
                             ExtendDir::Right,
                             black_box(len),
                         );
@@ -267,10 +259,8 @@ fn bench_many_extensions(c: &mut Criterion) {
 
                     // Left extension
                     let left_view = DpView::new(
-                        black_box(query),
-                        black_box(target),
-                        black_box(q_start),
-                        black_box(t_start),
+                        black_box(&query[..q_start + 1]),
+                        black_box(&target[..t_start + 1]),
                         ExtendDir::Left,
                         black_box(30),
                     );
@@ -280,10 +270,8 @@ fn bench_many_extensions(c: &mut Criterion) {
 
                     // Right extension
                     let right_view = DpView::new(
-                        black_box(query),
-                        black_box(target),
-                        black_box(q_end),
-                        black_box(t_end),
+                        black_box(&query[q_end..]),
+                        black_box(&target[t_end..]),
                         ExtendDir::Right,
                         black_box(30),
                     );

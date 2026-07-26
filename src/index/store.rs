@@ -10,7 +10,7 @@ use crate::index::sa::SuffixArray;
 use crate::index::view::RegistryView;
 use crate::types::{Base, Strand};
 
-const TARGET_REGISTRY_VERSION: u32 = 1;
+const TARGET_REGISTRY_VERSION: u32 = 2;
 
 /// Number of zero-valued entries appended after the real sequence and SA data.
 /// These sentinels keep `sa[suffix_pos + offset]` branchless in the seed hot path.
@@ -69,9 +69,9 @@ impl TargetRegistry {
             });
 
             combined_bases.reserve(2 * sequence.len() + 2);
-            combined_bases.extend(sequence.iter().copied().map(Base::complement));
-            combined_bases.push(Base::Gap);
             combined_bases.extend(sequence[..].iter().rev().copied());
+            combined_bases.push(Base::Gap);
+            combined_bases.extend(sequence.iter().copied().map(Base::complement));
             combined_bases.push(Base::Gap);
         }
 
@@ -150,22 +150,41 @@ impl TargetRegistry {
         }
     }
 
-    /// Return the forward and reverse-complement slices for a target entry.
+    /// Return the selected physical target strand in duplex-column order.
     ///
-    /// Block layout: `fwd_comp[seq_len] + Gap + rc_comp[seq_len] + Gap`.
+    /// For input `T` written 5' to 3', Forward is `R(T)` and Reverse is `C(T)`.
     #[inline]
-    pub fn target_slices(&self, target_idx: usize) -> (&[Base], &[Base], usize) {
+    pub fn target(&self, target_idx: usize, strand: Strand) -> &[Base] {
         let seq_len = self.seq_lens[target_idx];
-        let offset = self.offsets[target_idx];
+        let offset = self.offsets[target_idx]
+            + match strand {
+                Strand::Forward => 0,
+                Strand::Reverse => seq_len + 1,
+            };
         let combined_seq = self.combined_seq();
-        let t_fwd = &combined_seq[offset..offset + seq_len];
-        let t_rc = &combined_seq[offset + seq_len + 1..offset + 2 * seq_len + 1];
-        (t_fwd, t_rc, seq_len)
+        &combined_seq[offset..offset + seq_len]
     }
 
-    /// Map a local position within a target block to strand and view-normalized start.
+    /// Convert an inclusive target span between the physical duplex view and
+    /// original FASTA coordinates.
     ///
-    /// Block layout: `fwd_comp[seq_len] + Gap + rc[seq_len] + Gap`.
+    /// This is an involution: Forward `R(T)` mirrors; Reverse `C(T)` preserves.
+    #[inline(always)]
+    pub(crate) const fn map_target_span_between_frames(
+        strand: Strand,
+        start: usize,
+        end: usize,
+        target_len: usize,
+    ) -> (usize, usize) {
+        match strand {
+            Strand::Forward => (target_len - 1 - end, target_len - 1 - start),
+            Strand::Reverse => (start, end),
+        }
+    }
+
+    /// Map a position in a target block to its physical strand and block-local start.
+    ///
+    /// Block layout: `R(T)[seq_len] + Gap + C(T)[seq_len] + Gap`.
     /// Returns `None` if the position falls on a Gap or the seed overflows the block.
     #[inline]
     pub fn map_target_pos(
@@ -173,24 +192,12 @@ impl TargetRegistry {
         seq_len: usize,
         seed_len: usize,
     ) -> Option<(Strand, usize)> {
-        if local_pos < seq_len {
-            if local_pos + seed_len > seq_len {
-                return None;
-            }
-            return Some((Strand::Reverse, seq_len - (local_pos + seed_len)));
-        }
-
-        let rc_start = seq_len + 1;
-        let rc_end = rc_start + seq_len;
-        if local_pos >= rc_start && local_pos < rc_end {
-            let rc_pos = local_pos - rc_start;
-            if rc_pos + seed_len > seq_len {
-                return None;
-            }
-            return Some((Strand::Forward, seq_len - (rc_pos + seed_len)));
-        }
-
-        None
+        let (strand, start) = if local_pos < seq_len {
+            (Strand::Forward, local_pos)
+        } else {
+            (Strand::Reverse, local_pos.checked_sub(seq_len + 1)?)
+        };
+        (start < seq_len && seed_len <= seq_len - start).then_some((strand, start))
     }
 
     #[inline]
@@ -239,7 +246,7 @@ fn validate_store(
 ) -> Result<(Vec<usize>, Vec<usize>, usize)> {
     if root.version.to_native() != TARGET_REGISTRY_VERSION {
         bail!(
-            "Unsupported target index version {} in {}",
+            "Unsupported target index version {} in {}; rebuild index",
             root.version.to_native(),
             path.display()
         );
@@ -333,6 +340,8 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::types::{Base, Strand};
+
     use super::{
         write_target_registry, TargetRecord, TargetRegistry, TargetStore, TARGET_REGISTRY_VERSION,
     };
@@ -360,12 +369,20 @@ mod tests {
 
         for (i, (expected_name, expected_seq_len)) in expected.iter().enumerate().take(store.len())
         {
-            let (fwd, rc, seq_len) = store.target_slices(i);
             assert_eq!(store.get_name(i), *expected_name);
-            assert_eq!(seq_len, *expected_seq_len);
-            assert_eq!(fwd.len(), *expected_seq_len);
-            assert_eq!(rc.len(), *expected_seq_len);
+            for strand in [Strand::Forward, Strand::Reverse] {
+                assert_eq!(store.target(i, strand).len(), *expected_seq_len);
+            }
         }
+
+        assert_eq!(
+            store.target(0, Strand::Forward),
+            &[Base::A, Base::G, Base::U, Base::G, Base::C, Base::A]
+        );
+        assert_eq!(
+            store.target(0, Strand::Reverse),
+            &[Base::U, Base::G, Base::C, Base::A, Base::C, Base::U]
+        );
     }
 
     #[test]
@@ -380,17 +397,19 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_unsupported_version() {
+    fn open_rejects_v1_index() {
         let dir = tempdir().unwrap();
         let index_path = dir.path().join("targets.idx");
-        let store = tiny_store(999);
+        let store = tiny_store(1);
 
         write_target_registry(&index_path, &store).unwrap();
 
-        match TargetRegistry::open(&index_path) {
-            Ok(_) => panic!("Expected unsupported version error"),
-            Err(err) => assert!(err.to_string().contains("Unsupported target index version")),
-        }
+        let Err(err) = TargetRegistry::open(&index_path) else {
+            panic!("Expected v1 index rejection");
+        };
+        let message = err.to_string();
+        assert!(message.contains("Unsupported target index version 1"));
+        assert!(message.contains("rebuild it with `risearch index"));
     }
 
     #[test]
@@ -409,19 +428,25 @@ mod tests {
     }
 
     #[test]
-    fn map_target_pos_normalizes_into_strand_view() {
-        use crate::types::Strand;
-
+    fn map_target_pos_preserves_same_block_coordinates() {
         let seq_len = 5;
         let seed_len = 2;
 
         assert_eq!(
             TargetRegistry::map_target_pos(1, seq_len, seed_len),
-            Some((Strand::Reverse, 2))
+            Some((Strand::Forward, 1))
         );
         assert_eq!(
             TargetRegistry::map_target_pos(seq_len + 1 + 2, seq_len, seed_len),
-            Some((Strand::Forward, 1))
+            Some((Strand::Reverse, 2))
+        );
+        assert_eq!(
+            TargetRegistry::map_target_pos(seq_len - 1, seq_len, seed_len),
+            None
+        );
+        assert_eq!(
+            TargetRegistry::map_target_pos(2 * seq_len, seq_len, seed_len),
+            None
         );
         assert_eq!(
             TargetRegistry::map_target_pos(seq_len, seq_len, seed_len),
@@ -430,6 +455,20 @@ mod tests {
         assert_eq!(
             TargetRegistry::map_target_pos(2 * seq_len + 1, seq_len, seed_len),
             None
+        );
+    }
+
+    #[test]
+    fn target_span_mapping_between_frames_is_an_involution() {
+        let forward = TargetRegistry::map_target_span_between_frames(Strand::Forward, 1, 3, 8);
+        assert_eq!(forward, (4, 6));
+        assert_eq!(
+            TargetRegistry::map_target_span_between_frames(Strand::Forward, 4, 6, 8),
+            (1, 3)
+        );
+        assert_eq!(
+            TargetRegistry::map_target_span_between_frames(Strand::Reverse, 1, 3, 8),
+            (1, 3)
         );
     }
 

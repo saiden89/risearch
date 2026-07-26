@@ -150,6 +150,7 @@ fn emit_seed_match<F: FnMut(SeedHit)>(
             else {
                 continue;
             };
+            // Preserve block-local duplex coordinates; only identify the strand.
             let Some((strand, target_start)) = TargetRegistry::map_target_pos(
                 target_local_pos,
                 tview.seq_lens[target_idx],
@@ -235,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_normalizes_reverse_strand_target_hits() {
+    fn collect_preserves_same_block_coordinates_on_both_strands() {
         let config = SeedConfig {
             seed_start: None,
             seed_end: None,
@@ -245,17 +246,18 @@ mod tests {
             min_prefix_matches: 1,
             min_suffix_matches: 0,
         };
-        let queries = build_queries(">q1\nAC\n", &config);
-        let (targets, _dir) = build_store(">t1\nAC\n");
+        let queries = build_queries(">q1\nCG\n", &config);
+        let (targets, _dir) = build_store(">t1\nAACGU\n");
 
         let groups = SeedingEngine::new(&queries, &targets).run(&config).unwrap();
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].1.len(), 1);
-
-        let seed = &groups[0].1[0];
-        assert_eq!(seed.query_start, 0);
-        assert_eq!(seed.target_start, 0);
-        assert_eq!(seed.len, 2);
-        assert_eq!(seed.strand, Strand::Reverse);
+        let seeds = &groups[0].1;
+        assert_eq!(seeds.len(), 2);
+        assert!(seeds
+            .iter()
+            .any(|seed| seed.strand == Strand::Forward && seed.target_start == 1));
+        assert!(seeds
+            .iter()
+            .any(|seed| seed.strand == Strand::Reverse && seed.target_start == 2));
     }
 }

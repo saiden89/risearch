@@ -163,12 +163,12 @@ pub(crate) fn parse_bindingsite_output(
         _ => None,
     };
     let q_seq = query_registry.entries()[query_idx].sequence();
-    let (t_fwd, t_rc, _) = target_registry.target_slices(target_idx);
+    let target = target_registry.target(target_idx, strand);
     hit.alignment = Some(Alignment::from_classes(
         &classes,
         seed,
-        hit.query_bases(q_seq),
-        hit.target_bases(t_fwd, t_rc),
+        hit.query(q_seq),
+        hit.target(target),
     ));
 
     Some(hit)

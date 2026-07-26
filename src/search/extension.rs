@@ -86,8 +86,7 @@ fn map_trace_to_pairs(
     for &op in ops {
         match op {
             TraceOp::Paired => {
-                let target = view.t_base(j).complement();
-                out.push(PairClass::from_bases(view.q_base(i), target));
+                out.push(PairClass::from_bases(view.q_base(i), view.t_base(j)));
                 i -= 1;
                 j -= 1;
             }
@@ -119,9 +118,9 @@ mod tests {
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
         let mut engine = ExtensionEngine::new(8, &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
-        let target = [Base::G, Base::C, Base::A, Base::U];
+        let target = [Base::U, Base::A, Base::C, Base::G];
 
-        let view = DpView::new(&query, &target, 0, target.len() - 1, ExtendDir::Right, 8);
+        let view = DpView::new(&query, &target, ExtendDir::Right, 8);
         let result = engine.extend(&view, true);
         let pairs = result.pairs.expect("traceback expected");
 
@@ -135,5 +134,20 @@ mod tests {
             pairs.iter().filter(|step| step.consumes_target()).count(),
             result.t_ext
         );
+    }
+
+    #[test]
+    fn traceback_pairs_stay_in_query_order_for_both_directions() {
+        let query = [Base::A, Base::G, Base::C];
+        let target = [Base::U, Base::U, Base::G];
+        let ops = [TraceOp::Paired, TraceOp::Paired];
+
+        for (dir, expected) in [
+            (ExtendDir::Right, [PairClass::Wobble, PairClass::Canonical]),
+            (ExtendDir::Left, [PairClass::Canonical, PairClass::Wobble]),
+        ] {
+            let view = DpView::new(&query, &target, dir, 8);
+            assert_eq!(map_trace_to_pairs(&view, &ops, 2, 2).as_slice(), expected);
+        }
     }
 }

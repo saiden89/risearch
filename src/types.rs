@@ -132,12 +132,6 @@ impl Base {
             _ => PairType::Mismatch,
         }
     }
-
-    /// Check if this base forms a valid pair with the target base (which is in transformed/forward space).
-    #[inline(always)]
-    pub fn forms_pair(self, target: Base, allow_wobble: bool) -> bool {
-        self.pair_type(target.complement()).is_match(allow_wobble)
-    }
 }
 
 /// Chemistry of a base pair.
@@ -163,7 +157,7 @@ impl PairType {
     }
 }
 
-/// Number of nucleotide types (Gap, A, G, C, U, N)
+/// Number of nucleotide types (Gap, A, C, G, N, U)
 pub const BASE_COUNT: usize = 6;
 
 /// Constant for Gap index used in array indexing and DSM lookups.

@@ -49,8 +49,7 @@ pub fn format_hit_into(
     hit: &SearchHit,
     q_name: &str,
     t_name: &str,
-    t_fwd: &[Base],
-    t_rc: &[Base],
+    target: &[Base],
     format: OutputFormat,
 ) {
     // Uninitialized 40-byte stack array; there is nothing to amortize by
@@ -71,7 +70,7 @@ pub fn format_hit_into(
 
     let mut row = TsvLine::new(out);
     write_base_fields(&mut row, &mut itoa, hit, q_name, t_name);
-    write_extended_fields(&mut row, hit, t_fwd, t_rc, format);
+    write_extended_fields(&mut row, hit, target, format);
     row.finish();
 }
 
@@ -97,8 +96,7 @@ fn write_base_fields(
 fn write_extended_fields(
     row: &mut TsvLine<'_>,
     hit: &SearchHit,
-    t_fwd: &[Base],
-    t_rc: &[Base],
+    target: &[Base],
     format: OutputFormat,
 ) {
     let alignment = hit.alignment.as_ref();
@@ -118,9 +116,12 @@ fn write_extended_fields(
             }
         });
 
-        let (flank_right, flank_left) = hit.target_flanks(t_fwd, t_rc);
-        row.field_with(|buf| push_flank_rev(buf, flank_left));
-        row.field_with(|buf| push_flank_fwd(buf, flank_right));
+        // The duplex view runs target 3'->5': bases after the hit are its 5'
+        // flank, while bases before it are the 3' flank and must be emitted
+        // adjacent-to-outward. Legacy -p3 reports 5' first, then 3'.
+        let (_, flank_5, flank_3) = hit.target_context(target, BINDING_SITE_FLANK_LEN);
+        row.field_with(|buf| buf.extend(flank_5.iter().map(|base| base.to_byte())));
+        row.field_with(|buf| buf.extend(flank_3.iter().rev().map(|base| base.to_byte())));
     }
 }
 
@@ -169,14 +170,32 @@ fn push_target_row(buf: &mut Vec<u8>, alignment: &Alignment) {
     }
 }
 
-fn push_flank_fwd(buf: &mut Vec<u8>, bases: &[Base]) {
-    for &b in bases {
-        buf.push(b.complement().to_byte());
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Energy, Strand};
 
-fn push_flank_rev(buf: &mut Vec<u8>, bases: &[Base]) {
-    for &b in bases.iter().rev() {
-        buf.push(b.complement().to_byte());
+    #[test]
+    fn binding_site_writes_physical_five_prime_then_three_prime_flank() {
+        let hit = SearchHit {
+            query_idx: 0,
+            target_idx: 0,
+            q_start: 0,
+            q_end: 1,
+            t_start: 2,
+            t_end: 3,
+            strand: Strand::Reverse,
+            energy: Energy::from_kcal(0.0),
+            alignment: None,
+        };
+        let target = [Base::A, Base::C, Base::G, Base::U, Base::A, Base::C];
+        let mut out = Vec::new();
+
+        format_hit_into(&mut out, &hit, "q", "t", &target, OutputFormat::BindingSite);
+
+        let text = String::from_utf8(out).unwrap();
+        let fields = text.trim_end().split('\t').collect::<Vec<_>>();
+        assert_eq!(fields[10], "ac", "5' flank must be reported first");
+        assert_eq!(fields[11], "ca", "3' flank must be reported second");
     }
 }

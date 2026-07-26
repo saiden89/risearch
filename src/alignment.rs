@@ -14,8 +14,7 @@ pub enum PairClass {
 }
 
 impl PairClass {
-    /// `target` must be a real base. The index stores targets as the complement
-    /// of the strand the query binds to, so those need `.complement()` first.
+    /// Classify two physical bases from the same duplex column.
     #[inline]
     pub const fn from_bases(query: Base, target: Base) -> Self {
         match (query, target) {
@@ -129,9 +128,8 @@ impl Alignment {
         Self::resolve(classes.iter().copied().map(Some), seed, query, target)
     }
 
-    /// Walk columns 5'->3' along the query, which is 3'->5' along the target.
-    /// The index holds the complement of the strand the query binds to, so stored
-    /// bases are complemented on the way in. A `None` class is derived, which only
+    /// Walk physical duplex columns in their canonical order: 5'->3' along the
+    /// query and 3'->5' along the target. A `None` class is derived, which only
     /// works where the column is known to be gap-free.
     fn resolve(
         classes: impl Iterator<Item = Option<PairClass>>,
@@ -140,7 +138,7 @@ impl Alignment {
         target: &[Base],
     ) -> Self {
         let mut columns = SmallVec::new();
-        let (mut q, mut t) = (0usize, target.len());
+        let (mut q, mut t) = (0usize, 0usize);
         for class in classes {
             let query_base = if class.is_none_or(PairClass::consumes_query) {
                 let base = query.get(q).copied().unwrap_or(Base::Gap);
@@ -150,8 +148,9 @@ impl Alignment {
                 Base::Gap
             };
             let target_base = if class.is_none_or(PairClass::consumes_target) {
-                t = t.saturating_sub(1);
-                target.get(t).copied().unwrap_or(Base::Gap).complement()
+                let base = target.get(t).copied().unwrap_or(Base::Gap);
+                t += 1;
+                base
             } else {
                 Base::Gap
             };
@@ -177,5 +176,34 @@ impl Alignment {
 
     pub fn fingerprint(&self) -> String {
         self.columns.iter().map(|c| c.class.symbol()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_keep_physical_order_and_advance_only_the_consumed_strand() {
+        let query = [Base::A, Base::C];
+        let target = [Base::U, Base::G];
+        let prefix = [PairClass::TargetBulge, PairClass::QueryBulge];
+
+        let alignment = Alignment::from_parts(&prefix, 1, &[], &query, &target);
+
+        assert_eq!(alignment.seed(), Some(2..3));
+        let columns = alignment
+            .columns()
+            .iter()
+            .map(|c| (c.class, c.query, c.target))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            columns,
+            [
+                (PairClass::TargetBulge, Base::Gap, Base::U),
+                (PairClass::QueryBulge, Base::A, Base::Gap),
+                (PairClass::Canonical, Base::C, Base::G),
+            ]
+        );
     }
 }

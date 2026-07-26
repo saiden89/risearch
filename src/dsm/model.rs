@@ -18,13 +18,13 @@ pub struct ScoringModel {
 
 impl ScoringModel {
     #[inline]
-    fn ext_penalty_mult(q1: Base, q2: Base, t1_orig: Base, t2_orig: Base) -> i32 {
-        if q2 == Base::Gap && t2_orig == Base::Gap {
+    fn ext_penalty_mult(q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
+        if q2 == Base::Gap && t2 == Base::Gap {
             0
-        } else if q2 == Base::Gap || t2_orig == Base::Gap {
+        } else if q2 == Base::Gap || t2 == Base::Gap {
             1
-        } else if q1 == Base::Gap && t1_orig == Base::Gap {
-            if q2.pair_type(t2_orig.complement()).is_match(true) {
+        } else if q1 == Base::Gap && t1 == Base::Gap {
+            if q2.pair_type(t2).is_match(true) {
                 2
             } else {
                 0
@@ -40,15 +40,12 @@ impl ScoringModel {
         for q1 in BASES {
             for q2 in BASES {
                 for t1 in BASES {
-                    let t1_orig = t1.complement();
                     for t2 in BASES {
-                        let t2_orig = t2.complement();
-
                         let idx = flat_idx(q1.as_u8(), q2.as_u8(), t1.as_u8(), t2.as_u8());
-                        let ext_penalty_mult = Self::ext_penalty_mult(q1, q2, t1_orig, t2_orig);
+                        let ext_penalty_mult = Self::ext_penalty_mult(q1, q2, t1, t2);
 
-                        table[idx] = source_table[q1.as_usize()][q2.as_usize()][t1_orig.as_usize()]
-                            [t2_orig.as_usize()]
+                        table[idx] = source_table[q1.as_usize()][q2.as_usize()][t1.as_usize()]
+                            [t2.as_usize()]
                             - penalty.0 * ext_penalty_mult;
                     }
                 }
@@ -120,27 +117,61 @@ impl ScoringModel {
     }
 
     /// Calculate the thermodynamic score of a continuous, ungapped anti-parallel duplex.
-    pub fn ungapped_duplex_score(
-        &self,
-        query: &[Base],
-        target: &[Base],
-        q_pos: usize,
-        t_pos: usize,
-        len: usize,
-    ) -> Energy {
-        if len <= 1 {
-            return Energy(0);
-        }
-        let mut score = 0;
-        let t_match_end = t_pos + len - 1;
-        for i in 0..(len - 1) {
-            score += self.score_bases(
-                query[q_pos + i],
-                query[q_pos + i + 1],
-                target[t_match_end - i],
-                target[t_match_end - i - 1],
+    ///
+    /// Query and target are both in duplex-column order: query 5'→3' and the
+    /// physical target 3'→5', so paired positions advance together.
+    pub fn ungapped_duplex_score(&self, query: &[Base], target: &[Base]) -> Energy {
+        assert_eq!(query.len(), target.len());
+        Energy(
+            query
+                .windows(2)
+                .zip(target.windows(2))
+                .map(|(q, t)| self.score_bases(q[0], q[1], t[0], t[1]))
+                .sum(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_source() -> DsmTable {
+        [[[[0; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]
+    }
+
+    #[test]
+    fn runtime_table_and_ungapped_score_use_physical_target_order() {
+        let mut source = empty_source();
+        source[Base::A.as_usize()][Base::C.as_usize()][Base::U.as_usize()][Base::G.as_usize()] = 11;
+        source[Base::C.as_usize()][Base::G.as_usize()][Base::G.as_usize()][Base::C.as_usize()] = 17;
+        let model = ScoringModel::new(&source, Energy::from_kcal(0.0), Energy::from_kcal(0.0));
+
+        assert_eq!(model.score_bases(Base::A, Base::C, Base::U, Base::G), 11);
+        assert_eq!(model.score_bases(Base::A, Base::C, Base::A, Base::C), 0);
+        assert_eq!(
+            model.ungapped_duplex_score(&[Base::A, Base::C, Base::G], &[Base::U, Base::G, Base::C]),
+            Energy(28)
+        );
+    }
+
+    #[test]
+    fn anchor_penalty_uses_physical_wc_wobble_and_mismatch_pairs() {
+        let source = empty_source();
+        let unit = Energy::from_kcal(0.005);
+        let charged = ScoringModel::new(&source, Energy::from_kcal(0.0), unit);
+
+        for (query, target, expected_mult) in [
+            (Base::A, Base::U, 2), // Watson-Crick
+            (Base::G, Base::U, 2), // G-U wobble
+            (Base::A, Base::A, 0), // mismatch
+        ] {
+            let charged_score = charged.score_bases(Base::Gap, query, Base::Gap, target);
+            assert_eq!(
+                charged_score,
+                -unit.0 * expected_mult,
+                "anchor penalty for physical pair {query:?}-{target:?}"
             );
         }
-        Energy(score)
     }
 }

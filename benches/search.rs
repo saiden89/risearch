@@ -3,19 +3,20 @@ use std::path::Path;
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use rayon::ThreadPoolBuilder;
 use risearch::config::{
     ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat, ScoreConfig,
     SearchConfig, SeedConfig,
 };
 use risearch::registry::QueryRegistry;
 use risearch::search::run_search;
-use risearch::seed::{SeedHit, SeedingEngine};
+use risearch::seed::SeedingEngine;
 use risearch::seq::Sequence;
-use risearch::types::{Base, DsmId};
+use risearch::types::{Base, DsmId, Strand};
 use risearch::Energy;
 use risearch::TargetRegistry;
-use risearch::{TextSink, VecSink};
+use risearch::VecSink;
 use tempfile::TempDir;
 
 struct SimpleLcg {
@@ -46,7 +47,7 @@ impl SimpleLcg {
 }
 
 struct ProductionSearchDataset {
-    tmpdir: TempDir,
+    _tmpdir: TempDir,
     queries: QueryRegistry,
     store: TargetRegistry,
 }
@@ -94,7 +95,25 @@ fn build_production_dataset(
     let queries: Vec<_> = (0..query_count)
         .map(|i| generate_sequence(query_len, 1_000 + i as u64))
         .collect();
-    let targets = vec![generate_sequence(target_len, 9_999)];
+    let mut targets: Vec<Vec<Base>> = [9_999, 19_999]
+        .map(|seed| {
+            generate_sequence(target_len, seed)
+                .iter()
+                .copied()
+                .collect()
+        })
+        .into();
+    for (i, query) in queries.iter().enumerate() {
+        let start = 1_000 + i * 1_000;
+        let reverse_complement = query[..]
+            .iter()
+            .rev()
+            .map(|base| base.complement())
+            .collect::<Vec<_>>();
+        targets[0][start..start + query.len()].copy_from_slice(&reverse_complement);
+        targets[1][start..start + query.len()].copy_from_slice(query);
+    }
+    let targets = targets.into_iter().map(Sequence::from).collect::<Vec<_>>();
 
     write_fasta(&queries_path, "q", &queries);
     write_fasta(&targets_path, "t", &targets);
@@ -104,7 +123,7 @@ fn build_production_dataset(
     let store = TargetRegistry::open(&index_path).expect("open target index");
 
     ProductionSearchDataset {
-        tmpdir,
+        _tmpdir: tmpdir,
         queries,
         store,
     }
@@ -123,9 +142,6 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             build_alignment: false,
         },
         filter: FilterConfig {
-            // Saturating reject-all floor: DP still runs for every seed, hits
-            // stay un-recorded (matching the old NEG_INFINITY intent) without
-            // routing a non-finite value through Energy::from_kcal.
             delta_g: Energy::MIN,
             seed_energy: Energy::from_kcal(0.0),
             no_max_prune: false,
@@ -139,13 +155,27 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
     }
 }
 
-fn seed_count(groups: &[(usize, Vec<SeedHit>)]) -> usize {
-    groups.iter().map(|(_, seeds)| seeds.len()).sum()
+fn seed_counts(
+    queries: &QueryRegistry,
+    store: &TargetRegistry,
+    config: &SeedConfig,
+) -> (usize, usize) {
+    let engine = SeedingEngine::new(queries, store);
+    let (mut forward, mut reverse) = (0, 0);
+    for query_idx in 0..queries.len() {
+        engine
+            .seed_query(query_idx, config, |hit| match hit.strand {
+                Strand::Forward => forward += 1,
+                Strand::Reverse => reverse += 1,
+            })
+            .expect("stream seeds");
+    }
+    (forward, reverse)
 }
 
 fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("prod_shaped");
-    group.sample_size(10);
+    group.sample_size(20);
 
     let seed_config = SeedConfig {
         seed_start: None,
@@ -156,59 +186,83 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
         min_prefix_matches: 2,
         min_suffix_matches: 2,
     };
-    let dataset = build_production_dataset(10, 22, 100_000, &seed_config);
-    let args = make_search_config(&seed_config);
-    let output_path = dataset.tmpdir.path().join("search.out");
+    let dataset = build_production_dataset(10, 22, 50_000, &seed_config);
+    let mut score_args = make_search_config(&seed_config);
+    score_args.filter.no_max_prune = true;
+    score_args.filter.no_dedup = true;
+    let mut hit_args = make_search_config(&seed_config);
+    hit_args.filter.delta_g = Energy::from_kcal(100.0);
+    hit_args.extend.build_alignment = true;
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .expect("single-thread benchmark pool");
 
-    // Bench the seed stage alone on the same production-shaped dataset used
-    // by the full search pipeline benches below.
-    let case = "10q_x_100k";
+    let (forward, reverse) =
+        pool.install(|| seed_counts(&dataset.queries, &dataset.store, &seed_config));
+    let seed_total = forward + reverse;
+    assert_eq!(
+        (seed_total, forward, reverse),
+        (266_864, 133_452, 133_412),
+        "seed workload changed"
+    );
+    let setup_sink = VecSink::default();
+    let retained = pool
+        .install(|| run_search(&dataset.queries, &dataset.store, &hit_args, &setup_sink))
+        .expect("run setup search");
+    assert_eq!(retained, 110_801, "retained-hit workload changed");
 
-    group.bench_with_input(BenchmarkId::new("collect", case), &case, |b, _| {
+    let case = "10q_x_2x50k";
+    group.throughput(Throughput::Elements(seed_total as u64));
+
+    group.bench_with_input(BenchmarkId::new("seed_stream", case), &case, |b, _| {
         b.iter(|| {
-            let seeds = SeedingEngine::new(black_box(&dataset.queries), black_box(&dataset.store))
-                .run(black_box(&seed_config))
-                .unwrap();
-            black_box(seed_count(&seeds));
+            let counts = pool.install(|| {
+                seed_counts(
+                    black_box(&dataset.queries),
+                    black_box(&dataset.store),
+                    black_box(&seed_config),
+                )
+            });
+            black_box(counts);
         });
     });
 
-    // Bench the end-to-end search path when hits are collected in memory.
-    group.bench_with_input(
-        BenchmarkId::new("run_search_in_memory", case),
-        &case,
-        |b, _| {
-            b.iter(|| {
-                let sink = VecSink::default();
-                run_search(
-                    black_box(&dataset.queries),
-                    black_box(&dataset.store),
-                    black_box(&args),
-                    &sink,
-                )
-                .expect("run search in memory");
-                black_box(sink.into_hits().len());
-            });
-        },
-    );
-
-    // Bench the end-to-end search path including output writing.
-    group.bench_with_input(BenchmarkId::new("run_search", case), &case, |b, _| {
+    // Reject only after scoring, with maximality pruning disabled, so every
+    // collected seed exercises ungapped scoring and both DP directions.
+    group.bench_with_input(BenchmarkId::new("score_all_seeds", case), &case, |b, _| {
         b.iter(|| {
-            let sink = TextSink::new(
-                &dataset.queries,
-                &dataset.store,
-                &args.output,
-                output_path.as_path(),
-            )
-            .expect("open bench output");
-            run_search(
-                black_box(&dataset.queries),
-                black_box(&dataset.store),
-                black_box(&args),
-                &sink,
-            )
-            .expect("run search");
+            let sink = VecSink::default();
+            let emitted = pool
+                .install(|| {
+                    run_search(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.store),
+                        black_box(&score_args),
+                        &sink,
+                    )
+                })
+                .expect("score every seed");
+            black_box(emitted);
+        });
+    });
+
+    group.throughput(Throughput::Elements(retained as u64));
+
+    group.bench_with_input(BenchmarkId::new("trace_hits", case), &case, |b, _| {
+        b.iter(|| {
+            let sink = VecSink::default();
+            let emitted = pool
+                .install(|| {
+                    run_search(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.store),
+                        black_box(&hit_args),
+                        &sink,
+                    )
+                })
+                .expect("run traceback search");
+            black_box((emitted, sink.into_hits()));
         });
     });
 

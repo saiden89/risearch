@@ -31,9 +31,9 @@ use crate::types::{Base, Energy, Strand};
 /// One accepted interaction: a span of a query paired against a span of a target.
 ///
 /// Coordinates are 0-based and inclusive at both ends; the output formats add 1.
-/// `t_start`/`t_end` are forward-strand positions even for a `Reverse` hit, mapped
-/// back from the reverse-complement view the hit was found in, so both strands
-/// index the same target sequence.
+/// `t_start`/`t_end` always address the original FASTA sequence. Internally the
+/// search uses physical duplex views ordered 3'->5' alongside the 5'->3' query;
+/// that span is converted to FASTA coordinates once when the hit is assembled.
 ///
 /// Bases and names are not carried, only indices into the query and target
 /// registries. `query_bases` and `target_bases` slice the paired spans out of
@@ -317,20 +317,15 @@ impl SearchWorker {
 
         let mut hits = Vec::new();
         engine.seed_query(query_idx, &ctx.opts.seed, |seed| {
-            let (t_fwd, t_rc, target_len) = ctx.store.target_slices(seed.target_idx);
-            let target_trans = match seed.strand {
-                Strand::Forward => t_fwd,
-                Strand::Reverse => t_rc,
-            };
+            let target = ctx.store.target(seed.target_idx, seed.strand);
             if let Some(hit) = self.build_hit_from_seed(
                 ctx.opts,
                 query_idx,
                 query_seq,
                 seed_interval.clone(),
                 include_alignment,
-                target_len,
                 &seed,
-                target_trans,
+                target,
             ) {
                 hits.push(hit);
             }
@@ -350,24 +345,24 @@ impl SearchWorker {
         &mut self,
         opts: &SearchConfig,
         query_idx: usize,
-        query_bases: &[Base],
+        query: &[Base],
         seed_interval: Range<usize>,
         include_alignment: bool,
-        target_len: usize,
         seed: &SeedHit,
-        target_trans: &[Base],
+        target: &[Base],
     ) -> Option<SearchHit> {
-        debug_assert!(seed.target_start + seed.len <= target_trans.len());
+        debug_assert!(seed.target_start + seed.len <= target.len());
         let q_start = seed.query_start;
         let t_start = seed.target_start;
         let len = seed.len;
+        let q_match_end = q_start + len - 1;
         let t_match_end = t_start + len - 1;
 
         if !opts.filter.no_max_prune
             && !is_maximal(
                 seed,
-                query_bases,
-                target_trans,
+                query,
+                target,
                 &seed_interval,
                 opts.seed.seed_wobble,
             )
@@ -375,29 +370,28 @@ impl SearchWorker {
             return None;
         }
 
-        let duplex_score =
-            self.model
-                .ungapped_duplex_score(query_bases, target_trans, q_start, t_start, len);
+        let duplex_score = self.model.ungapped_duplex_score(
+            &query[q_start..=q_match_end],
+            &target[t_start..=t_match_end],
+        );
         let dp_cfg = DpConfig::from(&opts.extend);
-        let ext_left = dp_cfg.side_cap(q_start + 1);
-        let ext_right = dp_cfg.side_cap(query_bases.len() - (q_start + len - 1));
+        let query_left = &query[..=q_start];
+        let target_left = &target[..=t_start];
         let view_left = DpView::new(
-            query_bases,
-            target_trans,
-            q_start,
-            t_match_end,
+            query_left,
+            target_left,
             ExtendDir::Left,
-            ext_left,
+            dp_cfg.side_cap(query_left.len()),
         );
         let left = self.extension.extend(&view_left, include_alignment);
 
+        let query_right = &query[q_match_end..];
+        let target_right = &target[t_match_end..];
         let view_right = DpView::new(
-            query_bases,
-            target_trans,
-            q_start + len - 1,
-            t_start,
+            query_right,
+            target_right,
             ExtendDir::Right,
-            ext_right,
+            dp_cfg.side_cap(query_right.len()),
         );
         let right = self.extension.extend(&view_right, include_alignment);
         let nt_count = left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len;
@@ -407,14 +401,13 @@ impl SearchWorker {
         (energy <= opts.filter.delta_g).then(|| {
             SearchHit::new(
                 query_idx,
-                query_bases,
-                target_trans,
+                query,
+                target,
                 seed,
                 &left,
                 &right,
                 energy,
                 include_alignment,
-                target_len,
             )
         })
     }
@@ -430,7 +423,7 @@ struct ExtensionResult {
 fn is_maximal(
     seed: &SeedHit,
     query_bases: &[Base],
-    target_trans: &[Base],
+    target: &[Base],
     seed_interval: &Range<usize>,
     seed_wobble: bool,
 ) -> bool {
@@ -439,15 +432,19 @@ fn is_maximal(
     let len = seed.len;
 
     if q_start > seed_interval.start
-        && t_start + len < target_trans.len()
-        && query_bases[q_start - 1].forms_pair(target_trans[t_start + len], seed_wobble)
+        && t_start > 0
+        && query_bases[q_start - 1]
+            .pair_type(target[t_start - 1])
+            .is_match(seed_wobble)
     {
         return false;
     }
 
     if q_start + len < seed_interval.end
-        && t_start > 0
-        && query_bases[q_start + len].forms_pair(target_trans[t_start - 1], seed_wobble)
+        && t_start + len < target.len()
+        && query_bases[q_start + len]
+            .pair_type(target[t_start + len])
+            .is_match(seed_wobble)
     {
         return false;
     }
@@ -455,41 +452,32 @@ fn is_maximal(
     true
 }
 
-const BINDING_SITE_FLANK_LEN: usize = 20;
-
 impl SearchHit {
-    pub fn query_bases<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
+    pub fn query<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
         &q_seq[self.q_start..self.q_end + 1]
     }
 
-    pub fn target_bases<'a>(&self, t_fwd: &'a [Base], t_rc: &'a [Base]) -> &'a [Base] {
-        match self.strand {
-            Strand::Forward => &t_fwd[self.t_start..self.t_end + 1],
-            Strand::Reverse => {
-                let len = t_fwd.len();
-                &t_rc[len - 1 - self.t_end..len - self.t_start]
-            }
-        }
+    pub fn target<'a>(&self, target: &'a [Base]) -> &'a [Base] {
+        self.target_context(target, 0).0
     }
 
-    pub(crate) fn target_flanks<'a>(
+    pub(crate) fn target_context<'a>(
         &self,
-        t_fwd: &'a [Base],
-        t_rc: &'a [Base],
-    ) -> (&'a [Base], &'a [Base]) {
-        let len = t_fwd.len();
-        let (oriented, start, end) = match self.strand {
-            Strand::Forward => (t_fwd, self.t_start, self.t_end),
-            Strand::Reverse => (t_rc, len - 1 - self.t_end, len - 1 - self.t_start),
-        };
-
-        let right_start = end + 1;
-        let right_end = (right_start + BINDING_SITE_FLANK_LEN).min(oriented.len());
-        let left_start = start.saturating_sub(BINDING_SITE_FLANK_LEN);
-
+        target: &'a [Base],
+        flank_len: usize,
+    ) -> (&'a [Base], &'a [Base], &'a [Base]) {
+        let (start, end) = TargetRegistry::map_target_span_between_frames(
+            self.strand,
+            self.t_start,
+            self.t_end,
+            target.len(),
+        );
+        let (before, from_start) = target.split_at(start);
+        let (site, after) = from_start.split_at(end - start + 1);
         (
-            &oriented[right_start..right_end],
-            &oriented[left_start..start],
+            site,
+            &after[..after.len().min(flank_len)],
+            &before[before.len().saturating_sub(flank_len)..],
         )
     }
 
@@ -505,7 +493,6 @@ impl SearchHit {
         right: &ExtensionResult,
         energy: Energy,
         include_alignment: bool,
-        original_target_len: usize,
     ) -> Self {
         let q_start = seed.query_start;
         let t_start = seed.target_start;
@@ -513,26 +500,27 @@ impl SearchHit {
 
         let final_q_start = q_start - left.q_ext;
         let final_q_end = q_start + len - 1 + right.q_ext;
-        let mut final_t_start = t_start - right.t_ext;
-        let mut final_t_end = t_start + len - 1 + left.t_ext;
+        let final_t_duplex_start = t_start - left.t_ext;
+        let final_t_duplex_end = t_start + len - 1 + right.t_ext;
 
-        // Resolve columns while the coordinates still address `target_trans`; the
-        // reverse-strand flip below moves them into the original target's frame.
+        // Resolve columns in the physical duplex view before converting its span
+        // to the original target's FASTA coordinates.
         let alignment = include_alignment.then(|| {
             Alignment::from_parts(
                 left.pairs.as_deref().unwrap_or(&[]),
                 len,
                 right.pairs.as_deref().unwrap_or(&[]),
                 &query[final_q_start..=final_q_end],
-                &target[final_t_start..=final_t_end],
+                &target[final_t_duplex_start..=final_t_duplex_end],
             )
         });
 
-        if seed.strand == Strand::Reverse {
-            let tmp = original_target_len - 1 - final_t_end;
-            final_t_end = original_target_len - 1 - final_t_start;
-            final_t_start = tmp;
-        }
+        let (final_t_start, final_t_end) = TargetRegistry::map_target_span_between_frames(
+            seed.strand,
+            final_t_duplex_start,
+            final_t_duplex_end,
+            target.len(),
+        );
 
         Self {
             query_idx,

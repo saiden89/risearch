@@ -3,8 +3,8 @@ use crate::types::Base;
 /// Zero-copy view of a combined sequence + suffix array.
 ///
 /// Both the target index and the query registry expose this view. The target
-/// view covers the full fwd+rc concatenated sequences; the query view covers
-/// the concatenated seed-interval subsequences.
+/// view covers the concatenated forward and reverse physical duplex blocks;
+/// the query view covers the concatenated seed-interval subsequences.
 #[derive(Clone, Copy)]
 pub struct RegistryView<'a> {
     pub combined_seq: &'a [Base],

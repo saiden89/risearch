@@ -7,12 +7,11 @@ use risearch::output::format::format_hit_into;
 use risearch::search::SearchHit;
 use risearch::types::{Base, Energy, Strand};
 
-fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>, Vec<Base>) {
-    let q_bases = vec![Base::U, Base::G, Base::C, Base::U, Base::G, Base::C];
-    let t_fwd = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
-    let t_rc = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
+fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>) {
+    let query = vec![Base::U, Base::G, Base::C, Base::U, Base::G, Base::C];
+    let target = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
 
-    let alignment = Alignment::from_parts(&[], q_bases.len(), &[], &q_bases, &t_fwd);
+    let alignment = Alignment::from_parts(&[], query.len(), &[], &query, &target);
 
     let hit = SearchHit {
         query_idx: 0,
@@ -26,11 +25,11 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>, Vec<Base>) {
         alignment: Some(alignment),
     };
 
-    (hit, q_bases, t_fwd, t_rc)
+    (hit, query, target)
 }
 
 fn bench_format_hit(c: &mut Criterion) {
-    let (hit, _q_seq, t_fwd, t_rc) = setup_hit();
+    let (hit, _q_seq, target) = setup_hit();
 
     let mut group = c.benchmark_group("hit_formatting");
 
@@ -48,15 +47,7 @@ fn bench_format_hit(c: &mut Criterion) {
             |b, &fmt| {
                 b.iter(|| {
                     out.clear();
-                    format_hit_into(
-                        &mut out,
-                        &hit,
-                        "test_query",
-                        "test_target",
-                        &t_fwd,
-                        &t_rc,
-                        fmt,
-                    );
+                    format_hit_into(&mut out, &hit, "test_query", "test_target", &target, fmt);
                     black_box(&out);
                 });
             },

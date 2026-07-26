@@ -89,40 +89,29 @@ pub enum TraceOp {
 /// It defines the extension window and how DP offsets map back to semantic
 /// query/target bases. Rank-indexed symbols for scoring are materialized once
 /// in `Gotoh::extend`.
+///
+/// Query and target share one duplex-column frame: query bases run 5'→3' and
+/// physical target bases run 3'→5'. Both coordinates therefore decrease during
+/// left extension and increase during right extension.
 pub struct DpView<'a> {
     query: &'a [Base],
     target: &'a [Base],
-    q_anchor: usize,
-    t_anchor: usize,
     dir: ExtendDir,
     q_len: usize,
     t_len: usize,
 }
 
 impl<'a> DpView<'a> {
-    /// Create a directional extension view anchored at a seed boundary.
-    pub fn new(
-        query: &'a [Base],
-        target: &'a [Base],
-        q_anchor: usize,
-        t_anchor: usize,
-        dir: ExtendDir,
-        max_ext: usize,
-    ) -> Self {
+    /// Create a directional extension view from slices that start or end at
+    /// the seed boundary, depending on `dir`.
+    pub fn new(query: &'a [Base], target: &'a [Base], dir: ExtendDir, max_ext: usize) -> Self {
+        assert!(!query.is_empty() && !target.is_empty());
         Self {
             query,
             target,
-            q_anchor,
-            t_anchor,
             dir,
-            q_len: match dir {
-                ExtendDir::Left => (q_anchor + 1).min(max_ext),
-                ExtendDir::Right => (query.len() - q_anchor).min(max_ext),
-            },
-            t_len: match dir {
-                ExtendDir::Left => (target.len() - t_anchor).min(max_ext),
-                ExtendDir::Right => (t_anchor + 1).min(max_ext),
-            },
+            q_len: query.len().min(max_ext),
+            t_len: target.len().min(max_ext),
         }
     }
 
@@ -138,37 +127,35 @@ impl<'a> DpView<'a> {
 
     #[inline(always)]
     pub(crate) fn q_anchor_base(&self) -> Base {
-        unsafe { *self.query.get_unchecked(self.q_anchor) }
+        self.q_base(0)
     }
 
     #[inline(always)]
     pub(crate) fn t_anchor_base(&self) -> Base {
-        unsafe { *self.target.get_unchecked(self.t_anchor) }
+        self.t_base(0)
     }
 
     /// Get query base at DP position i (0 = anchor).
     #[inline(always)]
     pub(crate) fn q_base(&self, i: usize) -> Base {
-        debug_assert!(i < self.q_len);
+        debug_assert!(i < self.query.len());
         let pos = match self.dir {
-            ExtendDir::Left => self.q_anchor - i,
-            ExtendDir::Right => self.q_anchor + i,
+            ExtendDir::Left => self.query.len() - 1 - i,
+            ExtendDir::Right => i,
         };
-        // SAFETY: q_len is derived from q_anchor/query.len() for the chosen dir,
-        // so any i < q_len maps to an in-bounds query position.
+        // SAFETY: slices are nonempty; callers use anchor 0 or i < q_len <= query.len().
         unsafe { *self.query.get_unchecked(pos) }
     }
 
     /// Get target base at DP position j (0 = anchor).
     #[inline(always)]
     pub(crate) fn t_base(&self, j: usize) -> Base {
-        debug_assert!(j < self.t_len);
+        debug_assert!(j < self.target.len());
         let pos = match self.dir {
-            ExtendDir::Left => self.t_anchor + j,
-            ExtendDir::Right => self.t_anchor - j,
+            ExtendDir::Left => self.target.len() - 1 - j,
+            ExtendDir::Right => j,
         };
-        // SAFETY: t_len is derived from t_anchor/target.len() for the chosen dir,
-        // so any j < t_len maps to an in-bounds target position.
+        // SAFETY: slices are nonempty; callers use anchor 0 or j < t_len <= target.len().
         unsafe { *self.target.get_unchecked(pos) }
     }
 
@@ -178,28 +165,11 @@ impl<'a> DpView<'a> {
     #[inline(always)]
     pub fn fill_buffers(&self, q_buf: &mut [u8], t_buf: &mut [u8]) {
         let (q_len, t_len) = (self.q_len, self.t_len);
-
-        match self.dir {
-            ExtendDir::Left => {
-                let q_src = &self.query[self.q_anchor + 1 - q_len..=self.q_anchor];
-                for (dst, src) in q_buf[..q_len].iter_mut().zip(q_src.iter().rev()) {
-                    *dst = src.as_u8();
-                }
-                let t_src = &self.target[self.t_anchor..self.t_anchor + t_len];
-                for (dst, src) in t_buf[..t_len].iter_mut().zip(t_src.iter()) {
-                    *dst = src.as_u8();
-                }
-            }
-            ExtendDir::Right => {
-                let q_src = &self.query[self.q_anchor..self.q_anchor + q_len];
-                for (dst, src) in q_buf[..q_len].iter_mut().zip(q_src.iter()) {
-                    *dst = src.as_u8();
-                }
-                let t_src = &self.target[self.t_anchor + 1 - t_len..=self.t_anchor];
-                for (dst, src) in t_buf[..t_len].iter_mut().zip(t_src.iter().rev()) {
-                    *dst = src.as_u8();
-                }
-            }
+        for (i, dst) in q_buf[..q_len].iter_mut().enumerate() {
+            *dst = self.q_base(i).as_u8();
+        }
+        for (i, dst) in t_buf[..t_len].iter_mut().enumerate() {
+            *dst = self.t_base(i).as_u8();
         }
     }
 }
@@ -377,6 +347,30 @@ mod tests {
         // Buffer-safety invariant: never exceeds MAX_EXT on any path.
         for m in [-1, 0, 20, 300] {
             assert!(cfg(m).side_cap(usize::MAX) <= MAX_EXT);
+        }
+    }
+
+    #[test]
+    fn directional_views_walk_query_and_physical_target_together() {
+        let query = [Base::Gap, Base::A, Base::C, Base::G, Base::U];
+        let target = [Base::N, Base::U, Base::G, Base::C, Base::A, Base::Gap];
+        for (view, expected_q, expected_t) in [
+            (
+                DpView::new(&query[..4], &target[..5], ExtendDir::Left, 3),
+                [Base::G, Base::C, Base::A],
+                [Base::A, Base::C, Base::G],
+            ),
+            (
+                DpView::new(&query[1..], &target[2..], ExtendDir::Right, 3),
+                [Base::A, Base::C, Base::G],
+                [Base::G, Base::C, Base::A],
+            ),
+        ] {
+            let mut q_buf = [u8::MAX; 3];
+            let mut t_buf = [u8::MAX; 3];
+            view.fill_buffers(&mut q_buf, &mut t_buf);
+            assert_eq!(q_buf, expected_q.map(Base::as_u8));
+            assert_eq!(t_buf, expected_t.map(Base::as_u8));
         }
     }
 }

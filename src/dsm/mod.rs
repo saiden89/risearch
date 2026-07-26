@@ -312,19 +312,19 @@ mod tests {
     use crate::types::Base;
 
     #[test]
-    fn pairing_distinguishes_seed_and_extension_modes() {
-        assert!(Base::G.forms_pair(Base::G, true));
-        assert!(Base::G.forms_pair(Base::A, true));
-        assert!(!Base::G.forms_pair(Base::A, false));
-        assert!(Base::G.forms_pair(Base::A, true));
+    fn pairing_policy_uses_physical_duplex_bases() {
+        assert!(Base::A.pair_type(Base::U).is_match(false));
+        assert!(Base::G.pair_type(Base::U).is_match(true));
+        assert!(!Base::G.pair_type(Base::U).is_match(false));
+        assert!(!Base::G.pair_type(Base::A).is_match(true));
     }
 
     #[test]
     fn score_returns_nonzero_for_valid_pairs() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
-        let score = model.score_bases(Base::A, Base::U, Base::A, Base::U);
-        let gap_score = model.score_bases(Base::Gap, Base::A, Base::Gap, Base::A);
+        let score = model.score_bases(Base::A, Base::C, Base::U, Base::G);
+        let gap_score = model.score_bases(Base::Gap, Base::A, Base::Gap, Base::U);
         assert!(
             gap_score != 0 || score != 0,
             "At least one transition query should be non-zero"
@@ -335,7 +335,7 @@ mod tests {
     fn gg_cc_stack_is_strongest() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
-        let actual = model.score_bases(Base::G, Base::G, Base::G, Base::G);
+        let actual = model.score_bases(Base::G, Base::G, Base::C, Base::C);
         assert_eq!(actual, 33016);
     }
 
