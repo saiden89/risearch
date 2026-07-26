@@ -18,18 +18,15 @@
 #   - src/Makefile hardcodes `CC = gcc-15`; we override it with `make CC=...`.
 #     Honor a caller-supplied $CC, else default to plain `gcc`.
 #   - The Makefile links -fopenmp / -lz / -lpcre / -lm, so the host needs a
-#     GCC with OpenMP plus libpcre3-dev and zlib1g-dev. This is reliable on
-#     Linux; the macOS toolchain (Apple clang, no OpenMP) is NOT supported
-#     here — build the oracle on Linux only.
+#     GCC with OpenMP plus pcre and zlib. On Linux: build-essential, cmake,
+#     libpcre3-dev, zlib1g-dev. On macOS: `brew install gcc pcre` — Apple clang
+#     has no OpenMP, so this picks the newest Homebrew `gcc-<N>` and adds the
+#     Homebrew pcre paths; -lz resolves against the SDK.
 #
 # Safe to re-run: the libdivsufsort build dir is recreated from scratch and the
 # RIsearch2 objects are `make clean`ed before each build.
 
 set -euo pipefail
-
-# --- config ----------------------------------------------------------------
-
-CC="${CC:-gcc}"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -41,6 +38,28 @@ die() {
 	printf 'ERROR: %s\n' "$*" >&2
 	exit 1
 }
+
+# --- toolchain --------------------------------------------------------------
+# Exported so cmake configures libdivsufsort with the same compiler that links
+# the RIsearch2 binaries. CFLAGS/CLIBS are appended to by the Makefile's `+=`.
+
+if [ "$(uname -s)" = "Darwin" ]; then
+	command -v brew >/dev/null 2>&1 || die "Homebrew not found; needed for gcc and pcre"
+	BREW_PREFIX="$(brew --prefix)"
+
+	if [ -z "${CC:-}" ]; then
+		CC="$(find "$BREW_PREFIX/bin" -maxdepth 1 -name 'gcc-[0-9]*' 2>/dev/null |
+			grep -E '/gcc-[0-9]+$' | sort -V | tail -1)"
+		[ -n "$CC" ] || die "no Homebrew gcc-<N> on PATH; run: brew install gcc"
+	fi
+
+	PCRE_PREFIX="$(brew --prefix pcre 2>/dev/null)" ||
+		die "Homebrew pcre not installed; run: brew install pcre"
+	export CFLAGS="-I$PCRE_PREFIX/include ${CFLAGS:-}"
+	export CLIBS="-L$PCRE_PREFIX/lib ${CLIBS:-}"
+fi
+
+export CC="${CC:-gcc}"
 
 # --- resolve paths ----------------------------------------------------------
 # Resolve everything relative to this script so it works from any CWD.
@@ -88,7 +107,8 @@ cmake \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DBUILD_DIVSUFSORT64:BOOL=ON \
 	-DUSE_OPENMP:BOOL=ON \
-	-DBUILD_SHARED_LIBS:BOOL=OFF
+	-DBUILD_SHARED_LIBS:BOOL=OFF \
+	-DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 cmake --build "$DSS_BUILD_DIR" --parallel "$JOBS"
 

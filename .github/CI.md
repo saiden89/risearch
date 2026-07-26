@@ -15,7 +15,7 @@ Every dependency-resolving cargo and `uv` invocation passes `--locked` so a mani
 The `lint` job runs rustfmt and clippy (`-D warnings`), then two extra guards.
 It builds the `openmp` feature (`cargo build --locked -p risearch --features openmp`): it is a documented, user-facing feature that the default-feature test jobs never exercise, so without this it could rot unnoticed.
 `build`, not `check`, is deliberate; only a full build links `libgomp`, which is where the native OpenMP failures this lane targets actually surface.
-This runs only on Ubuntu because OpenMP under Apple clang is fragile; that is also why the C oracle is Linux-only.
+This runs only on Ubuntu because Apple clang ships no OpenMP, so the feature cannot link there with the default toolchain.
 It then builds the docs with `RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p risearch --all-features`, so a refactor that breaks an intra-doc link fails here rather than silently degrading the published docs.rs page.
 
 The `actions-lint` job lints the workflow files with `actionlint` (shellcheck-backed), pinned to its `rhysd/actionlint` Docker image by digest.
@@ -35,34 +35,28 @@ pytest runs from the repository root, not `risearch-python/`, so `import risearc
 
 ### OS matrix
 
+The `test` job is a matrix over both runners, reported as `Test ubuntu` and `Test macOS`:
+
 - `ubuntu-latest` (x86_64)
 - `macos-latest` (arm64)
 
-### Why the C oracle is Linux-only
+Every step is shared except installing the C-oracle system dependencies, which branches on `runner.os`.
+`fail-fast: false` keeps one OS from cancelling the other, since an arch-specific parity break is precisely what the second runner is there to catch.
 
-Eight integration test binaries depend on the legacy C oracle: they `Command::new` it (directly or via the shared parity runner) and panic if it is absent.
-Six are the core differential parity binaries.
-Two more are regression binaries that also drive the oracle: `parity_mismatch_regression` hard-asserts `risearch2.x` exists, and `parity_seed_prune_regression` runs the oracle through the shared `SingleSeqRunner`.
-All eight must therefore be filtered out where the oracle is not built.
-The oracle is built from committed source under `legacy_c/RIsearch2/` with GCC + OpenMP, which is clean on Ubuntu.
-On macOS the toolchain is Apple clang (no OpenMP) and the brew GCC / PCRE stack drifts, so the oracle build is fragile and is deliberately not attempted there.
+### The C oracle on both runners
 
-The Linux job builds both oracle binaries to `legacy_c/RIsearch2/bin/` (`risearch2.x` and the debug `risearch2.dbg.x`, both auto-detected; no env var needed) and runs the FULL suite including parity.
-The macOS job runs everything EXCEPT the eight oracle-dependent binaries, filtered out via nextest with exact `binary(=...)` matchers.
-The skip is logged with its reason (macOS has no C oracle) so it is never silent.
+Nine integration test binaries depend on the legacy C oracle: they `Command::new` it (directly or via the shared parity runner) and panic if it is absent.
+Both test jobs therefore build it from the committed source under `legacy_c/RIsearch2/` via `.github/scripts/build-c-oracle.sh`, then run the FULL suite with no nextest filter.
+The script emits `risearch2.x` and the debug `risearch2.dbg.x` into `legacy_c/RIsearch2/bin/`, where the tests auto-detect them; no env var is needed (`PARITY_C_BIN` overrides the choice for local work).
+Those binaries are gitignored and built fresh in every run, and the script's own final check exits non-zero unless both are present and executable, so an oracle that silently failed to build cannot masquerade as a passing run.
 
-Excluded on macOS:
+The oracle needs GCC with OpenMP plus pcre and zlib.
+On Ubuntu that is stock: `build-essential`, `cmake`, `libpcre3-dev`, `zlib1g-dev`.
+On macOS it is `brew install gcc pcre`, because Apple clang has no OpenMP; the script detects the newest Homebrew `gcc-<N>` and injects the Homebrew pcre include/lib paths, while `-lz` resolves against the SDK.
+Running parity on both arches is the point: the Rust and C sides are compared on the same machine, so arm64 and x86_64 exercise independent floating-point paths through the energy model.
 
-- `parity_seed`
-- `parity_seed_prune_regression`
-- `parity_extension`
-- `parity_dsm`
-- `parity_mismatch`
-- `parity_mismatch_regression`
-- `parity_wobble`
-- `parity_debug`
-
-Ubuntu system packages needed for the oracle build: `build-essential`, `cmake`, `libpcre3-dev`, `zlib1g-dev`.
+The cmake call passes `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` because libdivsufsort's `CMakeLists.txt` declares a pre-3.5 minimum that cmake 4 rejects outright.
+Older cmake ignores the variable, so the flag is safe on both runners.
 
 ## Action pinning and Dependabot
 
