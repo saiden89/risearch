@@ -6,7 +6,7 @@ use crate::dp::scoring::{GotohRowProfile, GotohScoring};
 use super::{max3, BestScore, DpCell, DpGrid};
 
 impl<S: GotohScoring> Gotoh<S> {
-    #[cfg_attr(feature = "prof", inline(never))]
+    #[inline(never)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn main_loop(
         &self,
