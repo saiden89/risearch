@@ -20,7 +20,7 @@ pub mod types; // Core domain types
 pub use alignment::{Alignment, PairClass};
 pub use index::store::TargetRegistry;
 pub use registry::QueryRegistry;
-pub use seq::{AlignedSeq, Sequence};
+pub use seq::Sequence;
 pub use types::{Base, Energy, PairType, Strand, BASE_COUNT, GAP};
 
 // Search API re-exports for library usage
