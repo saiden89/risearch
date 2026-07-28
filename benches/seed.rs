@@ -51,23 +51,12 @@ fn generate_sequence(len: usize, seed: u64) -> Sequence {
     Sequence::from(bases)
 }
 
-fn base_to_byte(base: Base) -> u8 {
-    match base {
-        Base::A => b'A',
-        Base::C => b'C',
-        Base::G => b'G',
-        Base::U => b'U',
-        Base::N => b'N',
-        Base::Gap => b'-',
-    }
-}
-
 fn write_fasta(path: &Path, prefix: &str, seqs: &[Sequence]) {
     let mut buf = Vec::new();
     for (idx, seq) in seqs.iter().enumerate() {
         buf.extend_from_slice(format!(">{prefix}{idx}\n").as_bytes());
         for &base in seq.iter() {
-            buf.push(base_to_byte(base));
+            buf.push(base.to_u8_upper());
         }
         buf.push(b'\n');
     }

@@ -94,12 +94,6 @@ impl Base {
         BASE_TO_BYTE[self.as_usize()]
     }
 
-    /// Get char representation
-    #[inline]
-    pub fn as_char(self) -> char {
-        self.to_u8_upper() as char
-    }
-
     /// Watson-Crick complement (A <-> U/T, G <-> C)
     #[inline(always)]
     pub const fn complement(self) -> Self {
