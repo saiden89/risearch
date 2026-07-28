@@ -1,7 +1,7 @@
 """Smoke tests for the risearch Python bindings.
 
 Requires the extension to be built first:
-    cd risearch-python && maturin develop
+    cd bindings/python && maturin develop
 """
 
 import importlib.util
@@ -20,7 +20,7 @@ import risearch
 # Fixtures
 # ---------------------------------------------------------------------------
 
-SUITE = Path(__file__).parent.parent.parent / "legacy_c" / "RIsearch2" / "test_suite"
+SUITE = Path(__file__).parent.parent.parent.parent / "legacy_c" / "RIsearch2" / "test_suite"
 TARGET_FA = SUITE / "RHOC.fa"
 QUERY_FA = SUITE / "mirnas.fa"
 

@@ -9,7 +9,7 @@ name = "risearch"
 crate-type = ["cdylib"]
 
 [dependencies]
-risearch = { path = ".." }
+risearch = { path = "../.." }
 anyhow.workspace = true
 pyo3 = { version = "0.29.0", features = ["extension-module", "anyhow", "abi3-py310"] }
 clap = { workspace = true }

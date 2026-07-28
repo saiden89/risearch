@@ -5,7 +5,7 @@
 From the repo root:
 
 ```bash
-cd risearch-python
+cd bindings/python
 uv sync
 uv run python
 ```
@@ -49,7 +49,7 @@ The `search()` kwargs map to the canonical Rust-facing options:
 
 ## Smoke test
 
-Run this from `risearch-python/`:
+Run this from `bindings/python/`:
 
 ```bash
 uv run python - <<'PY'
@@ -57,7 +57,7 @@ from pathlib import Path
 import tempfile
 import risearch
 
-root = Path.cwd().parent
+root = Path.cwd().parents[1]
 suite = root / "legacy_c" / "RIsearch2" / "test_suite"
 target_fa = suite / "RHOC.fa"
 query_fa = suite / "mirnas.fa"

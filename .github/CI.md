@@ -10,7 +10,7 @@ A concurrency group cancels superseded runs on the same ref.
 Default job permissions are `contents: read`, `actions/checkout` runs with `persist-credentials: false`, and every job sets a `timeout-minutes`.
 
 Every dependency-resolving cargo and `uv` invocation passes `--locked` so a manifest change that is not accompanied by its lockfile update fails CI instead of silently resolving.
-`Cargo.lock` and `risearch-python/uv.lock` are both committed for this reason.
+`Cargo.lock` and `bindings/python/uv.lock` are both committed for this reason.
 
 The `lint` job runs rustfmt and clippy (`-D warnings`), then two extra guards.
 It builds the `openmp` feature (`cargo build --locked -p risearch --features openmp`): it is a documented, user-facing feature that the default-feature test jobs never exercise, so without this it could rot unnoticed.
@@ -31,7 +31,7 @@ Where `msrv` fixes the compiler (1.88) and uses the latest deps, this fixes the 
 The `test-wheel` job (matrix over OS) builds a real abi3 wheel, installs it into a clean venv, and runs the suite against the installed package.
 This catches packaging defects `maturin develop` cannot (module-name, `__init__.py`/`.pyi` inclusion, runtime dependency resolution).
 Because the wheel is abi3 a single binary per OS works across every Python version, so testing one Python per OS is sufficient.
-pytest runs from the repository root, not `risearch-python/`, so `import risearch` resolves to the installed wheel rather than the source package (which also carries a stale committed `_risearch.abi3.so`).
+pytest runs from the repository root, not `bindings/python/`, so `import risearch` resolves to the installed wheel rather than the source package (which also carries a stale committed `_risearch.abi3.so`).
 
 ### OS matrix
 
@@ -64,4 +64,4 @@ Official actions from well-governed orgs (GitHub `actions/*`) use a major tag (e
 SHA/digest pins are immutable (a moved tag cannot inject code); Dependabot bumps them and keeps the comment current.
 `astral-sh/setup-uv` additionally pins the installed `uv` version via its `version:` input, since an unpinned `setup-uv` installs the latest `uv` at run time.
 
-Dependabot tracks three ecosystems: `cargo` (root workspace), `github-actions` (workflows), and `uv` (`risearch-python`, so `uv.lock` and the PEP 735 `[dependency-groups]` stay current).
+Dependabot tracks three ecosystems: `cargo` (root workspace), `github-actions` (workflows), and `uv` (`bindings/python`, so `uv.lock` and the PEP 735 `[dependency-groups]` stay current).
