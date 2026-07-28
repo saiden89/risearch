@@ -15,3 +15,11 @@ __pycache__/
 legacy_c/RIsearch2/bin/
 legacy_c/risearch3_src/
 docs/
+
+# Python environments, build output, and caches
+.venv/
+dist/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

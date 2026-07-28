@@ -9,7 +9,7 @@ pub(crate) use risearch::cli::args::SearchArgs;
 #[command(name = "risearch")]
 #[command(
     author,
-    version = "3.alpha.1",
+    version,
     about = "Energy based RNA-RNA interaction predictions",
     long_about = None,
     subcommand_required = true,

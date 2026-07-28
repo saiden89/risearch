@@ -1453,7 +1453,6 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "arrow-schema",
- "clap",
  "pyo3",
  "risearch",
 ]

@@ -152,7 +152,7 @@ wheels = [
 
 [[package]]
 name = "risearch"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "polars" },
 ]
@@ -177,7 +177,7 @@ provides-extras = ["lts-cpu"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "maturin" },
+    { name = "maturin", specifier = ">=1.12.5,<2" },
     { name = "pytest" },
 ]
 

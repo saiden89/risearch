@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1,<2"]
+requires = ["maturin>=1.12.5,<2"]
 build-backend = "maturin"
 
 [project]
@@ -8,6 +8,7 @@ dynamic = ["version"]
 requires-python = ">=3.10"
 description = "Python bindings for risearch RNA-RNA interaction search"
 readme = "README.md"
+license = "GPL-3.0-only"
 authors = [{ name = "Stefano Roncelli", email = "stefano.roncelli@sund.ku.dk" }]
 keywords = ["RNA", "bioinformatics", "RNA-RNA interaction", "sequence-search", "suffix-array"]
 classifiers = [
@@ -35,8 +36,12 @@ Issues = "https://github.com/saiden89/risearch/issues"
 lts-cpu = ["polars[rtcompat]>=1.43.0"]
 
 [dependency-groups]
-dev = ["pytest", "maturin"]
+dev = ["pytest", "maturin>=1.12.5,<2"]
+
+[tool.uv]
+package = false
 
 [tool.maturin]
 python-source = "."
 module-name = "risearch._native"
+locked = true

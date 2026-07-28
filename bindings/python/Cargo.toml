@@ -2,7 +2,20 @@
 name = "risearch-python"
 version.workspace = true
 rust-version.workspace = true
-edition = "2021"
+license-file.workspace = true
+edition.workspace = true
+publish = false
+description = "Python extension module for RIsearch"
+repository = "https://github.com/saiden89/risearch"
+readme = "README.md"
+include = [
+    "/src/**",
+    "/risearch/*.py",
+    "/risearch/*.pyi",
+    "/risearch/py.typed",
+    "/pyproject.toml",
+    "/README.md",
+]
 
 [lib]
 name = "_native"
@@ -11,7 +24,6 @@ crate-type = ["cdylib"]
 [dependencies]
 risearch = { path = "../.." }
 anyhow.workspace = true
-pyo3 = { version = "0.29.0", features = ["extension-module", "anyhow", "abi3-py310"] }
-clap = { workspace = true }
+pyo3 = { version = "0.29.0", features = ["anyhow", "abi3-py310"] }
 arrow-array = { version = "59.1.0", features = ["ffi"] }
 arrow-schema = "59.1.0"
