@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use support::{query_fa, target_fa, ParityRunner};
 
 /// Main seed length × extension limit matrix.
-/// Tests all combinations on mirnas.fa vs RHOC.fa.
+/// Tests all combinations on the shared query.fa and target.fa fixtures.
 #[rstest]
 fn length(
     query_fa: PathBuf,

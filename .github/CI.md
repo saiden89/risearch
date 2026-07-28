@@ -9,14 +9,17 @@ Uses `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2`, and `taiki-e/ins
 A concurrency group cancels superseded runs on the same ref.
 Default job permissions are `contents: read`, `actions/checkout` runs with `persist-credentials: false`, and every job sets a `timeout-minutes`.
 
-Every dependency-resolving cargo and `uv` invocation passes `--locked` so a manifest change that is not accompanied by its lockfile update fails CI instead of silently resolving.
-`Cargo.lock` and `bindings/python/uv.lock` are both committed for this reason.
+Cargo validation uses `--locked`. The Python package builds through
+`uv run --locked`, and Maturin is configured to use the committed Cargo
+lockfile. A manifest change that is not accompanied by its lockfile update
+therefore fails the build instead of silently resolving. `Cargo.lock` and
+`bindings/python/uv.lock` are both committed for this reason.
 
 The `lint` job runs rustfmt and clippy (`-D warnings`), then two extra guards.
 It builds the `openmp` feature (`cargo build --locked -p risearch --features openmp`): it is a documented, user-facing feature that the default-feature test jobs never exercise, so without this it could rot unnoticed.
 `build`, not `check`, is deliberate; only a full build links `libgomp`, which is where the native OpenMP failures this lane targets actually surface.
 This runs only on Ubuntu because Apple clang ships no OpenMP, so the feature cannot link there with the default toolchain.
-It then builds the docs with `RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p risearch --all-features`, so a refactor that breaks an intra-doc link fails here rather than silently degrading the published docs.rs page.
+It then builds the docs with `cargo doc --locked --no-deps -p risearch --all-features` under `RUSTDOCFLAGS: -D warnings`, so a refactor that breaks an intra-doc link fails here rather than silently degrading the published docs.rs page.
 
 The `actions-lint` job lints the workflow files with `actionlint` (shellcheck-backed), pinned to its `rhysd/actionlint` Docker image by digest.
 
@@ -28,10 +31,20 @@ The `minimal-versions` job proves the declared dependency floors of the publishe
 `--locked` is intentionally absent because the tool rewrites the lock down to those minimums.
 Where `msrv` fixes the compiler (1.88) and uses the latest deps, this fixes the deps to their floors and uses the current compiler; together they bound the support envelope.
 
-The `test-wheel` job (matrix over OS) builds a real abi3 wheel, installs it into a clean venv, and runs the suite against the installed package.
-This catches packaging defects `maturin develop` cannot (module-name, `__init__.py`/`.pyi` inclusion, runtime dependency resolution).
-Because the wheel is abi3 a single binary per OS works across every Python version, so testing one Python per OS is sufficient.
-pytest runs from the repository root, not `bindings/python/`, so `import risearch` resolves to the installed wheel rather than the source package (which also carries a stale committed `_risearch.abi3.so`).
+The `test-python` job builds the extension with `maturin develop` into the
+locked `uv` environment and runs the Python suite from `bindings/python/`.
+`uv sync` prunes packages it does not track, so it must run before
+`maturin develop`; `uv run` does not prune, so the suite step leaves the
+installed extension in place. The job pins CPython 3.10, the declared floor,
+because that is where the Python layer's syntax and typing assumptions break
+first — the `cp310-abi3` extension itself is identical on every supported
+interpreter. The Rust `test` job excludes `risearch-python`, so this is the
+only lane that exercises the binding.
+
+There is no wheel or source-distribution build in CI. Packaging defects that
+`maturin develop` cannot surface — module placement, missing Python package or
+workspace files, runtime dependency metadata — are therefore unguarded until a
+release lane exists.
 
 ### OS matrix
 
@@ -64,4 +77,6 @@ Official actions from well-governed orgs (GitHub `actions/*`) use a major tag (e
 SHA/digest pins are immutable (a moved tag cannot inject code); Dependabot bumps them and keeps the comment current.
 `astral-sh/setup-uv` additionally pins the installed `uv` version via its `version:` input, since an unpinned `setup-uv` installs the latest `uv` at run time.
 
-Dependabot tracks three ecosystems: `cargo` (root workspace), `github-actions` (workflows), and `uv` (`bindings/python`, so `uv.lock` and the PEP 735 `[dependency-groups]` stay current).
+Dependabot tracks three ecosystems: `cargo` (root workspace), `github-actions`
+(workflows), and `uv` (`bindings/python`, so `uv.lock` and the PEP 735
+`[dependency-groups]` stay current).

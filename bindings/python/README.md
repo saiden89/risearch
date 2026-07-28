@@ -6,11 +6,21 @@ From the repo root:
 
 ```bash
 cd bindings/python
-uv sync
-uv run python
+uv sync --locked
+uv run --locked maturin develop
+uv run --locked python
 ```
 
-`uv run` will build/install the local `risearch` package into the project venv as needed.
+`uv` manages the locked development environment; Maturin builds and installs
+the local extension into that environment. Run `maturin develop` again after
+changing Rust binding code.
+
+Import the public package as `risearch`. The compiled module is installed as
+`risearch._native` and is a private implementation detail.
+
+This Python package does not install the `risearch` command-line program. From
+the repository root, install only the CLI with
+`cargo install --locked --path .`.
 
 ## Legacy CPU / Rosetta install
 
@@ -18,7 +28,8 @@ For older x86-64 CPUs or x86-64 Python running under Rosetta on Apple Silicon,
 install the compatibility Polars runtime through the `lts-cpu` extra:
 
 ```bash
-uv sync --extra lts-cpu
+uv sync --locked --extra lts-cpu
+uv run --locked maturin develop
 ```
 
 For published wheels, the equivalent pip form is:
@@ -38,6 +49,17 @@ The Python package is very small:
 - `risearch.TargetRegistry.open(path)` opens that index for reuse
 - `risearch.search(query_fasta, store, **kwargs)` runs the search and returns a Polars `DataFrame`
 
+The result schema is:
+
+| Column | Polars type | Meaning |
+| --- | --- | --- |
+| `query_idx`, `target_idx` | `UInt64` | Registry positions |
+| `query_name`, `target_name` | `String` | FASTA identifiers |
+| `q_start`, `q_end`, `t_start`, `t_end` | `UInt64` | Zero-based, inclusive coordinates |
+| `strand` | `String` | `+` or `-` |
+| `energy` | `Float64` | Free energy in kcal/mol |
+| `alignment` | `String` (nullable) | Pairing fingerprint |
+
 The `search()` kwargs map to the canonical Rust-facing options:
 
 - `seed_length`, `seed_start`, `seed_end`
@@ -52,15 +74,14 @@ The `search()` kwargs map to the canonical Rust-facing options:
 Run this from `bindings/python/`:
 
 ```bash
-uv run python - <<'PY'
+uv run --locked python - <<'PY'
 from pathlib import Path
 import tempfile
 import risearch
 
 root = Path.cwd().parents[1]
-suite = root / "legacy_c" / "RIsearch2" / "test_suite"
-target_fa = suite / "RHOC.fa"
-query_fa = suite / "mirnas.fa"
+target_fa = root / "tests" / "data" / "target.fa"
+query_fa = root / "tests" / "data" / "query.fa"
 
 with tempfile.TemporaryDirectory() as tmp:
     idx = Path(tmp) / "RHOC.idx"
@@ -72,8 +93,6 @@ with tempfile.TemporaryDirectory() as tmp:
 PY
 ```
 
-Expected shape today is `(81, 9)`.
-
 ## Development check
 
 Rust-side build check:
@@ -82,4 +101,23 @@ Rust-side build check:
 cargo test -p risearch-python
 ```
 
-There is also a Python smoke suite in `tests/test_bindings.py`, but `pytest` is not currently declared in `pyproject.toml`, so it will not run until `pytest` is installed in the environment.
+Build the extension and run the Python suite:
+
+```bash
+uv sync --locked
+uv run --locked maturin develop
+uv run --locked pytest -q
+```
+
+Build a wheel directly:
+
+```bash
+uv run --python 3.10 --locked maturin build --out ../../dist
+```
+
+Build the source distribution and verify it by rebuilding a wheel from the
+unpacked archive:
+
+```bash
+uv run --python 3.10 --locked maturin build --sdist --out ../../dist
+```

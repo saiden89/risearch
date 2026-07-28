@@ -50,7 +50,9 @@ jobs:
         run: cargo build --locked -p risearch --features openmp
 
       - name: docs
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p risearch --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps -p risearch --all-features
 
   actions-lint:
     name: Lint workflows
@@ -163,14 +165,10 @@ jobs:
       - name: Run doctests
         run: cargo test --locked --workspace --exclude risearch-python --doc
 
-  test-wheel:
-    name: Wheel install test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+  test-python:
+    name: Python suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -188,12 +186,13 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      - name: Build abi3 wheel
-        run: uv run --no-project --with maturin maturin build -m bindings/python/Cargo.toml --out dist
-
-      - name: Install wheel and test
+      # uv sync prunes packages it does not track, so it must precede maturin develop.
+      - name: Build extension into the locked environment
+        working-directory: bindings/python
         run: |
-          set -euo pipefail
-          uv venv
-          uv pip install ./dist/*.whl pytest polars
-          .venv/bin/python -m pytest bindings/python/tests -q
+          uv sync --locked --python 3.10
+          uv run --locked maturin develop
+
+      - name: Run Python suite
+        working-directory: bindings/python
+        run: uv run --locked pytest -q

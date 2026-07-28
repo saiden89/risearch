@@ -67,16 +67,18 @@ deprecated and scheduled for removal.
 
 Need Cargo? Install Rust (includes `cargo`) via https://rustup.rs/
 
-Build:
+### Command-line interface
+
+Build the CLI from this checkout:
 
 ```bash
 cargo build --release
 ```
 
-Install locally:
+Install only the CLI from this checkout:
 
 ```bash
-cargo install --path .
+cargo install --locked --path .
 ```
 
 Sanity check:
@@ -84,6 +86,24 @@ Sanity check:
 ```bash
 risearch --help
 ```
+
+This does not build or install the Python bindings.
+
+### Python bindings
+
+The Python package is maintained independently under
+[`bindings/python`](bindings/python/README.md). For a development installation:
+
+```bash
+cd bindings/python
+uv sync --locked
+uv run --locked maturin develop
+uv run --locked pytest -q
+```
+
+Python users import the public `risearch` package. Its compiled
+`risearch._native` extension is private implementation detail; the Python
+package does not install the `risearch` CLI.
 
 If you have not installed the binary yet, use `cargo run --release -- ...` in
 the examples below.
@@ -283,6 +303,15 @@ Run selected integration suites:
 cargo test --test cli_output_compress
 cargo test --test cli_multifile_and_seed_validation
 cargo test --test parity_mismatch_regression
+```
+
+Validate the Python bindings:
+
+```bash
+cd bindings/python
+uv sync --locked
+uv run --locked maturin develop
+uv run --locked pytest -q
 ```
 
 ## Further Documentation
