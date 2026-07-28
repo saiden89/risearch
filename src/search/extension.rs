@@ -110,9 +110,9 @@ impl ExtensionEngine {
         let (q_win, t_win) = (&self.q_buf[..q_len], &self.t_buf[..t_len]);
         let best = gotoh.extend(q_win, t_win, &mut self.grid);
         let pairs = if include_alignment && (best.q_idx > 0 || best.t_idx > 0) {
-            let ops = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
+            let trace = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
             Some(map_trace_to_pairs(
-                q_win, t_win, dir, &ops, best.q_idx, best.t_idx,
+                q_win, t_win, dir, &trace, best.q_idx, best.t_idx,
             ))
         } else {
             None
