@@ -20,7 +20,7 @@ use std::sync::Mutex;
 
 use self::extension::{ExtendDir, ExtensionEngine};
 use crate::alignment::{Alignment, PairClass};
-use crate::config::SearchConfig;
+use crate::config::{SearchConfig, UNLIMITED_EXTENSION};
 use crate::dp::MAX_EXT;
 use crate::dsm::{DsmRegistry, ScoringModel};
 use crate::index::store::TargetRegistry;
@@ -243,7 +243,7 @@ impl<'a> SearchContext<'a> {
 /// A negative `-l` is the unlimited sentinel: extend across the whole query
 /// rather than a fixed length.
 fn is_unlimited(max_extension: i32) -> bool {
-    max_extension < 0
+    max_extension == UNLIMITED_EXTENSION
 }
 
 fn init_search<'a>(
@@ -251,6 +251,8 @@ fn init_search<'a>(
     store: &'a TargetRegistry,
     opts: &'a SearchConfig,
 ) -> Result<Option<SearchContext<'a>>> {
+    opts.validate().map_err(anyhow::Error::msg)?;
+
     if store.is_empty() || queries.is_empty() {
         return Ok(None);
     }
@@ -584,11 +586,21 @@ mod tests {
                 no_max_prune: false,
                 no_dedup: false,
             },
-            output: OutputConfig {
-                format: OutputFormat::Detailed,
-                compress: OutputCompression::None,
-                multifile: false,
-            },
+        }
+    }
+
+    fn test_output() -> OutputConfig {
+        OutputConfig {
+            format: OutputFormat::Detailed,
+            compress: OutputCompression::None,
+            multifile: false,
+        }
+    }
+
+    fn minimal_output() -> OutputConfig {
+        OutputConfig {
+            format: OutputFormat::Minimal,
+            ..test_output()
         }
     }
 
@@ -607,14 +619,14 @@ mod tests {
 
         let (store, _tmp) = build_store(target_f.path());
         let mut config = test_config();
-        config.output.format = OutputFormat::Minimal;
+        let output = minimal_output();
         // Mirror what the CLI derives for Minimal, so this also covers dedup's
         // empty-fingerprint (first-wins) tie-break.
         config.extend.build_alignment = false;
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
-        let hits = run_to_path(&queries, &store, &config, out.path());
+        let hits = run_to_path(&queries, &store, &config, &output, out.path());
         let file_hit_count = fs_err::read_to_string(out.path())
             .unwrap()
             .lines()
@@ -648,6 +660,24 @@ mod tests {
         assert_eq!(hits, 0, "no hits expected against a non-matching target");
     }
 
+    #[test]
+    fn run_search_validates_configs_constructed_without_clap() {
+        let query_f = fixture(QUERY_FA);
+        let target_f = fixture(TARGET_FA);
+        let (store, _tmp) = build_store(target_f.path());
+        let mut config = test_config();
+        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+
+        config.score.penalty = Energy::from_kcal(-0.1);
+        let err = run_search(&queries, &store, &config, &VecSink::default()).unwrap_err();
+        assert!(err.to_string().contains("penalty"));
+
+        config.score.penalty = Energy::from_kcal(0.0);
+        config.extend.max_extension = -2;
+        let err = run_search(&queries, &store, &config, &VecSink::default()).unwrap_err();
+        assert!(err.to_string().contains("max extension"));
+    }
+
     /// Zero-hit behaviour differs by topology and neither branch is covered by a
     /// CLI test: multifile creates no file at all, single-file truncates the
     /// output to nothing.
@@ -660,18 +690,19 @@ mod tests {
 
         let mut config = test_config();
         config.filter.delta_g = Energy::from_kcal(-100.0);
+        let mut output = test_output();
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         fs_err::write(out.path(), b"stale").unwrap();
-        run_to_path(&queries, &store, &config, out.path());
+        run_to_path(&queries, &store, &config, &output, out.path());
         assert_eq!(fs_err::metadata(out.path()).unwrap().len(), 0);
 
-        config.output.multifile = true;
+        output.multifile = true;
         let tmp = tempfile::tempdir().unwrap();
         // Not pre-created, so this also pins that the directory itself is made.
         let dir = tmp.path().join("multi");
-        run_to_path(&queries, &store, &config, &dir);
+        run_to_path(&queries, &store, &config, &output, &dir);
         assert_eq!(fs_err::read_dir(&dir).unwrap().count(), 0);
     }
 
@@ -684,13 +715,16 @@ mod tests {
         let (store, _tmp) = build_store(target_f.path());
 
         let mut config = test_config();
-        config.output.multifile = true;
         config.extend.max_extension = -1;
+        let output = OutputConfig {
+            multifile: true,
+            ..test_output()
+        };
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("multi");
-        let sink = TextSink::new(&queries, &store, &config.output, &dir).unwrap();
+        let sink = TextSink::new(&queries, &store, &output, &dir).unwrap();
         assert!(run_search(&queries, &store, &config, &sink).is_err());
         assert!(!dir.exists());
     }
@@ -705,8 +739,10 @@ mod tests {
         let (store, _tmp) = build_store(target_f.path());
 
         let mut config = test_config();
-        config.output.format = OutputFormat::Minimal;
-        config.output.multifile = true;
+        let output = OutputConfig {
+            multifile: true,
+            ..minimal_output()
+        };
         config.extend.build_alignment = false;
         config.extend.max_extension = 0;
         config.seed.seed_length = Some(4);
@@ -714,7 +750,7 @@ mod tests {
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        run_to_path(&queries, &store, &config, dir.path());
+        run_to_path(&queries, &store, &config, &output, dir.path());
 
         let mut files: Vec<(String, String)> = fs_err::read_dir(dir.path())
             .unwrap()
@@ -773,9 +809,10 @@ mod tests {
         queries: &QueryRegistry,
         store: &TargetRegistry,
         config: &SearchConfig,
+        output: &OutputConfig,
         path: &std::path::Path,
     ) -> usize {
-        let sink = TextSink::new(queries, store, &config.output, path).unwrap();
+        let sink = TextSink::new(queries, store, output, path).unwrap();
         run_search(queries, store, config, &sink).unwrap()
     }
 
@@ -785,7 +822,7 @@ mod tests {
         store: &TargetRegistry,
     ) -> Vec<String> {
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
-        run_to_path(queries, store, config, out.path());
+        run_to_path(queries, store, config, &minimal_output(), out.path());
         fs_err::read_to_string(out.path())
             .unwrap()
             .lines()
@@ -810,7 +847,6 @@ mod tests {
         let target_f = fixture(TARGET_FA);
         let (store, tmp) = build_store(target_f.path());
         let mut config = test_config();
-        config.output.format = OutputFormat::Minimal;
         config.extend.build_alignment = false;
         // Parameters that produce overlapping-seed box collisions on this
         // fixture (~33% redundant rows): short seed, mismatches, wide window,

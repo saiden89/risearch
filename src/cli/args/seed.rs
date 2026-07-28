@@ -1,4 +1,4 @@
-use crate::config;
+use crate::config::SeedConfig;
 use anyhow::Error;
 use std::str::FromStr;
 
@@ -227,7 +227,14 @@ pub struct SeedArgs {
 impl SeedArgs {
     fn resolve_mismatches(&self) -> Result<(usize, usize, usize), String> {
         match (self.mismatch_max, self.mismatch_prefix, self.mismatch_suffix) {
-            (None, None, None) => Ok((0, 1, 0)),
+            (None, None, None) => {
+                let defaults = SeedConfig::default();
+                Ok((
+                    defaults.max_mismatches,
+                    defaults.min_prefix_matches,
+                    defaults.min_suffix_matches,
+                ))
+            }
             (Some(max), None, None) => Ok((max, max, max)),
             (Some(max), Some(prefix), None) => Ok((max, prefix, prefix)),
             (Some(max), Some(prefix), Some(suffix)) => Ok((max, prefix, suffix)),
@@ -250,7 +257,7 @@ impl SeedArgs {
     }
 }
 
-impl TryFrom<SeedArgs> for config::SeedConfig {
+impl TryFrom<SeedArgs> for SeedConfig {
     type Error = Error;
 
     fn try_from(value: SeedArgs) -> Result<Self, Self::Error> {
@@ -276,21 +283,25 @@ impl TryFrom<SeedArgs> for config::SeedConfig {
             )
             .map_err(Error::msg)?;
 
-        Ok(config::SeedConfig {
+        let config = SeedConfig {
             seed_start,
             seed_end,
             seed_length,
-            seed_wobble: !(value.no_seed_wobble || value.no_guseed_legacy),
+            seed_wobble: SeedConfig::default().seed_wobble
+                && !(value.no_seed_wobble || value.no_guseed_legacy),
             max_mismatches,
             min_prefix_matches,
             min_suffix_matches,
-        })
+        };
+        config.validate().map_err(Error::msg)?;
+        Ok(config)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{LegacyMismatchSpec, LegacySeedSpec, SeedArgs, SeedBounds};
+    use crate::config::SeedConfig;
     use std::str::FromStr;
 
     #[test]
@@ -444,6 +455,6 @@ mod tests {
             mismatch_suffix: None,
         };
 
-        assert!(crate::config::SeedConfig::try_from(args).is_err());
+        assert!(SeedConfig::try_from(args).is_err());
     }
 }

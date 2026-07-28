@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use log::{debug, info, trace};
 
-use risearch::{output, search, QueryRegistry, SearchConfig, TargetRegistry};
+use risearch::{output, search, QueryRegistry, TargetRegistry};
 
 use crate::cli::legacy::emit_legacy_warnings;
 use crate::cli::{Cli, Commands, SearchArgs};
@@ -40,7 +40,7 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
     let output_path = &cmd.output.path;
 
     // Convert CLI args to config (handles deprecated flag translation)
-    let opts: SearchConfig = cmd.clone().try_into()?;
+    let (opts, output) = cmd.clone().try_into_configs()?;
     emit_legacy_warnings(cmd, cmd.input.uses_legacy_target());
 
     debug!("Loading queries from {:?}", query_path);
@@ -54,7 +54,7 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
 
     debug!("Starting search...");
 
-    let sink = output::TextSink::new(&queries, &targets, &opts.output, output_path)?;
+    let sink = output::TextSink::new(&queries, &targets, &output, output_path)?;
     search::run_search(&queries, &targets, &opts, &sink)?;
     info!("Done");
     Ok(())

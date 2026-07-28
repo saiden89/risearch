@@ -1,4 +1,4 @@
-use crate::config;
+use crate::config::{ExtendConfig, OutputConfig, OutputFormat, SearchConfig};
 use anyhow::Error;
 
 use super::{ExtendArgs, FilterArgs, InputArgs, OutputArgs, ScoreArgs, SeedArgs};
@@ -25,21 +25,24 @@ pub struct SearchArgs {
     pub output: OutputArgs,
 }
 
-impl TryFrom<SearchArgs> for config::SearchConfig {
-    type Error = Error;
-
-    fn try_from(value: SearchArgs) -> Result<Self, Self::Error> {
-        let output: config::OutputConfig = value.output.try_into()?;
-        let mut extend: config::ExtendConfig = value.extend.into();
+impl SearchArgs {
+    /// Resolve CLI-only output policy alongside the frontend-independent search
+    /// configuration. Output format controls whether traceback is worth doing,
+    /// but the output settings themselves do not belong in [`SearchConfig`].
+    pub fn try_into_configs(self) -> Result<(SearchConfig, OutputConfig), Error> {
+        let output: OutputConfig = self.output.try_into()?;
+        let mut extend: ExtendConfig = self.extend.into();
         // Only the alignment-printing formats read the alignment back.
-        extend.build_alignment = output.format != config::OutputFormat::Minimal;
+        extend.build_alignment = output.format != OutputFormat::Minimal;
 
-        Ok(config::SearchConfig {
-            seed: value.seed.try_into()?,
-            score: value.score.into(),
+        let search = SearchConfig {
+            seed: self.seed.try_into()?,
+            score: self.score.into(),
             extend,
-            filter: value.filter.into(),
-            output,
-        })
+            filter: self.filter.into(),
+        };
+        search.validate().map_err(Error::msg)?;
+
+        Ok((search, output))
     }
 }

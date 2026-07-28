@@ -6,7 +6,8 @@
 use log::info;
 use risearch::cli::args::SearchArgs;
 use risearch::{
-    run_search, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetRegistry, TextSink,
+    run_search, OutputConfig, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetRegistry,
+    TextSink,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -81,12 +82,19 @@ impl RustRunner<NoIndex> {
 
 impl RustRunner<Indexed> {
     /// Search using risearch as a library.
-    fn search(&self, query_path: &Path, args: &SearchConfig) -> (Vec<SearchHit>, QueryRegistry) {
+    fn search(
+        &self,
+        query_path: &Path,
+        args: &SearchConfig,
+        output: &OutputConfig,
+    ) -> (Vec<SearchHit>, QueryRegistry) {
         let query_registry =
             QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let mut search_args = args.clone();
+        let mut output = output.clone();
         // Parity parser expects binding-site columns (pairing + target sequence, optional flanks).
-        search_args.output.format = OutputFormat::BindingSite;
+        output.format = OutputFormat::BindingSite;
+        search_args.extend.build_alignment = true;
 
         let tmp = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         // Sink scoped so it drops before the read: compression trailers are
@@ -95,7 +103,7 @@ impl RustRunner<Indexed> {
             let sink = TextSink::new(
                 &query_registry,
                 &self.state.target_registry,
-                &search_args.output,
+                &output,
                 tmp.path(),
             )
             .expect("open parity output");
@@ -122,7 +130,7 @@ impl RustRunner<Indexed> {
     ///
     /// Unlike [`Self::search`] this does not force binding-site columns, so the
     /// caller can compare rendered output (e.g. detailed alignment blocks).
-    fn search_text(&self, query_path: &Path, args: &SearchConfig) -> String {
+    fn search_text(&self, query_path: &Path, args: &SearchConfig, output: &OutputConfig) -> String {
         let query_registry =
             QueryRegistry::from_fasta(query_path, &args.seed).expect("read query FASTA");
         let tmp = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
@@ -130,7 +138,7 @@ impl RustRunner<Indexed> {
             let sink = TextSink::new(
                 &query_registry,
                 &self.state.target_registry,
-                &args.output,
+                output,
                 tmp.path(),
             )
             .expect("open parity output");
@@ -201,13 +209,13 @@ impl ParityRunner {
     ) {
         let args = legacy_parity_args(args);
         let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-        let mut search_args = parse_search_args(&args_ref);
+        let (mut search_args, output) = parse_search_args(&args_ref);
         // Parity is defined against the per-seed row set: C never dedups, and the
         // harness's `parse_output` only collapses exact (coord+energy) duplicates,
         // not best-per-box. So the Rust side must also skip bounding-box dedup
         // here, or it would emit fewer rows than C for converging seeds.
         search_args.filter.no_dedup = true;
-        let (rust_hits, query_registry) = self.rust.search(query, &search_args);
+        let (rust_hits, query_registry) = self.rust.search(query, &search_args, &output);
 
         // Translate args to C format
         let c_args = translate_args_for_c(&args_ref);
@@ -268,10 +276,10 @@ impl ParityRunner {
         );
         let args = legacy_parity_args(args);
         let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-        let mut search_args = parse_search_args(&args_ref);
+        let (mut search_args, output) = parse_search_args(&args_ref);
         // Same rationale as `compare`: C never dedups, so neither may Rust.
         search_args.filter.no_dedup = true;
-        let rust_out = self.rust.search_text(query, &search_args);
+        let rust_out = self.rust.search_text(query, &search_args, &output);
 
         let c_args = translate_args_for_c(&args_ref);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
@@ -421,7 +429,7 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
 }
 
 /// Parse CLI-style args into SearchArgs using clap.
-fn parse_search_args(args: &[&str]) -> SearchConfig {
+fn parse_search_args(args: &[&str]) -> (SearchConfig, OutputConfig) {
     use clap::Parser;
 
     let mut cli_args: Vec<String> = vec![
@@ -473,5 +481,5 @@ fn parse_search_args(args: &[&str]) -> SearchConfig {
     }
 
     let parsed = FakeCmd::try_parse_from(&cli_args).expect("Failed to parse search args");
-    parsed.search.try_into().expect("valid search args")
+    parsed.search.try_into_configs().expect("valid search args")
 }

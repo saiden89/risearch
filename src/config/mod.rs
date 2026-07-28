@@ -1,6 +1,20 @@
 use clap::ValueEnum;
 
+use crate::dp::MAX_EXT;
+use crate::dsm::DsmRegistry;
 use crate::types::{DsmId, Energy};
+
+// `Default` implementations below own frontend default policy. Keep constants
+// here only for effective fallbacks and shared validity bounds or sentinels.
+pub const DEFAULT_SEED_LEN: i64 = 6;
+
+pub const MIN_PENALTY_KCAL: f64 = 0.0;
+pub const MAX_PENALTY_KCAL: f64 = 50.0;
+pub const MIN_TEMPERATURE_C: i32 = 0;
+pub const MAX_TEMPERATURE_C: i32 = 100;
+
+pub const UNLIMITED_EXTENSION: i32 = -1;
+pub const MAX_EXTENSION: i32 = MAX_EXT as i32;
 
 // =============================================================================
 // ENUMS (shared by config and CLI via clap derives)
@@ -68,7 +82,7 @@ impl OutputCompression {
 }
 
 /// Arguments for seed generation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SeedConfig {
     /// Seed interval start (1-based, can be negative). `None` = full query.
     pub seed_start: Option<i64>,
@@ -89,12 +103,64 @@ pub struct SeedConfig {
     pub min_suffix_matches: usize,
 }
 
-/// Default seed length when none is specified.
-pub const DEFAULT_SEED_LEN: i64 = 6;
+impl Default for SeedConfig {
+    fn default() -> Self {
+        Self {
+            seed_start: None,
+            seed_end: None,
+            seed_length: None,
+            seed_wobble: true,
+            max_mismatches: 0,
+            min_prefix_matches: 1,
+            min_suffix_matches: 0,
+        }
+    }
+}
 
 impl SeedConfig {
+    /// Validate query-independent seed invariants.
+    ///
+    /// Bounds against a particular sequence length, and a requested length
+    /// against that normalized interval, are checked by [`Self::resolve`].
+    pub fn validate(&self) -> Result<(), String> {
+        match (self.seed_start, self.seed_end) {
+            (None, None) => {
+                if self.seed_length.is_some_and(|length| length <= 0) {
+                    return Err("Invalid seed length: must be positive without an interval".into());
+                }
+            }
+            (Some(start), Some(end)) => {
+                if start == 0 || end == 0 {
+                    return Err(
+                        "Invalid seed interval: coordinates are 1-based and cannot be zero".into(),
+                    );
+                }
+                if start.signum() != end.signum() {
+                    return Err("Invalid seed interval: mixed sign".into());
+                }
+                if end < start {
+                    return Err("Invalid seed interval: end precedes start".into());
+                }
+
+                // In interval mode, zero or a negative length means the full
+                // interval, preserving the legacy CLI's established behavior.
+                if let Some(length) = self.seed_length.filter(|length| *length > 0) {
+                    let interval_len = i128::from(end) - i128::from(start) + 1;
+                    if i128::from(length) > interval_len {
+                        return Err("Invalid seed length (exceeds interval)".into());
+                    }
+                }
+            }
+            _ => return Err("use seed_start + seed_end together, or neither".into()),
+        }
+
+        Ok(())
+    }
+
     /// Resolve this config's seed bounds against a specific query length.
     pub fn resolve(&self, query_len: usize) -> Result<(usize, usize, usize), String> {
+        self.validate()?;
+
         let n = query_len as i64;
         if n <= 0 {
             return Err("query length must be positive".into());
@@ -161,6 +227,37 @@ pub struct ScoreConfig {
     pub temperature: i32,
 }
 
+impl Default for ScoreConfig {
+    fn default() -> Self {
+        Self {
+            dsm_id: DsmId::from("t04"),
+            penalty: Energy::default(),
+            temperature: 37,
+        }
+    }
+}
+
+impl ScoreConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        DsmRegistry::parse_id(self.dsm_id.0.as_str()).map_err(|err| err.to_string())?;
+
+        let penalty = self.penalty.to_kcal();
+        if !(MIN_PENALTY_KCAL..=MAX_PENALTY_KCAL).contains(&penalty) {
+            return Err(format!(
+                "penalty must be between {MIN_PENALTY_KCAL} and {MAX_PENALTY_KCAL}, got {penalty}"
+            ));
+        }
+        if !(MIN_TEMPERATURE_C..=MAX_TEMPERATURE_C).contains(&self.temperature) {
+            return Err(format!(
+                "temperature must be between {MIN_TEMPERATURE_C} and {MAX_TEMPERATURE_C}, got {}",
+                self.temperature
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 /// Arguments for extension strategy.
 #[derive(Debug, Clone)]
 pub struct ExtendConfig {
@@ -176,6 +273,27 @@ pub struct ExtendConfig {
     /// member of an energy-tied bounding box may survive. Tied hits share a box
     /// and an energy, so every other field is identical either way.
     pub build_alignment: bool,
+}
+
+impl Default for ExtendConfig {
+    fn default() -> Self {
+        Self {
+            max_extension: 20,
+            build_alignment: true,
+        }
+    }
+}
+
+impl ExtendConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(UNLIMITED_EXTENSION..=MAX_EXTENSION).contains(&self.max_extension) {
+            return Err(format!(
+                "max extension must be {UNLIMITED_EXTENSION} (unlimited) or between 0 and {MAX_EXTENSION}, got {}",
+                self.max_extension
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Hit acceptance and pruning policies.
@@ -196,14 +314,33 @@ pub struct FilterConfig {
     pub no_dedup: bool,
 }
 
+impl Default for FilterConfig {
+    fn default() -> Self {
+        Self {
+            delta_g: Energy::from_kcal(-20.0),
+            seed_energy: Energy::default(),
+            no_max_prune: false,
+            no_dedup: false,
+        }
+    }
+}
+
 /// Options that apply to the `search` subcommand
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SearchConfig {
     pub seed: SeedConfig,
     pub score: ScoreConfig,
     pub extend: ExtendConfig,
     pub filter: FilterConfig,
-    pub output: OutputConfig,
+}
+
+impl SearchConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        self.seed.validate()?;
+        self.score.validate()?;
+        self.extend.validate()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

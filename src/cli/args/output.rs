@@ -1,5 +1,4 @@
-use crate::config::{self, OutputCodec, OutputCompression, OutputFormat};
-use config::OutputConfig;
+use crate::config::{OutputCodec, OutputCompression, OutputConfig, OutputFormat};
 
 use anyhow::{bail, Error};
 use std::path::PathBuf;

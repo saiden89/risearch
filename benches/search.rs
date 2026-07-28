@@ -5,10 +5,7 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rayon::ThreadPoolBuilder;
-use risearch::config::{
-    ExtendConfig, FilterConfig, OutputCompression, OutputConfig, OutputFormat, ScoreConfig,
-    SearchConfig, SeedConfig,
-};
+use risearch::config::{ExtendConfig, FilterConfig, ScoreConfig, SearchConfig, SeedConfig};
 use risearch::registry::QueryRegistry;
 use risearch::search::run_search;
 use risearch::seed::SeedingEngine;
@@ -146,11 +143,6 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
             seed_energy: Energy::from_kcal(0.0),
             no_max_prune: false,
             no_dedup: false,
-        },
-        output: OutputConfig {
-            format: OutputFormat::Minimal,
-            compress: OutputCompression::None,
-            multifile: false,
         },
     }
 }

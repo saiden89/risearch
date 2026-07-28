@@ -9,13 +9,17 @@ pub struct FilterArgs {
         short = 'e',
         long = "energy",
         value_name = "dG",
-        default_value = "-20.0",
+        default_value_t = FilterConfig::default().delta_g,
         allow_hyphen_values = true
     )]
     pub total_energy: Energy,
 
     /// Energy per length threshold that filters seeds (in kcal/mol)
-    #[arg(long = "seed-energy", value_name = "THRESHOLD", default_value = "0.0")]
+    #[arg(
+        long = "seed-energy",
+        value_name = "THRESHOLD",
+        default_value_t = FilterConfig::default().seed_energy
+    )]
     pub seed_energy: Energy,
 
     /// Disable maximality check (allows redundant seeds)

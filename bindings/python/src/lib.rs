@@ -10,8 +10,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use risearch::dsm::DsmRegistry;
 use risearch::{
-    run_search, Energy, ExtendConfig, FilterConfig, HitSink, OutputCompression, OutputConfig,
-    OutputFormat, QueryRegistry, ScoreConfig, SearchConfig, SearchHit, SeedConfig, TargetRegistry,
+    run_search, Energy, ExtendConfig, FilterConfig, HitSink, QueryRegistry, ScoreConfig,
+    SearchConfig, SearchHit, SeedConfig, TargetRegistry,
 };
 
 // =============================================================================
@@ -291,11 +291,6 @@ fn search(
                 .map_err(pyo3::exceptions::PyValueError::new_err)?,
             no_max_prune,
             no_dedup,
-        },
-        output: OutputConfig {
-            format: OutputFormat::Detailed,
-            compress: OutputCompression::None,
-            multifile: false,
         },
     };
 
