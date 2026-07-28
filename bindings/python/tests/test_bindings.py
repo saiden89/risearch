@@ -1,28 +1,25 @@
 """Smoke tests for the risearch Python bindings.
 
 Requires the extension to be built first:
-    cd bindings/python && maturin develop
+    cd bindings/python && uv run --locked maturin develop
 """
 
-import importlib.util
+import inspect
 from pathlib import Path
 
-import pytest
-
 import polars as pl
-
-if importlib.util.find_spec("risearch") is None:
-    pytest.skip("risearch not installed — run `maturin develop` first", allow_module_level=True)
-
+import pytest
 import risearch
+import risearch._native as native
+from polars.testing import assert_frame_equal
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-SUITE = Path(__file__).parent.parent.parent.parent / "legacy_c" / "RIsearch2" / "test_suite"
-TARGET_FA = SUITE / "RHOC.fa"
-QUERY_FA = SUITE / "mirnas.fa"
+DATA = Path(__file__).resolve().parents[3] / "tests" / "data"
+TARGET_FA = DATA / "target.fa"
+QUERY_FA = DATA / "query.fa"
 
 
 @pytest.fixture(scope="session")
@@ -59,12 +56,14 @@ def test_target_registry_repr_shows_count(store):
 # ---------------------------------------------------------------------------
 
 EXPECTED_COLUMNS = {
-    "query_idx": pl.UInt32,
-    "target_idx": pl.UInt32,
-    "q_start": pl.UInt32,
-    "q_end": pl.UInt32,
-    "t_start": pl.UInt32,
-    "t_end": pl.UInt32,
+    "query_idx": pl.UInt64,
+    "query_name": pl.String,
+    "target_idx": pl.UInt64,
+    "target_name": pl.String,
+    "q_start": pl.UInt64,
+    "q_end": pl.UInt64,
+    "t_start": pl.UInt64,
+    "t_end": pl.UInt64,
     "strand": pl.String,
     "energy": pl.Float64,
     "alignment": pl.String,
@@ -86,6 +85,14 @@ def test_search_schema(store):
 def test_search_returns_hits(store):
     df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
     assert len(df) > 0
+
+
+def test_search_resolves_registry_names(store):
+    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
+    assert df["query_name"].is_not_null().all()
+    assert df["target_name"].is_not_null().all()
+    assert (df["query_name"].str.len_chars() > 0).all()
+    assert (df["target_name"].str.len_chars() > 0).all()
 
 
 def test_empty_result_has_correct_schema(store):
@@ -148,7 +155,9 @@ def test_longer_seed_returns_fewer_hits(store):
 
 
 def test_single_path_and_list_equivalent(store):
-    df_str = risearch.search(str(QUERY_FA), store, seed_length=8, energy_threshold=-10.0)
+    df_str = risearch.search(
+        str(QUERY_FA), store, seed_length=8, energy_threshold=-10.0
+    )
     df_list = risearch.search([QUERY_FA], store, seed_length=8, energy_threshold=-10.0)
     assert len(df_str) == len(df_list)
 
@@ -185,11 +194,53 @@ def test_seed_start_without_end_raises(store):
 
 
 def test_strict_seed_returns_fewer_or_equal_hits(store):
-    wobble = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=True)
-    strict = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=False)
+    wobble = risearch.search(
+        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=True
+    )
+    strict = risearch.search(
+        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=False
+    )
     assert len(strict) <= len(wobble)
 
 
 def test_invalid_matrix_raises(store):
     with pytest.raises(ValueError, match="DSM id"):
         risearch.search(QUERY_FA, store, matrix="t05")
+
+
+def test_excessive_max_extension_raises(store):
+    with pytest.raises(ValueError, match="max extension"):
+        risearch.search(QUERY_FA, store, max_extension=257)
+
+
+# ---------------------------------------------------------------------------
+# Public/private package boundary
+# ---------------------------------------------------------------------------
+
+
+def test_public_objects_identify_as_risearch():
+    assert risearch.TargetRegistry.__module__ == "risearch"
+    assert risearch.index.__module__ == "risearch"
+    assert risearch.index.__name__ == "index"
+    assert risearch.search.__module__ == "risearch"
+
+
+def test_public_and_native_search_defaults_match():
+    public = inspect.signature(risearch.search)
+    private = inspect.signature(native.search)
+    assert list(public.parameters) == list(private.parameters)
+    for name, parameter in public.parameters.items():
+        native_default = private.parameters[name].default
+        if native_default is not Ellipsis:
+            assert parameter.default == native_default
+    assert public.parameters["energy_threshold"].default == -20.0
+    assert public.parameters["penalty"].default == 0.0
+
+
+def test_native_negative_energy_default_matches_public_default(store):
+    implicit = pl.from_arrow(native.search([QUERY_FA], store, seed_length=8))
+    explicit = pl.from_arrow(
+        native.search([QUERY_FA], store, seed_length=8, energy_threshold=-20.0)
+    )
+    columns = list(EXPECTED_COLUMNS)
+    assert_frame_equal(implicit.sort(columns), explicit.sort(columns))

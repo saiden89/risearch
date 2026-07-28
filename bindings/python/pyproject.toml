@@ -38,4 +38,5 @@ lts-cpu = ["polars[rtcompat]>=1.43.0"]
 dev = ["pytest", "maturin"]
 
 [tool.maturin]
-module-name = "risearch._risearch"
+python-source = "."
+module-name = "risearch._native"

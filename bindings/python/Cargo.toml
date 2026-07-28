@@ -5,7 +5,7 @@ rust-version.workspace = true
 edition = "2021"
 
 [lib]
-name = "risearch"
+name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]

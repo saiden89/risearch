@@ -2,15 +2,14 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use arrow_array::builder::{Float64Builder, LargeStringBuilder, StringBuilder, UInt32Builder};
+use arrow_array::builder::{Float64Builder, LargeStringBuilder, StringBuilder, UInt64Builder};
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
-use risearch::dsm::DsmRegistry;
 use risearch::{
-    run_search, Energy, ExtendConfig, FilterConfig, HitSink, QueryRegistry, ScoreConfig,
+    run_search, DsmId, Energy, ExtendConfig, FilterConfig, HitSink, QueryRegistry, ScoreConfig,
     SearchConfig, SearchHit, SeedConfig, TargetRegistry,
 };
 
@@ -22,12 +21,14 @@ fn search_result_schema() -> &'static SchemaRef {
     static SCHEMA: OnceLock<SchemaRef> = OnceLock::new();
     SCHEMA.get_or_init(|| {
         Arc::new(Schema::new(vec![
-            Field::new("query_idx", DataType::UInt32, false),
-            Field::new("target_idx", DataType::UInt32, false),
-            Field::new("q_start", DataType::UInt32, false),
-            Field::new("q_end", DataType::UInt32, false),
-            Field::new("t_start", DataType::UInt32, false),
-            Field::new("t_end", DataType::UInt32, false),
+            Field::new("query_idx", DataType::UInt64, false),
+            Field::new("query_name", DataType::Utf8, false),
+            Field::new("target_idx", DataType::UInt64, false),
+            Field::new("target_name", DataType::Utf8, false),
+            Field::new("q_start", DataType::UInt64, false),
+            Field::new("q_end", DataType::UInt64, false),
+            Field::new("t_start", DataType::UInt64, false),
+            Field::new("t_end", DataType::UInt64, false),
             Field::new("strand", DataType::Utf8, false),
             Field::new("energy", DataType::Float64, false),
             Field::new("alignment", DataType::LargeUtf8, true),
@@ -37,12 +38,14 @@ fn search_result_schema() -> &'static SchemaRef {
 
 #[derive(Default)]
 struct HitColumns {
-    query_idx: UInt32Builder,
-    target_idx: UInt32Builder,
-    q_start: UInt32Builder,
-    q_end: UInt32Builder,
-    t_start: UInt32Builder,
-    t_end: UInt32Builder,
+    query_idx: UInt64Builder,
+    query_name: StringBuilder,
+    target_idx: UInt64Builder,
+    target_name: StringBuilder,
+    q_start: UInt64Builder,
+    q_end: UInt64Builder,
+    t_start: UInt64Builder,
+    t_end: UInt64Builder,
     strand: StringBuilder,
     energy: Float64Builder,
     alignment: LargeStringBuilder,
@@ -50,15 +53,28 @@ struct HitColumns {
 
 /// Appends each query's hits straight into the Arrow columns as that query
 /// finishes, so the full hit set is never materialized at once.
-#[derive(Default)]
-struct ArrowSink(Mutex<HitColumns>);
+struct ArrowSink<'a> {
+    queries: &'a QueryRegistry,
+    store: &'a TargetRegistry,
+    columns: Mutex<HitColumns>,
+}
 
-impl ArrowSink {
+impl<'a> ArrowSink<'a> {
+    fn new(queries: &'a QueryRegistry, store: &'a TargetRegistry) -> Self {
+        Self {
+            queries,
+            store,
+            columns: Mutex::new(HitColumns::default()),
+        }
+    }
+
     fn into_batch(self, schema: &SchemaRef) -> RecordBatch {
-        let mut c = self.0.into_inner().unwrap();
+        let mut c = self.columns.into_inner().unwrap();
         let columns: Vec<ArrayRef> = vec![
             Arc::new(c.query_idx.finish()),
+            Arc::new(c.query_name.finish()),
             Arc::new(c.target_idx.finish()),
+            Arc::new(c.target_name.finish()),
             Arc::new(c.q_start.finish()),
             Arc::new(c.q_end.finish()),
             Arc::new(c.t_start.finish()),
@@ -71,17 +87,21 @@ impl ArrowSink {
     }
 }
 
-impl HitSink for ArrowSink {
+impl HitSink for ArrowSink<'_> {
     fn consume(&self, _query_idx: usize, hits: Vec<SearchHit>) -> anyhow::Result<()> {
         let mut strand_buf = [0u8; 4];
-        let mut c = self.0.lock().unwrap();
+        let mut c = self.columns.lock().unwrap();
         for h in &hits {
-            c.query_idx.append_value(h.query_idx as u32);
-            c.target_idx.append_value(h.target_idx as u32);
-            c.q_start.append_value(h.q_start as u32);
-            c.q_end.append_value(h.q_end as u32);
-            c.t_start.append_value(h.t_start as u32);
-            c.t_end.append_value(h.t_end as u32);
+            c.query_idx.append_value(u64::try_from(h.query_idx)?);
+            c.query_name
+                .append_value(self.queries.get_name(h.query_idx));
+            c.target_idx.append_value(u64::try_from(h.target_idx)?);
+            c.target_name
+                .append_value(self.store.get_name(h.target_idx));
+            c.q_start.append_value(u64::try_from(h.q_start)?);
+            c.q_end.append_value(u64::try_from(h.q_end)?);
+            c.t_start.append_value(u64::try_from(h.t_start)?);
+            c.t_end.append_value(u64::try_from(h.t_end)?);
             c.strand
                 .append_value(char::from(h.strand).encode_utf8(&mut strand_buf));
             c.energy.append_value(f64::from(h.energy));
@@ -110,7 +130,7 @@ impl HitSink for ArrowSink {
 ///
 /// Consumed by `pl.from_arrow(result)` via the Arrow PyCapsule Interface.
 /// One-shot: the stream is consumed on the first call to `__arrow_c_stream__`.
-#[pyclass(name = "SearchResult")]
+#[pyclass(name = "SearchResult", module = "risearch._native")]
 struct PySearchResult {
     batch: Option<RecordBatch>,
     schema: SchemaRef,
@@ -156,7 +176,7 @@ impl PySearchResult {
 /// An mmap-backed target index for RNA-RNA interaction search.
 ///
 /// Build once with `build_index()`, then reuse across many `search()` calls.
-#[pyclass(name = "TargetRegistry")]
+#[pyclass(name = "TargetRegistry", module = "risearch")]
 pub struct PyTargetRegistry(TargetRegistry);
 
 #[pymethods]
@@ -232,7 +252,7 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
     mismatch_suffix = 0,
     seed_wobble = true,
     matrix = "t04",
-    penalty = 3.5,
+    penalty = 0.0,
     temperature = 37,
     max_extension = 20,
     seed_energy = 0.0,
@@ -262,9 +282,6 @@ fn search(
     no_max_prune: bool,
     no_dedup: bool,
 ) -> PyResult<PySearchResult> {
-    let dsm_id = DsmRegistry::parse_id(matrix)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-
     let config = SearchConfig {
         seed: SeedConfig {
             seed_start,
@@ -276,7 +293,7 @@ fn search(
             min_suffix_matches: mismatch_suffix,
         },
         score: ScoreConfig {
-            dsm_id,
+            dsm_id: DsmId::from(matrix),
             penalty: Energy::try_from(penalty).map_err(pyo3::exceptions::PyValueError::new_err)?,
             temperature,
         },
@@ -293,12 +310,15 @@ fn search(
             no_dedup,
         },
     };
+    config
+        .validate()
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let paths: Vec<&std::path::Path> = query_fasta.iter().map(|p| p.as_path()).collect();
     let queries = QueryRegistry::from_fastas(&paths, &config.seed)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
-    let sink = ArrowSink::default();
+    let sink = ArrowSink::new(&queries, &store.0);
     py.detach(|| run_search(&queries, &store.0, &config, &sink))?;
     let schema = search_result_schema().clone();
     Ok(PySearchResult::new(sink.into_batch(&schema), schema))
@@ -309,7 +329,7 @@ fn search(
 // =============================================================================
 
 #[pymodule]
-fn _risearch(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTargetRegistry>()?;
     m.add_function(wrap_pyfunction!(build_index, m)?)?;
     m.add_function(wrap_pyfunction!(search, m)?)?;
