@@ -2,9 +2,16 @@
 
 use std::ops::Range;
 
-use crate::types::Base;
+use crate::index::sa::SuffixIndexView;
+use crate::types::{Base, BASE_COUNT};
 
-use crate::index::RegistryView;
+const LINEAR_PARTITION_CUTOFF: usize = 1024;
+const MATCHABLE_BUCKETS: [(usize, Base); 4] = [
+    (Base::A.as_usize() - 1, Base::A),
+    (Base::C.as_usize() - 1, Base::C),
+    (Base::G.as_usize() - 1, Base::G),
+    (Base::U.as_usize() - 1, Base::U),
+];
 
 /// A raw seed candidate emitted by the parallel SA traversal.
 #[derive(Debug, Clone)]
@@ -18,8 +25,8 @@ pub(super) struct SeedMatch {
 // mismatch bounds that drive the SA descent; grouping would only obscure them.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
-    q: RegistryView<'_>,
-    t: RegistryView<'_>,
+    query: SuffixIndexView<'_>,
+    target: SuffixIndexView<'_>,
     min_len: usize,
     max_len: usize,
     max_mm: usize,
@@ -27,13 +34,13 @@ pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
     min_suffix: usize,
     on_match: &mut F,
 ) {
-    if min_len > max_len {
+    if min_len > max_len || query.is_empty() || target.is_empty() {
         return;
     }
 
     let mut traverser = ParallelSaTraverser {
-        q,
-        t,
+        query,
+        target,
         min_len,
         max_len,
         max_mm,
@@ -41,15 +48,15 @@ pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
         min_suffix,
         on_match,
     };
-    let q_range = 0..traverser.q.sa_real_len;
-    let t_range = 0..traverser.t.sa_real_len;
+    let q_range = 0..traverser.query.len();
+    let t_range = 0..traverser.target.len();
 
     traverser.recurse::<WOBBLE>(q_range, t_range, 0, 0, 0);
 }
 
 struct ParallelSaTraverser<'a, F: FnMut(SeedMatch)> {
-    q: RegistryView<'a>,
-    t: RegistryView<'a>,
+    query: SuffixIndexView<'a>,
+    target: SuffixIndexView<'a>,
     min_len: usize,
     max_len: usize,
     max_mm: usize,
@@ -59,6 +66,64 @@ struct ParallelSaTraverser<'a, F: FnMut(SeedMatch)> {
 }
 
 impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
+    /// Partition a sorted SA interval by base character at `depth`.
+    ///
+    /// Returns boundary positions `[A, C, G, N, U, end]` in suffix-array order.
+    /// The leading `Gap` bucket and the `N` slot are omitted by traversal.
+    #[inline(always)]
+    fn partition(
+        suffixes: SuffixIndexView<'_>,
+        range: Range<usize>,
+        depth: usize,
+    ) -> [usize; BASE_COUNT] {
+        let (start, end) = (range.start, range.end);
+        if start >= end {
+            return [start; BASE_COUNT];
+        }
+
+        let mut out = [0usize; BASE_COUNT];
+        if end - start <= LINEAR_PARTITION_CUTOFF {
+            let mut i = start;
+            for (slot, out_slot) in out.iter_mut().enumerate().take(BASE_COUNT - 1) {
+                let target = (slot + 1) as u8;
+                // SAFETY: `i` is inside this SA interval.
+                while i < end && unsafe { suffixes.base_unchecked(i, depth).as_u8() } < target {
+                    i += 1;
+                }
+                *out_slot = i;
+            }
+        } else {
+            for (slot, out_slot) in out.iter_mut().enumerate().take(BASE_COUNT - 1) {
+                let target = (slot + 1) as u8;
+                *out_slot = Self::lower_bound(suffixes, start..end, depth, target);
+            }
+        }
+        out[BASE_COUNT - 1] = end;
+        out
+    }
+
+    /// Leftmost position where the character at `depth` is at least `target`.
+    #[inline(always)]
+    fn lower_bound(
+        suffixes: SuffixIndexView<'_>,
+        mut range: Range<usize>,
+        depth: usize,
+        target: u8,
+    ) -> usize {
+        let mut half = (range.end - range.start) >> 1;
+        while range.start < range.end {
+            let mid = range.start + half;
+            // SAFETY: `mid` is inside this SA interval.
+            if unsafe { suffixes.base_unchecked(mid, depth).as_u8() } >= target {
+                range.end = range.start + half;
+            } else {
+                range.start += if half != 0 { half } else { 1 };
+            }
+            half >>= 1;
+        }
+        range.start
+    }
+
     #[inline(always)]
     fn should_emit(&self, depth: usize, match_streak: usize, mm_count: usize) -> bool {
         depth >= self.min_len
@@ -141,8 +206,8 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
             return;
         }
 
-        let query_partitions = partition(self.q, query_start, query_end, depth);
-        let target_partitions = partition(self.t, target_start, target_end, depth);
+        let query_partitions = Self::partition(self.query, query_start..query_end, depth);
+        let target_partitions = Self::partition(self.target, target_start..target_end, depth);
 
         if query_partitions[0] == query_end || target_partitions[0] == target_end {
             return;
@@ -195,18 +260,19 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
         match_streak: usize,
         mm_count: usize,
     ) {
-        let (singleton_view, multi_view) = if Q_SINGLETON {
-            (self.q, self.t)
+        let (singleton, multi) = if Q_SINGLETON {
+            (self.query, self.target)
         } else {
-            (self.t, self.q)
+            (self.target, self.query)
         };
 
-        let singleton_base = unsafe { singleton_view.sa_base_unchecked(singleton_sa_idx, depth) };
+        // SAFETY: traversal intervals only contain valid SA indices.
+        let singleton_base = unsafe { singleton.base_unchecked(singleton_sa_idx, depth) };
         if !singleton_base.is_matchable() {
             return;
         }
 
-        let multi_partitions = partition(multi_view, multi_sa.start, multi_sa.end, depth);
+        let multi_partitions = Self::partition(multi, multi_sa, depth);
 
         let d1 = depth + 1;
         let can_mm = self.can_mismatch_next(depth, match_streak, mm_count);
@@ -257,8 +323,9 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
             let d1 = depth + 1;
             let can_mm = self.can_mismatch_next(depth, match_streak, mm_count);
 
-            let query_base = unsafe { self.q.sa_base_unchecked(query_sa_idx, depth) };
-            let target_base = unsafe { self.t.sa_base_unchecked(target_sa_idx, depth) };
+            // SAFETY: traversal intervals only contain valid SA indices.
+            let query_base = unsafe { self.query.base_unchecked(query_sa_idx, depth) };
+            let target_base = unsafe { self.target.base_unchecked(target_sa_idx, depth) };
             if !query_base.is_matchable() || !target_base.is_matchable() {
                 return;
             }
@@ -285,106 +352,22 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
     }
 }
 
-const LINEAR_PARTITION_CUTOFF: usize = 1024;
-const MATCHABLE_BUCKETS: [(usize, Base); 4] = [
-    (Base::A.as_usize() - 1, Base::A),
-    (Base::C.as_usize() - 1, Base::C),
-    (Base::G.as_usize() - 1, Base::G),
-    (Base::U.as_usize() - 1, Base::U),
-];
-
-/// Partition a sorted SA interval by base character at `depth`.
-///
-/// Returns 6 boundary positions `[A, C, G, N, U, end]` in suffix-array order.
-/// Sub-interval for slot `k` is `bounds[k]..bounds[k+1]`.
-/// Callers that search only matchable RNA bases should skip the `N` bucket (slot 3).
-#[inline(always)]
-fn partition(view: RegistryView<'_>, start: usize, end: usize, depth: usize) -> [usize; 6] {
-    // Empty (or exhausted) interval: every boundary collapses to `start`, so all
-    // sub-intervals are empty and the caller's traversal branch terminates. This
-    // is what makes an empty SA range safe without a separate guard at entry.
-    if start >= end {
-        return [start; 6];
-    }
-
-    let mut out = [0usize; 6];
-    if end - start <= LINEAR_PARTITION_CUTOFF {
-        let mut i = start;
-        for (slot, out_slot) in out.iter_mut().enumerate().take(5) {
-            let target = (slot + 1) as u8;
-            while i < end && unsafe { view.sa_base_unchecked(i, depth).as_u8() } < target {
-                i += 1;
-            }
-            *out_slot = i;
-        }
-    } else {
-        for (slot, out_slot) in out.iter_mut().enumerate().take(5) {
-            let target = (slot + 1) as u8;
-            *out_slot = binary_search(view, start, end, depth, target);
-        }
-    }
-    out[5] = end;
-    out
-}
-
-/// Binary search for leftmost position where character at `depth` >= `target`.
-#[inline(always)]
-fn binary_search(
-    view: RegistryView<'_>,
-    mut start: usize,
-    mut end: usize,
-    depth: usize,
-    target: u8,
-) -> usize {
-    let mut half = (end - start) >> 1;
-    while start < end {
-        let mid = start + half;
-        if unsafe { view.sa_base_unchecked(mid, depth).as_u8() } >= target {
-            end = start + half;
-        } else {
-            start += if half != 0 { half } else { 1 };
-        }
-        half >>= 1;
-    }
-    start
-}
-
 #[cfg(test)]
 mod tests {
     use crate::config::SeedConfig;
-    use crate::index::sa::SuffixArray;
-    use crate::index::RegistryView;
+    use crate::index::sa::SuffixIndex;
     use crate::seq::Sequence;
     use crate::types::Base;
 
     use super::*;
 
-    fn build_padded_sa(seq: &Sequence) -> (Vec<u64>, Vec<Base>, usize) {
-        let sa = SuffixArray::try_from(&seq[..]).expect("SA construction failed");
-        let real_len = sa.len();
-        let mut padded: Vec<u64> = sa.into_inner();
-        padded.resize(padded.len() + crate::index::store::SA_CHAR_PADDING, 0u64);
-        let mut padded_seq: Vec<Base> = seq.iter().copied().collect();
-        padded_seq.resize(
-            padded_seq.len() + crate::index::store::SA_CHAR_PADDING,
-            Base::Gap,
-        );
-        (padded, padded_seq, real_len)
-    }
-
     #[test]
     fn partition_splits_by_base() {
         let seq_bases = vec![Base::A, Base::G, Base::C, Base::U];
         let seq = Sequence::from(seq_bases);
-        let (padded_sa, padded_seq, real_len) = build_padded_sa(&seq);
-        let view = RegistryView {
-            combined_seq: &padded_seq,
-            combined_sa: &padded_sa,
-            sa_real_len: real_len,
-            offsets: &[],
-            seq_lens: &[],
-        };
-        let parts = partition(view, 0, real_len, 0);
+        let prepared = SuffixIndex::build_for_seed(&seq, 1).unwrap();
+        let suffixes = prepared.view();
+        let parts = ParallelSaTraverser::<fn(SeedMatch)>::partition(suffixes, 0..suffixes.len(), 0);
 
         assert_eq!(parts[1] - parts[0], 1); // A
         assert_eq!(parts[2] - parts[1], 1); // C
@@ -394,13 +377,73 @@ mod tests {
     }
 
     #[test]
+    fn lower_bound_matches_a_linear_scan_above_the_cutoff() {
+        let bases = [Base::A, Base::C, Base::G, Base::U];
+        let seq: Vec<Base> = (0..LINEAR_PARTITION_CUTOFF * 2)
+            .map(|i| bases[i % bases.len()])
+            .collect();
+        let prepared = SuffixIndex::build_for_seed(&seq, 1).unwrap();
+        let suffixes = prepared.view();
+        assert!(suffixes.len() > LINEAR_PARTITION_CUTOFF);
+
+        for depth in [0, 1] {
+            for rank in 1..BASE_COUNT as u8 {
+                let expected = (0..suffixes.len())
+                    .find(|&i| unsafe { suffixes.base_unchecked(i, depth).as_u8() } >= rank)
+                    .unwrap_or(suffixes.len());
+                assert_eq!(
+                    ParallelSaTraverser::<fn(SeedMatch)>::lower_bound(
+                        suffixes,
+                        0..suffixes.len(),
+                        depth,
+                        rank,
+                    ),
+                    expected,
+                    "rank {rank} at depth {depth}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_gap_stops_descent_at_sequence_end() {
+        let len = 40;
+        let query = vec![Base::A; len];
+        let target = vec![Base::U; len];
+        let prepared_query = SuffixIndex::build_for_seed(&query, 1).unwrap();
+        let prepared_target = SuffixIndex::build_for_seed(&target, 1).unwrap();
+        let query_suffixes = prepared_query.view();
+        let target_suffixes = prepared_target.view();
+        let mut emitted_lengths = Vec::new();
+
+        // Every suffix is retained, so each depth partitions a multi-suffix
+        // interval in which one suffix has just reached the terminal Gap.
+        assert_eq!(query_suffixes.sequence().len(), len + 1);
+        assert_eq!(query_suffixes.len(), len);
+        traverse::<false, _>(
+            query_suffixes,
+            target_suffixes,
+            len,
+            len + 1,
+            0,
+            1,
+            0,
+            &mut |seed| emitted_lengths.push(seed.seed_len),
+        );
+
+        assert_eq!(emitted_lengths, [len]);
+    }
+
+    #[test]
     fn singleton_handoff_does_not_double_emit() {
         // Distinct first symbols force singleton intervals at depth=1 in both
         // query and target branches, exercising the singleton fast-path handoff.
         let q_seq = Sequence::from(vec![Base::A, Base::C]);
         let t_seq = Sequence::from(vec![Base::U, Base::G]);
-        let (q_sa, q_seq_padded, q_sa_len) = build_padded_sa(&q_seq);
-        let (t_sa, t_seq_padded, t_sa_len) = build_padded_sa(&t_seq);
+        let prepared_query = SuffixIndex::build_for_seed(&q_seq, 1).unwrap();
+        let prepared_target = SuffixIndex::build_for_seed(&t_seq, 1).unwrap();
+        let query = prepared_query.view();
+        let target = prepared_target.view();
 
         let cfg = SeedConfig {
             seed_start: None,
@@ -414,20 +457,8 @@ mod tests {
         };
         let mut seen = std::collections::HashSet::new();
         let mut ctx = ParallelSaTraverser {
-            q: RegistryView {
-                combined_seq: &q_seq_padded,
-                combined_sa: &q_sa,
-                sa_real_len: q_sa_len,
-                offsets: &[],
-                seq_lens: &[],
-            },
-            t: RegistryView {
-                combined_seq: &t_seq_padded,
-                combined_sa: &t_sa,
-                sa_real_len: t_sa_len,
-                offsets: &[],
-                seq_lens: &[],
-            },
+            query,
+            target,
             min_len: 1,
             max_len: 2,
             max_mm: cfg.max_mismatches,
@@ -448,8 +479,8 @@ mod tests {
             },
         };
 
-        let q_range = 0..ctx.q.sa_real_len;
-        let t_range = 0..ctx.t.sa_real_len;
+        let q_range = 0..ctx.query.len();
+        let t_range = 0..ctx.target.len();
         ctx.recurse::<false>(q_range, t_range, 0, 0, 0);
     }
 }
