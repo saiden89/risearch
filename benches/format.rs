@@ -47,7 +47,15 @@ fn bench_format_hit(c: &mut Criterion) {
             |b, &fmt| {
                 b.iter(|| {
                     out.clear();
-                    format_hit_into(&mut out, &hit, "test_query", "test_target", &target, fmt);
+                    format_hit_into(
+                        &mut out,
+                        &hit,
+                        "test_query",
+                        "test_target",
+                        &target,
+                        0..target.len(),
+                        fmt,
+                    );
                     black_box(&out);
                 });
             },

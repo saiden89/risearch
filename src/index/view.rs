@@ -65,6 +65,25 @@ impl<'a> TargetView<'a> {
         &self.suffixes.sequence()[offset..offset + seq_len]
     }
 
+    /// Convert a half-open target range between physical duplex-view and
+    /// original FASTA coordinates.
+    ///
+    /// This is an involution: Forward `R(T)` mirrors; Reverse `C(T)` preserves.
+    #[inline(always)]
+    pub(crate) fn map_target_range(
+        self,
+        target_idx: usize,
+        strand: Strand,
+        range: Range<usize>,
+    ) -> Range<usize> {
+        let target_len = self.seq_len(target_idx);
+        debug_assert!(range.start <= range.end && range.end <= target_len);
+        match strand {
+            Strand::Forward => target_len - range.end..target_len - range.start,
+            Strand::Reverse => range,
+        }
+    }
+
     /// Map a global sequence position to a physical target coordinate.
     ///
     /// The returned start is relative to the physical strand selected by

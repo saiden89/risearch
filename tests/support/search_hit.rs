@@ -169,12 +169,11 @@ pub(crate) fn parse_bindingsite_output(
         _ => None,
     };
     let q_seq = query_registry.entries()[query_idx].sequence();
-    let target = target_registry.target(target_idx, strand);
     hit.alignment = Some(Box::new(Alignment::from_classes(
         &classes,
         seed,
         hit.query(q_seq),
-        hit.target(target),
+        hit.target(target_registry.view()),
     )));
 
     Ok(hit)

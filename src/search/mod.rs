@@ -23,6 +23,7 @@ use crate::config::{SearchConfig, UNLIMITED_EXTENSION};
 use crate::dp::MAX_EXT;
 use crate::dsm::ScoringModel;
 use crate::index::store::TargetRegistry;
+use crate::index::view::TargetView;
 use crate::registry::QueryRegistry;
 use crate::seed::{SeedHit, SeedingEngine};
 use crate::types::{Base, Energy, Strand};
@@ -35,8 +36,8 @@ use crate::types::{Base, Energy, Strand};
 /// that span is converted to FASTA coordinates once when the hit is assembled.
 ///
 /// Bases and names are not carried, only indices into the query and target
-/// registries. `query_bases` and `target_bases` slice the paired spans out of
-/// sequences the caller supplies.
+/// registries. [`query`](Self::query) slices a supplied query sequence;
+/// [`target`](Self::target) resolves the paired span through a [`TargetView`].
 ///
 /// `alignment` is populated only under [`ExtendConfig::build_alignment`](crate::ExtendConfig),
 /// and carries the seed's span within its own steps.
@@ -319,7 +320,7 @@ impl SearchWorker {
                 .extend_seed(query, target, &seed, opts.extend.build_alignment);
 
             if ext.energy <= opts.filter.delta_g {
-                hits.push(SearchHit::new(&seed, ext, target.len()));
+                hits.push(SearchHit::new(&seed, ext, tview));
             }
         })?;
         // Dedup is exact per query: every box-mate of `query_idx` is in `hits`.
@@ -328,30 +329,6 @@ impl SearchWorker {
         } else {
             dedup_hits(hits)
         })
-    }
-}
-
-/// A hit's target span plus its flanking context, sliced from the duplex view.
-///
-/// The duplex view runs the target 3'->5', so the bases *after* the span are its
-/// 5' flank and the bases *before* it are the 3' flank. The accessors hand both
-/// back adjacent-to-outward, so callers never re-derive that polarity.
-pub(crate) struct SiteContext<'a> {
-    pub(crate) site: &'a [Base],
-    after: &'a [Base],
-    before: &'a [Base],
-    flank_len: usize,
-}
-
-impl SiteContext<'_> {
-    pub(crate) fn flank_5(&self) -> impl Iterator<Item = Base> + '_ {
-        self.after[..self.after.len().min(self.flank_len)]
-            .iter()
-            .copied()
-    }
-
-    pub(crate) fn flank_3(&self) -> impl Iterator<Item = Base> + '_ {
-        self.before.iter().rev().copied()
     }
 }
 
@@ -366,36 +343,28 @@ fn inclusive_bounds(mut range: Range<usize>) -> (usize, usize) {
 
 impl SearchHit {
     pub fn query<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
-        &q_seq[self.q_start..self.q_end + 1]
+        &q_seq[self.q_start..=self.q_end]
     }
 
-    pub fn target<'a>(&self, target: &'a [Base]) -> &'a [Base] {
-        self.site_context(target, 0).site
+    pub fn target<'a>(&self, targets: TargetView<'a>) -> &'a [Base] {
+        let target = targets.target(self.target_idx, self.strand);
+        &target[self.duplex_target_range(targets)]
     }
 
-    /// Slice the hit's target span and its flanks out of `target`, the
-    /// strand-selected duplex-frame view the extension resolved the span in.
-    pub(crate) fn site_context<'a>(&self, target: &'a [Base], flank_len: usize) -> SiteContext<'a> {
-        let (start, end) = TargetRegistry::map_target_span_between_frames(
-            self.strand,
-            self.t_start,
-            self.t_end,
-            target.len(),
-        );
-        let (before, from_start) = target.split_at(start);
-        let (site, after) = from_start.split_at(end - start + 1);
-        SiteContext {
-            site,
-            after,
-            before: &before[before.len().saturating_sub(flank_len)..],
-            flank_len,
-        }
+    /// Map the public inclusive FASTA coordinates into a half-open range over
+    /// the strand-selected duplex target.
+    pub(crate) fn duplex_target_range(&self, targets: TargetView<'_>) -> Range<usize> {
+        let fasta_range = self.t_start
+            ..self
+                .t_end
+                .checked_add(1)
+                .expect("inclusive target end must fit a half-open range");
+        targets.map_target_range(self.target_idx, self.strand, fasta_range)
     }
 
     /// Convert the extension's duplex-frame target span to FASTA coordinates and
-    /// record the hit. `target_len` is the length of the strand-selected view the
-    /// span was resolved in.
-    fn new(seed: &SeedHit, ext: SeedExtension, target_len: usize) -> Self {
+    /// record the hit.
+    fn new(seed: &SeedHit, ext: SeedExtension, targets: TargetView<'_>) -> Self {
         let SeedExtension {
             q_range,
             t_range,
@@ -403,13 +372,8 @@ impl SearchHit {
             alignment,
         } = ext;
         let (q_start, q_end) = inclusive_bounds(q_range);
-        let (duplex_t_start, duplex_t_end) = inclusive_bounds(t_range);
-        let (t_start, t_end) = TargetRegistry::map_target_span_between_frames(
-            seed.strand(),
-            duplex_t_start,
-            duplex_t_end,
-            target_len,
-        );
+        let fasta_t_range = targets.map_target_range(seed.target_idx(), seed.strand(), t_range);
+        let (t_start, t_end) = inclusive_bounds(fasta_t_range);
 
         Self {
             query_idx: seed.query_idx(),

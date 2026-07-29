@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::alignment::Alignment;
 use crate::config::OutputFormat;
 use crate::search::SearchHit;
@@ -50,6 +52,7 @@ pub fn format_hit_into(
     q_name: &str,
     t_name: &str,
     target: &[Base],
+    target_range: Range<usize>,
     format: OutputFormat,
 ) {
     // Uninitialized 40-byte stack array; there is nothing to amortize by
@@ -70,7 +73,7 @@ pub fn format_hit_into(
 
     let mut row = TsvLine::new(out);
     write_base_fields(&mut row, &mut itoa, hit, q_name, t_name);
-    write_extended_fields(&mut row, hit, target, format);
+    write_extended_fields(&mut row, hit, target, target_range, format);
     row.finish();
 }
 
@@ -97,6 +100,7 @@ fn write_extended_fields(
     row: &mut TsvLine<'_>,
     hit: &SearchHit,
     target: &[Base],
+    target_range: Range<usize>,
     format: OutputFormat,
 ) {
     let alignment = hit.alignment.as_ref();
@@ -116,10 +120,15 @@ fn write_extended_fields(
             }
         });
 
+        // The physical duplex target runs 3'->5': bases after the site are its
+        // 5' flank, while the 3' flank runs backward through the preceding bases.
         // Legacy -p3 reports the 5' flank first, then the 3'.
-        let context = hit.site_context(target, BINDING_SITE_FLANK_LEN);
-        row.field_with(|buf| buf.extend(context.flank_5().map(|base| base.to_byte())));
-        row.field_with(|buf| buf.extend(context.flank_3().map(|base| base.to_byte())));
+        let before = &target[..target_range.start];
+        let after = &target[target_range.end..];
+        let flank_5 = &after[..after.len().min(BINDING_SITE_FLANK_LEN)];
+        let flank_3 = &before[before.len().saturating_sub(BINDING_SITE_FLANK_LEN)..];
+        row.field_with(|buf| buf.extend(flank_5.iter().map(|base| base.to_byte())));
+        row.field_with(|buf| buf.extend(flank_3.iter().rev().map(|base| base.to_byte())));
     }
 }
 
@@ -189,7 +198,15 @@ mod tests {
         let target = [Base::A, Base::C, Base::G, Base::U, Base::A, Base::C];
         let mut out = Vec::new();
 
-        format_hit_into(&mut out, &hit, "q", "t", &target, OutputFormat::BindingSite);
+        format_hit_into(
+            &mut out,
+            &hit,
+            "q",
+            "t",
+            &target,
+            2..4,
+            OutputFormat::BindingSite,
+        );
 
         let text = String::from_utf8(out).unwrap();
         let fields = text.trim_end().split('\t').collect::<Vec<_>>();

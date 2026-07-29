@@ -137,23 +137,6 @@ impl TargetRegistry {
         self.view().target(target_idx, strand)
     }
 
-    /// Convert an inclusive target span between the physical duplex view and
-    /// original FASTA coordinates.
-    ///
-    /// This is an involution: Forward `R(T)` mirrors; Reverse `C(T)` preserves.
-    #[inline(always)]
-    pub(crate) const fn map_target_span_between_frames(
-        strand: Strand,
-        start: usize,
-        end: usize,
-        target_len: usize,
-    ) -> (usize, usize) {
-        match strand {
-            Strand::Forward => (target_len - 1 - end, target_len - 1 - start),
-            Strand::Reverse => (start, end),
-        }
-    }
-
     #[inline]
     fn root(&self) -> &ArchivedTargetStore {
         // SAFETY: `open` validates the archive before constructing `TargetRegistry`.
@@ -331,6 +314,10 @@ mod tests {
         let target = store.view();
         assert!(!target.suffixes().is_empty());
         assert_eq!(store.offsets.len(), store.len());
+        let forward = target.map_target_range(0, Strand::Forward, 1..4);
+        assert_eq!(forward, 2..5);
+        assert_eq!(target.map_target_range(0, Strand::Forward, forward), 1..4);
+        assert_eq!(target.map_target_range(0, Strand::Reverse, 1..4), 1..4);
 
         for (i, (expected_name, expected_seq_len)) in expected.iter().enumerate().take(store.len())
         {
@@ -548,20 +535,6 @@ mod tests {
         assert_eq!(target.map_seed_pos(2 * seq_len, seed_len), None);
         assert_eq!(target.map_seed_pos(seq_len, seed_len), None);
         assert_eq!(target.map_seed_pos(2 * seq_len + 1, seed_len), None);
-    }
-
-    #[test]
-    fn target_span_mapping_between_frames_is_an_involution() {
-        let forward = TargetRegistry::map_target_span_between_frames(Strand::Forward, 1, 3, 8);
-        assert_eq!(forward, (4, 6));
-        assert_eq!(
-            TargetRegistry::map_target_span_between_frames(Strand::Forward, 4, 6, 8),
-            (1, 3)
-        );
-        assert_eq!(
-            TargetRegistry::map_target_span_between_frames(Strand::Reverse, 1, 3, 8),
-            (1, 3)
-        );
     }
 
     #[test]

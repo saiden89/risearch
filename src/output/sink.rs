@@ -76,8 +76,17 @@ impl HitSink for TextSink<'_> {
         let mut block = Vec::new();
         for hit in &hits {
             let target = tview.target(hit.target_idx, hit.strand);
+            let target_range = hit.duplex_target_range(tview);
             let t_name = self.store.get_name(hit.target_idx);
-            format_hit_into(&mut block, hit, q_name, t_name, target, self.format);
+            format_hit_into(
+                &mut block,
+                hit,
+                q_name,
+                t_name,
+                target,
+                target_range,
+                self.format,
+            );
         }
 
         // Rendering above is off-lock; the writer sees one bulk write per query.
