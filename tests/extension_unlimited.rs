@@ -46,6 +46,7 @@ fn config(max_extension: i32) -> SearchConfig {
             seed_end: None,
             seed_length: Some(7),
             seed_wobble: true,
+            no_max_prune: false,
             max_mismatches: 0,
             min_prefix_matches: 1,
             min_suffix_matches: 0,
@@ -62,7 +63,6 @@ fn config(max_extension: i32) -> SearchConfig {
         filter: FilterConfig {
             delta_g: Energy::from_kcal(-8.0),
             seed_energy: Energy::from_kcal(0.0),
-            no_max_prune: false,
             no_dedup: false,
         },
     }

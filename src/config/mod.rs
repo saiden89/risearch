@@ -34,6 +34,15 @@ pub enum OutputFormat {
     Minimal,
 }
 
+impl OutputFormat {
+    /// Whether this format prints pairing data, and so needs the extension to
+    /// run traceback. The single source of truth for
+    /// [`ExtendConfig::build_alignment`].
+    pub const fn needs_alignment(self) -> bool {
+        !matches!(self, Self::Minimal)
+    }
+}
+
 /// CLI-facing codec selector — what the `--compress` flag parses into.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 #[clap(rename_all = "lowercase")]
@@ -95,6 +104,10 @@ pub struct SeedConfig {
     /// Allow G-U wobble pairs when locating and maximizing seeds.
     pub seed_wobble: bool,
 
+    /// Emit non-maximal seeds too — those that could be grown by one more
+    /// pairing column, and so are shorter copies of a longer match.
+    pub no_max_prune: bool,
+
     /// Maximum number of mismatches allowed in seed.
     pub max_mismatches: usize,
     /// Minimum consecutive matches at seed start (prefix, 5').
@@ -110,6 +123,7 @@ impl Default for SeedConfig {
             seed_end: None,
             seed_length: None,
             seed_wobble: true,
+            no_max_prune: false,
             max_mismatches: 0,
             min_prefix_matches: 1,
             min_suffix_matches: 0,
@@ -305,9 +319,6 @@ pub struct FilterConfig {
     /// Energy per length threshold that filters seeds
     pub seed_energy: Energy,
 
-    /// Disable maximality check (allows redundant seeds)
-    pub no_max_prune: bool,
-
     /// Report every maximal seed as its own hit. When unset (the default),
     /// hits whose extension resolves to the same final bounding box are
     /// collapsed to the single lowest-energy alignment.
@@ -319,7 +330,6 @@ impl Default for FilterConfig {
         Self {
             delta_g: Energy::from_kcal(-20.0),
             seed_energy: Energy::default(),
-            no_max_prune: false,
             no_dedup: false,
         }
     }

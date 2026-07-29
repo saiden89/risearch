@@ -22,10 +22,6 @@ pub struct FilterArgs {
     )]
     pub seed_energy: Energy,
 
-    /// Disable maximality check (allows redundant seeds)
-    #[arg(long = "no-max-prune", action = clap::ArgAction::SetTrue)]
-    pub no_max_prune: bool,
-
     /// Report every maximal seed as its own hit instead of collapsing hits
     /// that share a final bounding box to the lowest-energy alignment
     #[arg(long = "no-dedup", action = clap::ArgAction::SetTrue)]
@@ -37,7 +33,6 @@ impl From<FilterArgs> for FilterConfig {
         FilterConfig {
             delta_g: value.total_energy,
             seed_energy: value.seed_energy,
-            no_max_prune: value.no_max_prune,
             no_dedup: value.no_dedup,
         }
     }

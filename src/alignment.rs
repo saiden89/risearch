@@ -38,6 +38,14 @@ impl PairClass {
         }
     }
 
+    /// Canonical rank for ordering pairings. Derived from [`symbol`](Self::symbol)
+    /// so a printed fingerprint and a sort of the same columns can never disagree;
+    /// note this is deliberately not the variant declaration order.
+    #[inline]
+    pub const fn rank(self) -> u8 {
+        self.symbol() as u8
+    }
+
     pub const fn alignment_symbol(self) -> char {
         match self {
             Self::Canonical => '|',
@@ -137,7 +145,7 @@ impl Alignment {
         query: &[Base],
         target: &[Base],
     ) -> Self {
-        let mut columns = SmallVec::new();
+        let mut columns = SmallVec::with_capacity(classes.size_hint().0);
         let (mut q, mut t) = (0usize, 0usize);
         for class in classes {
             let query_base = if class.is_none_or(PairClass::consumes_query) {
@@ -176,6 +184,11 @@ impl Alignment {
 
     pub fn fingerprint(&self) -> String {
         self.columns.iter().map(|c| c.class.symbol()).collect()
+    }
+
+    /// Column pairings as ranks, for lexicographic comparison without allocating.
+    pub fn pairing_ranks(&self) -> impl Iterator<Item = u8> + '_ {
+        self.columns.iter().map(|c| c.class.rank())
     }
 }
 

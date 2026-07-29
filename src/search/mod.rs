@@ -13,16 +13,14 @@ mod extension;
 use anyhow::{bail, Result};
 use log::info;
 use rayon::prelude::*;
-use smallvec::SmallVec;
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::Mutex;
 
-use self::extension::{ExtendDir, ExtensionEngine};
-use crate::alignment::{Alignment, PairClass};
+use self::extension::{ExtensionEngine, SeedExtension};
+use crate::alignment::Alignment;
 use crate::config::{SearchConfig, UNLIMITED_EXTENSION};
 use crate::dp::MAX_EXT;
-use crate::dsm::{DsmRegistry, ScoringModel};
+use crate::dsm::ScoringModel;
 use crate::index::store::TargetRegistry;
 use crate::registry::QueryRegistry;
 use crate::seed::{SeedHit, SeedingEngine};
@@ -129,25 +127,20 @@ impl BoxKey {
 /// only distinguishes alignment-printing formats; Minimal rows that tie on energy
 /// are output-identical regardless of which wins.)
 fn hit_is_better(candidate: &SearchHit, current: &SearchHit) -> bool {
-    use std::cmp::Ordering;
-    match candidate.energy.cmp(&current.energy) {
-        Ordering::Less => true,
-        Ordering::Greater => false,
-        Ordering::Equal => fingerprint_cmp(candidate, current) == Ordering::Less,
-    }
+    candidate
+        .energy
+        .cmp(&current.energy)
+        .then_with(|| fingerprint_cmp(candidate, current))
+        == std::cmp::Ordering::Less
 }
 
-/// Lexicographic compare of the two hits' pairing fingerprints without
-/// allocating. Note `PairClass`'s own variant order differs from `symbol()`
-/// order, so compare the mapped symbol chars. A missing alignment is an empty
-/// fingerprint, which sorts before any non-empty one.
+/// Lexicographic compare of the two hits' pairings without allocating. A missing
+/// alignment ranks as empty, which sorts before any non-empty one.
 fn fingerprint_cmp(a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
-    fn syms(hit: &SearchHit) -> impl Iterator<Item = char> + '_ {
-        hit.alignment
-            .iter()
-            .flat_map(|a| a.columns().iter().map(|c| c.class.symbol()))
+    fn ranks(hit: &SearchHit) -> impl Iterator<Item = u8> + '_ {
+        hit.alignment.iter().flat_map(Alignment::pairing_ranks)
     }
-    syms(a).cmp(syms(b))
+    ranks(a).cmp(ranks(b))
 }
 
 /// Collapse hits sharing a [`BoxKey`] to the single best one. Caller guarantees
@@ -192,10 +185,26 @@ pub fn run_search(
     opts: &SearchConfig,
     sink: &dyn HitSink,
 ) -> Result<usize> {
-    let Some(ctx) = init_search(queries, store, opts)? else {
+    opts.validate().map_err(anyhow::Error::msg)?;
+
+    if store.is_empty() || queries.is_empty() {
         // Deliberately not flushed: an empty store or query set leaves the
         // destination untouched, where a zero-hit run truncates it.
         return Ok(0);
+    }
+
+    check_unlimited_fits(queries, opts)?;
+    log_search_banner(queries, store, opts);
+
+    let ctx = SearchContext {
+        queries,
+        store,
+        opts,
+        model: ScoringModel::load(
+            &opts.score.dsm_id,
+            opts.score.temperature,
+            opts.score.penalty,
+        )?,
     };
     let engine = SeedingEngine::new(ctx.queries, ctx.store);
     let counts: Vec<usize> = (0..ctx.queries.len())
@@ -203,7 +212,7 @@ pub fn run_search(
         .map_init(
             || SearchWorker::new(ctx.opts, &ctx.model),
             |worker, qi| -> Result<usize> {
-                let hits = worker.query_hits(&ctx, &engine, qi)?;
+                let hits = worker.search_query(&ctx, &engine, qi)?;
                 let emitted = hits.len();
                 sink.consume(qi, hits)?;
                 Ok(emitted)
@@ -224,59 +233,37 @@ struct SearchContext<'a> {
     model: ScoringModel,
 }
 
-impl<'a> SearchContext<'a> {
-    fn new(
-        queries: &'a QueryRegistry,
-        store: &'a TargetRegistry,
-        opts: &'a SearchConfig,
-        model: ScoringModel,
-    ) -> Self {
-        Self {
-            queries,
-            store,
-            opts,
-            model,
-        }
-    }
-}
-
 /// A negative `-l` is the unlimited sentinel: extend across the whole query
 /// rather than a fixed length.
 fn is_unlimited(max_extension: i32) -> bool {
     max_extension == UNLIMITED_EXTENSION
 }
 
-fn init_search<'a>(
-    queries: &'a QueryRegistry,
-    store: &'a TargetRegistry,
-    opts: &'a SearchConfig,
-) -> Result<Option<SearchContext<'a>>> {
-    opts.validate().map_err(anyhow::Error::msg)?;
-
-    if store.is_empty() || queries.is_empty() {
-        return Ok(None);
+/// Unlimited extension (`-l -1`) promises to span the whole query, but the DP
+/// buffers cap each side at MAX_EXT. Refuse rather than silently clamp: a query
+/// longer than the cap cannot be served as requested. (Mirrors clap rejecting an
+/// explicit `-l > MAX_EXT`.)
+fn check_unlimited_fits(queries: &QueryRegistry, opts: &SearchConfig) -> Result<()> {
+    if !is_unlimited(opts.extend.max_extension) {
+        return Ok(());
     }
-
-    // Unlimited extension (`-l -1`) promises to span the whole query, but the DP
-    // buffers cap each side at MAX_EXT. Refuse rather than silently clamp: a
-    // query longer than the cap cannot be served as requested. (Mirrors clap
-    // rejecting an explicit `-l > MAX_EXT`.)
-    if is_unlimited(opts.extend.max_extension) {
-        for (_, q) in queries.iter() {
-            let n = q.sequence().len();
-            if n > MAX_EXT {
-                bail!(
-                    "query '{}' is {} nt; `-l -1` cannot extend across it ({} nt cap). \
-                     Pass an explicit `-l <={}` to accept the cap, or shorten the query.",
-                    q.name(),
-                    n,
-                    MAX_EXT,
-                    MAX_EXT
-                );
-            }
+    for (_, q) in queries.iter() {
+        let n = q.sequence().len();
+        if n > MAX_EXT {
+            bail!(
+                "query '{}' is {} nt; `-l -1` cannot extend across it ({} nt cap). \
+                 Pass an explicit `-l <={}` to accept the cap, or shorten the query.",
+                q.name(),
+                n,
+                MAX_EXT,
+                MAX_EXT
+            );
         }
     }
+    Ok(())
+}
 
+fn log_search_banner(queries: &QueryRegistry, store: &TargetRegistry, opts: &SearchConfig) {
     let max_ext = if is_unlimited(opts.extend.max_extension) {
         format!("unlimited(<={MAX_EXT})")
     } else {
@@ -290,11 +277,6 @@ fn init_search<'a>(
         max_ext,
         opts.filter.delta_g
     );
-
-    let (initiation, source_table) = DsmRegistry::load(&opts.score.dsm_id, opts.score.temperature)?;
-
-    let model = ScoringModel::new(&source_table, initiation, opts.score.penalty);
-    Ok(Some(SearchContext::new(queries, store, opts, model)))
 }
 
 struct SearchWorker {
@@ -304,11 +286,8 @@ struct SearchWorker {
 
 impl SearchWorker {
     fn new(opts: &SearchConfig, model: &ScoringModel) -> Self {
-        let max_window = if is_unlimited(opts.extend.max_extension) {
-            None
-        } else {
-            Some(opts.extend.max_extension as usize)
-        };
+        let max_window = (!is_unlimited(opts.extend.max_extension))
+            .then_some(opts.extend.max_extension as usize);
         let model = model.clone();
         Self {
             extension: ExtensionEngine::new(max_window, &model),
@@ -316,140 +295,68 @@ impl SearchWorker {
         }
     }
 
-    fn query_hits(
+    /// Seed one query, extend and score every seed, and collapse the survivors.
+    fn search_query(
         &mut self,
         ctx: &SearchContext<'_>,
         engine: &SeedingEngine<'_>,
         query_idx: usize,
     ) -> Result<Vec<SearchHit>> {
-        let query = &ctx.queries.entries()[query_idx];
-        let query_seq = query.sequence();
-        let seed_interval = query.seed_interval.clone();
-        let include_alignment = ctx.opts.extend.build_alignment;
+        let opts = ctx.opts;
+        let query = ctx.queries.get(query_idx).sequence();
 
         let mut hits = Vec::new();
-        engine.seed_query(query_idx, &ctx.opts.seed, |seed| {
+        engine.seed_query(query_idx, &opts.seed, |seed| {
             let target = ctx.store.target(seed.target_idx, seed.strand);
-            if let Some(hit) = self.build_hit_from_seed(
-                ctx.opts,
-                query_idx,
-                query_seq,
-                seed_interval.clone(),
-                include_alignment,
-                &seed,
-                target,
-            ) {
-                hits.push(hit);
+            let (q_start, t_start, len) = (seed.query_start, seed.target_start, seed.len);
+            debug_assert!(t_start + len <= target.len());
+
+            let duplex_score = self.model.ungapped_duplex_score(
+                &query[q_start..q_start + len],
+                &target[t_start..t_start + len],
+            );
+            let ext = self
+                .extension
+                .extend_seed(query, target, &seed, opts.extend.build_alignment);
+            let energy = self
+                .model
+                .binding_energy(duplex_score + ext.energy, ext.nt_count());
+
+            if energy <= opts.filter.delta_g {
+                hits.push(SearchHit::new(query_idx, &seed, ext, energy, target.len()));
             }
         })?;
         // Dedup is exact per query: every box-mate of `query_idx` is in `hits`.
-        Ok(if ctx.opts.filter.no_dedup {
+        Ok(if opts.filter.no_dedup {
             hits
         } else {
             dedup_hits(hits)
         })
     }
-
-    // Cohesive per-seed extension inputs (query/target buffers, seed interval,
-    // and output flags); bundling them would only add indirection.
-    #[allow(clippy::too_many_arguments)]
-    fn build_hit_from_seed(
-        &mut self,
-        opts: &SearchConfig,
-        query_idx: usize,
-        query: &[Base],
-        seed_interval: Range<usize>,
-        include_alignment: bool,
-        seed: &SeedHit,
-        target: &[Base],
-    ) -> Option<SearchHit> {
-        debug_assert!(seed.target_start + seed.len <= target.len());
-        let q_start = seed.query_start;
-        let t_start = seed.target_start;
-        let len = seed.len;
-        let q_match_end = q_start + len - 1;
-        let t_match_end = t_start + len - 1;
-
-        if !opts.filter.no_max_prune
-            && !is_maximal(seed, query, target, &seed_interval, opts.seed.seed_wobble)
-        {
-            return None;
-        }
-
-        let duplex_score = self.model.ungapped_duplex_score(
-            &query[q_start..=q_match_end],
-            &target[t_start..=t_match_end],
-        );
-        let query_left = &query[..=q_start];
-        let target_left = &target[..=t_start];
-        let left =
-            self.extension
-                .extend(query_left, target_left, ExtendDir::Left, include_alignment);
-
-        let query_right = &query[q_match_end..];
-        let target_right = &target[t_match_end..];
-        let right = self.extension.extend(
-            query_right,
-            target_right,
-            ExtendDir::Right,
-            include_alignment,
-        );
-        let nt_count = left.q_ext + left.t_ext + right.q_ext + right.t_ext + 2 * len;
-        let stacking_stability = duplex_score + left.energy + right.energy;
-        let energy = self.model.binding_energy(stacking_stability, nt_count);
-
-        (energy <= opts.filter.delta_g).then(|| {
-            SearchHit::new(
-                query_idx,
-                query,
-                target,
-                seed,
-                &left,
-                &right,
-                energy,
-                include_alignment,
-            )
-        })
-    }
 }
 
-struct ExtensionResult {
-    energy: Energy,
-    q_ext: usize,
-    t_ext: usize,
-    pairs: Option<SmallVec<[PairClass; 64]>>,
+/// A hit's target span plus its flanking context, sliced from the duplex view.
+///
+/// The duplex view runs the target 3'->5', so the bases *after* the span are its
+/// 5' flank and the bases *before* it are the 3' flank. The accessors hand both
+/// back adjacent-to-outward, so callers never re-derive that polarity.
+pub(crate) struct SiteContext<'a> {
+    pub(crate) site: &'a [Base],
+    after: &'a [Base],
+    before: &'a [Base],
+    flank_len: usize,
 }
 
-fn is_maximal(
-    seed: &SeedHit,
-    query_bases: &[Base],
-    target: &[Base],
-    seed_interval: &Range<usize>,
-    seed_wobble: bool,
-) -> bool {
-    let q_start = seed.query_start;
-    let t_start = seed.target_start;
-    let len = seed.len;
-
-    if q_start > seed_interval.start
-        && t_start > 0
-        && query_bases[q_start - 1]
-            .pair_type(target[t_start - 1])
-            .is_match(seed_wobble)
-    {
-        return false;
+impl SiteContext<'_> {
+    pub(crate) fn flank_5(&self) -> impl Iterator<Item = Base> + '_ {
+        self.after[..self.after.len().min(self.flank_len)]
+            .iter()
+            .copied()
     }
 
-    if q_start + len < seed_interval.end
-        && t_start + len < target.len()
-        && query_bases[q_start + len]
-            .pair_type(target[t_start + len])
-            .is_match(seed_wobble)
-    {
-        return false;
+    pub(crate) fn flank_3(&self) -> impl Iterator<Item = Base> + '_ {
+        self.before.iter().rev().copied()
     }
-
-    true
 }
 
 impl SearchHit {
@@ -458,14 +365,12 @@ impl SearchHit {
     }
 
     pub fn target<'a>(&self, target: &'a [Base]) -> &'a [Base] {
-        self.target_context(target, 0).0
+        self.site_context(target, 0).site
     }
 
-    pub(crate) fn target_context<'a>(
-        &self,
-        target: &'a [Base],
-        flank_len: usize,
-    ) -> (&'a [Base], &'a [Base], &'a [Base]) {
+    /// Slice the hit's target span and its flanks out of `target`, the
+    /// strand-selected duplex-frame view the extension resolved the span in.
+    pub(crate) fn site_context<'a>(&self, target: &'a [Base], flank_len: usize) -> SiteContext<'a> {
         let (start, end) = TargetRegistry::map_target_span_between_frames(
             self.strand,
             self.t_start,
@@ -474,64 +379,41 @@ impl SearchHit {
         );
         let (before, from_start) = target.split_at(start);
         let (site, after) = from_start.split_at(end - start + 1);
-        (
+        SiteContext {
             site,
-            &after[..after.len().min(flank_len)],
-            &before[before.len().saturating_sub(flank_len)..],
-        )
+            after,
+            before: &before[before.len().saturating_sub(flank_len)..],
+            flank_len,
+        }
     }
 
-    // Cohesive hit-assembly inputs (query/target buffers, seed, both extension
-    // results, and energy); bundling them would only add indirection.
-    #[allow(clippy::too_many_arguments)]
+    /// Convert the extension's duplex-frame target span to FASTA coordinates and
+    /// record the hit. `target_len` is the length of the strand-selected view the
+    /// span was resolved in.
     fn new(
         query_idx: usize,
-        query: &[Base],
-        target: &[Base],
         seed: &SeedHit,
-        left: &ExtensionResult,
-        right: &ExtensionResult,
+        ext: SeedExtension,
         energy: Energy,
-        include_alignment: bool,
+        target_len: usize,
     ) -> Self {
-        let q_start = seed.query_start;
-        let t_start = seed.target_start;
-        let len = seed.len;
-
-        let final_q_start = q_start - left.q_ext;
-        let final_q_end = q_start + len - 1 + right.q_ext;
-        let final_t_duplex_start = t_start - left.t_ext;
-        let final_t_duplex_end = t_start + len - 1 + right.t_ext;
-
-        // Resolve columns in the physical duplex view before converting its span
-        // to the original target's FASTA coordinates.
-        let alignment = include_alignment.then(|| {
-            Alignment::from_parts(
-                left.pairs.as_deref().unwrap_or(&[]),
-                len,
-                right.pairs.as_deref().unwrap_or(&[]),
-                &query[final_q_start..=final_q_end],
-                &target[final_t_duplex_start..=final_t_duplex_end],
-            )
-        });
-
-        let (final_t_start, final_t_end) = TargetRegistry::map_target_span_between_frames(
+        let (t_start, t_end) = TargetRegistry::map_target_span_between_frames(
             seed.strand,
-            final_t_duplex_start,
-            final_t_duplex_end,
-            target.len(),
+            ext.t_start,
+            ext.t_end,
+            target_len,
         );
 
         Self {
             query_idx,
             target_idx: seed.target_idx,
-            q_start: final_q_start,
-            q_end: final_q_end,
-            t_start: final_t_start,
-            t_end: final_t_end,
+            q_start: ext.q_start,
+            q_end: ext.q_end,
+            t_start,
+            t_end,
             strand: seed.strand,
             energy,
-            alignment,
+            alignment: ext.alignment,
         }
     }
 }
@@ -567,6 +449,7 @@ mod tests {
                 seed_end: None,
                 seed_length: Some(8),
                 seed_wobble: true,
+                no_max_prune: false,
                 max_mismatches: 0,
                 min_prefix_matches: 1,
                 min_suffix_matches: 0,
@@ -583,7 +466,6 @@ mod tests {
             filter: FilterConfig {
                 delta_g: Energy::from_kcal(-10.0),
                 seed_energy: Energy::from_kcal(0.0),
-                no_max_prune: false,
                 no_dedup: false,
             },
         }

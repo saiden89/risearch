@@ -130,7 +130,6 @@ fn make_search_config(seed_config: &SeedConfig) -> SearchConfig {
         filter: FilterConfig {
             delta_g: Energy::MIN,
             seed_energy: Energy::from_kcal(0.0),
-            no_max_prune: false,
             no_dedup: false,
         },
     }
@@ -163,13 +162,14 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
         seed_end: None,
         seed_length: Some(7),
         seed_wobble: true,
+        no_max_prune: false,
         max_mismatches: 1,
         min_prefix_matches: 2,
         min_suffix_matches: 2,
     };
     let dataset = build_production_dataset(10, 22, 50_000, &seed_config);
     let mut score_args = make_search_config(&seed_config);
-    score_args.filter.no_max_prune = true;
+    score_args.seed.no_max_prune = true;
     score_args.filter.no_dedup = true;
     let mut hit_args = make_search_config(&seed_config);
     hit_args.filter.delta_g = Energy::from_kcal(100.0);

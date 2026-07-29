@@ -117,7 +117,17 @@ impl<'a> SeedingEngine<'a> {
             config.max_mismatches,
             config.min_prefix_matches,
             config.min_suffix_matches,
-            &mut |m| emit_seed_match(qi, query, qview, tview, m, &mut *on_seed),
+            &mut |m| {
+                emit_seed_match::<WOBBLE, _>(
+                    qi,
+                    query,
+                    qview,
+                    tview,
+                    config.no_max_prune,
+                    m,
+                    &mut *on_seed,
+                )
+            },
         );
         Ok(())
     }
@@ -127,15 +137,21 @@ impl<'a> SeedingEngine<'a> {
 /// single query. The query side is a one-entry SA (`offsets == [0]`), so its
 /// remap is the identity `local_pos == q_sa_pos`; only the target side needs the
 /// offset binary search.
-fn emit_seed_match<F: FnMut(SeedHit)>(
+///
+/// Non-maximal seeds are dropped here unless `no_max_prune`: they are shorter
+/// copies of a longer match, so extending them only rediscovers the same duplex.
+fn emit_seed_match<const WOBBLE: bool, F: FnMut(SeedHit)>(
     qi: usize,
     query: &Query,
     qview: RegistryView<'_>,
     tview: RegistryView<'_>,
+    no_max_prune: bool,
     raw_match: SeedMatch,
     on_seed: &mut F,
 ) {
     let seed_len = raw_match.seed_len;
+    let query_bases = query.sequence();
+    let seed_interval = query.seed_interval();
     for &query_sa_pos in
         &qview.combined_sa[raw_match.query_interval.start..raw_match.query_interval.end]
     {
@@ -159,14 +175,25 @@ fn emit_seed_match<F: FnMut(SeedHit)>(
                 continue;
             };
 
-            on_seed(SeedHit {
+            let hit = SeedHit {
                 query_idx: qi,
                 query_start,
                 target_idx,
                 target_start,
                 len: seed_len,
                 strand,
-            });
+            };
+            if !no_max_prune
+                && !hit.is_maximal(
+                    query_bases,
+                    tview.target(target_idx, strand),
+                    &seed_interval,
+                    WOBBLE,
+                )
+            {
+                continue;
+            }
+            on_seed(hit);
         }
     }
 }
@@ -214,6 +241,7 @@ mod tests {
             seed_end: Some(4),
             seed_length: Some(2),
             seed_wobble: false,
+            no_max_prune: true,
             max_mismatches: 0,
             min_prefix_matches: 1,
             min_suffix_matches: 0,
@@ -242,6 +270,7 @@ mod tests {
             seed_end: None,
             seed_length: Some(2),
             seed_wobble: false,
+            no_max_prune: true,
             max_mismatches: 0,
             min_prefix_matches: 1,
             min_suffix_matches: 0,

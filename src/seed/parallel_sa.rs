@@ -407,6 +407,7 @@ mod tests {
             seed_end: None,
             seed_length: Some(1),
             seed_wobble: false,
+            no_max_prune: false,
             max_mismatches: 0,
             min_prefix_matches: 1,
             min_suffix_matches: 0,

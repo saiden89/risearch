@@ -2,13 +2,46 @@ use log::trace;
 use smallvec::SmallVec;
 
 use crate::adapter::gotoh::GotohModel;
-use crate::alignment::PairClass;
+use crate::alignment::{Alignment, PairClass};
 use crate::dp::gotoh::Gotoh;
 use crate::dp::{DpGrid, TraceOp, MAX_EXT};
 use crate::dsm::ScoringModel;
+use crate::seed::SeedHit;
 use crate::types::{Base, Energy};
 
-use super::ExtensionResult;
+/// Pairing columns for one flank. Inline capacity covers a full-length window at
+/// the default `-l`; both flanks are live at once while an alignment resolves.
+type Pairs = SmallVec<[PairClass; 64]>;
+
+/// One flank's extension: the energy gained, how far each side reached, and the
+/// per-column pairing when an alignment was requested.
+struct ExtensionResult {
+    energy: Energy,
+    q_ext: usize,
+    t_ext: usize,
+    pairs: Pairs,
+}
+
+/// A seed grown in both directions: the extension energy, the final inclusive
+/// spans, and the resolved alignment when one was requested.
+///
+/// The target span is in the physical duplex frame the DP works in; converting
+/// it to FASTA coordinates is the caller's job.
+pub(super) struct SeedExtension {
+    pub(super) energy: Energy,
+    pub(super) q_start: usize,
+    pub(super) q_end: usize,
+    pub(super) t_start: usize,
+    pub(super) t_end: usize,
+    pub(super) alignment: Option<Alignment>,
+}
+
+impl SeedExtension {
+    /// Nucleotides participating in the duplex, both strands counted.
+    pub(super) fn nt_count(&self) -> usize {
+        (self.q_end - self.q_start + 1) + (self.t_end - self.t_start + 1)
+    }
+}
 
 /// Extension direction — the polarity of the DP window.
 ///
@@ -35,8 +68,10 @@ impl std::fmt::Display for ExtendDir {
 /// only mutable state (grid, buffers) is mutated.
 ///
 /// The engine owns the window policy along with the buffers it constrains: the
-/// buffers are the reason a window can never exceed [`MAX_EXT`], so nothing
-/// upstream has to know that ceiling exists.
+/// buffers are the reason a window can never exceed [`MAX_EXT`]. That ceiling is
+/// mirrored upstream — `MAX_EXTENSION`, the clap range on `-l`, and
+/// `check_unlimited_fits` — because those reject what the engine would otherwise
+/// clamp silently. Raising it means changing all four.
 pub(super) struct ExtensionEngine {
     grid: DpGrid,
     q_buf: [u8; MAX_EXT],
@@ -73,11 +108,63 @@ impl ExtensionEngine {
         max_window.unwrap_or(query_avail).min(MAX_EXT)
     }
 
+    /// Extend both flanks of `seed` against the full query and target views and
+    /// resolve the whole duplex.
+    ///
+    /// Flank slicing, per-flank polarity, and prefix/suffix ordering all stay
+    /// inside the engine: the anchor convention has one definition, the
+    /// non-empty precondition of [`Self::extend`] holds by construction, and
+    /// callers see one extended duplex rather than two halves to reassemble.
+    pub(super) fn extend_seed(
+        &mut self,
+        query: &[Base],
+        target: &[Base],
+        seed: &SeedHit,
+        include_alignment: bool,
+    ) -> SeedExtension {
+        let (q_start, t_start, len) = (seed.query_start, seed.target_start, seed.len);
+        let q_match_end = q_start + len - 1;
+        let t_match_end = t_start + len - 1;
+
+        let left = self.extend(
+            &query[..=q_start],
+            &target[..=t_start],
+            ExtendDir::Left,
+            include_alignment,
+        );
+        let right = self.extend(
+            &query[q_match_end..],
+            &target[t_match_end..],
+            ExtendDir::Right,
+            include_alignment,
+        );
+
+        let (q_start, q_end) = (q_start - left.q_ext, q_match_end + right.q_ext);
+        let (t_start, t_end) = (t_start - left.t_ext, t_match_end + right.t_ext);
+
+        SeedExtension {
+            energy: left.energy + right.energy,
+            q_start,
+            q_end,
+            t_start,
+            t_end,
+            alignment: include_alignment.then(|| {
+                Alignment::from_parts(
+                    &left.pairs,
+                    len,
+                    &right.pairs,
+                    &query[q_start..=q_end],
+                    &target[t_start..=t_end],
+                )
+            }),
+        }
+    }
+
     /// Extend one flank of a seed by DP.
     ///
     /// `query` and `target` are the flanking slices including the anchor column:
     /// they end at the seed boundary for `Left` and start at it for `Right`.
-    pub(super) fn extend(
+    fn extend(
         &mut self,
         query: &[Base],
         target: &[Base],
@@ -103,20 +190,18 @@ impl ExtensionEngine {
                 energy: Energy(gotoh.boundary(anchor(query, dir), anchor(target, dir))),
                 q_ext: 0,
                 t_ext: 0,
-                pairs: None,
+                pairs: SmallVec::new(),
             };
         }
 
         let (q_win, t_win) = (&self.q_buf[..q_len], &self.t_buf[..t_len]);
         let best = gotoh.extend(q_win, t_win, &mut self.grid);
-        let pairs = if include_alignment && (best.q_idx > 0 || best.t_idx > 0) {
-            let trace = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
-            Some(map_trace_to_pairs(
-                q_win, t_win, dir, &trace, best.q_idx, best.t_idx,
-            ))
-        } else {
-            None
-        };
+        let pairs = (include_alignment && (best.q_idx > 0 || best.t_idx > 0))
+            .then(|| {
+                let trace = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
+                map_trace_to_pairs(q_win, t_win, dir, &trace, best.q_idx, best.t_idx)
+            })
+            .unwrap_or_default();
         ExtensionResult {
             energy: Energy(best.score),
             q_ext: best.q_idx,
@@ -131,6 +216,10 @@ impl ExtensionEngine {
 ///
 /// `dst.len()` is the hard ceiling, so an unlimited `cap` still cannot overflow
 /// the buffer.
+///
+/// A `Left` flank enters reversed here; `map_trace_to_pairs` reverses a `Right`
+/// traceback on the way out. Both stem from the same polarity, in opposite
+/// directions — change one and check the other.
 fn fill(dst: &mut [u8], src: &[Base], dir: ExtendDir, cap: usize) -> usize {
     let len = src.len().min(cap).min(dst.len());
     match dir {
@@ -150,14 +239,11 @@ fn fill(dst: &mut [u8], src: &[Base], dir: ExtendDir, cap: usize) -> usize {
 
 /// Anchor symbol at the seed boundary, for windows too short to fill.
 ///
-/// Routed through `fill` so the polarity rule has exactly one definition.
+/// Routed through `fill` so the buffer-order rule is not restated here. Callers
+/// have already asserted the flank is non-empty, so `fill` always yields one.
 fn anchor(src: &[Base], dir: ExtendDir) -> u8 {
     let mut buf = [0u8; 1];
-    assert_eq!(
-        fill(&mut buf, src, dir, 1),
-        1,
-        "flank must include the anchor column"
-    );
+    fill(&mut buf, src, dir, 1);
     buf[0]
 }
 
@@ -173,10 +259,12 @@ fn map_trace_to_pairs(
     ops: &[TraceOp],
     end_i: usize,
     end_j: usize,
-) -> SmallVec<[PairClass; 64]> {
-    let mut out = SmallVec::with_capacity(ops.len());
+) -> Pairs {
+    let mut out = Pairs::with_capacity(ops.len());
     let (mut i, mut j) = (end_i, end_j);
     for &op in ops {
+        // The advance follows the DP op, not the resolved class: a `Match` over a
+        // block-separator `Gap` classifies as a bulge but still consumed both.
         match op {
             TraceOp::Match => {
                 out.push(PairClass::from_bases(
@@ -205,19 +293,23 @@ fn map_trace_to_pairs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsm::DsmRegistry;
     use crate::types::DsmId;
+
+    /// Same constructor the search path uses, so these pin the shipped model.
+    fn test_model() -> ScoringModel {
+        ScoringModel::load(&DsmId::from("t04"), 37, Energy::from_kcal(0.0)).unwrap()
+    }
 
     #[test]
     fn extension_result_extents_match_traceback_consumption() {
-        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
+        let model = test_model();
         let mut engine = ExtensionEngine::new(Some(8), &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::U, Base::A, Base::C, Base::G];
 
         let result = engine.extend(&query, &target, ExtendDir::Right, true);
-        let pairs = result.pairs.expect("traceback expected");
+        let pairs = &result.pairs;
+        assert!(!pairs.is_empty(), "traceback expected");
 
         assert!(result.q_ext > 0);
         assert!(result.t_ext > 0);
@@ -262,8 +354,7 @@ mod tests {
 
     #[test]
     fn zero_cap_window_scores_the_anchor_column() {
-        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
+        let model = test_model();
         let mut engine = ExtensionEngine::new(Some(0), &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::U, Base::A, Base::C, Base::G];
@@ -274,7 +365,7 @@ mod tests {
         let right = engine.extend(&query, &target, ExtendDir::Right, true);
         for result in [&left, &right] {
             assert_eq!((result.q_ext, result.t_ext), (0, 0));
-            assert!(result.pairs.is_none());
+            assert!(result.pairs.is_empty());
         }
         assert_eq!(
             left.energy,
@@ -318,8 +409,7 @@ mod tests {
     /// DP from the query flank, not merely be computable from it.
     #[test]
     fn unlimited_extension_matches_a_window_fixed_to_the_query_flank() {
-        let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
-        let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
+        let model = test_model();
         let query = [Base::A, Base::U, Base::G, Base::C];
         // Target flank two orders of magnitude longer than the query, as in a real
         // chromosome search: the window must still follow the query.

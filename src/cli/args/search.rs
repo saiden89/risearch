@@ -1,4 +1,4 @@
-use crate::config::{ExtendConfig, OutputConfig, OutputFormat, SearchConfig};
+use crate::config::{ExtendConfig, OutputConfig, SearchConfig};
 use anyhow::Error;
 
 use super::{ExtendArgs, FilterArgs, InputArgs, OutputArgs, ScoreArgs, SeedArgs};
@@ -32,8 +32,7 @@ impl SearchArgs {
     pub fn try_into_configs(self) -> Result<(SearchConfig, OutputConfig), Error> {
         let output: OutputConfig = self.output.try_into()?;
         let mut extend: ExtendConfig = self.extend.into();
-        // Only the alignment-printing formats read the alignment back.
-        extend.build_alignment = output.format != OutputFormat::Minimal;
+        extend.build_alignment = output.format.needs_alignment();
 
         let search = SearchConfig {
             seed: self.seed.try_into()?,

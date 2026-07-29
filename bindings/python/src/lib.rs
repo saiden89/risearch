@@ -288,6 +288,7 @@ fn search(
             seed_end,
             seed_length,
             seed_wobble,
+            no_max_prune,
             max_mismatches: mismatches,
             min_prefix_matches: mismatch_prefix,
             min_suffix_matches: mismatch_suffix,
@@ -306,7 +307,6 @@ fn search(
                 .map_err(pyo3::exceptions::PyValueError::new_err)?,
             seed_energy: Energy::try_from(seed_energy)
                 .map_err(pyo3::exceptions::PyValueError::new_err)?,
-            no_max_prune,
             no_dedup,
         },
     };

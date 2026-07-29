@@ -116,12 +116,10 @@ fn write_extended_fields(
             }
         });
 
-        // The duplex view runs target 3'->5': bases after the hit are its 5'
-        // flank, while bases before it are the 3' flank and must be emitted
-        // adjacent-to-outward. Legacy -p3 reports 5' first, then 3'.
-        let (_, flank_5, flank_3) = hit.target_context(target, BINDING_SITE_FLANK_LEN);
-        row.field_with(|buf| buf.extend(flank_5.iter().map(|base| base.to_byte())));
-        row.field_with(|buf| buf.extend(flank_3.iter().rev().map(|base| base.to_byte())));
+        // Legacy -p3 reports the 5' flank first, then the 3'.
+        let context = hit.site_context(target, BINDING_SITE_FLANK_LEN);
+        row.field_with(|buf| buf.extend(context.flank_5().map(|base| base.to_byte())));
+        row.field_with(|buf| buf.extend(context.flank_3().map(|base| base.to_byte())));
     }
 }
 
