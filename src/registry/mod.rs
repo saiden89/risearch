@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::ops::Range;
+use std::ops::{Index, Range};
 use std::path::Path;
 
 use crate::config::SeedConfig;
@@ -39,16 +39,20 @@ impl<T> Registry<T> {
         self.entries.is_empty()
     }
 
-    pub fn get(&self, idx: usize) -> &T {
-        &self.entries[idx]
-    }
-
     pub fn entries(&self) -> &[T] {
         &self.entries
     }
 
     pub fn into_entries(self) -> Vec<T> {
         self.entries
+    }
+}
+
+impl<T> Index<usize> for Registry<T> {
+    type Output = T;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        &self.entries[idx]
     }
 }
 
@@ -213,10 +217,6 @@ impl QueryRegistry {
         self.inner.is_empty()
     }
 
-    pub fn get(&self, idx: usize) -> &Query {
-        self.inner.get(idx)
-    }
-
     pub fn entries(&self) -> &[Query] {
         self.inner.entries()
     }
@@ -231,6 +231,14 @@ impl QueryRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = (usize, &Query)> {
         self.inner.iter()
+    }
+}
+
+impl Index<usize> for QueryRegistry {
+    type Output = Query;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        &self.inner[idx]
     }
 }
 

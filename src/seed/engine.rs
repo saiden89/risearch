@@ -48,7 +48,7 @@ impl<'a> SeedingEngine<'a> {
         mut on_seed: F,
     ) -> Result<()> {
         // `traverse` is monomorphized on whether G-U wobble pairs are allowed.
-        let query = self.queries.get(qi);
+        let query = &self.queries[qi];
         if config.seed_wobble {
             self.seed_one::<true, _>(qi, query, config, &mut on_seed)
         } else {

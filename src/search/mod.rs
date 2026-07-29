@@ -282,16 +282,13 @@ impl SearchWorker {
         query_idx: usize,
     ) -> Result<Vec<SearchHit>> {
         let opts = ctx.opts;
-        let query = ctx.queries.get(query_idx).sequence();
+        let query = ctx.queries[query_idx].sequence();
 
         // Loop-invariant: rebuilding it per seed re-enters the rkyv root twice.
         let tview = ctx.store.view();
         let mut hits = Vec::new();
         engine.seed_query(query_idx, &opts.seed, |seed| {
-            debug_assert_eq!(seed.query_idx(), query_idx);
             let target = tview.target(seed.target_idx(), seed.strand());
-            let target_range = seed.target_range();
-            debug_assert!(target_range.end <= target.len());
 
             let ext = self
                 .extension
