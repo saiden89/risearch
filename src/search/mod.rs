@@ -13,6 +13,7 @@ mod extension;
 use anyhow::{bail, Result};
 use log::info;
 use rayon::prelude::*;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Mutex;
@@ -98,7 +99,7 @@ impl HitSink for VecSink {
 
 /// Key identifying one final bounding box: a `(query, target, strand)` plus the
 /// extended span. Overlapping seeds that converge on the same box collapse to
-/// one row under [`hit_is_better`].
+/// one row under [`SearchHit::cmp`].
 #[derive(PartialEq, Eq, Hash)]
 struct BoxKey {
     query_idx: usize,
@@ -124,29 +125,6 @@ impl BoxKey {
     }
 }
 
-/// Deterministic total order: a candidate beats the incumbent iff it has a more
-/// negative energy, or — on an exact energy tie — a lexicographically smaller
-/// pairing fingerprint. Both terms are pure functions of a hit's own fields, so
-/// the surviving set is independent of insertion/scheduling order. (The tie-break
-/// only distinguishes alignment-printing formats; Minimal rows that tie on energy
-/// are output-identical regardless of which wins.)
-fn hit_is_better(candidate: &SearchHit, current: &SearchHit) -> bool {
-    candidate
-        .energy
-        .cmp(&current.energy)
-        .then_with(|| fingerprint_cmp(candidate, current))
-        == std::cmp::Ordering::Less
-}
-
-/// Lexicographic compare of the two hits' pairings without allocating. A missing
-/// alignment ranks as empty, which sorts before any non-empty one.
-fn fingerprint_cmp(a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
-    fn ranks(hit: &SearchHit) -> impl Iterator<Item = u8> + '_ {
-        hit.alignment.iter().flat_map(|a| a.pairing_ranks())
-    }
-    ranks(a).cmp(ranks(b))
-}
-
 /// Collapse hits sharing a [`BoxKey`] to the single best one. Caller guarantees
 /// all hits belong to one query, so this is globally exact for that query.
 fn dedup_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
@@ -155,7 +133,7 @@ fn dedup_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
     for hit in hits {
         match best.entry(BoxKey::of(&hit)) {
             Entry::Occupied(mut e) => {
-                if hit_is_better(&hit, e.get()) {
+                if hit.cmp(e.get()).is_lt() {
                     e.insert(hit);
                 }
             }
@@ -342,6 +320,22 @@ fn inclusive_bounds(mut range: Range<usize>) -> (usize, usize) {
 }
 
 impl SearchHit {
+    /// Compare two candidates for the same [`BoxKey`].
+    ///
+    /// `Less` means `self` is retained, `Greater` means `other` is retained, and
+    /// `Equal` means they are indistinguishable under the deduplication policy.
+    /// Energy orders first; an exact tie is broken by the alignment fingerprint.
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.energy.cmp(&other.energy).then_with(|| {
+            match (self.alignment.as_deref(), other.alignment.as_deref()) {
+                (Some(a), Some(b)) => a.fingerprint_cmp(b),
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Less,
+                (Some(_), None) => Ordering::Greater,
+            }
+        })
+    }
+
     pub fn query<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
         &q_seq[self.q_start..=self.q_end]
     }

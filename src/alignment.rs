@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::ops::Range;
 
 use smallvec::SmallVec;
@@ -189,6 +190,11 @@ impl Alignment {
     /// Column pairings as ranks, for lexicographic comparison without allocating.
     pub fn pairing_ranks(&self) -> impl Iterator<Item = u8> + '_ {
         self.columns.iter().map(|c| c.class.rank())
+    }
+
+    /// Compare pairing fingerprints lexicographically without allocating.
+    pub(crate) fn fingerprint_cmp(&self, other: &Self) -> Ordering {
+        self.pairing_ranks().cmp(other.pairing_ranks())
     }
 }
 
