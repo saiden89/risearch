@@ -13,7 +13,7 @@ use crate::types::{Base, Strand};
 /// strand-local coordinate. A block ends at the next target offset, or at the
 /// end of the indexed sequence for the final target.
 ///
-/// All fields are borrowed from the same validated [`crate::index::TargetRegistry`].
+/// All fields are borrowed from the same validated [`crate::TargetRegistry`].
 #[derive(Clone, Copy)]
 pub struct TargetView<'a> {
     suffixes: SuffixIndexView<'a>,
