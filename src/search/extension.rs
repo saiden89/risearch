@@ -196,12 +196,12 @@ impl ExtensionEngine {
 
         let (q_win, t_win) = (&self.q_buf[..q_len], &self.t_buf[..t_len]);
         let best = gotoh.extend(q_win, t_win, &mut self.grid);
-        let pairs = (include_alignment && (best.q_idx > 0 || best.t_idx > 0))
-            .then(|| {
-                let trace = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
-                map_trace_to_pairs(q_win, t_win, dir, &trace, best.q_idx, best.t_idx)
-            })
-            .unwrap_or_default();
+        let pairs = if include_alignment && (best.q_idx > 0 || best.t_idx > 0) {
+            let trace = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
+            map_trace_to_pairs(q_win, t_win, dir, &trace, best.q_idx, best.t_idx)
+        } else {
+            SmallVec::new()
+        };
         ExtensionResult {
             energy: Energy(best.score),
             q_ext: best.q_idx,
