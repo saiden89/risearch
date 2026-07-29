@@ -167,18 +167,18 @@ pub enum Strand {
 
 impl std::fmt::Display for Strand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Strand::Forward => write!(f, "+"),
-            Strand::Reverse => write!(f, "-"),
-        }
+        write!(f, "{}", char::from(*self))
     }
 }
 
-impl From<char> for Strand {
-    fn from(c: char) -> Self {
+impl TryFrom<char> for Strand {
+    type Error = String;
+
+    fn try_from(c: char) -> Result<Self, Self::Error> {
         match c {
-            '+' => Strand::Forward,
-            _ => Strand::Reverse,
+            '+' => Ok(Strand::Forward),
+            '-' => Ok(Strand::Reverse),
+            _ => Err(format!("invalid strand '{c}'")),
         }
     }
 }

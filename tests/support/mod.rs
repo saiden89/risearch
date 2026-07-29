@@ -38,6 +38,7 @@ pub(crate) use search_hit::{parse_bindingsite_output, SearchHitExt};
 // LOGGING SETUP
 // =============================================================================
 
+use anyhow::Context;
 use std::path::PathBuf;
 use std::sync::Once;
 
@@ -94,13 +95,16 @@ pub(crate) fn parse_output(
     output: &str,
     query_registry: &risearch::QueryRegistry,
     target_registry: &risearch::TargetRegistry,
-) -> (Vec<risearch::SearchHit>, usize) {
+) -> anyhow::Result<(Vec<risearch::SearchHit>, usize)> {
     let mut hits: Vec<risearch::SearchHit> = output
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
-        .filter_map(|l| parse_bindingsite_output(l, query_registry, target_registry))
-        .collect();
+        .map(|l| {
+            parse_bindingsite_output(l, query_registry, target_registry)
+                .with_context(|| format!("malformed bindingsite line: {l:?}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let parsed_count = hits.len();
     // Sort by group_key, then all coordinates for deterministic dedup
     // Must sort by ALL coordinate fields to ensure true duplicates are adjacent
@@ -115,7 +119,7 @@ pub(crate) fn parse_output(
     hits.dedup_by(|a, b| {
         a.coords_match(b) && (f64::from(a.energy) - f64::from(b.energy)).abs() < 0.001
     });
-    (hits, parsed_count)
+    Ok((hits, parsed_count))
 }
 
 // Comparison logic has been moved to comparison.rs (ParityComparator)

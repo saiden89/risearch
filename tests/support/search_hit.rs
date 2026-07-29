@@ -4,6 +4,7 @@
 //! - `SearchHitExt` trait: Comparison helpers for parity testing
 //! - `parse_bindingsite_output()`: Parse bindingsite output into `SearchHit`
 
+use anyhow::{anyhow, bail, Context, Result};
 use risearch::alignment::Alignment;
 use risearch::index::store::TargetRegistry;
 use risearch::registry::QueryRegistry;
@@ -106,28 +107,33 @@ pub(crate) fn parse_bindingsite_output(
     line: &str,
     query_registry: &QueryRegistry,
     target_registry: &TargetRegistry,
-) -> Option<SearchHit> {
+) -> Result<SearchHit> {
     let fields: Vec<&str> = line.split('\t').collect();
     if fields.len() < 10 {
-        return None;
+        bail!("expected at least 10 columns, got {}", fields.len());
     }
-    let query_idx = query_registry.index_of(fields[0])?;
-    let target_idx = target_registry.index_of(fields[3])?;
+    let query_idx = (0..query_registry.len())
+        .find(|&i| name_token(query_registry.get_name(i)) == name_token(fields[0]))
+        .with_context(|| format!("unknown query name {:?}", fields[0]))?;
+    let target_idx = (0..target_registry.len())
+        .find(|&i| name_token(target_registry.get_name(i)) == name_token(fields[3]))
+        .with_context(|| format!("unknown target name {:?}", fields[3]))?;
 
     // Parse and strip seed markers from interaction
     let (interaction, seed_start, seed_end) = strip_c_markers(fields[8]);
 
     // Parse coordinates (C uses 1-based)
-    let q_start: usize = fields[1].parse().ok()?;
-    let q_end: usize = fields[2].parse().ok()?;
-    let t_start: usize = fields[4].parse().ok()?;
-    let t_end: usize = fields[5].parse().ok()?;
+    let q_start: usize = column(&fields, 1, "q_start")?;
+    let q_end: usize = column(&fields, 2, "q_end")?;
+    let t_start: usize = column(&fields, 4, "t_start")?;
+    let t_end: usize = column(&fields, 5, "t_end")?;
 
     // Parse strand
-    let strand: Strand = fields[6].chars().next().unwrap_or('+').into();
+    let strand = Strand::try_from(fields[6].chars().next().context("empty strand column")?)
+        .map_err(|e| anyhow!(e))?;
 
     // Parse energy
-    let energy = Energy::from_kcal(fields[7].parse::<f64>().ok()?);
+    let energy = Energy::from_kcal(column(&fields, 7, "energy")?);
 
     let classes: Vec<PairClass> = interaction
         .chars()
@@ -171,7 +177,22 @@ pub(crate) fn parse_bindingsite_output(
         hit.target(target),
     ));
 
-    Some(hit)
+    Ok(hit)
+}
+
+/// C truncates FASTA ids at the first whitespace (`fasta.c` strtok); Rust keeps the
+/// whole header, so the two sides' name columns only agree on the first token.
+fn name_token(name: &str) -> &str {
+    name.split_ascii_whitespace().next().unwrap_or("")
+}
+
+fn column<T: std::str::FromStr>(fields: &[&str], idx: usize, name: &str) -> Result<T>
+where
+    T::Err: std::fmt::Display,
+{
+    fields[idx]
+        .parse()
+        .map_err(|e| anyhow!("invalid {name} {:?}: {e}", fields[idx]))
 }
 
 /// Strip y/x seed markers and extract seed range positions.

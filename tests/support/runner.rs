@@ -122,7 +122,8 @@ impl RustRunner<Indexed> {
             });
         }
         let rust_out = fs::read_to_string(tmp.path()).expect("read output");
-        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_registry);
+        let (hits, _) = parse_output(&rust_out, &query_registry, &self.state.target_registry)
+            .expect("parse Rust bindingsite output");
         (hits, query_registry)
     }
 
@@ -221,7 +222,8 @@ impl ParityRunner {
         let c_args = translate_args_for_c(&args_ref);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
-        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_registry);
+        let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_registry)
+            .expect("parse C bindingsite output");
 
         (rust_hits, c_hits, query_registry)
     }
