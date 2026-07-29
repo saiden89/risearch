@@ -3,6 +3,8 @@ act = "latest"
 rust = "latest"
 cmake = "latest"
 lefthook = "latest"
+# Without pyo3/extension-module, pyo3 links libpython and enforces abi3-py310 against PATH python; macOS ships 3.9.
+python = "3.10"
 
 "cargo:cargo-edit" = "latest"
 "cargo:cargo-hack" = "latest"
