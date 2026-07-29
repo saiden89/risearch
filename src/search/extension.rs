@@ -15,17 +15,17 @@ use crate::types::{Base, Energy};
 /// the default `-l`; both flanks are live at once while an alignment resolves.
 type Pairs = SmallVec<[PairClass; 64]>;
 
-/// One flank's extension: the energy gained, how far each side reached, and the
-/// per-column pairing when an alignment was requested.
+/// One flank's extension: the stacking stability gained, how far each side
+/// reached, and the per-column pairing when an alignment was requested.
 struct ExtensionResult {
-    energy: Energy,
+    stability: Energy,
     q_ext: usize,
     t_ext: usize,
     pairs: Pairs,
 }
 
-/// A seed grown in both directions: the extension energy, the final half-open
-/// ranges, and the resolved alignment when one was requested.
+/// A seed grown and scored in both directions: the final half-open ranges,
+/// binding energy, and resolved alignment when one was requested.
 ///
 /// The target range is in the physical duplex frame the DP works in; converting
 /// it to FASTA coordinates is the caller's job.
@@ -34,13 +34,6 @@ pub(super) struct SeedExtension {
     pub(super) t_range: Range<usize>,
     pub(super) energy: Energy,
     pub(super) alignment: Option<Box<Alignment>>,
-}
-
-impl SeedExtension {
-    /// Nucleotides participating in the duplex, both strands counted.
-    pub(super) fn nt_count(&self) -> usize {
-        self.q_range.len() + self.t_range.len()
-    }
 }
 
 /// Extension direction — the polarity of the DP window.
@@ -97,6 +90,11 @@ impl ExtensionEngine {
         }
     }
 
+    /// Canonical-orientation model used for seed and final duplex scoring.
+    fn model(&self) -> &ScoringModel {
+        &self.gotoh_right.scoring
+    }
+
     /// Per-side window cap for a flank with `query_avail` symbols available.
     ///
     /// An unlimited window follows the query, so the target window never outruns
@@ -125,6 +123,9 @@ impl ExtensionEngine {
         let query_range = seed.query_range();
         let target_range = seed.target_range();
         let len = query_range.len();
+        let seed_energy = self
+            .model()
+            .ungapped_duplex_score(&query[query_range.clone()], &target[target_range.clone()]);
         let q_match_end = query_range
             .clone()
             .next_back()
@@ -158,11 +159,15 @@ impl ExtensionEngine {
                 &target[t_range.clone()],
             ))
         });
+        let stacking_stability = seed_energy + left.stability + right.stability;
+        let binding_energy = self
+            .model()
+            .binding_energy(stacking_stability, q_range.len() + t_range.len());
 
         SeedExtension {
-            energy: left.energy + right.energy,
             q_range,
             t_range,
+            energy: binding_energy,
             alignment,
         }
     }
@@ -200,7 +205,7 @@ impl ExtensionEngine {
             SmallVec::new()
         };
         ExtensionResult {
-            energy: Energy(best.score),
+            stability: Energy(best.score),
             q_ext: best.q_idx,
             t_ext: best.t_idx,
             pairs,
@@ -352,11 +357,11 @@ mod tests {
             assert!(result.pairs.is_empty());
         }
         assert_eq!(
-            left.energy,
+            left.stability,
             Energy(engine.gotoh_left.boundary(Base::C.as_u8(), Base::G.as_u8()))
         );
         assert_eq!(
-            right.energy,
+            right.stability,
             Energy(
                 engine
                     .gotoh_right
@@ -405,8 +410,8 @@ mod tests {
             let free = unlimited.extend(&query, &target, dir, true);
             let pinned = fixed.extend(&query, &target, dir, true);
             assert_eq!(
-                (free.energy, free.q_ext, free.t_ext),
-                (pinned.energy, pinned.q_ext, pinned.t_ext),
+                (free.stability, free.q_ext, free.t_ext),
+                (pinned.stability, pinned.q_ext, pinned.t_ext),
                 "{dir}: unlimited must equal a window fixed to the query flank"
             );
             assert!(

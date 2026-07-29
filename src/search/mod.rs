@@ -284,17 +284,14 @@ fn log_search_banner(queries: &QueryRegistry, store: &TargetRegistry, opts: &Sea
 
 struct SearchWorker {
     extension: ExtensionEngine,
-    model: ScoringModel,
 }
 
 impl SearchWorker {
     fn new(opts: &SearchConfig, model: &ScoringModel) -> Self {
         let max_window = (!is_unlimited(opts.extend.max_extension))
             .then_some(opts.extend.max_extension as usize);
-        let model = model.clone();
         Self {
-            extension: ExtensionEngine::from_parts(max_window, &model),
-            model,
+            extension: ExtensionEngine::from_parts(max_window, model),
         }
     }
 
@@ -317,18 +314,12 @@ impl SearchWorker {
             let target_range = seed.target_range();
             debug_assert!(target_range.end <= target.len());
 
-            let duplex_score = self
-                .model
-                .ungapped_duplex_score(&query[seed.query_range()], &target[target_range]);
             let ext = self
                 .extension
                 .extend_seed(query, target, &seed, opts.extend.build_alignment);
-            let energy = self
-                .model
-                .binding_energy(duplex_score + ext.energy, ext.nt_count());
 
-            if energy <= opts.filter.delta_g {
-                hits.push(SearchHit::new(&seed, ext, energy, target.len()));
+            if ext.energy <= opts.filter.delta_g {
+                hits.push(SearchHit::new(&seed, ext, target.len()));
             }
         })?;
         // Dedup is exact per query: every box-mate of `query_idx` is in `hits`.
@@ -404,9 +395,15 @@ impl SearchHit {
     /// Convert the extension's duplex-frame target span to FASTA coordinates and
     /// record the hit. `target_len` is the length of the strand-selected view the
     /// span was resolved in.
-    fn new(seed: &SeedHit, ext: SeedExtension, energy: Energy, target_len: usize) -> Self {
-        let (q_start, q_end) = inclusive_bounds(ext.q_range);
-        let (duplex_t_start, duplex_t_end) = inclusive_bounds(ext.t_range);
+    fn new(seed: &SeedHit, ext: SeedExtension, target_len: usize) -> Self {
+        let SeedExtension {
+            q_range,
+            t_range,
+            energy: binding_energy,
+            alignment,
+        } = ext;
+        let (q_start, q_end) = inclusive_bounds(q_range);
+        let (duplex_t_start, duplex_t_end) = inclusive_bounds(t_range);
         let (t_start, t_end) = TargetRegistry::map_target_span_between_frames(
             seed.strand(),
             duplex_t_start,
@@ -422,8 +419,8 @@ impl SearchHit {
             t_start,
             t_end,
             strand: seed.strand(),
-            energy,
-            alignment: ext.alignment,
+            energy: binding_energy,
+            alignment,
         }
     }
 }
