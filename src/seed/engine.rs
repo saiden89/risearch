@@ -129,14 +129,7 @@ fn emit_seed_match<const WOBBLE: bool, F: FnMut(SeedHit)>(
                 continue;
             };
 
-            let hit = SeedHit {
-                query_idx: qi,
-                query_start,
-                target_idx,
-                target_start,
-                len: seed_len,
-                strand,
-            };
+            let hit = SeedHit::new(qi, query_start, target_idx, target_start, seed_len, strand);
             if no_max_prune
                 || hit.is_maximal(
                     query_bases,
@@ -196,12 +189,12 @@ mod tests {
         assert_eq!(groups[0].1.len(), 1);
 
         let seed = &groups[0].1[0];
-        assert_eq!(seed.query_idx, 0);
-        assert_eq!(seed.query_start, 2);
-        assert_eq!(seed.target_idx, 0);
-        assert_eq!(seed.target_start, 0);
-        assert_eq!(seed.len, 2);
-        assert_eq!(seed.strand, Strand::Forward);
+        assert_eq!(seed.query_idx(), 0);
+        assert_eq!(seed.query_range(), 2..4);
+        assert_eq!(seed.target_idx(), 0);
+        assert_eq!(seed.target_range(), 0..2);
+        assert_eq!(seed.seed_len(), 2);
+        assert_eq!(seed.strand(), Strand::Forward);
     }
 
     #[test]
@@ -221,9 +214,9 @@ mod tests {
         assert_eq!(seeds.len(), 2);
         assert!(seeds
             .iter()
-            .any(|seed| seed.strand == Strand::Forward && seed.target_start == 1));
+            .any(|seed| seed.strand() == Strand::Forward && seed.target_range() == (1..3)));
         assert!(seeds
             .iter()
-            .any(|seed| seed.strand == Strand::Reverse && seed.target_start == 2));
+            .any(|seed| seed.strand() == Strand::Reverse && seed.target_range() == (2..4)));
     }
 }

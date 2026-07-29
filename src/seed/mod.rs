@@ -8,30 +8,84 @@ use std::ops::Range;
 use crate::types::{Base, Strand};
 
 /// A candidate seed match found during suffix array search.
+///
+/// Query coordinates address the full query sequence. Target coordinates
+/// address the strand-selected physical duplex view returned by
+/// `TargetRegistry::target(target_idx, strand)`. Both ranges are half-open and
+/// always have the same non-zero length.
 #[derive(Debug, Clone)]
 pub struct SeedHit {
-    /// Index of query in the registry
-    pub query_idx: usize,
-    /// Start position in query sequence (0-based)
-    pub query_start: usize,
-    /// Index of target sequence in the index
-    pub target_idx: usize,
-    /// Start position in the strand-selected target view used by seeding/DP (0-based)
-    pub target_start: usize,
-    /// Length of the seed match
-    pub len: usize,
-    /// Strand of the match (forward or reverse)
-    pub strand: Strand,
+    query_idx: usize,
+    query_start: usize,
+    target_idx: usize,
+    target_start: usize,
+    len: usize,
+    strand: Strand,
 }
 
 impl SeedHit {
+    pub(crate) fn new(
+        query_idx: usize,
+        query_start: usize,
+        target_idx: usize,
+        target_start: usize,
+        len: usize,
+        strand: Strand,
+    ) -> Self {
+        debug_assert!(len > 0, "seed matches must be non-empty");
+        Self {
+            query_idx,
+            query_start,
+            target_idx,
+            target_start,
+            len,
+            strand,
+        }
+    }
+
+    /// Index of the query in its registry.
+    #[inline]
+    pub fn query_idx(&self) -> usize {
+        self.query_idx
+    }
+
+    /// Half-open range in the full query sequence.
+    #[inline]
+    pub fn query_range(&self) -> Range<usize> {
+        self.query_start..self.query_start + self.len
+    }
+
+    /// Index of the target in its registry.
+    #[inline]
+    pub fn target_idx(&self) -> usize {
+        self.target_idx
+    }
+
+    /// Half-open range in the strand-selected physical target view.
+    #[inline]
+    pub fn target_range(&self) -> Range<usize> {
+        self.target_start..self.target_start + self.len
+    }
+
+    /// Shared length of the query and target ranges.
+    #[inline]
+    pub fn seed_len(&self) -> usize {
+        self.len
+    }
+
+    /// Strand used to select the physical target view containing the match.
+    #[inline]
+    pub fn strand(&self) -> Strand {
+        self.strand
+    }
+
     /// Whether the match cannot be grown by one more pairing column on either
     /// side. A non-maximal seed is a shorter copy of a longer one, so extending
     /// it only rediscovers the same duplex.
     ///
     /// `query` and `target` are the same views seeding used; `seed_interval`
     /// bounds the query region seeds were drawn from.
-    pub fn is_maximal(
+    pub(crate) fn is_maximal(
         &self,
         query: &[Base],
         target: &[Base],
@@ -39,15 +93,19 @@ impl SeedHit {
         seed_wobble: bool,
     ) -> bool {
         let pairs = |qi: usize, ti: usize| query[qi].pair_type(target[ti]).is_match(seed_wobble);
-        let (q_start, t_start, len) = (self.query_start, self.target_start, self.len);
+        let query_range = self.query_range();
+        let target_range = self.target_range();
 
-        if q_start > seed_interval.start && t_start > 0 && pairs(q_start - 1, t_start - 1) {
+        if query_range.start > seed_interval.start
+            && target_range.start > 0
+            && pairs(query_range.start - 1, target_range.start - 1)
+        {
             return false;
         }
 
-        if q_start + len < seed_interval.end
-            && t_start + len < target.len()
-            && pairs(q_start + len, t_start + len)
+        if query_range.end < seed_interval.end
+            && target_range.end < target.len()
+            && pairs(query_range.end, target_range.end)
         {
             return false;
         }

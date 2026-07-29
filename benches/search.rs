@@ -144,7 +144,7 @@ fn seed_counts(
     let (mut forward, mut reverse) = (0, 0);
     for query_idx in 0..queries.len() {
         engine
-            .seed_query(query_idx, config, |hit| match hit.strand {
+            .seed_query(query_idx, config, |hit| match hit.strand() {
                 Strand::Forward => forward += 1,
                 Strand::Reverse => reverse += 1,
             })

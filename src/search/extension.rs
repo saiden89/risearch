@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use log::trace;
 use smallvec::SmallVec;
 
@@ -22,24 +24,22 @@ struct ExtensionResult {
     pairs: Pairs,
 }
 
-/// A seed grown in both directions: the extension energy, the final inclusive
-/// spans, and the resolved alignment when one was requested.
+/// A seed grown in both directions: the extension energy, the final half-open
+/// ranges, and the resolved alignment when one was requested.
 ///
-/// The target span is in the physical duplex frame the DP works in; converting
+/// The target range is in the physical duplex frame the DP works in; converting
 /// it to FASTA coordinates is the caller's job.
 pub(super) struct SeedExtension {
+    pub(super) q_range: Range<usize>,
+    pub(super) t_range: Range<usize>,
     pub(super) energy: Energy,
-    pub(super) q_start: usize,
-    pub(super) q_end: usize,
-    pub(super) t_start: usize,
-    pub(super) t_end: usize,
     pub(super) alignment: Option<Box<Alignment>>,
 }
 
 impl SeedExtension {
     /// Nucleotides participating in the duplex, both strands counted.
     pub(super) fn nt_count(&self) -> usize {
-        (self.q_end - self.q_start + 1) + (self.t_end - self.t_start + 1)
+        self.q_range.len() + self.t_range.len()
     }
 }
 
@@ -50,7 +50,7 @@ impl SeedExtension {
 /// left extension and increase during right extension, so a left flank enters
 /// the DP buffers back-to-front.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum ExtendDir {
+enum ExtendDir {
     Left,
     Right,
 }
@@ -64,8 +64,7 @@ impl std::fmt::Display for ExtendDir {
     }
 }
 
-/// Per-worker extension engine. Each worker owns one; `&mut` is safe because
-/// only mutable state (grid, buffers) is mutated.
+/// Per-worker extension engine.
 ///
 /// The engine owns the window policy along with the buffers it constrains: the
 /// buffers are the reason a window can never exceed [`MAX_EXT`]. That ceiling is
@@ -83,7 +82,7 @@ pub(super) struct ExtensionEngine {
 
 impl ExtensionEngine {
     /// `max_window` of `None` is unlimited: each side follows the query.
-    pub(super) fn new(max_window: Option<usize>, model: &ScoringModel) -> Self {
+    pub(super) fn from_parts(max_window: Option<usize>, model: &ScoringModel) -> Self {
         let gotoh_right = Gotoh::new(model);
         let gotoh_left = Gotoh::new(&model.transpose());
         Self {
@@ -103,9 +102,10 @@ impl ExtensionEngine {
     /// An unlimited window follows the query, so the target window never outruns
     /// the query flank it pairs with. [`MAX_EXT`] bounds both, because that is
     /// what the buffers hold — resolving the sentinel here keeps the grid
-    /// pre-size in `new` and the per-extension cap on one rule.
+    /// pre-size in the constructor and the per-extension cap on one rule. Even a
+    /// zero extension keeps the anchor column needed for boundary scoring.
     fn window_cap(max_window: Option<usize>, query_avail: usize) -> usize {
-        max_window.unwrap_or(query_avail).min(MAX_EXT)
+        max_window.unwrap_or(query_avail).clamp(1, MAX_EXT)
     }
 
     /// Extend both flanks of `seed` against the full query and target views and
@@ -122,13 +122,21 @@ impl ExtensionEngine {
         seed: &SeedHit,
         include_alignment: bool,
     ) -> SeedExtension {
-        let (q_start, t_start, len) = (seed.query_start, seed.target_start, seed.len);
-        let q_match_end = q_start + len - 1;
-        let t_match_end = t_start + len - 1;
+        let query_range = seed.query_range();
+        let target_range = seed.target_range();
+        let len = query_range.len();
+        let q_match_end = query_range
+            .clone()
+            .next_back()
+            .expect("SeedHit query range must be non-empty");
+        let t_match_end = target_range
+            .clone()
+            .next_back()
+            .expect("SeedHit target range must be non-empty");
 
         let left = self.extend(
-            &query[..=q_start],
-            &target[..=t_start],
+            &query[..=query_range.start],
+            &target[..=target_range.start],
             ExtendDir::Left,
             include_alignment,
         );
@@ -139,24 +147,23 @@ impl ExtensionEngine {
             include_alignment,
         );
 
-        let (q_start, q_end) = (q_start - left.q_ext, q_match_end + right.q_ext);
-        let (t_start, t_end) = (t_start - left.t_ext, t_match_end + right.t_ext);
+        let q_range = query_range.start - left.q_ext..query_range.end + right.q_ext;
+        let t_range = target_range.start - left.t_ext..target_range.end + right.t_ext;
+        let alignment = include_alignment.then(|| {
+            Box::new(Alignment::from_parts(
+                &left.pairs,
+                len,
+                &right.pairs,
+                &query[q_range.clone()],
+                &target[t_range.clone()],
+            ))
+        });
 
         SeedExtension {
             energy: left.energy + right.energy,
-            q_start,
-            q_end,
-            t_start,
-            t_end,
-            alignment: include_alignment.then(|| {
-                Box::new(Alignment::from_parts(
-                    &left.pairs,
-                    len,
-                    &right.pairs,
-                    &query[q_start..=q_end],
-                    &target[t_start..=t_end],
-                ))
-            }),
+            q_range,
+            t_range,
+            alignment,
         }
     }
 
@@ -181,22 +188,12 @@ impl ExtensionEngine {
             ExtendDir::Right => &self.gotoh_right,
         };
         let cap = Self::window_cap(self.max_window, query.len());
-        let q_len = fill(&mut self.q_buf, query, dir, cap);
-        let t_len = fill(&mut self.t_buf, target, dir, cap);
-        trace!("{dir} q_len={q_len} t_len={t_len}");
+        let q_win = fill(&mut self.q_buf, query, dir, cap);
+        let t_win = fill(&mut self.t_buf, target, dir, cap);
+        trace!("{dir} q_len={} t_len={}", q_win.len(), t_win.len());
 
-        if q_len == 0 || t_len == 0 {
-            return ExtensionResult {
-                energy: Energy(gotoh.boundary(anchor(query, dir), anchor(target, dir))),
-                q_ext: 0,
-                t_ext: 0,
-                pairs: SmallVec::new(),
-            };
-        }
-
-        let (q_win, t_win) = (&self.q_buf[..q_len], &self.t_buf[..t_len]);
         let best = gotoh.extend(q_win, t_win, &mut self.grid);
-        let pairs = if include_alignment && (best.q_idx > 0 || best.t_idx > 0) {
+        let pairs = if include_alignment {
             let trace = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
             map_trace_to_pairs(q_win, t_win, dir, &trace, best.q_idx, best.t_idx)
         } else {
@@ -212,7 +209,7 @@ impl ExtensionEngine {
 }
 
 /// Copy a flank into `dst` in DP order — position 0 is the anchor column at the
-/// seed boundary — and return the window length.
+/// seed boundary — and return the filled window.
 ///
 /// `dst.len()` is the hard ceiling, so an unlimited `cap` still cannot overflow
 /// the buffer.
@@ -220,7 +217,7 @@ impl ExtensionEngine {
 /// A `Left` flank enters reversed here; `map_trace_to_pairs` reverses a `Right`
 /// traceback on the way out. Both stem from the same polarity, in opposite
 /// directions — change one and check the other.
-fn fill(dst: &mut [u8], src: &[Base], dir: ExtendDir, cap: usize) -> usize {
+fn fill<'a>(dst: &'a mut [u8], src: &[Base], dir: ExtendDir, cap: usize) -> &'a [u8] {
     let len = src.len().min(cap).min(dst.len());
     match dir {
         ExtendDir::Left => {
@@ -234,17 +231,7 @@ fn fill(dst: &mut [u8], src: &[Base], dir: ExtendDir, cap: usize) -> usize {
             }
         }
     }
-    len
-}
-
-/// Anchor symbol at the seed boundary, for windows too short to fill.
-///
-/// Routed through `fill` so the buffer-order rule is not restated here. Callers
-/// have already asserted the flank is non-empty, so `fill` always yields one.
-fn anchor(src: &[Base], dir: ExtendDir) -> u8 {
-    let mut buf = [0u8; 1];
-    fill(&mut buf, src, dir, 1);
-    buf[0]
+    &dst[..len]
 }
 
 /// Resolve a traceback into pair classes, ordered 5'->3' along the query.
@@ -265,24 +252,23 @@ fn map_trace_to_pairs(
     for &op in ops {
         // The advance follows the DP op, not the resolved class: a `Match` over a
         // block-separator `Gap` classifies as a bulge but still consumed both.
-        match op {
+        let pair = match op {
             TraceOp::Match => {
-                out.push(PairClass::from_bases(
-                    Base::from_u8(q[i]),
-                    Base::from_u8(t[j]),
-                ));
+                let pair = PairClass::from_bases(Base::from_u8(q[i]), Base::from_u8(t[j]));
                 i -= 1;
                 j -= 1;
+                pair
             }
             TraceOp::GapQ => {
-                out.push(PairClass::QueryBulge);
                 i -= 1;
+                PairClass::QueryBulge
             }
             TraceOp::GapT => {
-                out.push(PairClass::TargetBulge);
                 j -= 1;
+                PairClass::TargetBulge
             }
-        }
+        };
+        out.push(pair);
     }
     if dir == ExtendDir::Right {
         out.reverse();
@@ -303,7 +289,7 @@ mod tests {
     #[test]
     fn extension_result_extents_match_traceback_consumption() {
         let model = test_model();
-        let mut engine = ExtensionEngine::new(Some(8), &model);
+        let mut engine = ExtensionEngine::from_parts(Some(8), &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::U, Base::A, Base::C, Base::G];
 
@@ -345,17 +331,15 @@ mod tests {
         ] {
             let mut q_buf = [u8::MAX; 3];
             let mut t_buf = [u8::MAX; 3];
-            assert_eq!(fill(&mut q_buf, q_src, dir, 3), 3);
-            assert_eq!(fill(&mut t_buf, t_src, dir, 3), 3);
-            assert_eq!(q_buf, expected_q.map(Base::as_u8));
-            assert_eq!(t_buf, expected_t.map(Base::as_u8));
+            assert_eq!(fill(&mut q_buf, q_src, dir, 3), expected_q.map(Base::as_u8));
+            assert_eq!(fill(&mut t_buf, t_src, dir, 3), expected_t.map(Base::as_u8));
         }
     }
 
     #[test]
     fn zero_cap_window_scores_the_anchor_column() {
         let model = test_model();
-        let mut engine = ExtensionEngine::new(Some(0), &model);
+        let mut engine = ExtensionEngine::from_parts(Some(0), &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::U, Base::A, Base::C, Base::G];
 
@@ -390,18 +374,18 @@ mod tests {
         // Unlimited: both sides take the query flank, so a target flank orders of
         // magnitude longer than the query cannot outrun the query it pairs with.
         let cap = ExtensionEngine::window_cap(None, query.len());
-        assert_eq!(fill(&mut buf, &query, ExtendDir::Right, cap), 5);
-        assert_eq!(fill(&mut buf, &long, ExtendDir::Right, cap), 5);
+        assert_eq!(fill(&mut buf, &query, ExtendDir::Right, cap).len(), 5);
+        assert_eq!(fill(&mut buf, &long, ExtendDir::Right, cap).len(), 5);
 
         // Fixed: independent of how much sequence is available on either side.
         let cap = ExtensionEngine::window_cap(Some(20), query.len());
-        assert_eq!(fill(&mut buf, &query, ExtendDir::Right, cap), 5);
-        assert_eq!(fill(&mut buf, &long, ExtendDir::Right, cap), 20);
+        assert_eq!(fill(&mut buf, &query, ExtendDir::Right, cap).len(), 5);
+        assert_eq!(fill(&mut buf, &long, ExtendDir::Right, cap).len(), 20);
 
         // Buffer-safety invariant: the buffer is the ceiling on every path.
         for max_window in [None, Some(0), Some(20), Some(usize::MAX)] {
             let cap = ExtensionEngine::window_cap(max_window, long.len());
-            assert!(fill(&mut buf, &long, ExtendDir::Right, cap) <= MAX_EXT);
+            assert!(fill(&mut buf, &long, ExtendDir::Right, cap).len() <= MAX_EXT);
         }
     }
 
@@ -415,8 +399,8 @@ mod tests {
         // chromosome search: the window must still follow the query.
         let target = [Base::U; 200];
 
-        let mut unlimited = ExtensionEngine::new(None, &model);
-        let mut fixed = ExtensionEngine::new(Some(query.len()), &model);
+        let mut unlimited = ExtensionEngine::from_parts(None, &model);
+        let mut fixed = ExtensionEngine::from_parts(Some(query.len()), &model);
         for dir in [ExtendDir::Left, ExtendDir::Right] {
             let free = unlimited.extend(&query, &target, dir, true);
             let pinned = fixed.extend(&query, &target, dir, true);
