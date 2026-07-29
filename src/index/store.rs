@@ -155,14 +155,7 @@ impl TargetRegistry {
     /// For input `T` written 5' to 3', Forward is `R(T)` and Reverse is `C(T)`.
     #[inline]
     pub fn target(&self, target_idx: usize, strand: Strand) -> &[Base] {
-        let seq_len = self.seq_lens[target_idx];
-        let offset = self.offsets[target_idx]
-            + match strand {
-                Strand::Forward => 0,
-                Strand::Reverse => seq_len + 1,
-            };
-        let combined_seq = self.combined_seq();
-        &combined_seq[offset..offset + seq_len]
+        self.view().target(target_idx, strand)
     }
 
     /// Convert an inclusive target span between the physical duplex view and

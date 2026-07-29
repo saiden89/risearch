@@ -1,4 +1,4 @@
-use crate::types::Base;
+use crate::types::{Base, Strand};
 
 /// Zero-copy view of a combined sequence + suffix array.
 ///
@@ -17,6 +17,20 @@ pub struct RegistryView<'a> {
 }
 
 impl<'a> RegistryView<'a> {
+    /// Return the selected physical target strand in duplex-column order.
+    ///
+    /// For input `T` written 5' to 3', Forward is `R(T)` and Reverse is `C(T)`.
+    #[inline]
+    pub fn target(&self, target_idx: usize, strand: Strand) -> &'a [Base] {
+        let seq_len = self.seq_lens[target_idx];
+        let offset = self.offsets[target_idx]
+            + match strand {
+                Strand::Forward => 0,
+                Strand::Reverse => seq_len + 1,
+            };
+        &self.combined_seq[offset..offset + seq_len]
+    }
+
     /// Read the base at `combined_seq[sa[sa_idx] + offset]` — branchless hot-path lookup.
     #[inline(always)]
     pub(crate) unsafe fn sa_base_unchecked(&self, sa_idx: usize, offset: usize) -> Base {

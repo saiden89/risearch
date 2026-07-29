@@ -1,7 +1,9 @@
-use crate::dp::MAX_TRANSITION_SCORE;
-use crate::types::{Base, Energy, BASE_COUNT};
+use anyhow::Result;
 
-use super::{flat_idx, DsmTable, DSM_FLAT_SIZE};
+use crate::dp::MAX_TRANSITION_SCORE;
+use crate::types::{Base, DsmId, Energy, BASE_COUNT};
+
+use super::{flat_idx, DsmRegistry, DsmTable, DSM_FLAT_SIZE};
 
 const BASES: [Base; BASE_COUNT] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
 
@@ -32,6 +34,12 @@ impl ScoringModel {
         } else {
             2
         }
+    }
+
+    /// Load the bundled table for `id` at `temperature` and apply `penalty`.
+    pub fn load(id: &DsmId, temperature: i32, penalty: Energy) -> Result<Self> {
+        let (initiation, source_table) = DsmRegistry::load(id, temperature)?;
+        Ok(Self::new(&source_table, initiation, penalty))
     }
 
     /// Create a new scoring model from a source table and initiation energy.
