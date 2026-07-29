@@ -27,28 +27,15 @@ impl<'a> SeedingEngine<'a> {
     /// Retained for benchmarks and unit tests; the search paths stream one query
     /// at a time via [`seed_query`](Self::seed_query).
     pub fn run(&self, config: &SeedConfig) -> Result<Vec<(usize, Vec<SeedHit>)>> {
-        let mut seeds_by_query: Vec<Vec<SeedHit>> =
-            (0..self.queries.len()).map(|_| Vec::new()).collect();
-        self.run_streaming(config, |seed| seeds_by_query[seed.query_idx].push(seed))?;
-
-        Ok(seeds_by_query
-            .into_iter()
-            .enumerate()
-            .filter_map(|(qi, seeds)| (!seeds.is_empty()).then_some((qi, seeds)))
-            .collect())
-    }
-
-    /// Stream every query's seeds to `on_seed`, one query at a time via
-    /// [`seed_query`](Self::seed_query).
-    pub(crate) fn run_streaming<F: FnMut(SeedHit)>(
-        &self,
-        config: &SeedConfig,
-        mut on_seed: F,
-    ) -> Result<()> {
+        let mut groups = Vec::new();
         for qi in 0..self.queries.len() {
-            self.seed_query(qi, config, &mut on_seed)?;
+            let mut seeds = Vec::new();
+            self.seed_query(qi, config, |seed| seeds.push(seed))?;
+            if !seeds.is_empty() {
+                groups.push((qi, seeds));
+            }
         }
-        Ok(())
+        Ok(groups)
     }
 
     /// Seed a single query against the shared target SA: build the query's own
@@ -64,9 +51,9 @@ impl<'a> SeedingEngine<'a> {
         // `traverse` is monomorphized on whether G-U wobble pairs are allowed.
         let query = self.queries.get(qi);
         if config.seed_wobble {
-            self.seed_one::<true, F>(qi, query, config, &mut on_seed)
+            self.seed_one::<true, _>(qi, query, config, &mut on_seed)
         } else {
-            self.seed_one::<false, F>(qi, query, config, &mut on_seed)
+            self.seed_one::<false, _>(qi, query, config, &mut on_seed)
         }
     }
 
@@ -77,35 +64,32 @@ impl<'a> SeedingEngine<'a> {
         config: &SeedConfig,
         on_seed: &mut F,
     ) -> Result<()> {
-        // Skip queries whose seed window cannot host a seed.
+        // Returning here also skips the per-query suffix array build.
         if query.min_seed_len > query.max_seed_len {
             return Ok(());
         }
         let tview = self.tview;
 
-        // Build this query's own (tiny) suffix array over its seed sequence; it
-        // lives only for this traversal, then drops. SA_CHAR_PADDING sentinels
-        // keep the branchless kernel lookups in bounds. The single-query view's
-        // offsets/seq_lens are [0]/[seed_len], so the query-side remap in
-        // `emit_seed_match` is the identity.
+        // SA_CHAR_PADDING sentinels keep the branchless kernel lookups in bounds.
         let seed = query.seed_sequence();
-        let mut sa = SuffixArray::try_from(seed)
+        // A per-query seed is tens of bases; an OpenMP team would cost more than the sort.
+        let mut sa = SuffixArray::build(seed, Some(1))
             .with_context(|| format!("building suffix array for query '{}'", query.name()))?
             .into_inner();
-        // Drop query suffixes too short to reach min_seed_len. They emit nothing
-        // anyway; skipping them avoids wasted target-SA descent.
+        // Suffixes too short for min_seed_len emit nothing; dropping them avoids
+        // wasted target-SA descent.
         let max_valid_start = seed.len().saturating_sub(query.min_seed_len);
         sa.retain(|&p| (p as usize) <= max_valid_start);
         let sa_real_len = sa.len();
-        let mut seq = seed.to_vec();
-        seq.resize(seq.len() + SA_CHAR_PADDING, Base::Gap);
         sa.resize(sa.len() + SA_CHAR_PADDING, 0u64);
-        let (offsets, seq_lens) = ([0usize], [seed.len()]);
+        let mut seq = vec![Base::Gap; seed.len() + SA_CHAR_PADDING];
+        seq[..seed.len()].copy_from_slice(seed);
+        let seq_lens = [seed.len()];
         let qview = RegistryView {
             combined_seq: &seq,
             combined_sa: &sa,
             sa_real_len,
-            offsets: &offsets,
+            offsets: &[0],
             seq_lens: &seq_lens,
         };
 
@@ -121,7 +105,7 @@ impl<'a> SeedingEngine<'a> {
                 emit_seed_match::<WOBBLE, _>(
                     qi,
                     query,
-                    qview,
+                    qview.combined_sa,
                     tview,
                     config.no_max_prune,
                     m,
@@ -134,8 +118,8 @@ impl<'a> SeedingEngine<'a> {
 }
 
 /// Emit every (query position × target position) seed for one `SeedMatch` of a
-/// single query. The query side is a one-entry SA (`offsets == [0]`), so its
-/// remap is the identity `local_pos == q_sa_pos`; only the target side needs the
+/// single query. Query positions come straight out of the single-query SA and
+/// map back through [`Query::map_seed_pos`]; only the target side needs the
 /// offset binary search.
 ///
 /// Non-maximal seeds are dropped here unless `no_max_prune`: they are shorter
@@ -143,7 +127,7 @@ impl<'a> SeedingEngine<'a> {
 fn emit_seed_match<const WOBBLE: bool, F: FnMut(SeedHit)>(
     qi: usize,
     query: &Query,
-    qview: RegistryView<'_>,
+    query_sa: &[u64],
     tview: RegistryView<'_>,
     no_max_prune: bool,
     raw_match: SeedMatch,
@@ -152,9 +136,7 @@ fn emit_seed_match<const WOBBLE: bool, F: FnMut(SeedHit)>(
     let seed_len = raw_match.seed_len;
     let query_bases = query.sequence();
     let seed_interval = query.seed_interval();
-    for &query_sa_pos in
-        &qview.combined_sa[raw_match.query_interval.start..raw_match.query_interval.end]
-    {
+    for &query_sa_pos in &query_sa[raw_match.query_interval.start..raw_match.query_interval.end] {
         let Some(query_start) = query.map_seed_pos(query_sa_pos as usize, seed_len) else {
             continue;
         };
@@ -183,17 +165,16 @@ fn emit_seed_match<const WOBBLE: bool, F: FnMut(SeedHit)>(
                 len: seed_len,
                 strand,
             };
-            if !no_max_prune
-                && !hit.is_maximal(
+            if no_max_prune
+                || hit.is_maximal(
                     query_bases,
                     tview.target(target_idx, strand),
                     &seed_interval,
                     WOBBLE,
                 )
             {
-                continue;
+                on_seed(hit);
             }
-            on_seed(hit);
         }
     }
 }
@@ -242,9 +223,7 @@ mod tests {
             seed_length: Some(2),
             seed_wobble: false,
             no_max_prune: true,
-            max_mismatches: 0,
-            min_prefix_matches: 1,
-            min_suffix_matches: 0,
+            ..Default::default()
         };
         let queries = build_queries(">q1\nGGAC\n", &config);
         let (targets, _dir) = build_store(">t1\nGU\n");
@@ -266,14 +245,10 @@ mod tests {
     #[test]
     fn collect_preserves_same_block_coordinates_on_both_strands() {
         let config = SeedConfig {
-            seed_start: None,
-            seed_end: None,
             seed_length: Some(2),
             seed_wobble: false,
             no_max_prune: true,
-            max_mismatches: 0,
-            min_prefix_matches: 1,
-            min_suffix_matches: 0,
+            ..Default::default()
         };
         let queries = build_queries(">q1\nCG\n", &config);
         let (targets, _dir) = build_store(">t1\nAACGU\n");
