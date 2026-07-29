@@ -49,7 +49,9 @@ pub struct SearchHit {
     pub t_end: usize,
     pub strand: Strand,
     pub energy: Energy,
-    pub alignment: Option<Alignment>,
+    // Boxed: the hit array is grown and moved per seed, and an inline `Alignment`
+    // would make every element carry its column buffer.
+    pub alignment: Option<Box<Alignment>>,
 }
 
 /// Where a search's hits go.
@@ -138,7 +140,7 @@ fn hit_is_better(candidate: &SearchHit, current: &SearchHit) -> bool {
 /// alignment ranks as empty, which sorts before any non-empty one.
 fn fingerprint_cmp(a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
     fn ranks(hit: &SearchHit) -> impl Iterator<Item = u8> + '_ {
-        hit.alignment.iter().flat_map(Alignment::pairing_ranks)
+        hit.alignment.iter().flat_map(|a| a.pairing_ranks())
     }
     ranks(a).cmp(ranks(b))
 }
@@ -305,9 +307,11 @@ impl SearchWorker {
         let opts = ctx.opts;
         let query = ctx.queries.get(query_idx).sequence();
 
+        // Loop-invariant: rebuilding it per seed re-enters the rkyv root twice.
+        let tview = ctx.store.view();
         let mut hits = Vec::new();
         engine.seed_query(query_idx, &opts.seed, |seed| {
-            let target = ctx.store.target(seed.target_idx, seed.strand);
+            let target = tview.target(seed.target_idx, seed.strand);
             let (q_start, t_start, len) = (seed.query_start, seed.target_start, seed.len);
             debug_assert!(t_start + len <= target.len());
 

@@ -69,10 +69,13 @@ impl HitSink for TextSink<'_> {
         }
         let q_name = self.queries.get_name(query_idx);
 
+        // Loop-invariant: rebuilding it per hit re-enters the rkyv root.
+        let tview = self.store.view();
+
         // `format_hit_into` reserves per hit, so the buffer sizes itself.
         let mut block = Vec::new();
         for hit in &hits {
-            let target = self.store.target(hit.target_idx, hit.strand);
+            let target = tview.target(hit.target_idx, hit.strand);
             let t_name = self.store.get_name(hit.target_idx);
             format_hit_into(&mut block, hit, q_name, t_name, target, self.format);
         }

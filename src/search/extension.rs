@@ -33,7 +33,7 @@ pub(super) struct SeedExtension {
     pub(super) q_end: usize,
     pub(super) t_start: usize,
     pub(super) t_end: usize,
-    pub(super) alignment: Option<Alignment>,
+    pub(super) alignment: Option<Box<Alignment>>,
 }
 
 impl SeedExtension {
@@ -149,13 +149,13 @@ impl ExtensionEngine {
             t_start,
             t_end,
             alignment: include_alignment.then(|| {
-                Alignment::from_parts(
+                Box::new(Alignment::from_parts(
                     &left.pairs,
                     len,
                     &right.pairs,
                     &query[q_start..=q_end],
                     &target[t_start..=t_end],
-                )
+                ))
             }),
         }
     }

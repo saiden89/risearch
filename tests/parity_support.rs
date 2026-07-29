@@ -32,7 +32,7 @@ fn make_hit(
         t_end,
         strand,
         energy: Energy::from_kcal(energy),
-        alignment: Some(alignment),
+        alignment: Some(Box::new(alignment)),
     }
 }
 
