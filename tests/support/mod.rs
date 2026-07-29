@@ -106,8 +106,8 @@ pub(crate) fn parse_output(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let parsed_count = hits.len();
-    // Sort by group_key, then all coordinates for deterministic dedup
-    // Must sort by ALL coordinate fields to ensure true duplicates are adjacent
+    // Sort on the full dedup key: coordinates alone leave two identical rows
+    // non-adjacent when a same-coordinate row of another energy sits between them.
     hits.sort_by(|a, b| {
         (a.query_idx, a.target_idx)
             .cmp(&(b.query_idx, b.target_idx))
@@ -115,6 +115,8 @@ pub(crate) fn parse_output(
             .then(a.q_end.cmp(&b.q_end))
             .then(a.t_start.cmp(&b.t_start))
             .then(a.t_end.cmp(&b.t_end))
+            .then(char::from(a.strand).cmp(&char::from(b.strand)))
+            .then(f64::from(a.energy).total_cmp(&f64::from(b.energy)))
     });
     hits.dedup_by(|a, b| {
         a.coords_match(b) && (f64::from(a.energy) - f64::from(b.energy)).abs() < 0.001
