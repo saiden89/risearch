@@ -41,9 +41,9 @@ impl<S: GotohScoring> Gotoh<S> {
                 let boundary = row.boundary_ptr();
                 let ext_qgap = row.ext_qgap();
 
-                // 1. Target Sequence Context
-                let mut tp = *t_ptr.add(2) as usize; // Target previous
-                let mut tc_ptr = t_ptr.add(3); // Target current
+                // 1. T-symbol context
+                let mut tp = *t_ptr.add(2) as usize; // Previous t symbol
+                let mut tc_ptr = t_ptr.add(3); // Current t symbol
 
                 // 2. Previous Row Grid Context (Reads only)
                 let mut diag = *ptr.add(prev_row_offset + 2);

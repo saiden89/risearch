@@ -1,10 +1,8 @@
-//! Gotoh 3-state DP over an abstract symbol alphabet.
+//! Gotoh 3-state DP over ranked symbol streams.
 //!
-//! The engine knows nothing about nucleotides or thermodynamics: a window
-//! arrives as dense `u8` symbol ranks in DP order, every score comes from a
-//! [`GotohScoring`] implementation, and results are plain `i32`. Orienting a
-//! duplex flank into a window, and reading energies back out of the scores, is
-//! the caller's job.
+//! A window arrives as dense `u8` ranks in DP order, every transition score
+//! comes from a [`GotohScoring`] implementation, and results are plain `i32`.
+//! The caller owns the symbols' meaning and any interpretation of a trace.
 
 mod core;
 pub mod gotoh;
@@ -21,7 +19,12 @@ use std::cmp::max;
 /// within this bound.
 pub const MAX_EXT: usize = 256;
 
-/// One step in a Gotoh traceback: which DP state was active.
+/// One step in a Gotoh traceback, named for the active DP state.
+///
+/// The variants specify only coordinate consumption:
+/// - `Match`: one symbol from each input
+/// - `GapQ`: one symbol from `q`
+/// - `GapT`: one symbol from `t`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceOp {
     Match,
@@ -108,9 +111,9 @@ pub(super) fn max3(a: i32, b: i32, c: i32) -> i32 {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct DpCell {
-    pub(super) m: i32,     // Match/mismatch state
-    pub(super) gap_q: i32, // Query-gap state: query symbols unpaired
-    pub(super) gap_t: i32, // Target-gap state: target symbols unpaired
+    pub(super) m: i32,     // Diagonal state: consume q and t
+    pub(super) gap_q: i32, // Q-only state: consume q
+    pub(super) gap_t: i32, // T-only state: consume t
 }
 
 impl DpCell {

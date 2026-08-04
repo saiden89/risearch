@@ -1,22 +1,14 @@
 //! Gotoh 3-state DP recurrence.
 //!
-//! This module implements the core DP engine for directional extension.
-//! The algorithm is agnostic to the underlying scoring data, interacting
-//! only through the [`GotohScoring`] trait.
+//! This module implements the core DP engine for directional extension and
+//! obtains every transition score through [`GotohScoring`]. Its three states
+//! differ only in coordinate consumption:
+//! - `M`: consume one symbol from `q` and `t`
+//! - `GapQ`: consume one symbol from `q`
+//! - `GapT`: consume one symbol from `t`
 //!
-//! The DP core identifies three transition families:
-//! - `M`: continue the match run, close a query gap, or close a target gap
-//! - `GapQ`: open or extend a query gap
-//! - `GapT`: open or extend a target gap
-//!
-//! A mismatch is not its own transition family; it is simply an unfavorable
-//! match transition score.
-//!
-//! `GapQ`/`GapT` are the states written `Bq`/`Bt` (query/target bulge) in the
-//! RIsearch papers and the C implementation. They are gaps here because that is
-//! all the recurrence knows; a gap run is a *bulge* only because `GapQ` and
-//! `GapT` have no transition between them, so no two gap runs can be adjacent.
-//! Naming that conclusion is the search layer's job — see `PairClass`.
+//! `M` covers every diagonal transition. The caller interprets the symbols and
+//! the recovered state path.
 //!
 //! # Index safety
 //!
@@ -55,7 +47,7 @@ impl<S: GotohScoring> Gotoh<S> {
         }
     }
 
-    /// Boundary penalty for the given symbol pair.
+    /// Boundary score for the given terminal symbols.
     #[inline(always)]
     pub fn boundary(&self, qc: u8, tc: u8) -> i32 {
         self.scoring.boundary(qc, tc)
@@ -75,8 +67,8 @@ impl<S: GotohScoring> Gotoh<S> {
             "DP window exceeds MAX_EXT: {q_len}x{t_len}"
         );
 
-        // A window of one column scores only its anchor pair, and an empty one has
-        // no anchor at all. Taking that branch first means the raw reads below are
+        // A one-position window scores only its anchor, and an empty one has no
+        // anchor at all. Taking that branch first means the raw reads below are
         // covered by a check the hot path already pays for.
         if q_len <= 1 || t_len <= 1 {
             return match (q.first(), t.first()) {
@@ -225,8 +217,7 @@ impl<S: GotohScoring> Gotoh<S> {
 
 #[cfg(test)]
 mod tests {
-    // Note: Integration tests for the DP algorithm (parity with legacy RIsearch)
-    // are located in the /tests directory.
+    // End-to-end tests for the DP algorithm are located in the /tests directory.
 
     use super::is_transition;
     use crate::dp::NEG_INF;

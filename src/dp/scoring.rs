@@ -17,28 +17,28 @@ pub trait GotohScoring {
     /// Associated row-profile type for hot-path optimization.
     type RowProfile: GotohRowProfile;
 
-    /// Build a row-local lookup for the given (qp, qc) pair.
+    /// Build a row-local lookup for the given previous/current `q` symbols.
     fn row_profile(&self, qp: u8, qc: u8) -> Self::RowProfile;
 
-    /// M ← M transition score: continue the match run.
+    /// M ← M transition score: continue diagonally.
     fn r#match(&self, qp: u8, qc: u8, tp: u8, tc: u8) -> i32;
 
-    /// M ← GapQ transition score: close a query gap and return to matching.
+    /// M ← GapQ transition score: leave the Q-only state diagonally.
     fn close_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32;
 
-    /// M ← GapT transition score: close a target gap and return to matching.
+    /// M ← GapT transition score: leave the T-only state diagonally.
     fn close_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32;
 
-    /// GapQ ← M transition score: open a query gap.
+    /// GapQ ← M transition score: enter the Q-only state.
     fn open_query_gap(&self, qp: u8, qc: u8, tc: u8) -> i32;
 
-    /// GapQ ← GapQ transition score: extend a query gap.
+    /// GapQ ← GapQ transition score: continue the Q-only state.
     fn extend_query_gap(&self, qp: u8, qc: u8) -> i32;
 
-    /// GapT ← M transition score: open a target gap.
+    /// GapT ← M transition score: enter the T-only state.
     fn open_target_gap(&self, qc: u8, tp: u8, tc: u8) -> i32;
 
-    /// GapT ← GapT transition score: extend a target gap.
+    /// GapT ← GapT transition score: continue the T-only state.
     fn extend_target_gap(&self, tp: u8, tc: u8) -> i32;
 
     /// Boundary transition score.
