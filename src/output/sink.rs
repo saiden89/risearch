@@ -75,9 +75,10 @@ impl HitSink for TextSink<'_> {
         // `format_hit_into` reserves per hit, so the buffer sizes itself.
         let mut block = Vec::new();
         for hit in &hits {
-            let target = tview.target(hit.target_idx, hit.strand);
+            let target_idx = usize::try_from(hit.target_idx)?;
+            let target = tview.target(target_idx, hit.strand);
             let target_range = hit.duplex_target_range(tview);
-            let t_name = self.store.get_name(hit.target_idx);
+            let t_name = self.store.get_name(target_idx);
             format_hit_into(
                 &mut block,
                 hit,

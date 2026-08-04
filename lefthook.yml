@@ -2,11 +2,4 @@ pre-commit:
   commands:
     fmt:
       glob: "*.rs"
-      run: mise exec -- rustfmt --edition 2021 {staged_files}
-      stage_fixed: true
-
-pre-push:
-  commands:
-    clippy:
-      # Too slow to pay on every commit, fast enough to beat CI to the failure.
-      run: mise exec -- cargo clippy --workspace --all-targets --features prof -- -D warnings
+      run: mise exec -- cargo fmt --all --check

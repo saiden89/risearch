@@ -77,10 +77,9 @@ impl ScoringModel {
         }
     }
 
-    /// Compute the total binding free energy for a state with the given total
-    /// stacking stability score and physical length.
-    pub fn binding_energy(&self, stacking_stability: Energy, length: usize) -> Energy {
-        self.initiation - stacking_stability - (self.penalty * length)
+    /// Convert a total stacking score and physical length to binding free energy.
+    pub fn binding_energy(&self, stacking_score: Energy, length: usize) -> Energy {
+        self.initiation - stacking_score - (self.penalty * length)
     }
 
     #[inline(always)]

@@ -1,8 +1,3 @@
-use std::cmp::Ordering;
-use std::ops::Range;
-
-use smallvec::SmallVec;
-
 use crate::types::{Base, PairType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,14 +34,6 @@ impl PairClass {
         }
     }
 
-    /// Canonical rank for ordering pairings. Derived from [`symbol`](Self::symbol)
-    /// so a printed fingerprint and a sort of the same columns can never disagree;
-    /// note this is deliberately not the variant declaration order.
-    #[inline]
-    pub const fn rank(self) -> u8 {
-        self.symbol() as u8
-    }
-
     pub const fn alignment_symbol(self) -> char {
         match self {
             Self::Canonical => '|',
@@ -54,148 +41,111 @@ impl PairClass {
             _ => ' ',
         }
     }
-
-    #[inline]
-    pub const fn consumes_query(self) -> bool {
-        !matches!(self, Self::TargetBulge)
-    }
-
-    #[inline]
-    pub const fn consumes_target(self) -> bool {
-        !matches!(self, Self::QueryBulge)
-    }
 }
 
-/// One rendered column: what the pair is, and the bases on either side.
+/// One resolved alignment column in physical duplex order.
 ///
-/// `query` and `target` are real bases, `Base::Gap` on the side a bulge skips,
-/// so a formatter can emit a column without consulting a sequence.
+/// [`Base::Gap`] marks the side a traceback step did not consume. Normalized
+/// query and target sequences never contain gap-ranked input bases, so every
+/// other value is an actual consumed input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlignColumn {
-    pub class: PairClass,
-    pub query: Base,
-    pub target: Base,
+    class: PairClass,
+    query: Base,
+    target: Base,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Alignment {
-    columns: SmallVec<[AlignColumn; 128]>,
-    seed: Option<Range<usize>>,
-}
+impl AlignColumn {
+    #[inline]
+    pub const fn class(&self) -> PairClass {
+        self.class
+    }
 
-impl Alignment {
-    /// Resolve flank classes and a gap-free core of `core_len` into columns.
-    ///
-    /// Every column's class must agree with its own bases, which is what pins the
-    /// flanks' order: a flank handed over reversed lands its classes on the wrong
-    /// bases. Checked under `debug_assertions`.
-    pub fn from_parts(
-        prefix: &[PairClass],
-        core_len: usize,
-        suffix: &[PairClass],
-        query: &[Base],
-        target: &[Base],
-    ) -> Self {
-        let classes = prefix
-            .iter()
-            .copied()
-            .map(Some)
-            .chain(std::iter::repeat_n(None, core_len))
-            .chain(suffix.iter().copied().map(Some));
-        let out = Self::resolve(
-            classes,
-            Some(prefix.len()..prefix.len() + core_len),
+    #[inline]
+    pub const fn query(&self) -> Base {
+        self.query
+    }
+
+    #[inline]
+    pub const fn target(&self) -> Base {
+        self.target
+    }
+
+    /// A diagonal traceback step consuming both inputs.
+    #[inline]
+    pub const fn paired(query: Base, target: Base) -> Self {
+        debug_assert!(
+            !matches!(query, Base::Gap) && !matches!(target, Base::Gap),
+            "a paired column must consume two non-gap inputs"
+        );
+        Self {
+            class: PairClass::from_bases(query, target),
             query,
             target,
-        );
-        debug_assert!(
-            out.columns
-                .iter()
-                .all(|c| c.class == PairClass::from_bases(c.query, c.target)),
-            "alignment column disagrees with its own bases: {:?}",
-            out.columns
-        );
-        out
-    }
-
-    /// Resolve an alignment produced elsewhere, keeping its classes as given.
-    ///
-    /// Unlike [`Self::from_parts`] the classes are not re-derived: a foreign
-    /// aligner's chemistry is data to compare against, not an invariant to hold.
-    ///
-    /// Exists so the parity harness can populate [`SearchHit::alignment`] from
-    /// another implementation's output. Not part of the library's own pipeline.
-    ///
-    /// [`SearchHit::alignment`]: crate::SearchHit::alignment
-    #[doc(hidden)]
-    pub fn from_classes(
-        classes: &[PairClass],
-        seed: Option<Range<usize>>,
-        query: &[Base],
-        target: &[Base],
-    ) -> Self {
-        Self::resolve(classes.iter().copied().map(Some), seed, query, target)
-    }
-
-    /// Walk physical duplex columns in their canonical order: 5'->3' along the
-    /// query and 3'->5' along the target. A `None` class is derived, which only
-    /// works where the column is known to be gap-free.
-    fn resolve(
-        classes: impl Iterator<Item = Option<PairClass>>,
-        seed: Option<Range<usize>>,
-        query: &[Base],
-        target: &[Base],
-    ) -> Self {
-        let mut columns = SmallVec::with_capacity(classes.size_hint().0);
-        let (mut q, mut t) = (0usize, 0usize);
-        for class in classes {
-            let query_base = if class.is_none_or(PairClass::consumes_query) {
-                let base = query.get(q).copied().unwrap_or(Base::Gap);
-                q += 1;
-                base
-            } else {
-                Base::Gap
-            };
-            let target_base = if class.is_none_or(PairClass::consumes_target) {
-                let base = target.get(t).copied().unwrap_or(Base::Gap);
-                t += 1;
-                base
-            } else {
-                Base::Gap
-            };
-            columns.push(AlignColumn {
-                class: class.unwrap_or(PairClass::from_bases(query_base, target_base)),
-                query: query_base,
-                target: target_base,
-            });
         }
-        Self { columns, seed }
     }
 
+    /// A traceback step consuming only the query input.
     #[inline]
-    pub fn columns(&self) -> &[AlignColumn] {
-        &self.columns
+    pub const fn query_only(query: Base) -> Self {
+        debug_assert!(
+            !matches!(query, Base::Gap),
+            "a query-only column must consume a non-gap input"
+        );
+        Self {
+            class: PairClass::QueryBulge,
+            query,
+            target: Base::Gap,
+        }
     }
 
-    /// Span of the seed core within [`columns`](Self::columns).
+    /// A traceback step consuming only the target input.
     #[inline]
-    pub fn seed(&self) -> Option<Range<usize>> {
-        self.seed.clone()
+    pub const fn target_only(target: Base) -> Self {
+        debug_assert!(
+            !matches!(target, Base::Gap),
+            "a target-only column must consume a non-gap input"
+        );
+        Self {
+            class: PairClass::TargetBulge,
+            query: Base::Gap,
+            target,
+        }
     }
 
-    pub fn fingerprint(&self) -> String {
-        self.columns.iter().map(|c| c.class.symbol()).collect()
+    /// Record a paired column classified by another aligner.
+    ///
+    /// The reported chemistry is comparison data, so it is not re-derived from
+    /// the bases. Consumption remains valid because both inputs are required.
+    #[doc(hidden)]
+    #[inline]
+    pub const fn reported_pair(class: PairClass, query: Base, target: Base) -> Self {
+        assert!(
+            matches!(
+                class,
+                PairClass::Canonical | PairClass::Wobble | PairClass::Mismatch
+            ),
+            "a reported pair must consume both inputs"
+        );
+        assert!(
+            !matches!(query, Base::Gap) && !matches!(target, Base::Gap),
+            "a reported pair must consume two non-gap inputs"
+        );
+        Self {
+            class,
+            query,
+            target,
+        }
     }
+}
 
-    /// Column pairings as ranks, for lexicographic comparison without allocating.
-    pub fn pairing_ranks(&self) -> impl Iterator<Item = u8> + '_ {
-        self.columns.iter().map(|c| c.class.rank())
-    }
-
-    /// Compare pairing fingerprints lexicographically without allocating.
-    pub(crate) fn fingerprint_cmp(&self, other: &Self) -> Ordering {
-        self.pairing_ranks().cmp(other.pairing_ranks())
-    }
+/// The canonical fingerprint spelling and traversal order for an alignment.
+///
+/// Formatting, parity comparison, and deduplication all consume this iterator,
+/// so the visible fingerprint and its lexicographic order cannot drift apart.
+#[inline]
+pub fn fingerprint_symbols(columns: &[AlignColumn]) -> impl Iterator<Item = char> + '_ {
+    columns.iter().map(|column| column.class().symbol())
 }
 
 #[cfg(test)]
@@ -203,26 +153,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn columns_keep_physical_order_and_advance_only_the_consumed_strand() {
-        let query = [Base::A, Base::C];
-        let target = [Base::U, Base::G];
-        let prefix = [PairClass::TargetBulge, PairClass::QueryBulge];
+    fn columns_mark_the_unconsumed_input_with_gap() {
+        let target_only = AlignColumn::target_only(Base::U);
 
-        let alignment = Alignment::from_parts(&prefix, 1, &[], &query, &target);
-
-        assert_eq!(alignment.seed(), Some(2..3));
-        let columns = alignment
-            .columns()
-            .iter()
-            .map(|c| (c.class, c.query, c.target))
-            .collect::<Vec<_>>();
         assert_eq!(
-            columns,
-            [
-                (PairClass::TargetBulge, Base::Gap, Base::U),
-                (PairClass::QueryBulge, Base::A, Base::Gap),
-                (PairClass::Canonical, Base::C, Base::G),
-            ]
+            target_only,
+            AlignColumn {
+                class: PairClass::TargetBulge,
+                query: Base::Gap,
+                target: Base::U,
+            }
         );
     }
 }

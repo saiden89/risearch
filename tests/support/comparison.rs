@@ -116,7 +116,7 @@ impl ParityResult {
         );
 
         // Collect all hits into groups by (query_idx, target_idx)
-        let mut groups: BTreeMap<(usize, usize), Vec<(&str, String)>> = BTreeMap::new();
+        let mut groups: BTreeMap<(u32, u32), Vec<(&str, String)>> = BTreeMap::new();
 
         // Helper to render a table and collect lines
         let render_table = |kind: ParityKind| -> String {

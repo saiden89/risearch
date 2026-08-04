@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::alignment::Alignment;
+use crate::alignment::{fingerprint_symbols, AlignColumn};
 use crate::config::OutputFormat;
 use crate::search::SearchHit;
 use crate::types::Base;
@@ -59,7 +59,7 @@ pub fn format_hit_into(
     // hoisting it to the caller.
     let mut itoa = itoa::Buffer::new();
     let alignment = hit.alignment.as_ref();
-    let steps_len = alignment.map(|a| a.columns().len()).unwrap_or(0);
+    let steps_len = alignment.map(|a| a.len()).unwrap_or(0);
     let flank_reserve = if format == OutputFormat::BindingSite {
         2 * BINDING_SITE_FLANK_LEN
     } else {
@@ -136,13 +136,13 @@ fn write_alignment_prelude(out: &mut Vec<u8>, hit: &SearchHit) {
     let Some(align) = hit.alignment.as_ref() else {
         return;
     };
-    for col in align.columns() {
-        out.push(col.query.to_byte());
+    for column in align {
+        out.push(column.query().to_byte());
     }
     out.push(b'\n');
 
-    for col in align.columns() {
-        out.push(col.class.alignment_symbol() as u8);
+    for column in align {
+        out.push(column.class().alignment_symbol() as u8);
     }
     out.push(b'\n');
 
@@ -164,16 +164,14 @@ fn append_score_2dp(buf: &mut Vec<u8>, itoa: &mut itoa::Buffer, score: f64) {
     buf.push(b'0' + (frac % 10));
 }
 
-fn push_pairing_string(buf: &mut Vec<u8>, alignment: &Alignment) {
-    for col in alignment.columns() {
-        buf.push(col.class.symbol() as u8);
-    }
+fn push_pairing_string(buf: &mut Vec<u8>, alignment: &[AlignColumn]) {
+    buf.extend(fingerprint_symbols(alignment).map(|symbol| symbol as u8));
 }
 
 /// The target row, shared by the detailed block and the binding-site column.
-fn push_target_row(buf: &mut Vec<u8>, alignment: &Alignment) {
-    for col in alignment.columns() {
-        buf.push(col.target.to_byte());
+fn push_target_row(buf: &mut Vec<u8>, alignment: &[AlignColumn]) {
+    for column in alignment {
+        buf.push(column.target().to_byte());
     }
 }
 

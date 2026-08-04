@@ -8,6 +8,7 @@ use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
+use risearch::alignment::fingerprint_symbols;
 use risearch::{
     run_search, DsmId, Energy, ExtendConfig, FilterConfig, HitSink, QueryRegistry, ScoreConfig,
     SearchConfig, SearchHit, SeedConfig, TargetRegistry,
@@ -92,12 +93,12 @@ impl HitSink for ArrowSink<'_> {
         let mut strand_buf = [0u8; 4];
         let mut c = self.columns.lock().unwrap();
         for h in &hits {
-            c.query_idx.append_value(u64::try_from(h.query_idx)?);
-            c.query_name
-                .append_value(self.queries.get_name(h.query_idx));
-            c.target_idx.append_value(u64::try_from(h.target_idx)?);
-            c.target_name
-                .append_value(self.store.get_name(h.target_idx));
+            let query_idx = usize::try_from(h.query_idx)?;
+            let target_idx = usize::try_from(h.target_idx)?;
+            c.query_idx.append_value(u64::from(h.query_idx));
+            c.query_name.append_value(self.queries.get_name(query_idx));
+            c.target_idx.append_value(u64::from(h.target_idx));
+            c.target_name.append_value(self.store.get_name(target_idx));
             c.q_start.append_value(u64::try_from(h.q_start)?);
             c.q_end.append_value(u64::try_from(h.q_end)?);
             c.t_start.append_value(u64::try_from(h.t_start)?);
@@ -106,12 +107,11 @@ impl HitSink for ArrowSink<'_> {
                 .append_value(char::from(h.strand).encode_utf8(&mut strand_buf));
             c.energy.append_value(f64::from(h.energy));
             match &h.alignment {
-                // Write the fingerprint's symbols straight into the builder
-                // instead of through `Alignment::fingerprint`'s String: this runs
-                // under the shared lock. `append_value("")` closes the value.
+                // Write the fingerprint symbols straight into the builder while
+                // holding the shared lock. `append_value("")` closes the value.
                 Some(a) => {
-                    for col in a.columns() {
-                        let _ = c.alignment.write_char(col.class.symbol());
+                    for symbol in fingerprint_symbols(a) {
+                        let _ = c.alignment.write_char(symbol);
                     }
                     c.alignment.append_value("");
                 }

@@ -61,7 +61,8 @@ impl<T: RegistryEntry> Registry<T> {
     ///
     /// # Safety
     /// Caller must ensure idx is valid (< number of entries).
-    /// In practice, idx comes from hit.query_idx which is always valid.
+    /// In practice, idx is widened from a generated hit's compact registry
+    /// index, which is always valid.
     #[inline(always)]
     pub fn get_name(&self, idx: usize) -> &str {
         debug_assert!(

@@ -205,42 +205,20 @@ struct ParsedInteraction {
 }
 
 impl ParsedInteraction {
-    /// Parse from a hit using its seed range.
+    /// Parse a hit into the table's interaction columns.
+    ///
+    /// Seed markers are an output-only detail of the legacy implementation and
+    /// are not retained in `SearchHit`, so the complete interaction occupies the
+    /// central column.
     fn from_hit(hit: &SearchHit) -> Self {
-        Self::from_hit_with_range(hit, hit.seed_start(), hit.seed_end())
-    }
-
-    /// Parse with explicit seed range override (for diff alignment).
-    fn from_hit_with_range(
-        hit: &SearchHit,
-        seed_start: Option<usize>,
-        seed_end: Option<usize>,
-    ) -> Self {
-        let fp_raw = hit
+        let fingerprint = hit
             .fingerprint()
             .expect("hit missing alignment for fingerprint");
-
-        let (left, seed, right) = if let (Some(start), Some(end)) = (seed_start, seed_end) {
-            let chars: Vec<char> = fp_raw.chars().collect();
-            let len = chars.len();
-            if len >= end {
-                (
-                    chars[..start].iter().collect(),
-                    chars[start..end].iter().collect(),
-                    chars[end..].iter().collect(),
-                )
-            } else {
-                ("".into(), fp_raw.clone(), "".into())
-            }
-        } else {
-            ("".into(), fp_raw.clone(), "".into())
-        };
-
         Self {
             ctx_5: "".into(),
-            ext_5: left,
-            seed,
-            ext_3: right,
+            ext_5: "".into(),
+            seed: fingerprint,
+            ext_3: "".into(),
             ctx_3: "".into(),
         }
     }
@@ -303,13 +281,23 @@ impl ParsedInteraction {
 }
 
 fn aligned_query_track(hit: &SearchHit) -> Option<String> {
-    let cols = hit.alignment.as_ref()?.columns();
-    Some(cols.iter().map(|c| c.query.to_byte() as char).collect())
+    Some(
+        hit.alignment
+            .as_ref()?
+            .iter()
+            .map(|column| column.query().to_byte() as char)
+            .collect(),
+    )
 }
 
 fn aligned_target_track(hit: &SearchHit) -> Option<String> {
-    let cols = hit.alignment.as_ref()?.columns();
-    Some(cols.iter().map(|c| c.target.to_byte() as char).collect())
+    Some(
+        hit.alignment
+            .as_ref()?
+            .iter()
+            .map(|column| column.target().to_byte() as char)
+            .collect(),
+    )
 }
 
 // =============================================================================
@@ -386,7 +374,7 @@ impl<'a> std::fmt::Display for ParityTable<'a> {
             }
             ParityKind::Mismatch { rust: r, c } => {
                 let p_c = ParsedInteraction::from_hit(c);
-                let p_r = ParsedInteraction::from_hit(r); // Use Rust's own seed range
+                let p_r = ParsedInteraction::from_hit(r);
 
                 let diff_l = build_diff(&p_c.ext_5, &p_r.ext_5);
                 let diff_s = build_diff(&p_c.seed, &p_r.seed);

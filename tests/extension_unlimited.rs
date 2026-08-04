@@ -135,8 +135,8 @@ fn pseudo_random_rna(len: usize, seed: u64) -> String {
 /// equality here is exact, not float-fuzzy.
 #[derive(Debug, PartialEq)]
 struct Observed {
-    query_idx: usize,
-    target_idx: usize,
+    query_idx: u32,
+    target_idx: u32,
     q_start: usize,
     q_end: usize,
     t_start: usize,

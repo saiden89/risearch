@@ -1,7 +1,7 @@
 mod support;
 
 use risearch::types::{Base, Energy, Strand};
-use risearch::{Alignment, SearchHit};
+use risearch::{AlignColumn, SearchHit};
 use rstest::rstest;
 use std::path::PathBuf;
 use support::comparison::{
@@ -21,7 +21,13 @@ fn make_hit(
     let len = q_end.saturating_sub(q_start).max(1);
     // Stored targets are complemented, so A against A resolves to a canonical pair.
     let bases = vec![Base::A; len];
-    let alignment = Alignment::from_parts(&[], len, &[], &bases, &bases);
+    let alignment = bases
+        .iter()
+        .copied()
+        .zip(bases.iter().copied())
+        .map(|(q, t)| AlignColumn::paired(q, t))
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
 
     SearchHit {
         query_idx: 0,
@@ -32,7 +38,7 @@ fn make_hit(
         t_end,
         strand,
         energy: Energy::from_kcal(energy),
-        alignment: Some(Box::new(alignment)),
+        alignment: Some(alignment),
     }
 }
 

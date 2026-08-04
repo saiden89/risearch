@@ -17,7 +17,7 @@ pub mod seq;
 pub mod types; // Core domain types
 
 // Re-exports for convenience
-pub use alignment::{Alignment, PairClass};
+pub use alignment::{AlignColumn, PairClass};
 pub use index::store::TargetRegistry;
 pub use registry::QueryRegistry;
 pub use seq::Sequence;

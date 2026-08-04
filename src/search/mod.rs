@@ -19,7 +19,7 @@ use std::ops::Range;
 use std::sync::Mutex;
 
 use self::extension::{ExtensionEngine, SeedExtension};
-use crate::alignment::Alignment;
+use crate::alignment::{fingerprint_symbols, AlignColumn};
 use crate::config::{SearchConfig, UNLIMITED_EXTENSION};
 use crate::dp::MAX_EXT;
 use crate::dsm::ScoringModel;
@@ -40,22 +40,27 @@ use crate::types::{Base, Energy, Strand};
 /// registries. [`query`](Self::query) slices a supplied query sequence;
 /// [`target`](Self::target) resolves the paired span through a [`TargetView`].
 ///
-/// `alignment` is populated only under [`ExtendConfig::build_alignment`](crate::ExtendConfig),
-/// and carries the seed's span within its own steps.
+/// `alignment` is populated only under
+/// [`ExtendConfig::build_alignment`](crate::ExtendConfig).
 #[derive(Debug, Clone)]
 pub struct SearchHit {
-    pub query_idx: usize,
-    pub target_idx: usize,
+    /// Compact registry positions, checked when the hit is constructed.
+    pub query_idx: u32,
+    pub target_idx: u32,
     pub q_start: usize,
     pub q_end: usize,
     pub t_start: usize,
     pub t_end: usize,
     pub strand: Strand,
     pub energy: Energy,
-    // Boxed: the hit array is grown and moved per seed, and an inline `Alignment`
-    // would make every element carry its column buffer.
-    pub alignment: Option<Box<Alignment>>,
+    // Keep the variable-length traceback out of the densely stored hit. Compact
+    // registry indices offset the boxed slice's metadata, preserving a 64-byte
+    // SearchHit on 64-bit targets even when alignment building is disabled.
+    pub alignment: Option<Box<[AlignColumn]>>,
 }
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<SearchHit>() == 64);
 
 /// Where a search's hits go.
 ///
@@ -102,8 +107,8 @@ impl HitSink for VecSink {
 /// one row under [`SearchHit::cmp`].
 #[derive(PartialEq, Eq, Hash)]
 struct BoxKey {
-    query_idx: usize,
-    target_idx: usize,
+    query_idx: u32,
+    target_idx: u32,
     strand: Strand,
     q_start: usize,
     q_end: usize,
@@ -270,7 +275,7 @@ impl SearchWorker {
         let max_window = (!is_unlimited(opts.extend.max_extension))
             .then_some(opts.extend.max_extension as usize);
         Self {
-            extension: ExtensionEngine::from_parts(max_window, model),
+            extension: ExtensionEngine::new(max_window, opts.extend.build_alignment, model),
         }
     }
 
@@ -290,12 +295,11 @@ impl SearchWorker {
         engine.seed_query(query_idx, &opts.seed, |seed| {
             let target = tview.target(seed.target_idx(), seed.strand());
 
-            let ext = self
-                .extension
-                .extend_seed(query, target, &seed, opts.extend.build_alignment);
+            let ext = self.extension.extend_seed(query, target, &seed);
 
             if ext.energy <= opts.filter.delta_g {
-                hits.push(SearchHit::new(&seed, ext, tview));
+                let alignment = self.extension.materialize_alignment(query, target, &seed);
+                hits.push(SearchHit::new(&seed, ext, alignment, tview));
             }
         })?;
         // Dedup is exact per query: every box-mate of `query_idx` is in `hits`.
@@ -325,7 +329,7 @@ impl SearchHit {
     fn cmp(&self, other: &Self) -> Ordering {
         self.energy.cmp(&other.energy).then_with(|| {
             match (self.alignment.as_deref(), other.alignment.as_deref()) {
-                (Some(a), Some(b)) => a.fingerprint_cmp(b),
+                (Some(a), Some(b)) => fingerprint_symbols(a).cmp(fingerprint_symbols(b)),
                 (None, None) => Ordering::Equal,
                 (None, Some(_)) => Ordering::Less,
                 (Some(_), None) => Ordering::Greater,
@@ -338,7 +342,7 @@ impl SearchHit {
     }
 
     pub fn target<'a>(&self, targets: TargetView<'a>) -> &'a [Base] {
-        let target = targets.target(self.target_idx, self.strand);
+        let target = targets.target(self.target_index(), self.strand);
         &target[self.duplex_target_range(targets)]
     }
 
@@ -350,31 +354,40 @@ impl SearchHit {
                 .t_end
                 .checked_add(1)
                 .expect("inclusive target end must fit a half-open range");
-        targets.map_target_range(self.target_idx, self.strand, fasta_range)
+        targets.map_target_range(self.target_index(), self.strand, fasta_range)
+    }
+
+    #[inline]
+    fn target_index(&self) -> usize {
+        usize::try_from(self.target_idx).expect("u32 target index must fit usize")
     }
 
     /// Convert the extension's duplex-frame target span to FASTA coordinates and
     /// record the hit.
-    fn new(seed: &SeedHit, ext: SeedExtension, targets: TargetView<'_>) -> Self {
+    fn new(
+        seed: &SeedHit,
+        ext: SeedExtension,
+        alignment: Option<Box<[AlignColumn]>>,
+        targets: TargetView<'_>,
+    ) -> Self {
         let SeedExtension {
             q_range,
             t_range,
-            energy: binding_energy,
-            alignment,
+            energy,
         } = ext;
         let (q_start, q_end) = inclusive_bounds(q_range);
         let fasta_t_range = targets.map_target_range(seed.target_idx(), seed.strand(), t_range);
         let (t_start, t_end) = inclusive_bounds(fasta_t_range);
 
         Self {
-            query_idx: seed.query_idx(),
-            target_idx: seed.target_idx(),
+            query_idx: u32::try_from(seed.query_idx()).expect("query index exceeds u32"),
+            target_idx: u32::try_from(seed.target_idx()).expect("target index exceeds u32"),
             q_start,
             q_end,
             t_start,
             t_end,
             strand: seed.strand(),
-            energy: binding_energy,
+            energy,
             alignment,
         }
     }
@@ -631,7 +644,9 @@ mod tests {
 
         impl HitSink for Spy {
             fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
-                assert!(hits.iter().all(|hit| hit.query_idx == query_idx));
+                assert!(hits
+                    .iter()
+                    .all(|hit| usize::try_from(hit.query_idx).unwrap() == query_idx));
                 self.0.lock().unwrap().push(query_idx);
                 Ok(())
             }

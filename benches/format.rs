@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use risearch::alignment::Alignment;
+use risearch::alignment::AlignColumn;
 use risearch::config::OutputFormat;
 use risearch::output::format::format_hit_into;
 use risearch::search::SearchHit;
@@ -11,7 +11,13 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>) {
     let query = vec![Base::U, Base::G, Base::C, Base::U, Base::G, Base::C];
     let target = vec![Base::G, Base::U, Base::C, Base::G, Base::U, Base::C];
 
-    let alignment = Alignment::from_parts(&[], query.len(), &[], &query, &target);
+    let alignment = query
+        .iter()
+        .copied()
+        .zip(target.iter().copied())
+        .map(|(q, t)| AlignColumn::paired(q, t))
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
 
     let hit = SearchHit {
         query_idx: 0,
@@ -22,7 +28,7 @@ fn setup_hit() -> (SearchHit, Vec<Base>, Vec<Base>) {
         t_end: 5,
         strand: Strand::Forward,
         energy: Energy::from_kcal(-10.5),
-        alignment: Some(Box::new(alignment)),
+        alignment: Some(alignment),
     };
 
     (hit, query, target)

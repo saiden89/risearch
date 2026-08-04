@@ -5,7 +5,7 @@
 //! - `parse_bindingsite_output()`: Parse bindingsite output into `SearchHit`
 
 use anyhow::{anyhow, bail, Context, Result};
-use risearch::alignment::Alignment;
+use risearch::alignment::{fingerprint_symbols, AlignColumn};
 use risearch::index::store::TargetRegistry;
 use risearch::registry::QueryRegistry;
 use risearch::types::{Energy, Strand};
@@ -28,12 +28,6 @@ pub(crate) trait SearchHitExt {
     /// Fingerprint string for comparison. None if no alignment data.
     fn fingerprint(&self) -> Option<String>;
 
-    /// Seed start position within interaction.
-    fn seed_start(&self) -> Option<usize>;
-
-    /// Seed end position within interaction.
-    fn seed_end(&self) -> Option<usize>;
-
     /// Format for debug output (uses 1-based output coordinates).
     fn fmt_coords(&self) -> String;
 }
@@ -54,27 +48,15 @@ impl SearchHitExt for SearchHit {
     ) -> String {
         format!(
             "{}:{}",
-            query_registry.get_name(self.query_idx),
-            target_registry.get_name(self.target_idx)
+            query_registry.get_name(usize::try_from(self.query_idx).unwrap()),
+            target_registry.get_name(usize::try_from(self.target_idx).unwrap())
         )
     }
 
     fn fingerprint(&self) -> Option<String> {
-        self.alignment.as_ref().map(|a| a.fingerprint())
-    }
-
-    fn seed_start(&self) -> Option<usize> {
         self.alignment
             .as_ref()
-            .and_then(|a| a.seed())
-            .map(|s| s.start)
-    }
-
-    fn seed_end(&self) -> Option<usize> {
-        self.alignment
-            .as_ref()
-            .and_then(|a| a.seed())
-            .map(|s| s.end)
+            .map(|columns| fingerprint_symbols(columns).collect())
     }
 
     fn fmt_coords(&self) -> String {
@@ -120,7 +102,7 @@ pub(crate) fn parse_bindingsite_output(
         .with_context(|| format!("unknown target name {:?}", fields[3]))?;
 
     // Parse and strip seed markers from interaction
-    let (interaction, seed_start, seed_end) = strip_c_markers(fields[8]);
+    let interaction = strip_c_markers(fields[8]);
 
     // Parse coordinates (C uses 1-based)
     let q_start: usize = column(&fields, 1, "q_start")?;
@@ -148,8 +130,8 @@ pub(crate) fn parse_bindingsite_output(
         .collect();
 
     let mut hit = SearchHit {
-        query_idx,
-        target_idx,
+        query_idx: u32::try_from(query_idx).context("query index does not fit u32")?,
+        target_idx: u32::try_from(target_idx).context("target index does not fit u32")?,
         q_start: q_start.saturating_sub(1),
         q_end: q_end.saturating_sub(1),
         t_start: t_start.saturating_sub(1),
@@ -159,22 +141,38 @@ pub(crate) fn parse_bindingsite_output(
         alignment: None,
     };
 
-    // Resolve C's classes into columns against our own registries, reusing the
-    // hit's slice accessors rather than restating the reverse-strand remap.
-    let seed = match (seed_start, seed_end) {
-        (Some(s), Some(e)) => {
-            let s = s.min(classes.len());
-            Some(s..e.min(classes.len()).max(s))
-        }
-        _ => None,
-    };
+    // Resolve C's reported classes against our own registries, reusing the hit's
+    // slice accessors rather than restating the reverse-strand remap. Keep the
+    // reported class even if it differs from what Rust would derive.
     let q_seq = query_registry.entries()[query_idx].sequence();
-    hit.alignment = Some(Box::new(Alignment::from_classes(
-        &classes,
-        seed,
-        hit.query(q_seq),
-        hit.target(target_registry.view()),
-    )));
+    let mut query = hit.query(q_seq).iter().copied();
+    let mut target = hit.target(target_registry.view()).iter().copied();
+    let mut columns = Vec::with_capacity(classes.len());
+    for class in classes {
+        let column = match class {
+            PairClass::TargetBulge => AlignColumn::target_only(
+                target
+                    .next()
+                    .context("C alignment consumes too many target bases")?,
+            ),
+            PairClass::QueryBulge => AlignColumn::query_only(
+                query
+                    .next()
+                    .context("C alignment consumes too many query bases")?,
+            ),
+            _ => AlignColumn::reported_pair(
+                class,
+                query
+                    .next()
+                    .context("C alignment consumes too many query bases")?,
+                target
+                    .next()
+                    .context("C alignment consumes too many target bases")?,
+            ),
+        };
+        columns.push(column);
+    }
+    hit.alignment = Some(columns.into_boxed_slice());
 
     Ok(hit)
 }
@@ -194,16 +192,7 @@ where
         .map_err(|e| anyhow!("invalid {name} {:?}: {e}", fields[idx]))
 }
 
-/// Strip y/x seed markers and extract seed range positions.
-fn strip_c_markers(s: &str) -> (String, Option<usize>, Option<usize>) {
-    let y_pos = s.find('y');
-    let x_pos = s.find('x');
-
-    let (seed_start, seed_end) = match (y_pos, x_pos) {
-        (Some(y), Some(x)) if x > y => (Some(y), Some(x - 1)),
-        _ => (None, None),
-    };
-
-    let clean: String = s.chars().filter(|&c| c != 'y' && c != 'x').collect();
-    (clean, seed_start, seed_end)
+/// Strip the seed markers embedded by the C output format.
+fn strip_c_markers(s: &str) -> String {
+    s.chars().filter(|&c| c != 'y' && c != 'x').collect()
 }

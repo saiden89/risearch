@@ -1,31 +1,19 @@
 use std::ops::Range;
 
 use log::trace;
-use smallvec::SmallVec;
 
 use crate::adapter::gotoh::GotohModel;
-use crate::alignment::{Alignment, PairClass};
+use crate::alignment::AlignColumn;
+#[cfg(test)]
+use crate::alignment::PairClass;
 use crate::dp::gotoh::Gotoh;
-use crate::dp::{DpGrid, TraceOp, MAX_EXT};
+use crate::dp::{BestScore, DpGrid, TraceOp, MAX_EXT};
 use crate::dsm::ScoringModel;
 use crate::seed::SeedHit;
 use crate::types::{Base, Energy};
 
-/// Pairing columns for one flank. Inline capacity covers a full-length window at
-/// the default `-l`; both flanks are live at once while an alignment resolves.
-type Pairs = SmallVec<[PairClass; 64]>;
-
-/// One flank's extension: the stacking stability gained, how far each side
-/// reached, and the per-column pairing when an alignment was requested.
-struct ExtensionResult {
-    stability: Energy,
-    q_ext: usize,
-    t_ext: usize,
-    pairs: Pairs,
-}
-
-/// A seed grown and scored in both directions: the final half-open ranges,
-/// binding energy, and resolved alignment when one was requested.
+/// A seed grown and scored in both directions: the final half-open ranges and
+/// binding energy.
 ///
 /// The target range is in the physical duplex frame the DP works in; converting
 /// it to FASTA coordinates is the caller's job.
@@ -33,7 +21,6 @@ pub(super) struct SeedExtension {
     pub(super) q_range: Range<usize>,
     pub(super) t_range: Range<usize>,
     pub(super) energy: Energy,
-    pub(super) alignment: Option<Box<Alignment>>,
 }
 
 /// Extension direction — the polarity of the DP window.
@@ -70,12 +57,20 @@ pub(super) struct ExtensionEngine {
     t_buf: [u8; MAX_EXT],
     gotoh_left: GotohModel,
     gotoh_right: GotohModel,
+    left_columns: Vec<AlignColumn>,
+    right_columns: Vec<AlignColumn>,
     max_window: Option<usize>,
+    build_alignment: bool,
 }
 
 impl ExtensionEngine {
     /// `max_window` of `None` is unlimited: each side follows the query.
-    pub(super) fn from_parts(max_window: Option<usize>, model: &ScoringModel) -> Self {
+    /// `build_alignment` controls traceback for every seed handled by the worker.
+    pub(super) fn new(
+        max_window: Option<usize>,
+        build_alignment: bool,
+        model: &ScoringModel,
+    ) -> Self {
         let gotoh_right = Gotoh::new(model);
         let gotoh_left = Gotoh::new(&model.transpose());
         Self {
@@ -86,7 +81,12 @@ impl ExtensionEngine {
             t_buf: [0u8; MAX_EXT],
             gotoh_left,
             gotoh_right,
+            // Reused across seeds. Keeping these out of the flank return value
+            // leaves the no-alignment hot path with only `BestScore` results.
+            left_columns: Vec::new(),
+            right_columns: Vec::new(),
             max_window,
+            build_alignment,
         }
     }
 
@@ -107,25 +107,24 @@ impl ExtensionEngine {
     }
 
     /// Extend both flanks of `seed` against the full query and target views and
-    /// resolve the whole duplex.
+    /// score the whole duplex.
     ///
     /// Flank slicing, per-flank polarity, and prefix/suffix ordering all stay
     /// inside the engine: the anchor convention has one definition, the
-    /// non-empty precondition of [`Self::extend`] holds by construction, and
+    /// non-empty precondition of [`Self::extend_flank`] holds by construction, and
     /// callers see one extended duplex rather than two halves to reassemble.
+    /// When alignment is enabled, the resolved flank columns remain in the
+    /// engine until [`Self::materialize_alignment`] or the next extension.
     pub(super) fn extend_seed(
         &mut self,
         query: &[Base],
         target: &[Base],
         seed: &SeedHit,
-        include_alignment: bool,
     ) -> SeedExtension {
         let query_range = seed.query_range();
         let target_range = seed.target_range();
-        let len = query_range.len();
-        let seed_energy = self
-            .model()
-            .ungapped_duplex_score(&query[query_range.clone()], &target[target_range.clone()]);
+        let seed_query = &query[query_range.clone()];
+        let seed_target = &target[target_range.clone()];
         let q_match_end = query_range
             .clone()
             .next_back()
@@ -135,54 +134,57 @@ impl ExtensionEngine {
             .next_back()
             .expect("SeedHit target range must be non-empty");
 
-        let left = self.extend(
+        let left = self.extend_flank(
             &query[..=query_range.start],
             &target[..=target_range.start],
             ExtendDir::Left,
-            include_alignment,
         );
-        let right = self.extend(
+        let right = self.extend_flank(
             &query[q_match_end..],
             &target[t_match_end..],
             ExtendDir::Right,
-            include_alignment,
         );
 
-        let q_range = query_range.start - left.q_ext..query_range.end + right.q_ext;
-        let t_range = target_range.start - left.t_ext..target_range.end + right.t_ext;
-        let alignment = include_alignment.then(|| {
-            Box::new(Alignment::from_parts(
-                &left.pairs,
-                len,
-                &right.pairs,
-                &query[q_range.clone()],
-                &target[t_range.clone()],
-            ))
-        });
-        let stacking_stability = seed_energy + left.stability + right.stability;
-        let binding_energy = self
-            .model()
-            .binding_energy(stacking_stability, q_range.len() + t_range.len());
+        let q_range = query_range.start - left.q_idx..query_range.end + right.q_idx;
+        let t_range = target_range.start - left.t_idx..target_range.end + right.t_idx;
+        let model = self.model();
+        let score = model.ungapped_duplex_score(seed_query, seed_target)
+            + Energy(left.score)
+            + Energy(right.score);
+        let energy = model.binding_energy(score, q_range.len() + t_range.len());
 
         SeedExtension {
             q_range,
             t_range,
-            energy: binding_energy,
-            alignment,
+            energy,
         }
+    }
+
+    /// Materialize the most recently extended seed's alignment.
+    ///
+    /// The flank buffers are overwritten by the next call to [`Self::extend_seed`],
+    /// so a retained hit must call this before extension continues.
+    pub(super) fn materialize_alignment(
+        &self,
+        query: &[Base],
+        target: &[Base],
+        seed: &SeedHit,
+    ) -> Option<Box<[AlignColumn]>> {
+        self.build_alignment.then(|| {
+            assemble_alignment(
+                &self.left_columns,
+                &query[seed.query_range()],
+                &target[seed.target_range()],
+                &self.right_columns,
+            )
+        })
     }
 
     /// Extend one flank of a seed by DP.
     ///
     /// `query` and `target` are the flanking slices including the anchor column:
     /// they end at the seed boundary for `Left` and start at it for `Right`.
-    fn extend(
-        &mut self,
-        query: &[Base],
-        target: &[Base],
-        dir: ExtendDir,
-        include_alignment: bool,
-    ) -> ExtensionResult {
+    fn extend_flank(&mut self, query: &[Base], target: &[Base], dir: ExtendDir) -> BestScore {
         assert!(
             !query.is_empty() && !target.is_empty(),
             "extension flanks must include the anchor column"
@@ -198,19 +200,39 @@ impl ExtensionEngine {
         trace!("{dir} q_len={} t_len={}", q_win.len(), t_win.len());
 
         let best = gotoh.extend(q_win, t_win, &mut self.grid);
-        let pairs = if include_alignment {
+        if self.build_alignment {
             let trace = gotoh.traceback(q_win, t_win, &self.grid, best.q_idx, best.t_idx);
-            map_trace_to_pairs(q_win, t_win, dir, &trace, best.q_idx, best.t_idx)
-        } else {
-            SmallVec::new()
-        };
-        ExtensionResult {
-            stability: Energy(best.score),
-            q_ext: best.q_idx,
-            t_ext: best.t_idx,
-            pairs,
+            let columns = match dir {
+                ExtendDir::Left => &mut self.left_columns,
+                ExtendDir::Right => &mut self.right_columns,
+            };
+            map_trace_to_columns(q_win, t_win, dir, &trace, best.q_idx, best.t_idx, columns);
         }
+        best
     }
+}
+
+/// Join the two reusable flank buffers around the seed, then compact the
+/// finished alignment into its immutable representation.
+fn assemble_alignment(
+    left: &[AlignColumn],
+    seed_query: &[Base],
+    seed_target: &[Base],
+    right: &[AlignColumn],
+) -> Box<[AlignColumn]> {
+    debug_assert_eq!(seed_query.len(), seed_target.len());
+
+    let mut columns = Vec::with_capacity(left.len() + seed_query.len() + right.len());
+    columns.extend_from_slice(left);
+    columns.extend(
+        seed_query
+            .iter()
+            .copied()
+            .zip(seed_target.iter().copied())
+            .map(|(query, target)| AlignColumn::paired(query, target)),
+    );
+    columns.extend_from_slice(right);
+    columns.into_boxed_slice()
 }
 
 /// Copy a flank into `dst` in DP order — position 0 is the anchor column at the
@@ -219,7 +241,7 @@ impl ExtensionEngine {
 /// `dst.len()` is the hard ceiling, so an unlimited `cap` still cannot overflow
 /// the buffer.
 ///
-/// A `Left` flank enters reversed here; `map_trace_to_pairs` reverses a `Right`
+/// A `Left` flank enters reversed here; `map_trace_to_columns` reverses a `Right`
 /// traceback on the way out. Both stem from the same polarity, in opposite
 /// directions — change one and check the other.
 fn fill<'a>(dst: &'a mut [u8], src: &[Base], dir: ExtendDir, cap: usize) -> &'a [u8] {
@@ -239,46 +261,50 @@ fn fill<'a>(dst: &'a mut [u8], src: &[Base], dir: ExtendDir, cap: usize) -> &'a 
     &dst[..len]
 }
 
-/// Resolve a traceback into pair classes, ordered 5'->3' along the query.
+/// Resolve a traceback into columns ordered 5'->3' along the query.
 ///
 /// A traceback runs from `(end_i, end_j)` back to the anchor, which is ascending
 /// query coordinate for `Left` but descending for `Right` (window polarity), so
-/// the right-hand walk is reversed to hand `Alignment` one canonical order.
-fn map_trace_to_pairs(
+/// the right-hand walk is reversed into the physical duplex order used outside
+/// the DP engine.
+fn map_trace_to_columns(
     q: &[u8],
     t: &[u8],
     dir: ExtendDir,
     ops: &[TraceOp],
     end_i: usize,
     end_j: usize,
-) -> Pairs {
-    let mut out = Pairs::with_capacity(ops.len());
+    out: &mut Vec<AlignColumn>,
+) {
+    out.clear();
+    out.reserve(ops.len());
     let (mut i, mut j) = (end_i, end_j);
     for &op in ops {
-        // The advance follows the DP op, not the resolved class: a `Match` over a
-        // block-separator `Gap` classifies as a bulge but still consumed both.
-        let pair = match op {
+        // Consumption follows the DP op, not the resolved class: a `Match` over
+        // a gap-ranked symbol still consumed both inputs.
+        let column = match op {
             TraceOp::Match => {
-                let pair = PairClass::from_bases(Base::from_u8(q[i]), Base::from_u8(t[j]));
+                let column = AlignColumn::paired(Base::from_u8(q[i]), Base::from_u8(t[j]));
                 i -= 1;
                 j -= 1;
-                pair
+                column
             }
             TraceOp::GapQ => {
+                let column = AlignColumn::query_only(Base::from_u8(q[i]));
                 i -= 1;
-                PairClass::QueryBulge
+                column
             }
             TraceOp::GapT => {
+                let column = AlignColumn::target_only(Base::from_u8(t[j]));
                 j -= 1;
-                PairClass::TargetBulge
+                column
             }
         };
-        out.push(pair);
+        out.push(column);
     }
     if dir == ExtendDir::Right {
         out.reverse();
     }
-    out
 }
 
 #[cfg(test)]
@@ -292,25 +318,31 @@ mod tests {
     }
 
     #[test]
-    fn extension_result_extents_match_traceback_consumption() {
+    fn flank_extents_match_traceback_consumption() {
         let model = test_model();
-        let mut engine = ExtensionEngine::from_parts(Some(8), &model);
+        let mut engine = ExtensionEngine::new(Some(8), true, &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::U, Base::A, Base::C, Base::G];
 
-        let result = engine.extend(&query, &target, ExtendDir::Right, true);
-        let pairs = &result.pairs;
-        assert!(!pairs.is_empty(), "traceback expected");
+        let result = engine.extend_flank(&query, &target, ExtendDir::Right);
+        let columns = &engine.right_columns;
+        assert!(!columns.is_empty(), "traceback expected");
 
-        assert!(result.q_ext > 0);
-        assert!(result.t_ext > 0);
+        assert!(result.q_idx > 0);
+        assert!(result.t_idx > 0);
         assert_eq!(
-            pairs.iter().filter(|step| step.consumes_query()).count(),
-            result.q_ext
+            columns
+                .iter()
+                .filter(|column| column.query() != Base::Gap)
+                .count(),
+            result.q_idx
         );
         assert_eq!(
-            pairs.iter().filter(|step| step.consumes_target()).count(),
-            result.t_ext
+            columns
+                .iter()
+                .filter(|column| column.target() != Base::Gap)
+                .count(),
+            result.t_idx
         );
     }
 
@@ -344,29 +376,28 @@ mod tests {
     #[test]
     fn zero_cap_window_scores_the_anchor_column() {
         let model = test_model();
-        let mut engine = ExtensionEngine::from_parts(Some(0), &model);
+        let mut engine = ExtensionEngine::new(Some(0), true, &model);
         let query = [Base::A, Base::U, Base::G, Base::C];
         let target = [Base::U, Base::A, Base::C, Base::G];
 
         // The anchor is the last base for Left and the first for Right, so the
         // two directions score different columns of the same slices.
-        let left = engine.extend(&query, &target, ExtendDir::Left, true);
-        let right = engine.extend(&query, &target, ExtendDir::Right, true);
+        let left = engine.extend_flank(&query, &target, ExtendDir::Left);
+        let right = engine.extend_flank(&query, &target, ExtendDir::Right);
         for result in [&left, &right] {
-            assert_eq!((result.q_ext, result.t_ext), (0, 0));
-            assert!(result.pairs.is_empty());
+            assert_eq!((result.q_idx, result.t_idx), (0, 0));
         }
+        assert!(engine.left_columns.is_empty());
+        assert!(engine.right_columns.is_empty());
         assert_eq!(
-            left.stability,
-            Energy(engine.gotoh_left.boundary(Base::C.as_u8(), Base::G.as_u8()))
+            left.score,
+            engine.gotoh_left.boundary(Base::C.as_u8(), Base::G.as_u8())
         );
         assert_eq!(
-            right.stability,
-            Energy(
-                engine
-                    .gotoh_right
-                    .boundary(Base::A.as_u8(), Base::U.as_u8())
-            )
+            right.score,
+            engine
+                .gotoh_right
+                .boundary(Base::A.as_u8(), Base::U.as_u8())
         );
     }
 
@@ -394,8 +425,8 @@ mod tests {
         }
     }
 
-    /// Same invariant as above, but through `extend` — the cap has to reach the
-    /// DP from the query flank, not merely be computable from it.
+    /// Same invariant as above, but through `extend_flank` — the cap has to reach
+    /// the DP from the query flank, not merely be computable from it.
     #[test]
     fn unlimited_extension_matches_a_window_fixed_to_the_query_flank() {
         let model = test_model();
@@ -404,27 +435,27 @@ mod tests {
         // chromosome search: the window must still follow the query.
         let target = [Base::U; 200];
 
-        let mut unlimited = ExtensionEngine::from_parts(None, &model);
-        let mut fixed = ExtensionEngine::from_parts(Some(query.len()), &model);
+        let mut unlimited = ExtensionEngine::new(None, true, &model);
+        let mut fixed = ExtensionEngine::new(Some(query.len()), true, &model);
         for dir in [ExtendDir::Left, ExtendDir::Right] {
-            let free = unlimited.extend(&query, &target, dir, true);
-            let pinned = fixed.extend(&query, &target, dir, true);
+            let free = unlimited.extend_flank(&query, &target, dir);
+            let pinned = fixed.extend_flank(&query, &target, dir);
             assert_eq!(
-                (free.stability, free.q_ext, free.t_ext),
-                (pinned.stability, pinned.q_ext, pinned.t_ext),
+                (free.score, free.q_idx, free.t_idx),
+                (pinned.score, pinned.q_idx, pinned.t_idx),
                 "{dir}: unlimited must equal a window fixed to the query flank"
             );
             assert!(
-                free.t_ext < query.len(),
+                free.t_idx < query.len(),
                 "{dir}: target extent {} escaped the {}-symbol query window",
-                free.t_ext,
+                free.t_idx,
                 query.len()
             );
         }
     }
 
     #[test]
-    fn traceback_pairs_stay_in_query_order_for_both_directions() {
+    fn traceback_columns_stay_in_query_order_for_both_directions() {
         let query = [Base::A, Base::G, Base::C];
         let target = [Base::U, Base::U, Base::G];
         let ops = [TraceOp::Match, TraceOp::Match];
@@ -437,8 +468,13 @@ mod tests {
             let mut t_buf = [0u8; 3];
             fill(&mut q_buf, &query, dir, 3);
             fill(&mut t_buf, &target, dir, 3);
+            let mut columns = Vec::new();
+            map_trace_to_columns(&q_buf, &t_buf, dir, &ops, 2, 2, &mut columns);
             assert_eq!(
-                map_trace_to_pairs(&q_buf, &t_buf, dir, &ops, 2, 2).as_slice(),
+                columns
+                    .iter()
+                    .map(|column| column.class())
+                    .collect::<Vec<_>>(),
                 expected
             );
         }
