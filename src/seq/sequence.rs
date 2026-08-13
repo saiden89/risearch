@@ -6,7 +6,6 @@
 
 use crate::types::Base;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::ops::{Deref, Index, Range, RangeFrom, RangeFull, RangeTo};
 
 use super::normalize::{normalize_rna_sequence, NormalizationStats};
@@ -15,7 +14,7 @@ use super::normalize::{normalize_rna_sequence, NormalizationStats};
 ///
 /// Sequences are normalized once at input (FASTA parsing) and stored as Base enums.
 /// This eliminates repeated ASCII→Base conversions during search and alignment.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sequence(Vec<Base>);
 
 impl Sequence {

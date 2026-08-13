@@ -1,27 +1,11 @@
 //! Core domain types used across the codebase
 
-use serde::{Deserialize, Serialize};
-
 /// Nucleotide/gap representation for DSM indexing and sequence operations.
 ///
 /// The discriminants are the canonical internal rank. DSM tables, DP scoring,
 /// and suffix-array construction/partitioning all depend on this exact order.
 #[repr(u8)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Default,
-    Serialize,
-    Deserialize,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Base {
     #[default]
     Gap = 0,
@@ -194,7 +178,7 @@ impl From<Strand> for char {
 
 /// Represents thermodynamic energy, internally stored as an integer (scaling kcal/mol by 10,000).
 /// All conversions from floating-point values expect inputs in kcal/mol.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Energy(pub(crate) i32);
 impl Energy {
     pub const SCALE: f64 = 10000.0;
@@ -343,7 +327,7 @@ impl TryFrom<&str> for SequenceType {
 
 /// Identifier for a bundled dinucleotide stacking model (DSM).
 /// The set of valid IDs is determined by data/dsm/manifest.toml.
-#[derive(Clone, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct DsmId(pub String);
 
 impl std::fmt::Display for DsmId {

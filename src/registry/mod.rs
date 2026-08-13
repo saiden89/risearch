@@ -1,6 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops::{Index, Range};
 use std::path::Path;
@@ -20,7 +19,6 @@ impl RegistryEntry for String {
     }
 }
 
-#[derive(Serialize, Deserialize)]
 pub struct Registry<T> {
     entries: Vec<T>,
 }

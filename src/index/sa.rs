@@ -22,7 +22,7 @@ use crate::types::Base;
 ///
 /// The sequence is stored as bytes so the value can be archived. All bytes are
 /// valid [`Base`] discriminants.
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(rkyv::Archive, rkyv::Serialize)]
 pub(crate) struct SuffixIndex {
     pub(super) sequence: Vec<u8>,
     pub(super) suffix_array: Vec<u64>,

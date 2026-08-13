@@ -49,7 +49,6 @@ memmap2 = "0.9"
 needletail = "0.7"
 rayon = "1.5"
 rkyv = { version = "0.8", features = ["bytecheck", "std", "pointer_width_64"] }
-serde = { version = "1.0.229", features = ["derive"] }
 smallvec = "1"
 tikv-jemallocator = "0.7"
 toml_edit = "0.25"

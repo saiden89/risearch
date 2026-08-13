@@ -21,14 +21,14 @@ pub struct TargetRegistry {
     offsets: Vec<usize>,
 }
 
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(rkyv::Archive, rkyv::Serialize)]
 struct TargetStore {
     version: u32,
     targets: Vec<TargetRecord>,
     suffix_index: SuffixIndex,
 }
 
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(rkyv::Archive, rkyv::Serialize)]
 struct TargetRecord {
     name: String,
     offset: u64,
