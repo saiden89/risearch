@@ -7,7 +7,6 @@ use std::path::Path;
 
 use crate::config::SeedConfig;
 use crate::fastx::{normalize_record, read_and_validate_fasta};
-use crate::index::io::validate_readable_file;
 use crate::seq::Sequence;
 use crate::types::Base;
 
@@ -244,8 +243,6 @@ impl Index<usize> for QueryRegistry {
 }
 
 fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
-    validate_readable_file(path)?;
-
     let sequences = read_and_validate_fasta(path)?;
     if sequences.is_empty() {
         bail!("No sequences found in input file: {}", path.display());

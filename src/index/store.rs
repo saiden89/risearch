@@ -6,7 +6,6 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 
 use crate::fastx::{normalize_record, read_and_validate_fasta};
-use crate::index::io::validate_output_path;
 use crate::index::sa::{SuffixIndex, SuffixIndexView};
 use crate::index::view::TargetView;
 use crate::types::{Base, Strand};
@@ -151,6 +150,20 @@ impl TargetRegistry {
         // SAFETY: `open` validates every stored byte as a Base discriminant.
         unsafe { SuffixIndexView::from_bytes_unchecked(bytes, suffix_array) }
     }
+}
+
+fn validate_output_path(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let md = fs_err::metadata(parent).with_context(|| {
+                format!("Output directory does not exist: {}", parent.display())
+            })?;
+            if !md.is_dir() {
+                bail!("Output parent is not a directory: {}", parent.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn write_target_registry(output: &Path, store: &TargetStore) -> Result<()> {

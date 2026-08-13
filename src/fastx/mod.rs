@@ -17,7 +17,10 @@ pub fn read_and_validate_fasta(filename: impl AsRef<Path>) -> Result<FastaRecord
             filename_ref.display()
         )
     })?;
-    if md.is_file() && md.len() == 0 {
+    if !md.is_file() {
+        bail!("Input path is not a file: {}", filename_ref.display());
+    }
+    if md.len() == 0 {
         return Ok(Vec::new());
     }
 
