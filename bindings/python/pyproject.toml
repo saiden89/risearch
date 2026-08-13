@@ -33,7 +33,7 @@ Repository = "https://github.com/saiden89/risearch"
 Issues = "https://github.com/saiden89/risearch/issues"
 
 [project.optional-dependencies]
-lts-cpu = ["polars[rtcompat]>=1.43.2"]
+lts-cpu = ["polars[rtcompat]"]
 
 [dependency-groups]
 dev = ["pytest", "maturin>=1.12.5,<2"]
