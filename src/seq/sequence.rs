@@ -47,15 +47,6 @@ impl Sequence {
         self.0.is_empty()
     }
 
-    /// Compute reverse complement of this sequence.
-    ///
-    /// Uses Base::complement() for each base, then reverses.
-    pub fn reverse_complement(&self) -> Sequence {
-        let rc_bases: Vec<Base> = self.0.iter().rev().map(|&base| base.complement()).collect();
-
-        Self(rc_bases)
-    }
-
     /// Iterator over bases
     pub fn iter(&self) -> impl Iterator<Item = &Base> {
         self.0.iter()
@@ -167,18 +158,6 @@ mod tests {
         assert_eq!(seq[3], Base::G);
         assert_eq!(seq[4], Base::U);
         assert_eq!(stats.converted_to_n, 1);
-    }
-
-    #[test]
-    fn reverse_complement_acgu() {
-        let (seq, _) = Sequence::normalize("test", b"ACGU").unwrap();
-        let rc = seq.reverse_complement();
-
-        assert_eq!(rc.len(), 4);
-        assert_eq!(rc[0], Base::A); // U -> A
-        assert_eq!(rc[1], Base::C); // G -> C
-        assert_eq!(rc[2], Base::G); // C -> G
-        assert_eq!(rc[3], Base::U); // A -> U
     }
 
     #[test]

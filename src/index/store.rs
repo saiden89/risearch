@@ -99,13 +99,6 @@ impl TargetRegistry {
         self.root().targets[idx].name.as_str()
     }
 
-    pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.root()
-            .targets
-            .iter()
-            .position(|target| target.name.as_str() == name)
-    }
-
     /// Get a seed-search view of the combined SA and sequence.
     pub fn view(&self) -> TargetView<'_> {
         TargetView::new(self.suffixes(), &self.offsets)
