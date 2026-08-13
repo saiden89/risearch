@@ -463,9 +463,8 @@ mod tests {
 
     fn build_store(target_fa: &std::path::Path) -> (TargetRegistry, tempfile::TempDir) {
         let tmpdir = tempfile::tempdir().unwrap();
-        let idx = tmpdir.path().join("target.idx");
-        TargetRegistry::build(target_fa, &idx, None).unwrap();
-        let store = TargetRegistry::open(&idx).unwrap();
+        let targets = crate::fastx::read_sequences(target_fa).unwrap();
+        let store = TargetRegistry::build(targets, None).unwrap();
         (store, tmpdir)
     }
 

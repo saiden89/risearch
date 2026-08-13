@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use log::{debug, info, trace};
 
+use risearch::cli::args::validate_output_parent;
 use risearch::{output, search, QueryRegistry, TargetRegistry};
 
 use crate::cli::legacy::emit_legacy_warnings;
@@ -29,7 +30,10 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 
 fn cmd_index(input: &Path, output: &Path, threads: Option<usize>) -> Result<()> {
     info!("Creating index: {:?} -> {:?}", input, output);
-    TargetRegistry::build(input, output, threads).context("Failed to write index file")?;
+    validate_output_parent(output)?;
+    let targets = risearch::fastx::read_sequences(input).context("Failed to read targets")?;
+    let index = TargetRegistry::build(targets, threads).context("Failed to build index")?;
+    index.save(output).context("Failed to write index file")?;
     info!("Index saved to {:?}", output);
     Ok(())
 }

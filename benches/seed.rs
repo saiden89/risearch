@@ -71,20 +71,21 @@ fn build_production_dataset(
 ) -> ProductionSeedDataset {
     let tmpdir = TempDir::new().expect("tempdir");
     let queries_path = tmpdir.path().join("queries.fa");
-    let targets_path = tmpdir.path().join("targets.fa");
-    let index_path = tmpdir.path().join("targets.rsidx");
 
     let queries: Vec<_> = (0..query_count)
         .map(|i| generate_sequence(query_len, 1_000 + i as u64))
         .collect();
-    let targets = vec![generate_sequence(target_len, 9_999)];
+    let targets = [generate_sequence(target_len, 9_999)];
 
     write_fasta(&queries_path, "q", &queries);
-    write_fasta(&targets_path, "t", &targets);
 
     let queries = QueryRegistry::from_fasta(&queries_path, seed_config).expect("query registry");
-    TargetRegistry::build(&targets_path, &index_path, None).expect("build target index");
-    let store = TargetRegistry::open(&index_path).expect("open target index");
+    let named_targets = targets
+        .iter()
+        .enumerate()
+        .map(|(idx, seq)| (format!("t{idx}"), seq.clone()))
+        .collect();
+    let store = TargetRegistry::build(named_targets, None).expect("build target index");
 
     ProductionSeedDataset {
         _tmpdir: tmpdir,

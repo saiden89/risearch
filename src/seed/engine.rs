@@ -158,10 +158,9 @@ mod tests {
     fn build_store(fasta: &str) -> (TargetRegistry, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let fasta_path = dir.path().join("targets.fa");
-        let index_path = dir.path().join("targets.idx");
         fs_err::write(&fasta_path, fasta).unwrap();
-        TargetRegistry::build(&fasta_path, &index_path, None).unwrap();
-        (TargetRegistry::open(&index_path).unwrap(), dir)
+        let targets = crate::fastx::read_sequences(&fasta_path).unwrap();
+        (TargetRegistry::build(targets, None).unwrap(), dir)
     }
 
     fn build_queries(fasta: &str, config: &SeedConfig) -> QueryRegistry {

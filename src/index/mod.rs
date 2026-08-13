@@ -1,3 +1,4 @@
+mod archive;
 pub mod sa;
 pub mod store;
 pub mod view;

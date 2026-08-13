@@ -1,7 +1,24 @@
 use crate::config::{OutputCodec, OutputCompression, OutputConfig, OutputFormat};
 
-use anyhow::{bail, Error};
-use std::path::PathBuf;
+use anyhow::{bail, Context, Error, Result};
+use std::path::{Path, PathBuf};
+
+/// Reject an output path whose parent directory is missing or is not a directory.
+///
+/// A CLI-boundary check: it exists so a bad `-o` fails before the work that
+/// would fill it, not to guard the write itself.
+pub fn validate_output_parent(path: &Path) -> Result<()> {
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+
+    let md = fs_err::metadata(parent)
+        .with_context(|| format!("output directory '{}' does not exist", parent.display()))?;
+    if !md.is_dir() {
+        bail!("output path '{}' is not a directory", parent.display());
+    }
+    Ok(())
+}
 
 /// Boundary CLI arguments for output destination, formatting, and compression.
 #[derive(clap::Args, Debug, Clone)]
@@ -64,11 +81,7 @@ impl TryFrom<OutputArgs> for OutputConfig {
         }
 
         if value.path.as_os_str() != "-" {
-            if let Some(parent) = value.path.parent() {
-                if !parent.as_os_str().is_empty() && !parent.exists() {
-                    bail!("output directory '{}' does not exist", parent.display());
-                }
-            }
+            validate_output_parent(&value.path)?;
         }
 
         let codec = value

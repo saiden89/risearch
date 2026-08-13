@@ -64,6 +64,31 @@ pub fn read_and_validate_fasta(filename: impl AsRef<Path>) -> Result<FastaRecord
     Ok(records)
 }
 
+/// Read a FASTA/FASTQ file into normalized sequences.
+///
+/// Records that normalize to nothing are dropped; an input where every record
+/// does is an error.
+pub fn read_sequences(filename: impl AsRef<Path>) -> Result<Vec<(String, crate::seq::Sequence)>> {
+    let filename = filename.as_ref();
+    let records = read_and_validate_fasta(filename)?;
+
+    let mut sequences = Vec::with_capacity(records.len());
+    for (id, raw_seq) in records {
+        if let Some(sequence) = normalize_record(&id, &raw_seq)? {
+            sequences.push((id, sequence));
+        }
+    }
+
+    if sequences.is_empty() {
+        bail!(
+            "All sequences were empty after normalization in {}",
+            filename.display()
+        );
+    }
+
+    Ok(sequences)
+}
+
 /// Normalizes a raw sequence and handles logging for gaps/N-conversions.
 /// Returns `Ok(None)` if the sequence is entirely empty after normalization.
 pub fn normalize_record(id: &str, raw_seq: &[u8]) -> Result<Option<crate::seq::Sequence>> {

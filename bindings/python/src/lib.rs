@@ -217,7 +217,10 @@ impl PyTargetRegistry {
 /// may run concurrently.
 #[pyfunction]
 fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> {
-    py.detach(|| TargetRegistry::build(&fasta, &output, None))?;
+    py.detach(|| {
+        let targets = risearch::fastx::read_sequences(&fasta)?;
+        TargetRegistry::build(targets, None)?.save(&output)
+    })?;
     Ok(())
 }
 

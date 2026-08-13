@@ -20,9 +20,13 @@ use crate::types::Base;
 /// `sequence`; the two fields therefore form one logical value and must not be
 /// separated.
 ///
-/// The sequence is stored as bytes so the value can be archived. All bytes are
-/// valid [`Base`] discriminants.
-#[derive(rkyv::Archive, rkyv::Serialize)]
+/// The sequence is stored as bytes so it can be handed to the archive writer
+/// and reinterpreted from a mapping without copying. All bytes are valid
+/// [`Base`] discriminants.
+///
+/// This is the in-memory form only. The persisted form lives in
+/// [`crate::index::archive`] and always holds the complete suffix array; the
+/// subset case below is never archived.
 pub(crate) struct SuffixIndex {
     pub(super) sequence: Vec<u8>,
     pub(super) suffix_array: Vec<u64>,

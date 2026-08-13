@@ -65,10 +65,13 @@ impl RustRunner<NoIndex> {
             }
         };
 
-        risearch::TargetRegistry::build(&self.target_path, &index_path, None)
-            .expect("build target index");
+        let targets =
+            risearch::fastx::read_sequences(&self.target_path).expect("read target sequences");
         let target_registry =
-            risearch::TargetRegistry::open(&index_path).expect("open target registry");
+            risearch::TargetRegistry::build(targets, None).expect("build target index");
+        target_registry
+            .save(&index_path)
+            .expect("write target index");
 
         RustRunner {
             target_path: self.target_path,

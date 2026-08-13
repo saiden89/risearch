@@ -1,59 +1,45 @@
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use fs_err::File;
 use memmap2::Mmap;
-use rayon::prelude::*;
 
-use crate::fastx::{normalize_record, read_and_validate_fasta};
+use crate::index::archive::{self, ArchivedTargetStore, TargetRecord, TargetStore};
 use crate::index::sa::{SuffixIndex, SuffixIndexView};
 use crate::index::view::TargetView;
+use crate::seq::Sequence;
 use crate::types::{Base, Strand};
-
-const TARGET_REGISTRY_VERSION: u32 = 3;
 
 /// Runtime handle for a target index.
 ///
-/// The mapped file contains a private rkyv `TargetStore`; this type owns the
-/// mmap lifetime and carries the native offset directory needed by `TargetView`.
+/// The mapped file holds the format described by [`crate::index::archive`]; this
+/// type owns the mmap lifetime and carries the native offset directory needed by
+/// `TargetView`.
 pub struct TargetRegistry {
     mmap: Mmap,
     offsets: Vec<usize>,
 }
 
-#[derive(rkyv::Archive, rkyv::Serialize)]
-struct TargetStore {
-    version: u32,
-    targets: Vec<TargetRecord>,
-    suffix_index: SuffixIndex,
-}
-
-#[derive(rkyv::Archive, rkyv::Serialize)]
-struct TargetRecord {
-    name: String,
-    offset: u64,
-}
-
 impl TargetRegistry {
-    /// Build a target index from a FASTA file and write it as an rkyv archive.
+    /// Build a target index over normalized sequences.
     ///
-    /// `threads` controls suffix-index construction parallelism.
-    /// `None` (or `Some(0)`) means auto.
-    pub fn build(input: &Path, output: &Path, threads: Option<usize>) -> Result<()> {
-        validate_output_path(output)?;
+    /// The index is held in an anonymous mapping carrying the same image
+    /// [`save`](Self::save) writes, so a built and a reopened index are the same
+    /// value. `threads` controls suffix-index construction parallelism; `None`
+    /// (or `Some(0)`) means auto.
+    pub fn build(targets: Vec<(String, Sequence)>, threads: Option<usize>) -> Result<Self> {
+        if targets.is_empty() {
+            bail!("No target sequences to index");
+        }
 
-        let records = read_and_validate_fasta(input)?;
-        let mut targets = Vec::new();
+        let mut records = Vec::with_capacity(targets.len());
         let mut combined_bases = Vec::new();
 
-        for (id, raw_seq) in records {
-            let Some(sequence) = normalize_record(&id, &raw_seq)? else {
-                continue;
-            };
-
-            let offset = combined_bases.len() as u64;
-
-            targets.push(TargetRecord { name: id, offset });
+        for (name, sequence) in targets {
+            records.push(TargetRecord {
+                name,
+                len: sequence.len() as u64,
+            });
 
             combined_bases.reserve(2 * sequence.len() + 2);
             combined_bases.extend(sequence[..].iter().rev().copied());
@@ -62,23 +48,26 @@ impl TargetRegistry {
             combined_bases.push(Base::Gap);
         }
 
-        if targets.is_empty() {
-            bail!(
-                "All sequences were empty after normalization in {}",
-                input.display()
-            );
-        }
-
         let suffix_index = SuffixIndex::build(combined_bases, threads)
             .context("Failed to build global suffix array")?;
 
         let store = TargetStore {
-            version: TARGET_REGISTRY_VERSION,
-            targets,
-            suffix_index,
+            targets: records,
+            sequence: suffix_index.sequence,
+            suffix_array: suffix_index.suffix_array,
         };
 
-        write_target_registry(output, &store)
+        let mmap = archive::map_anon(&store)?;
+        let source = "a freshly built target index";
+        let root = archive::access(archive::payload(mmap.as_ref()), &source)?;
+        let offsets = archive::validate(root, &source)?;
+
+        Ok(Self { mmap, offsets })
+    }
+
+    /// Write this index to `output` through a temporary file.
+    pub fn save(&self, output: &Path) -> Result<()> {
+        archive::write(output, self.mmap.as_ref())
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -87,16 +76,10 @@ impl TargetRegistry {
         let mmap = unsafe { Mmap::map(&file) }
             .with_context(|| format!("Failed to memory-map index file: {}", path.display()))?;
 
-        // An index written by an older version fails bytecheck before the version
-        // check below, so the rebuild hint has to be on this error too.
-        let root = rkyv::access::<ArchivedTargetStore, rkyv::rancor::Error>(mmap.as_ref())
-            .with_context(|| {
-                format!(
-                    "Invalid target index archive: {}; rebuild it with `risearch index`",
-                    path.display()
-                )
-            })?;
-        let offsets = validate_store(root, path)?;
+        archive::read_header(mmap.as_ref(), path)?;
+        let source = path.display();
+        let root = archive::access(archive::payload(mmap.as_ref()), &source)?;
+        let offsets = archive::validate(root, &source)?;
 
         Ok(Self { mmap, offsets })
     }
@@ -139,187 +122,48 @@ impl TargetRegistry {
     #[inline]
     fn root(&self) -> &ArchivedTargetStore {
         // SAFETY: `open` validates the archive before constructing `TargetRegistry`.
-        unsafe { rkyv::access_unchecked::<ArchivedTargetStore>(self.mmap.as_ref()) }
+        unsafe { archive::root_unchecked(archive::payload(self.mmap.as_ref())) }
     }
 
     #[inline]
     fn suffixes(&self) -> SuffixIndexView<'_> {
-        let stored = &self.root().suffix_index;
-        let bytes = stored.sequence.as_slice();
-        let suffix_array = archived_u64_as_native(stored.suffix_array.as_slice());
+        let root = self.root();
+        let bytes = root.sequence.as_slice();
+        let suffix_array = archive::archived_u64_as_native(root.suffix_array.as_slice());
         // SAFETY: `open` validates every stored byte as a Base discriminant.
         unsafe { SuffixIndexView::from_bytes_unchecked(bytes, suffix_array) }
     }
 }
 
-fn validate_output_path(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            let md = fs_err::metadata(parent).with_context(|| {
-                format!("Output directory does not exist: {}", parent.display())
-            })?;
-            if !md.is_dir() {
-                bail!("Output parent is not a directory: {}", parent.display());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_target_registry(output: &Path, store: &TargetStore) -> Result<()> {
-    let output_name = output
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "target.idx".to_string());
-    let tmp_path = output.with_file_name(format!("{output_name}.tmp"));
-
-    let bytes =
-        rkyv::to_bytes::<rkyv::rancor::Error>(store).context("Failed to serialize target index")?;
-    fs_err::write(&tmp_path, bytes.as_slice())
-        .with_context(|| format!("Failed to write target index: {}", tmp_path.display()))?;
-    fs_err::rename(&tmp_path, output).with_context(|| {
-        format!(
-            "Failed to finalize index file: {} -> {}",
-            tmp_path.display(),
-            output.display()
-        )
-    })?;
-    Ok(())
-}
-
-fn validate_store(root: &ArchivedTargetStore, path: &Path) -> Result<Vec<usize>> {
-    if root.version.to_native() != TARGET_REGISTRY_VERSION {
-        bail!(
-            "Unsupported target index version {} in {}; rebuild it with `risearch index`",
-            root.version.to_native(),
-            path.display()
-        );
-    }
-
-    let seq = root.suffix_index.sequence.as_slice();
-    let sa = root.suffix_index.suffix_array.as_slice();
-    if seq.len() != sa.len() {
-        bail!(
-            "Target index sequence/SA length mismatch (seq={}, sa={}): {}",
-            seq.len(),
-            sa.len(),
-            path.display()
-        );
-    }
-    let data_len = sa.len();
-    // Only the sequence is scanned: reinterpreting these bytes as `Base` needs
-    // every discriminant to be valid, while an out-of-range suffix position is
-    // already harmless because `base_unchecked` clamps past-the-end reads.
-    // Reduced as a per-chunk max rather than a short-circuiting `any`, which
-    // cannot vectorize; at index scale that is the difference between ~0.1 and
-    // ~0.8 G instructions per open.
-    let max_rank = seq
-        .par_chunks(1 << 20)
-        .map(|chunk| chunk.iter().copied().fold(0u8, u8::max))
-        .max()
-        .unwrap_or(0);
-    if max_rank > Base::U.as_u8() {
-        bail!(
-            "Target index contains an invalid base rank: {}",
-            path.display()
-        );
-    }
-    let mut offsets = Vec::with_capacity(root.targets.len());
-    for target in root.targets.iter() {
-        let offset = usize::try_from(target.offset.to_native())
-            .context("Target offset does not fit in usize")?;
-        offsets.push(offset);
-    }
-
-    if offsets.first() != Some(&0) {
-        bail!(
-            "First target block does not start at offset 0 in {}",
-            path.display()
-        );
-    }
-
-    for (target_idx, target) in root.targets.iter().enumerate() {
-        let name = target.name.as_str();
-        let offset = offsets[target_idx];
-        let block_end = offsets.get(target_idx + 1).copied().unwrap_or(data_len);
-        if block_end > data_len {
-            bail!(
-                "Target '{}' block exceeds sequence data (end={}, data_len={}) in {}",
-                name,
-                block_end,
-                data_len,
-                path.display()
-            );
-        }
-        let block_len = block_end.checked_sub(offset).ok_or_else(|| {
-            anyhow!(
-                "Target '{}' offset {} is not before block end {} in {}",
-                name,
-                offset,
-                block_end,
-                path.display()
-            )
-        })?;
-        if block_len < 2 || (block_len - 2) % 2 != 0 {
-            bail!(
-                "Target '{}' has invalid block length {} in {}",
-                name,
-                block_len,
-                path.display()
-            );
-        }
-        let seq_len = (block_len - 2) / 2;
-        if seq[offset + seq_len] != Base::Gap.as_u8() || seq[block_end - 1] != Base::Gap.as_u8() {
-            bail!(
-                "Target '{}' block is missing a separator Gap in {}",
-                name,
-                path.display()
-            );
-        }
-    }
-
-    Ok(offsets)
-}
-
-#[cfg(target_endian = "little")]
-#[inline]
-fn archived_u64_as_native(values: &[rkyv::primitive::ArchivedU64]) -> &[u64] {
-    // SAFETY: rkyv's aligned little-endian archived u64 is a transparent-sized,
-    // 8-aligned wrapper over native u64 bytes on little-endian targets.
-    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u64>(), values.len()) }
-}
-
-#[cfg(not(target_endian = "little"))]
-#[inline]
-fn archived_u64_as_native(_values: &[rkyv::primitive::ArchivedU64]) -> &[u64] {
-    panic!("mmap-backed target indexes currently require a little-endian target")
-}
-
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     use tempfile::tempdir;
 
     use crate::index::sa::SuffixIndex;
+    use crate::seq::Sequence;
     use crate::types::{Base, Strand};
 
-    use super::{
-        write_target_registry, TargetRecord, TargetRegistry, TargetStore, TARGET_REGISTRY_VERSION,
-    };
+    use super::TargetRegistry;
+
+    fn targets(records: &[(&str, &str)]) -> Vec<(String, Sequence)> {
+        records
+            .iter()
+            .map(|(name, seq)| {
+                let (sequence, _) = Sequence::normalize(name, seq.as_bytes()).unwrap();
+                (name.to_string(), sequence)
+            })
+            .collect()
+    }
 
     #[test]
     fn roundtrip_build_open_target_view() {
         let dir = tempdir().unwrap();
-        let fasta_path = dir.path().join("targets.fa");
         let index_path = dir.path().join("targets.idx");
 
-        let mut fasta = fs_err::File::create(&fasta_path).unwrap();
-        writeln!(fasta, ">chrA\nACGUGA").unwrap();
-        writeln!(fasta, ">chrB\nUUUGCA").unwrap();
-        drop(fasta);
-
-        TargetRegistry::build(&fasta_path, &index_path, None).unwrap();
+        TargetRegistry::build(targets(&[("chrA", "ACGUGA"), ("chrB", "UUUGCA")]), None)
+            .unwrap()
+            .save(&index_path)
+            .unwrap();
         let store = TargetRegistry::open(&index_path).unwrap();
         let expected = [("chrA", 6usize), ("chrB", 6usize)];
         assert_eq!(store.len(), expected.len());
@@ -348,157 +192,6 @@ mod tests {
             store.target(0, Strand::Reverse),
             &[Base::U, Base::G, Base::C, Base::A, Base::C, Base::U]
         );
-    }
-
-    #[test]
-    fn open_rejects_invalid_archive() {
-        let dir = tempdir().unwrap();
-        let bad_path = dir.path().join("bad.idx");
-        fs_err::write(&bad_path, b"not-a-valid-rkyv-archive").unwrap();
-        match TargetRegistry::open(&bad_path) {
-            Ok(_) => panic!("Expected invalid archive error"),
-            Err(err) => assert!(err.to_string().contains("Invalid target index archive")),
-        }
-    }
-
-    #[test]
-    fn open_rejects_v1_index() {
-        let dir = tempdir().unwrap();
-        let index_path = dir.path().join("targets.idx");
-        let store = tiny_store(1);
-
-        write_target_registry(&index_path, &store).unwrap();
-
-        let Err(err) = TargetRegistry::open(&index_path) else {
-            panic!("Expected v1 index rejection");
-        };
-        let message = err.to_string();
-        assert!(message.contains("Unsupported target index version 1"));
-        assert!(message.contains("rebuild it with `risearch index"));
-    }
-
-    #[test]
-    fn open_rejects_v2_index() {
-        let dir = tempdir().unwrap();
-        let index_path = dir.path().join("targets.idx");
-        let store = tiny_store(2);
-
-        write_target_registry(&index_path, &store).unwrap();
-
-        let Err(err) = TargetRegistry::open(&index_path) else {
-            panic!("Expected v2 index rejection");
-        };
-        let message = err.to_string();
-        assert!(message.contains("Unsupported target index version 2"));
-        assert!(message.contains("rebuild it with `risearch index"));
-    }
-
-    #[test]
-    fn open_rejects_sequence_sa_length_mismatch() {
-        let dir = tempdir().unwrap();
-        let index_path = dir.path().join("targets.idx");
-        let mut store = tiny_store(TARGET_REGISTRY_VERSION);
-        store.suffix_index.suffix_array.pop();
-
-        write_target_registry(&index_path, &store).unwrap();
-
-        match TargetRegistry::open(&index_path) {
-            Ok(_) => panic!("Expected padding/length error"),
-            Err(err) => assert!(err.to_string().contains("sequence/SA length mismatch")),
-        }
-    }
-
-    #[test]
-    fn open_rejects_invalid_base_rank() {
-        let dir = tempdir().unwrap();
-        let index_path = dir.path().join("targets.idx");
-        let mut store = tiny_store(TARGET_REGISTRY_VERSION);
-        store.suffix_index.sequence[0] = Base::U.as_u8() + 1;
-
-        write_target_registry(&index_path, &store).unwrap();
-
-        match TargetRegistry::open(&index_path) {
-            Ok(_) => panic!("Expected invalid base rejection"),
-            Err(err) => assert!(err.to_string().contains("invalid base rank")),
-        }
-    }
-
-    #[test]
-    fn open_tolerates_out_of_range_suffix_position() {
-        let dir = tempdir().unwrap();
-        let index_path = dir.path().join("targets.idx");
-        let mut store = tiny_store(TARGET_REGISTRY_VERSION);
-        let past_end = store.suffix_index.sequence.len() as u64;
-        store.suffix_index.suffix_array[0] = past_end;
-
-        write_target_registry(&index_path, &store).unwrap();
-
-        // Bounds are enforced at read time by the clamp in `base_unchecked`, so
-        // opening must not pay an O(n) scan of the suffix array to prove it.
-        let store = TargetRegistry::open(&index_path).expect("open tolerates a stale position");
-        let suffixes = store.view().suffixes();
-        assert_eq!(suffixes.suffix_positions(0..1), &[past_end]);
-        // SAFETY: index 0 is inside the suffix array.
-        assert_eq!(unsafe { suffixes.base_unchecked(0, 0) }, Base::Gap);
-    }
-
-    #[test]
-    fn open_rejects_missing_separator_gap() {
-        // Both halves separately: the mid separator, then the trailing one that
-        // makes the last stored byte a Gap.
-        for corrupt_idx in [1, 3] {
-            let dir = tempdir().unwrap();
-            let index_path = dir.path().join("targets.idx");
-            let mut store = tiny_store(TARGET_REGISTRY_VERSION);
-            store.suffix_index.sequence[corrupt_idx] = Base::A.as_u8();
-
-            write_target_registry(&index_path, &store).unwrap();
-
-            match TargetRegistry::open(&index_path) {
-                Ok(_) => panic!("Expected separator Gap rejection for byte {corrupt_idx}"),
-                Err(err) => assert!(err.to_string().contains("missing a separator Gap")),
-            }
-        }
-    }
-
-    #[test]
-    fn open_rejects_v2_layout_archive() {
-        #[derive(rkyv::Archive, rkyv::Serialize)]
-        struct TargetRecordV2 {
-            name: String,
-            offset: u64,
-            seq_len: u64,
-        }
-
-        #[derive(rkyv::Archive, rkyv::Serialize)]
-        struct TargetStoreV2 {
-            version: u32,
-            targets: Vec<TargetRecordV2>,
-            combined_seq: Vec<u8>,
-            combined_sa: Vec<u64>,
-        }
-
-        let dir = tempdir().unwrap();
-        let index_path = dir.path().join("targets.idx");
-        // A name over rkyv's inline-string threshold; short names still validate
-        // and reach the version check instead.
-        let store = TargetStoreV2 {
-            version: 2,
-            targets: vec![TargetRecordV2 {
-                name: "ENSG00000139618.15_transcript".to_string(),
-                offset: 0,
-                seq_len: 1,
-            }],
-            combined_seq: vec![1, 0, 1, 0],
-            combined_sa: vec![0, 1, 2, 3],
-        };
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&store).unwrap();
-        fs_err::write(&index_path, bytes.as_slice()).unwrap();
-
-        let Err(err) = TargetRegistry::open(&index_path) else {
-            panic!("Expected v2 layout rejection");
-        };
-        assert!(format!("{err:#}").contains("rebuild it with `risearch index`"));
     }
 
     #[test]
@@ -552,33 +245,12 @@ mod tests {
 
     #[test]
     fn global_offsets_delimit_target_blocks() {
-        let dir = tempdir().unwrap();
-        let fasta_path = dir.path().join("targets.fa");
-        let index_path = dir.path().join("targets.idx");
-
-        let mut fasta = fs_err::File::create(&fasta_path).unwrap();
-        writeln!(fasta, ">t1\nACGU").unwrap();
-        writeln!(fasta, ">t2\nGGCC").unwrap();
-        writeln!(fasta, ">t3\nAA").unwrap();
-        drop(fasta);
-
-        TargetRegistry::build(&fasta_path, &index_path, None).unwrap();
-        let store = TargetRegistry::open(&index_path).unwrap();
+        let store = TargetRegistry::build(
+            targets(&[("t1", "ACGU"), ("t2", "GGCC"), ("t3", "AA")]),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(store.offsets, [0, 10, 20]);
-    }
-
-    fn tiny_store(version: u32) -> TargetStore {
-        TargetStore {
-            version,
-            targets: vec![TargetRecord {
-                name: "t1".to_string(),
-                offset: 0,
-            }],
-            suffix_index: SuffixIndex {
-                sequence: vec![1, 0, 1, 0],
-                suffix_array: vec![0, 1, 2, 3],
-            },
-        }
     }
 }

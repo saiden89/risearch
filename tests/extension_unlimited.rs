@@ -77,13 +77,10 @@ fn search_or_err(query: &str, target: &str, max_extension: i32) -> Result<Vec<Se
     let cfg = config(max_extension);
     let tmp = tempfile::tempdir().unwrap();
     let query_fa = tmp.path().join("query.fa");
-    let target_fa = tmp.path().join("target.fa");
-    let idx = tmp.path().join("target.idx");
     fs::write(&query_fa, format!(">query\n{query}\n")).unwrap();
-    fs::write(&target_fa, format!(">target\n{target}\n")).unwrap();
 
-    TargetRegistry::build(&target_fa, &idx, None).unwrap();
-    let store = TargetRegistry::open(&idx).unwrap();
+    let (target_seq, _) = risearch::Sequence::normalize("target", target.as_bytes()).unwrap();
+    let store = TargetRegistry::build(vec![("target".to_string(), target_seq)], None).unwrap();
     let queries = QueryRegistry::from_fasta(&query_fa, &cfg.seed).unwrap();
 
     let sink = VecSink::default();
