@@ -366,13 +366,14 @@ fn legacy_parity_args(args: &[&str]) -> Vec<String> {
 /// Handles:
 /// - Rust-only flags (--no-max-prune, --experimental, --dp-band*)
 /// - New seed syntax (--seed-start/end/length) → legacy -s format
-/// - Flag name differences (--no-seed-wobble → --noGUseed)
+/// - Wobble polarity (Rust opts in with --seed-wobble; C opts out with --noGUseed)
 fn translate_args_for_c(args: &[&str]) -> Vec<String> {
     let mut c_args: Vec<String> = Vec::new();
     let mut seed_start: Option<&str> = None;
     let mut seed_end: Option<&str> = None;
     let mut seed_length: Option<&str> = None;
     let mut has_legacy_seed = false;
+    let mut seed_wobble = false;
 
     let mut iter = args.iter().copied().peekable();
     while let Some(arg) = iter.next() {
@@ -410,11 +411,16 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
                 seed_length = Some(&arg["--seed-length=".len()..])
             }
 
-            // Pairing flags - translate names
-            "--no-seed-wobble" | "--noGUseed" => c_args.push("--noGUseed".to_string()),
+            // Wobble polarity is inverted: Rust opts in, C opts out.
+            "--seed-wobble" => seed_wobble = true,
+            "--noGUseed" => continue,
             // Pass through everything else
             _ => c_args.push(arg.to_string()),
         }
+    }
+
+    if !seed_wobble {
+        c_args.push("--noGUseed".to_string());
     }
 
     // Convert new seed syntax to legacy format

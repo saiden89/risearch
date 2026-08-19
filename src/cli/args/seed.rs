@@ -186,15 +186,15 @@ pub struct SeedArgs {
     #[arg(long = "seed-length", value_name = "LENGTH")]
     pub seed_length: Option<i64>,
 
-    /// Disable G-U wobble pairs when locating and maximizing seeds
-    #[arg(long = "no-seed-wobble", action = clap::ArgAction::SetTrue)]
-    pub no_seed_wobble: bool,
+    /// Allow G-U wobble pairs when locating and maximizing seeds
+    #[arg(long = "seed-wobble", action = clap::ArgAction::SetTrue)]
+    pub seed_wobble: bool,
 
     /// Disable maximality check (allows redundant seeds)
     #[arg(long = "no-max-prune", action = clap::ArgAction::SetTrue)]
     pub no_max_prune: bool,
 
-    /// DEPRECATED: legacy C flag for --no-seed-wobble
+    /// DEPRECATED: no-op; wobble is off unless --seed-wobble is given
     #[arg(long = "noGUseed", hide = true, action = clap::ArgAction::SetTrue)]
     pub no_guseed_legacy: bool,
 
@@ -291,8 +291,7 @@ impl TryFrom<SeedArgs> for SeedConfig {
             seed_start,
             seed_end,
             seed_length,
-            seed_wobble: SeedConfig::default().seed_wobble
-                && !(value.no_seed_wobble || value.no_guseed_legacy),
+            seed_wobble: value.seed_wobble && !value.no_guseed_legacy,
             no_max_prune: value.no_max_prune,
             max_mismatches,
             min_prefix_matches,
@@ -362,7 +361,7 @@ mod tests {
             seed_start: None,
             seed_end: None,
             seed_length: None,
-            no_seed_wobble: false,
+            seed_wobble: false,
             no_guseed_legacy: false,
             no_max_prune: false,
             mismatch_legacy: None,
@@ -383,7 +382,7 @@ mod tests {
             seed_start: start,
             seed_end: end,
             seed_length: length,
-            no_seed_wobble: false,
+            seed_wobble: false,
             no_guseed_legacy: false,
             no_max_prune: false,
             mismatch_legacy: None,
@@ -454,7 +453,7 @@ mod tests {
             seed_start: Some(3),
             seed_end: None,
             seed_length: None,
-            no_seed_wobble: false,
+            seed_wobble: false,
             no_guseed_legacy: false,
             no_max_prune: false,
             mismatch_legacy: None,

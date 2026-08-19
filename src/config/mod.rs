@@ -101,7 +101,7 @@ pub struct SeedConfig {
     /// In interval mode, `None` means use the full interval width.
     pub seed_length: Option<i64>,
 
-    /// Allow G-U wobble pairs when locating and maximizing seeds.
+    /// Allow G-U wobble pairs when locating and maximizing seeds. Off by default.
     pub seed_wobble: bool,
 
     /// Emit non-maximal seeds too — those that could be grown by one more
@@ -122,7 +122,7 @@ impl Default for SeedConfig {
             seed_start: None,
             seed_end: None,
             seed_length: None,
-            seed_wobble: true,
+            seed_wobble: false,
             no_max_prune: false,
             max_mismatches: 0,
             min_prefix_matches: 1,

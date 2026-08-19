@@ -43,8 +43,8 @@ fn run_search_and_read(
 }
 
 #[test]
-fn default_seed_wobble_matches_enabled_behavior() -> Result<(), Box<dyn std::error::Error>> {
-    // This fixture has only G-U seed matches, so disabling seed wobble should produce no hits.
+fn seed_wobble_opt_in_enables_wobble_only_hits() -> Result<(), Box<dyn std::error::Error>> {
+    // This fixture has only G-U seed matches, so hits appear only when wobble is opted in.
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nGGGG")?;
 
@@ -55,7 +55,7 @@ fn default_seed_wobble_matches_enabled_behavior() -> Result<(), Box<dyn std::err
     build_index(target_file.path(), index_file.path());
 
     let default_out = NamedTempFile::new()?;
-    let strict_out = NamedTempFile::new()?;
+    let wobble_out = NamedTempFile::new()?;
 
     let default_content = run_search_and_read(
         query_file.path(),
@@ -63,36 +63,36 @@ fn default_seed_wobble_matches_enabled_behavior() -> Result<(), Box<dyn std::err
         default_out.path(),
         &[],
     )?;
-    let strict_content = run_search_and_read(
+    let wobble_content = run_search_and_read(
         query_file.path(),
         index_file.path(),
-        strict_out.path(),
-        &["--no-seed-wobble"],
+        wobble_out.path(),
+        &["--seed-wobble"],
     )?;
 
     let default_count = default_content
         .lines()
         .filter(|l| !l.trim().is_empty())
         .count();
-    let strict_count = strict_content
+    let wobble_count = wobble_content
         .lines()
         .filter(|l| !l.trim().is_empty())
         .count();
 
     assert!(
-        default_count > 0,
-        "default mode should permit wobble seed hits"
+        wobble_count > 0,
+        "--seed-wobble should permit wobble seed hits"
     );
     assert!(
-        strict_count < default_count,
-        "strict mode should reduce hits for wobble-only seeds"
+        default_count < wobble_count,
+        "default mode should reduce hits for wobble-only seeds"
     );
 
     Ok(())
 }
 
 #[test]
-fn legacy_no_guseed_warning_points_to_no_seed_wobble() -> Result<(), Box<dyn std::error::Error>> {
+fn legacy_no_guseed_warns_it_is_now_a_noop() -> Result<(), Box<dyn std::error::Error>> {
     let mut query_file = NamedTempFile::new()?;
     writeln!(query_file, ">q\nGGGG")?;
 
@@ -122,7 +122,7 @@ fn legacy_no_guseed_warning_points_to_no_seed_wobble() -> Result<(), Box<dyn std
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "'--noGUseed' is deprecated; use --no-seed-wobble instead.",
+            "'--noGUseed' is deprecated and now a no-op; G-U wobble is off by default, enable it with --seed-wobble.",
         ));
 
     Ok(())

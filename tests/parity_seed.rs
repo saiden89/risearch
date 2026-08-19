@@ -19,8 +19,8 @@ fn length(
     let l_str = l.to_string();
     let s_str = s.to_string();
     let mut args = vec!["-l", &l_str, "-e", "100.0", "--seed-length", &s_str, "-p3"];
-    if strict {
-        args.push("--no-seed-wobble");
+    if !strict {
+        args.push("--seed-wobble");
     }
 
     let test_name = if strict {

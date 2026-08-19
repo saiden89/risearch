@@ -11,7 +11,7 @@ mod tests {
 
         assert_eq!(cfg.seed.seed_length, None);
         assert_eq!(DEFAULT_SEED_LEN, 6);
-        assert!(cfg.seed.seed_wobble);
+        assert!(!cfg.seed.seed_wobble);
         assert_eq!(cfg.seed.max_mismatches, 0);
         assert_eq!(cfg.seed.min_prefix_matches, 1);
         assert_eq!(cfg.seed.min_suffix_matches, 0);

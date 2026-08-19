@@ -253,7 +253,7 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
     mismatches = 0,
     mismatch_prefix = 1,
     mismatch_suffix = 0,
-    seed_wobble = true,
+    seed_wobble = false,
     matrix = "t04",
     penalty = 0.0,
     temperature = 37,

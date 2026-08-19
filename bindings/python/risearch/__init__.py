@@ -31,7 +31,7 @@ def search(
     mismatches: int = 0,
     mismatch_prefix: int = 1,
     mismatch_suffix: int = 0,
-    seed_wobble: bool = True,
+    seed_wobble: bool = False,
     matrix: str = "t04",
     penalty: float = 0.0,
     temperature: int = 37,

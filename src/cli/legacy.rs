@@ -12,7 +12,9 @@ fn warn_if(used: bool, flag: &str, replacement: &str) {
 
 pub(crate) fn emit_legacy_warnings(args: &SearchArgs, legacy_target: bool) {
     // Simple flag deprecations
-    warn_if(args.seed.no_guseed_legacy, "--noGUseed", "--no-seed-wobble");
+    if args.seed.no_guseed_legacy {
+        warn!("'--noGUseed' is deprecated and now a no-op; G-U wobble is off by default, enable it with --seed-wobble.");
+    }
     warn_if(legacy_target, "-i", "-t/--target");
 
     // -p/--report-alignment: warn with smart suggestion
