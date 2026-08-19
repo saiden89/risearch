@@ -238,8 +238,8 @@ def test_public_and_native_search_defaults_match():
 
 
 def test_native_negative_energy_default_matches_public_default(store):
-    implicit = pl.from_arrow(native.search([QUERY_FA], store, seed_length=8))
-    explicit = pl.from_arrow(
+    implicit = pl.DataFrame(native.search([QUERY_FA], store, seed_length=8))
+    explicit = pl.DataFrame(
         native.search([QUERY_FA], store, seed_length=8, energy_threshold=-20.0)
     )
     columns = list(EXPECTED_COLUMNS)

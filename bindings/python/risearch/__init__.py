@@ -68,7 +68,7 @@ def search(
         no_max_prune=no_max_prune,
         no_dedup=no_dedup,
     )
-    return pl.from_arrow(result)
+    return pl.DataFrame(result)
 
 
 __all__ = ["TargetRegistry", "index", "search"]

@@ -128,7 +128,7 @@ impl HitSink for ArrowSink<'_> {
 
 /// The result of a `search()` call.
 ///
-/// Consumed by `pl.from_arrow(result)` via the Arrow PyCapsule Interface.
+/// Consumed by `pl.DataFrame(result)` via the Arrow PyCapsule Interface.
 /// One-shot: the stream is consumed on the first call to `__arrow_c_stream__`.
 #[pyclass(name = "SearchResult", module = "risearch._native")]
 struct PySearchResult {
@@ -149,7 +149,7 @@ impl PySearchResult {
 impl PySearchResult {
     /// Arrow PyCapsule Interface producer (`__arrow_c_stream__` protocol).
     ///
-    /// Called automatically by `pl.from_arrow(result)` — do not call directly.
+    /// Called automatically by `pl.DataFrame(result)` — do not call directly.
     #[pyo3(signature = (requested_schema = None))]
     fn __arrow_c_stream__<'py>(
         &mut self,
@@ -236,7 +236,7 @@ fn build_index(py: Python<'_>, fasta: PathBuf, output: PathBuf) -> PyResult<()> 
 /// Returns
 /// -------
 /// SearchResult
-///     Arrow C Stream producer; pass to `pl.from_arrow()` to obtain a DataFrame.
+///     Arrow C Stream producer; pass to `pl.DataFrame()` to obtain a DataFrame.
 ///
 /// Notes
 /// -----
