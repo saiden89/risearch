@@ -222,7 +222,7 @@ impl ParityRunner {
         let (rust_hits, query_registry) = self.rust.search(query, &search_args, &output);
 
         // Translate args to C format
-        let c_args = translate_args_for_c(&args_ref);
+        let c_args = translate_args_for_c(&args_ref, search_args.seed.seed_wobble);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         let c_out = self.c.search(query, &c_args_ref);
         let (c_hits, _) = parse_output(&c_out, &query_registry, &self.rust.state.target_registry)
@@ -234,6 +234,11 @@ impl ParityRunner {
     /// Run comparison and assert parity passes.
     pub(crate) fn assert_pass(&self, query: &Path, test_name: &str, args: &[&str]) {
         let (rust_recs, c_recs, query_registry) = self.compare(query, args);
+
+        assert!(
+            !rust_recs.is_empty() || !c_recs.is_empty(),
+            "{test_name}: neither implementation reported hits, so parity is vacuous"
+        );
 
         let result = ParityComparator::new(&rust_recs, &c_recs).compare();
 
@@ -286,7 +291,7 @@ impl ParityRunner {
         search_args.filter.no_dedup = true;
         let rust_out = self.rust.search_text(query, &search_args, &output);
 
-        let c_args = translate_args_for_c(&args_ref);
+        let c_args = translate_args_for_c(&args_ref, search_args.seed.seed_wobble);
         let c_args_ref: Vec<&str> = c_args.iter().map(|s| s.as_str()).collect();
         (rust_out, self.c.search(query, &c_args_ref))
     }
@@ -367,13 +372,15 @@ fn legacy_parity_args(args: &[&str]) -> Vec<String> {
 /// - Rust-only flags (--no-max-prune, --experimental, --dp-band*)
 /// - New seed syntax (--seed-start/end/length) → legacy -s format
 /// - Wobble polarity (Rust opts in with --seed-wobble; C opts out with --noGUseed)
-fn translate_args_for_c(args: &[&str]) -> Vec<String> {
+///
+/// `seed_wobble` comes from the clap-parsed config, not from scanning `args`, so
+/// the two sides cannot disagree about `--seed-wobble=false` or `--noGUseed`.
+fn translate_args_for_c(args: &[&str], seed_wobble: bool) -> Vec<String> {
     let mut c_args: Vec<String> = Vec::new();
     let mut seed_start: Option<&str> = None;
     let mut seed_end: Option<&str> = None;
     let mut seed_length: Option<&str> = None;
     let mut has_legacy_seed = false;
-    let mut seed_wobble = false;
 
     let mut iter = args.iter().copied().peekable();
     while let Some(arg) = iter.next() {
@@ -412,8 +419,8 @@ fn translate_args_for_c(args: &[&str]) -> Vec<String> {
             }
 
             // Wobble polarity is inverted: Rust opts in, C opts out.
-            "--seed-wobble" => seed_wobble = true,
             "--noGUseed" => continue,
+            _ if arg == "--seed-wobble" || arg.starts_with("--seed-wobble=") => continue,
             // Pass through everything else
             _ => c_args.push(arg.to_string()),
         }

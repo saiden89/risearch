@@ -291,7 +291,7 @@ impl TryFrom<SeedArgs> for SeedConfig {
             seed_start,
             seed_end,
             seed_length,
-            seed_wobble: value.seed_wobble && !value.no_guseed_legacy,
+            seed_wobble: value.seed_wobble,
             no_max_prune: value.no_max_prune,
             max_mismatches,
             min_prefix_matches,

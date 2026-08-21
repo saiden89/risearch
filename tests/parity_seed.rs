@@ -8,27 +8,44 @@ use support::{query_fa, target_fa, ParityRunner};
 
 /// Main seed length × extension limit matrix.
 /// Tests all combinations on the shared query.fa and target.fa fixtures.
+///
+/// The seed-length sweeps stop where the fixtures stop yielding hits: 9 for
+/// strict pairing, 13 with wobble. Beyond that both sides report nothing and
+/// the comparison is vacuous.
 #[rstest]
 fn length(
     query_fa: PathBuf,
     target_fa: PathBuf,
-    #[values(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)] s: usize,
+    #[values(6, 7, 8, 9, 10, 11, 12, 13)] s: usize,
     #[values(0, 5, 10, 15, 20, 25, 30, 35, 40)] l: usize,
-    #[values(false, true)] strict: bool,
 ) {
     let l_str = l.to_string();
     let s_str = s.to_string();
-    let mut args = vec!["-l", &l_str, "-e", "100.0", "--seed-length", &s_str, "-p3"];
-    if !strict {
-        args.push("--seed-wobble");
-    }
+    let args = vec![
+        "-l",
+        &l_str,
+        "-e",
+        "100.0",
+        "--seed-length",
+        &s_str,
+        "-p3",
+        "--seed-wobble",
+    ];
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &format!("s{}_l{}", s, l), &args);
+}
 
-    let test_name = if strict {
-        format!("s{}_l{}_strict", s, l)
-    } else {
-        format!("s{}_l{}", s, l)
-    };
-    ParityRunner::new(&target_fa).assert_pass(&query_fa, &test_name, &args);
+/// Same matrix under strict (Watson-Crick only) seeding.
+#[rstest]
+fn length_strict(
+    query_fa: PathBuf,
+    target_fa: PathBuf,
+    #[values(6, 7, 8, 9)] s: usize,
+    #[values(0, 5, 10, 15, 20, 25, 30, 35, 40)] l: usize,
+) {
+    let l_str = l.to_string();
+    let s_str = s.to_string();
+    let args = vec!["-l", &l_str, "-e", "100.0", "--seed-length", &s_str, "-p3"];
+    ParityRunner::new(&target_fa).assert_pass(&query_fa, &format!("s{}_l{}_strict", s, l), &args);
 }
 
 /// Seed interval: --seed-start/--seed-end
@@ -36,7 +53,9 @@ fn length(
 fn interval(
     query_fa: PathBuf,
     target_fa: PathBuf,
-    #[values("1:8", "1:12", "2:10", "1:15")] spec: &str,
+    // With no --seed-length the interval width becomes the seed length, so
+    // widths past ~10 find nothing in these fixtures.
+    #[values("1:8", "1:10", "2:10", "5:13")] spec: &str,
     #[values(0, 10, 20)] l: usize,
 ) {
     let l_str = l.to_string();
@@ -51,6 +70,7 @@ fn interval(
         "--seed-end",
         end,
         "-p3",
+        "--seed-wobble",
     ];
 
     let test_name = format!("interval_{}_l{}", spec.replace(':', "_"), l);
@@ -80,6 +100,7 @@ fn interval_with_length(
         "--seed-length",
         len,
         "-p3",
+        "--seed-wobble",
     ];
 
     let test_name = format!("interval_{}_l{}", spec.replace([':', '/'], "_"), l);

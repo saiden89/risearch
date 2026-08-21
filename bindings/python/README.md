@@ -45,9 +45,10 @@ imported as `polars`.
 
 The Python package is very small:
 
-- `risearch.index(fasta, output)` builds a binary target index
+- `risearch.index(fasta, output, threads=None)` builds a binary target index
+  (`threads` needs the `openmp` build feature; wheels are single-threaded here)
 - `risearch.TargetRegistry.open(path)` opens that index for reuse
-- `risearch.search(query_fasta, store, **kwargs)` runs the search and returns a Polars `DataFrame`
+- `risearch.search(query, target, **kwargs)` runs the search and returns a Polars `DataFrame`
 
 The result schema is:
 
@@ -68,6 +69,33 @@ The `search()` kwargs map to the canonical Rust-facing options:
 - `matrix`, `penalty`, `temperature`
 - `max_extension`
 - `energy_threshold`, `seed_energy`, `no_max_prune`, `no_dedup`
+- `alignment` — set `False` to skip DP traceback; the `alignment` column becomes all-null
+- `threads` — rayon worker width for query parsing and search; defaults to rayon's
+  choice, which honours `RAYON_NUM_THREADS`. `0` means "all cores", not serial.
+
+## Logging
+
+Rust log records are forwarded into Python's `logging` under the `risearch`
+logger, so the application decides where they go:
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+```
+
+Unconfigured, Python's own fallback prints warnings to stderr. Silence the
+library with `logging.getLogger("risearch").setLevel(logging.ERROR)`.
+Configure logging before the first call: pyo3-log caches each module's
+effective level on first use, so later `setLevel` calls may not take effect.
+`TRACE` never reaches Python, and release wheels also drop `DEBUG`.
+
+## Where defaults live
+
+`risearch.search()` declares every default; the compiled `_native.search`
+declares none. `_native._default_options()` reports the Rust config defaults
+and the test suite holds the wrapper to them. This covers the Python API only
+— the CLI resolves some options its own way, so the two can still differ
+(`alignment` is one: the CLI derives it from the output format).
 
 ## Smoke test
 
@@ -86,8 +114,8 @@ query_fa = root / "tests" / "data" / "query.fa"
 with tempfile.TemporaryDirectory() as tmp:
     idx = Path(tmp) / "RHOC.idx"
     risearch.index(target_fa, idx)
-    store = risearch.TargetRegistry.open(idx)
-    df = risearch.search(query_fa, store, seed_length=8, energy_threshold=-10.0)
+    target = risearch.TargetRegistry.open(idx)
+    df = risearch.search(query_fa, target, seed_length=8, energy_threshold=-10.0)
     print(df.shape)
     print(df.columns)
 PY

@@ -20,6 +20,9 @@ mod tests {
         assert_eq!(cfg.score.temperature, 37);
         assert_eq!(cfg.extend.max_extension, 20);
         assert!(cfg.extend.build_alignment);
+        assert_eq!(cfg.filter.delta_g, Energy::from_kcal(-20.0));
+        assert_eq!(cfg.filter.seed_energy, Energy::default());
+        assert!(!cfg.filter.no_dedup);
         cfg.validate().expect("default config");
     }
 

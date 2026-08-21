@@ -102,6 +102,7 @@ fn exact_seed_config(seed_length: i64) -> SeedConfig {
     SeedConfig {
         seed_length: Some(seed_length),
         min_prefix_matches: 1,
+        seed_wobble: true,
         ..Default::default()
     }
 }

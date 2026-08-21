@@ -15,14 +15,16 @@ from ._native import search as _native_search
 def index(
     fasta: str | PathLike[str],
     output: str | PathLike[str],
+    *,
+    threads: int | None = None,
 ) -> None:
     """Build a reusable target index from a FASTA file."""
-    _build_index(fasta, output)
+    _build_index(fasta, output, threads=threads)
 
 
 def search(
-    query_fasta: str | PathLike[str] | list[str | PathLike[str]],
-    store: TargetRegistry,
+    query: str | PathLike[str] | list[str | PathLike[str]],
+    target: TargetRegistry,
     *,
     seed_length: int | None = None,
     seed_start: int | None = None,
@@ -39,19 +41,21 @@ def search(
     seed_energy: float = 0.0,
     no_max_prune: bool = False,
     no_dedup: bool = False,
+    alignment: bool = True,
+    threads: int | None = None,
 ) -> pl.DataFrame:
     """Search for RNA-RNA interactions and return one row per hit.
 
-    ``query_fasta`` accepts one path or a list of paths. Result order is not
+    ``query`` accepts one path or a list of paths. Result order is not
     stable across runs; sort the returned DataFrame when deterministic ordering
     matters.
     """
-    if isinstance(query_fasta, (str, os.PathLike)):
-        query_fasta = [query_fasta]
+    if isinstance(query, (str, os.PathLike)):
+        query = [query]
 
     result = _native_search(
-        query_fasta,
-        store,
+        query,
+        target,
         seed_length=seed_length,
         seed_start=seed_start,
         seed_end=seed_end,
@@ -67,6 +71,8 @@ def search(
         seed_energy=seed_energy,
         no_max_prune=no_max_prune,
         no_dedup=no_dedup,
+        alignment=alignment,
+        threads=threads,
     )
     return pl.DataFrame(result)
 

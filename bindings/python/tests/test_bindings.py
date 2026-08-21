@@ -184,6 +184,55 @@ def test_split_files_match_full_file(store, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# search — alignment and threads
+# ---------------------------------------------------------------------------
+
+SORT_COLS = [c for c in EXPECTED_COLUMNS if c != "alignment"]
+
+
+def test_alignment_populated_by_default(store):
+    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
+    assert df["alignment"].is_not_null().any()
+
+
+def test_alignment_false_nulls_column_but_keeps_schema(store):
+    df = risearch.search(
+        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, alignment=False
+    )
+    assert df["alignment"].is_null().all()
+    for col, dtype in EXPECTED_COLUMNS.items():
+        assert col in df.columns
+        assert df[col].dtype == dtype
+
+
+def test_alignment_false_preserves_hits(store):
+    with_aln = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
+    without = risearch.search(
+        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, alignment=False
+    )
+    assert_frame_equal(
+        with_aln.drop("alignment").sort(SORT_COLS),
+        without.drop("alignment").sort(SORT_COLS),
+    )
+
+
+@pytest.mark.parametrize("threads", [1, 2])
+def test_threads_does_not_change_results(store, threads):
+    default = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
+    pinned = risearch.search(
+        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, threads=threads
+    )
+    columns = list(EXPECTED_COLUMNS)
+    assert_frame_equal(default.sort(columns), pinned.sort(columns))
+
+
+def test_index_accepts_threads(tmp_path):
+    idx = tmp_path / "threaded.idx"
+    risearch.index(TARGET_FA, idx, threads=2)
+    assert idx.exists() and idx.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
 # search — invalid arguments
 # ---------------------------------------------------------------------------
 
@@ -225,22 +274,50 @@ def test_public_objects_identify_as_risearch():
     assert risearch.search.__module__ == "risearch"
 
 
-def test_public_and_native_search_defaults_match():
+def test_public_and_native_search_params_match():
+    """The wrapper must forward every native keyword, in the same order."""
     public = inspect.signature(risearch.search)
     private = inspect.signature(native.search)
     assert list(public.parameters) == list(private.parameters)
-    for name, parameter in public.parameters.items():
-        native_default = private.parameters[name].default
-        if native_default is not Ellipsis:
-            assert parameter.default == native_default
-    assert public.parameters["energy_threshold"].default == -20.0
-    assert public.parameters["penalty"].default == 0.0
 
 
-def test_native_negative_energy_default_matches_public_default(store):
-    implicit = pl.DataFrame(native.search([QUERY_FA], store, seed_length=8))
-    explicit = pl.DataFrame(
-        native.search([QUERY_FA], store, seed_length=8, energy_threshold=-20.0)
+def test_native_search_declares_no_defaults():
+    """Defaults belong to the wrapper alone, so the native side must have none."""
+    private = inspect.signature(native.search)
+    defaulted = [
+        name
+        for name, p in private.parameters.items()
+        if p.default is not inspect.Parameter.empty
+    ]
+    assert defaulted == []
+
+
+def test_wrapper_defaults_match_rust_config_defaults():
+    """The wrapper's defaults are the Rust config's defaults, not a copy of them."""
+    public = inspect.signature(risearch.search).parameters
+    exempt = {"query", "target", "threads", "alignment"}
+    assert {n: p.default for n, p in public.items() if n not in exempt} == (
+        native._default_options()
     )
-    columns = list(EXPECTED_COLUMNS)
-    assert_frame_equal(implicit.sort(columns), explicit.sort(columns))
+
+
+def test_documented_defaults_are_pinned():
+    """Absolute pins: the relative check above moves with the Rust config."""
+    public = inspect.signature(risearch.search).parameters
+    assert public["energy_threshold"].default == -20.0
+    assert public["penalty"].default == 0.0
+    assert public["seed_wobble"].default is False
+    assert public["max_extension"].default == 20
+    assert public["temperature"].default == 37
+    assert public["matrix"].default == "t04"
+
+
+def test_native_search_is_callable_with_every_kwarg(store):
+    """Keeps a runtime call on the native entry point the stub documents."""
+    result = native.search(
+        [QUERY_FA],
+        store,
+        **{**native._default_options(), "seed_length": 8, "alignment": True},
+        threads=None,
+    )
+    assert pl.DataFrame(result).height > 0
