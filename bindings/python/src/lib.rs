@@ -1,4 +1,5 @@
 mod arrow;
+mod error;
 
 use std::path::PathBuf;
 
@@ -7,12 +8,14 @@ use arrow_array::{RecordBatch, RecordBatchIterator};
 use arrow_schema::SchemaRef;
 use pyo3::prelude::*;
 use pyo3::types::{PyCapsule, PyDict};
+use risearch::fastx::read_sequences;
 use risearch::{
     run_search, DsmId, Energy, ExtendConfig, FilterConfig, QueryRegistry, ScoreConfig,
     SearchConfig, SeedConfig, TargetRegistry,
 };
 
 use crate::arrow::{search_result_schema, ArrowSink};
+use crate::error::{IndexFormatError, InputError, ModelError, Result, RisearchError, SearchError};
 
 // =============================================================================
 // PySearchResult — Arrow C Stream Interface producer
@@ -80,7 +83,7 @@ impl PyTargetRegistry {
     /// path : str | os.PathLike
     ///     Path to the `.idx` file produced by `build_index()`.
     #[staticmethod]
-    fn open(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+    fn open(py: Python<'_>, path: PathBuf) -> Result<Self> {
         // Archive validation is rayon-parallel: a worker that logs deadlocks if
         // this thread holds the GIL.
         let store = py.detach(|| TargetRegistry::open(&path))?;
@@ -141,10 +144,10 @@ fn build_index(
     fasta: PathBuf,
     output: PathBuf,
     threads: Option<i64>,
-) -> PyResult<()> {
+) -> Result<()> {
     let threads = thread_count(threads)?;
     py.detach(|| {
-        let targets = risearch::fastx::read_sequences(&fasta)?;
+        let targets = read_sequences(&fasta)?;
         TargetRegistry::build(targets, threads)?.save(&output)
     })?;
     Ok(())
@@ -221,7 +224,7 @@ fn search(
     no_dedup: bool,
     alignment: bool,
     threads: Option<i64>,
-) -> PyResult<PySearchResult> {
+) -> Result<PySearchResult> {
     let config = SearchConfig {
         seed: SeedConfig {
             seed_start,
@@ -250,9 +253,7 @@ fn search(
             no_dedup,
         },
     };
-    config
-        .validate()
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    config.validate()?;
 
     let paths: Vec<&std::path::Path> = query.iter().map(|p| p.as_path()).collect();
 
@@ -265,16 +266,14 @@ fn search(
                 .map(|n| rayon::ThreadPoolBuilder::new().num_threads(n).build())
                 .transpose()
         })
-        .map_err(anyhow::Error::from)?;
+        .map_err(|err| SearchError::new_err(format!("failed to build the thread pool: {err}")))?;
 
     // Detached: a rayon worker that logs deadlocks against a held GIL.
-    let queries = py
-        .detach(|| {
-            in_pool(pool.as_ref(), || {
-                QueryRegistry::from_fastas(&paths, &config.seed)
-            })
+    let queries = py.detach(|| {
+        in_pool(pool.as_ref(), || {
+            QueryRegistry::from_fastas(&paths, &config.seed)
         })
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    })?;
 
     let sink = ArrowSink::new(&queries, &target.0);
     py.detach(|| {
@@ -325,6 +324,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // try_init, not init: init panics when another extension already installed
     // a logger, and this body re-runs on module reload.
     let _ = pyo3_log::try_init();
+    m.add("RisearchError", m.py().get_type::<RisearchError>())?;
+    m.add("IndexFormatError", m.py().get_type::<IndexFormatError>())?;
+    m.add("ModelError", m.py().get_type::<ModelError>())?;
+    m.add("InputError", m.py().get_type::<InputError>())?;
+    m.add("SearchError", m.py().get_type::<SearchError>())?;
     m.add_class::<PyTargetRegistry>()?;
     m.add_class::<PySearchResult>()?;
     m.add_function(wrap_pyfunction!(build_index, m)?)?;

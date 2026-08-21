@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
 use fs_err::File;
 use memmap2::Mmap;
 
+use crate::error::{Error, Result};
 use crate::index::archive::{self, ArchivedTargetStore, TargetRecord, TargetStore};
 use crate::index::sa::{SuffixIndex, SuffixIndexView};
 use crate::index::view::TargetView;
@@ -29,7 +29,7 @@ impl TargetRegistry {
     /// (or `Some(0)`) means auto.
     pub fn build(targets: Vec<(String, Sequence)>, threads: Option<usize>) -> Result<Self> {
         if targets.is_empty() {
-            bail!("No target sequences to index");
+            return Err(Error::Input("No target sequences to index".into()));
         }
 
         let mut records = Vec::with_capacity(targets.len());
@@ -48,8 +48,7 @@ impl TargetRegistry {
             combined_bases.push(Base::Gap);
         }
 
-        let suffix_index = SuffixIndex::build(combined_bases, threads)
-            .context("Failed to build global suffix array")?;
+        let suffix_index = SuffixIndex::build(combined_bases, threads)?;
 
         let store = TargetStore {
             targets: records,
@@ -71,10 +70,14 @@ impl TargetRegistry {
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open index file: {}", path.display()))?;
-        let mmap = unsafe { Mmap::map(&file) }
-            .with_context(|| format!("Failed to memory-map index file: {}", path.display()))?;
+        let file = File::open(path)?;
+        // memmap2 drops the path that fs-err would have carried.
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|err| {
+            std::io::Error::new(
+                err.kind(),
+                format!("failed to memory-map file `{}`: {err}", path.display()),
+            )
+        })?;
 
         archive::read_header(mmap.as_ref(), path)?;
         let source = path.display();

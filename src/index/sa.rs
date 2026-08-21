@@ -6,11 +6,11 @@
 
 use std::ops::Range;
 
-use anyhow::{anyhow, Error};
 use libsais::SuffixArrayConstruction;
 #[cfg(debug_assertions)]
 use rayon::prelude::*;
 
+use crate::error::Error;
 use crate::types::Base;
 
 /// An owned sequence and the lexicographically ordered suffixes built over it.
@@ -179,7 +179,7 @@ fn build_suffix_array(bases: &[Base], threads: Option<usize>) -> Result<Vec<u64>
             .in_owned_buffer()
             .multi_threaded(thread_count)
             .run()
-            .map_err(|e| anyhow!("{e:?}"))?
+            .map_err(|e| Error::Index(format!("{e:?}")))?
     };
 
     #[cfg(not(feature = "openmp"))]
@@ -189,7 +189,7 @@ fn build_suffix_array(bases: &[Base], threads: Option<usize>) -> Result<Vec<u64>
             .in_owned_buffer()
             .single_threaded()
             .run()
-            .map_err(|e| anyhow!("{e:?}"))?
+            .map_err(|e| Error::Index(format!("{e:?}")))?
     };
 
     // Extract the SA vec

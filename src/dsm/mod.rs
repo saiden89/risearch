@@ -11,10 +11,11 @@
 //! Target: 3'─ t1 ─ t2 ─ 5'
 //! ```
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context};
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::error::{Error, Result};
 use crate::types::{DsmId, Energy, SequenceType, BASE_COUNT};
 
 mod model;
@@ -69,7 +70,7 @@ impl DsmRegistry {
         if BUILTIN_TABLES.iter().any(|e| e.id == s) {
             Ok(DsmId(s.to_string()))
         } else {
-            bail!("unknown DSM id '{}'", s)
+            Err(Error::Dsm(format!("unknown DSM id '{s}'")))
         }
     }
 
@@ -78,7 +79,7 @@ impl DsmRegistry {
         let entries: Vec<&Dsm> = BUILTIN_TABLES.iter().filter(|e| e.id == id.0).collect();
 
         if entries.is_empty() {
-            bail!("No bundled DSM for id='{}'", id.0);
+            return Err(Error::Dsm(format!("No bundled DSM for id='{}'", id.0)));
         }
 
         if let Some(e) = entries.iter().find(|e| e.temperature == temperature) {
@@ -101,11 +102,12 @@ impl DsmRegistry {
 
         let (lo, hi) = match (lo, hi) {
             (Some(l), Some(h)) => (l, h),
-            _ => bail!(
-                "Temperature {} is outside range for bundled DSM '{}'",
-                temperature,
-                id.0
-            ),
+            _ => {
+                return Err(Error::Dsm(format!(
+                    "Temperature {} is outside range for bundled DSM '{}'",
+                    temperature, id.0
+                )))
+            }
         };
 
         let (init1, table1) = load_dsm_tsv_text(
@@ -135,7 +137,7 @@ impl DsmRegistry {
     }
 }
 
-fn validate_canonical_manifest_text(text: &str, data_root: &Path) -> Result<()> {
+fn validate_canonical_manifest_text(text: &str, data_root: &Path) -> anyhow::Result<()> {
     let doc = text
         .parse::<toml_edit::DocumentMut>()
         .context("Failed to parse DSM manifest")?;
@@ -219,7 +221,7 @@ fn validate_canonical_manifest_text(text: &str, data_root: &Path) -> Result<()> 
     Ok(())
 }
 
-fn parse_orientation(raw: &str) -> Result<Orientation> {
+fn parse_orientation(raw: &str) -> anyhow::Result<Orientation> {
     match raw {
         "identity" => Ok(Orientation::Identity),
         "reverse-swap" => Ok(Orientation::ReverseSwap),
@@ -227,25 +229,25 @@ fn parse_orientation(raw: &str) -> Result<Orientation> {
     }
 }
 
-fn validate_sequence_type(raw: &str) -> Result<SequenceType> {
+fn validate_sequence_type(raw: &str) -> anyhow::Result<SequenceType> {
     SequenceType::try_from(raw).map_err(|e| anyhow::anyhow!(e))
 }
 
-fn required_table_str<'a>(table: &'a toml_edit::Table, key: &str) -> Result<&'a str> {
+fn required_table_str<'a>(table: &'a toml_edit::Table, key: &str) -> anyhow::Result<&'a str> {
     table
         .get(key)
         .and_then(toml_edit::Item::as_str)
         .with_context(|| format!("DSM manifest entry requires string field '{}'", key))
 }
 
-fn required_table_int(table: &toml_edit::Table, key: &str) -> Result<i64> {
+fn required_table_int(table: &toml_edit::Table, key: &str) -> anyhow::Result<i64> {
     table
         .get(key)
         .and_then(toml_edit::Item::as_integer)
         .with_context(|| format!("DSM manifest entry requires integer field '{}'", key))
 }
 
-fn required_table_number(table: &toml_edit::Table, key: &str) -> Result<f64> {
+fn required_table_number(table: &toml_edit::Table, key: &str) -> anyhow::Result<f64> {
     let value = table
         .get(key)
         .with_context(|| format!("DSM manifest entry requires numeric field '{}'", key))?;
@@ -255,21 +257,24 @@ fn required_table_number(table: &toml_edit::Table, key: &str) -> Result<f64> {
         .with_context(|| format!("DSM manifest entry field '{}' must be numeric", key))
 }
 
-fn required_inline_str<'a>(table: &'a toml_edit::InlineTable, key: &str) -> Result<&'a str> {
+fn required_inline_str<'a>(
+    table: &'a toml_edit::InlineTable,
+    key: &str,
+) -> anyhow::Result<&'a str> {
     table
         .get(key)
         .and_then(toml_edit::Value::as_str)
         .with_context(|| format!("DSM temperature entry requires string field '{}'", key))
 }
 
-fn required_inline_int(table: &toml_edit::InlineTable, key: &str) -> Result<i64> {
+fn required_inline_int(table: &toml_edit::InlineTable, key: &str) -> anyhow::Result<i64> {
     table
         .get(key)
         .and_then(toml_edit::Value::as_integer)
         .with_context(|| format!("DSM temperature entry requires integer field '{}'", key))
 }
 
-fn required_inline_number(table: &toml_edit::InlineTable, key: &str) -> Result<f64> {
+fn required_inline_number(table: &toml_edit::InlineTable, key: &str) -> anyhow::Result<f64> {
     let value = table
         .get(key)
         .with_context(|| format!("DSM temperature entry requires numeric field '{}'", key))?;

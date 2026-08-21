@@ -91,7 +91,7 @@ mod tests {
             seed_length: Some(0),
             ..Default::default()
         };
-        let err = cfg.resolve(100).unwrap_err();
+        let err = cfg.resolve(100).unwrap_err().to_string();
         assert!(err.contains("Invalid seed length"));
     }
 
@@ -102,7 +102,7 @@ mod tests {
             seed_end: Some(-1),
             ..Default::default()
         };
-        let err = cfg.resolve(100).unwrap_err();
+        let err = cfg.resolve(100).unwrap_err().to_string();
         assert!(err.contains("Invalid seed interval"));
     }
 
@@ -114,7 +114,7 @@ mod tests {
             seed_length: Some(5),
             ..Default::default()
         };
-        let err = cfg.resolve(100).unwrap_err();
+        let err = cfg.resolve(100).unwrap_err().to_string();
         assert!(err.contains("exceeds interval"));
     }
 
@@ -124,7 +124,11 @@ mod tests {
             seed_start: Some(1),
             ..Default::default()
         };
-        assert!(partial.validate().unwrap_err().contains("together"));
+        assert!(partial
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("together"));
 
         let zero_coordinate = SeedConfig {
             seed_start: Some(0),
@@ -134,6 +138,7 @@ mod tests {
         assert!(zero_coordinate
             .validate()
             .unwrap_err()
+            .to_string()
             .contains("cannot be zero"));
 
         let reversed = SeedConfig {
@@ -141,7 +146,11 @@ mod tests {
             seed_end: Some(1),
             ..Default::default()
         };
-        assert!(reversed.validate().unwrap_err().contains("precedes start"));
+        assert!(reversed
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("precedes start"));
     }
 
     #[test]
@@ -150,31 +159,43 @@ mod tests {
             penalty: Energy::from_kcal(-0.1),
             ..Default::default()
         };
-        assert!(cfg.validate().unwrap_err().contains("penalty"));
+        assert!(cfg.validate().unwrap_err().to_string().contains("penalty"));
 
         let cfg = ScoreConfig {
             penalty: Energy::from_kcal(50.1),
             ..Default::default()
         };
-        assert!(cfg.validate().unwrap_err().contains("penalty"));
+        assert!(cfg.validate().unwrap_err().to_string().contains("penalty"));
 
         let cfg = ScoreConfig {
             temperature: -1,
             ..Default::default()
         };
-        assert!(cfg.validate().unwrap_err().contains("temperature"));
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("temperature"));
 
         let cfg = ScoreConfig {
             temperature: 101,
             ..Default::default()
         };
-        assert!(cfg.validate().unwrap_err().contains("temperature"));
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("temperature"));
 
         let cfg = ScoreConfig {
             dsm_id: DsmId::from("not-a-dsm"),
             ..Default::default()
         };
-        assert!(cfg.validate().unwrap_err().contains("unknown DSM"));
+        assert!(cfg
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown DSM"));
     }
 
     #[test]

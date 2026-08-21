@@ -13,10 +13,10 @@ use std::fmt::Display;
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
 use memmap2::{Mmap, MmapOptions};
 use rayon::prelude::*;
 
+use crate::error::{Error, Result};
 use crate::types::Base;
 
 /// Bytes preceding the rkyv payload.
@@ -50,38 +50,47 @@ pub(super) fn read_header(bytes: &[u8], path: &Path) -> Result<()> {
     let rebuild = || format!("{}; rebuild it with `risearch index`", path.display());
 
     if bytes.len() < HEADER_LEN {
-        bail!("Target index is too small to hold a header: {}", rebuild());
+        return Err(Error::Index(format!(
+            "Target index is too small to hold a header: {}",
+            rebuild()
+        )));
     }
     if bytes[..MAGIC.len()] != MAGIC {
-        bail!("Not a risearch target index: {}", rebuild());
+        return Err(Error::Index(format!(
+            "Not a risearch target index: {}",
+            rebuild()
+        )));
     }
 
     let version = u32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes"));
     if version != FORMAT_VERSION {
-        bail!(
+        return Err(Error::Index(format!(
             "Unsupported target index version {version} in {}",
             rebuild()
-        );
+        )));
     }
     if bytes[12] != SA_WIDTH {
-        bail!(
+        return Err(Error::Index(format!(
             "Target index stores {}-byte suffix positions, expected {SA_WIDTH}: {}",
             bytes[12],
             rebuild()
-        );
+        )));
     }
     if bytes[13] != LITTLE_ENDIAN {
-        bail!("Target index is not little-endian: {}", rebuild());
+        return Err(Error::Index(format!(
+            "Target index is not little-endian: {}",
+            rebuild()
+        )));
     }
 
     let payload_len = u64::from_le_bytes(bytes[16..24].try_into().expect("8 bytes"));
     let expected = HEADER_LEN as u64 + payload_len;
     if expected != bytes.len() as u64 {
-        bail!(
+        return Err(Error::Index(format!(
             "Target index is {} bytes, its header declares {expected}: {}",
             bytes.len(),
             rebuild()
-        );
+        )));
     }
 
     Ok(())
@@ -99,7 +108,7 @@ pub(super) fn access<'a>(
     source: &dyn Display,
 ) -> Result<&'a ArchivedTargetStore> {
     rkyv::access::<ArchivedTargetStore, rkyv::rancor::Error>(payload)
-        .with_context(|| format!("Invalid target index archive: {source}"))
+        .map_err(|err| Error::Index(format!("Invalid target index archive: {source}: {err}")))
 }
 
 /// Borrow the root of a payload already validated by [`access`].
@@ -118,12 +127,12 @@ pub(super) fn validate(root: &ArchivedTargetStore, source: &dyn Display) -> Resu
     let seq = root.sequence.as_slice();
     let sa = root.suffix_array.as_slice();
     if seq.len() != sa.len() {
-        bail!(
+        return Err(Error::Index(format!(
             "Target index sequence/SA length mismatch (seq={}, sa={}): {}",
             seq.len(),
             sa.len(),
             source
-        );
+        )));
     }
 
     // Reinterpreting these bytes as `Base` requires every discriminant to be
@@ -136,7 +145,9 @@ pub(super) fn validate(root: &ArchivedTargetStore, source: &dyn Display) -> Resu
         .max()
         .unwrap_or(0);
     if max_rank > Base::U.as_u8() {
-        bail!("Target index contains an invalid base rank: {}", source);
+        return Err(Error::Index(format!(
+            "Target index contains an invalid base rank: {source}"
+        )));
     }
 
     let gap = Base::Gap.as_u8();
@@ -145,35 +156,36 @@ pub(super) fn validate(root: &ArchivedTargetStore, source: &dyn Display) -> Resu
     for target in root.targets.iter() {
         let name = target.name.as_str();
         let len = usize::try_from(target.len.to_native())
-            .with_context(|| format!("Target '{name}' length does not fit in usize"))?;
+            .map_err(|_| Error::Index(format!("Target '{name}' length does not fit in usize")))?;
         let block_end = len
             .checked_mul(2)
             .and_then(|doubled| doubled.checked_add(1))
             .and_then(|last| cursor.checked_add(last))
-            .ok_or_else(|| anyhow!("Target '{name}' block overflows the address space"))?;
+            .ok_or_else(|| {
+                Error::Index(format!("Target '{name}' block overflows the address space"))
+            })?;
         if block_end >= seq.len() {
-            bail!(
+            return Err(Error::Index(format!(
                 "Target '{name}' block exceeds the indexed sequence (end={block_end}, len={}): {}",
                 seq.len(),
                 source
-            );
+            )));
         }
         if seq[cursor + len] != gap || seq[block_end] != gap {
-            bail!(
-                "Target '{name}' block is missing a separator Gap in {}",
-                source
-            );
+            return Err(Error::Index(format!(
+                "Target '{name}' block is missing a separator Gap in {source}"
+            )));
         }
         offsets.push(cursor);
         cursor = block_end + 1;
     }
 
     if cursor != seq.len() {
-        bail!(
+        return Err(Error::Index(format!(
             "Target blocks cover {cursor} bytes of a {}-byte indexed sequence: {}",
             seq.len(),
             source
-        );
+        )));
     }
 
     Ok(offsets)
@@ -193,19 +205,16 @@ pub(super) fn header(version: u32, sa_width: u8, payload_len: usize) -> [u8; HEA
 /// Serialize `store` into an anonymous read-only mapping holding the same
 /// header-and-payload image a file would.
 pub(super) fn map_anon(store: &TargetStore) -> Result<Mmap> {
-    let payload =
-        rkyv::to_bytes::<rkyv::rancor::Error>(store).context("Failed to serialize target index")?;
+    let payload = rkyv::to_bytes::<rkyv::rancor::Error>(store)
+        .map_err(|err| Error::Index(format!("Failed to serialize target index: {err}")))?;
 
     let mut image = MmapOptions::new()
         .len(HEADER_LEN + payload.len())
-        .map_anon()
-        .context("Failed to allocate the target index mapping")?;
+        .map_anon()?;
     image[..HEADER_LEN].copy_from_slice(&header(FORMAT_VERSION, SA_WIDTH, payload.len()));
     image[HEADER_LEN..].copy_from_slice(payload.as_slice());
 
-    image
-        .make_read_only()
-        .context("Failed to seal the target index mapping")
+    Ok(image.make_read_only()?)
 }
 
 /// Publish `image` at `output` through a temporary file.
@@ -216,19 +225,11 @@ pub(super) fn write(output: &Path, image: &[u8]) -> Result<()> {
         .unwrap_or_else(|| "target.idx".to_string());
     let tmp_path = output.with_file_name(format!("{output_name}.tmp"));
 
-    let mut file = fs_err::File::create(&tmp_path)
-        .with_context(|| format!("Failed to create target index: {}", tmp_path.display()))?;
-    file.write_all(image)
-        .with_context(|| format!("Failed to write target index: {}", tmp_path.display()))?;
+    let mut file = fs_err::File::create(&tmp_path)?;
+    file.write_all(image)?;
     drop(file);
 
-    fs_err::rename(&tmp_path, output).with_context(|| {
-        format!(
-            "Failed to finalize index file: {} -> {}",
-            tmp_path.display(),
-            output.display()
-        )
-    })
+    Ok(fs_err::rename(&tmp_path, output)?)
 }
 
 #[cfg(target_endian = "little")]

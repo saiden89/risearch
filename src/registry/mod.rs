@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use crate::error::{Error, Result};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::ops::{Index, Range};
@@ -120,7 +120,7 @@ impl Query {
         // Compute seed interval once and fail early at boundary if invalid.
         let (start1, end1, min_seed_len) = config
             .resolve(q_len)
-            .map_err(|err| anyhow!("Invalid seed spec for query '{}': {}", id, err))?;
+            .map_err(|err| Error::Config(format!("Invalid seed spec for query '{id}': {err}")))?;
         let seed_interval = (start1 - 1)..end1;
         let max_seed_len = seed_interval.end.saturating_sub(seed_interval.start);
         let seed_sequence =
@@ -243,7 +243,10 @@ impl Index<usize> for QueryRegistry {
 fn read_and_validate_sequences(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let sequences = read_and_validate_fasta(path)?;
     if sequences.is_empty() {
-        bail!("No sequences found in input file: {}", path.display());
+        return Err(Error::Input(format!(
+            "No sequences found in input file: {}",
+            path.display()
+        )));
     }
 
     Ok(sequences)
@@ -264,20 +267,21 @@ impl QueryRegistry {
     /// files, are rejected. Query SA construction is parallelised via rayon.
     pub fn from_fastas(paths: &[&Path], config: &SeedConfig) -> Result<Self> {
         if paths.is_empty() {
-            bail!("No query files provided");
+            return Err(Error::Input("No query files provided".into()));
         }
 
         let mut all_sequences: Vec<(String, Vec<u8>)> = Vec::new();
         for path in paths {
-            let seqs = read_and_validate_sequences(path)
-                .with_context(|| format!("in {}", path.display()))?;
+            let seqs = read_and_validate_sequences(path)?;
             all_sequences.extend(seqs);
         }
 
         let mut seen = HashSet::with_capacity(all_sequences.len());
         for (id, _) in &all_sequences {
             if !seen.insert(id.as_str()) {
-                bail!("Duplicate FASTA record id '{}' across input files", id);
+                return Err(Error::Input(format!(
+                    "Duplicate FASTA record id '{id}' across input files"
+                )));
             }
         }
 
@@ -293,7 +297,9 @@ impl QueryRegistry {
 
         let entries: Vec<Query> = maybe_entries.into_iter().flatten().collect();
         if entries.is_empty() {
-            bail!("All sequences were empty after normalization");
+            return Err(Error::Input(
+                "All sequences were empty after normalization".into(),
+            ));
         }
 
         Ok(Self {

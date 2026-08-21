@@ -10,7 +10,7 @@
 
 mod extension;
 
-use anyhow::{bail, Result};
+use crate::error::{Error, Result};
 use log::info;
 use rayon::prelude::*;
 use std::cmp::Ordering;
@@ -172,7 +172,7 @@ pub fn run_search(
     opts: &SearchConfig,
     sink: &dyn HitSink,
 ) -> Result<usize> {
-    opts.validate().map_err(anyhow::Error::msg)?;
+    opts.validate()?;
 
     if store.is_empty() || queries.is_empty() {
         // Deliberately not flushed: an empty store or query set leaves the
@@ -237,14 +237,11 @@ fn check_unlimited_fits(queries: &QueryRegistry, opts: &SearchConfig) -> Result<
     for (_, q) in queries.iter() {
         let n = q.sequence().len();
         if n > MAX_EXT {
-            bail!(
-                "query '{}' is {} nt; `-l -1` cannot extend across it ({} nt cap). \
-                 Pass an explicit `-l <={}` to accept the cap, or shorten the query.",
-                q.name(),
-                n,
-                MAX_EXT,
-                MAX_EXT
-            );
+            return Err(Error::Config(format!(
+                "query '{}' is {n} nt; `-l -1` cannot extend across it ({MAX_EXT} nt cap). \
+                 Pass an explicit `-l <={MAX_EXT}` to accept the cap, or shorten the query.",
+                q.name()
+            )));
         }
     }
     Ok(())
@@ -357,8 +354,9 @@ impl SearchHit {
         targets.map_target_range(self.target_index(), self.strand, fasta_range)
     }
 
+    /// [`target_idx`](Self::target_idx) as an index into the target registry.
     #[inline]
-    fn target_index(&self) -> usize {
+    pub fn target_index(&self) -> usize {
         usize::try_from(self.target_idx).expect("u32 target index must fit usize")
     }
 

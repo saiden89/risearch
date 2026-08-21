@@ -2,6 +2,7 @@ use clap::ValueEnum;
 
 use crate::dp::MAX_EXT;
 use crate::dsm::DsmRegistry;
+use crate::error::{Error, Result};
 use crate::types::{DsmId, Energy};
 
 // `Default` implementations below own frontend default policy. Keep constants
@@ -136,24 +137,28 @@ impl SeedConfig {
     ///
     /// Bounds against a particular sequence length, and a requested length
     /// against that normalized interval, are checked by [`Self::resolve`].
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         match (self.seed_start, self.seed_end) {
             (None, None) => {
                 if self.seed_length.is_some_and(|length| length <= 0) {
-                    return Err("Invalid seed length: must be positive without an interval".into());
+                    return Err(Error::Config(
+                        "Invalid seed length: must be positive without an interval".into(),
+                    ));
                 }
             }
             (Some(start), Some(end)) => {
                 if start == 0 || end == 0 {
-                    return Err(
+                    return Err(Error::Config(
                         "Invalid seed interval: coordinates are 1-based and cannot be zero".into(),
-                    );
+                    ));
                 }
                 if start.signum() != end.signum() {
-                    return Err("Invalid seed interval: mixed sign".into());
+                    return Err(Error::Config("Invalid seed interval: mixed sign".into()));
                 }
                 if end < start {
-                    return Err("Invalid seed interval: end precedes start".into());
+                    return Err(Error::Config(
+                        "Invalid seed interval: end precedes start".into(),
+                    ));
                 }
 
                 // In interval mode, zero or a negative length means the full
@@ -161,30 +166,36 @@ impl SeedConfig {
                 if let Some(length) = self.seed_length.filter(|length| *length > 0) {
                     let interval_len = i128::from(end) - i128::from(start) + 1;
                     if i128::from(length) > interval_len {
-                        return Err("Invalid seed length (exceeds interval)".into());
+                        return Err(Error::Config(
+                            "Invalid seed length (exceeds interval)".into(),
+                        ));
                     }
                 }
             }
-            _ => return Err("use seed_start + seed_end together, or neither".into()),
+            _ => {
+                return Err(Error::Config(
+                    "use seed_start + seed_end together, or neither".into(),
+                ))
+            }
         }
 
         Ok(())
     }
 
     /// Resolve this config's seed bounds against a specific query length.
-    pub fn resolve(&self, query_len: usize) -> Result<(usize, usize, usize), String> {
+    pub fn resolve(&self, query_len: usize) -> Result<(usize, usize, usize)> {
         self.validate()?;
 
         let n = query_len as i64;
         if n <= 0 {
-            return Err("query length must be positive".into());
+            return Err(Error::Config("query length must be positive".into()));
         }
 
         match (self.seed_start, self.seed_end) {
             (None, None) => {
                 let effective_length = self.seed_length.unwrap_or(DEFAULT_SEED_LEN);
                 if effective_length <= 0 {
-                    return Err("Invalid seed length".into());
+                    return Err(Error::Config("Invalid seed length".into()));
                 }
                 let length = effective_length.min(n) as usize;
                 Ok((1, query_len, length))
@@ -204,16 +215,16 @@ impl SeedConfig {
                         };
                         (to_pos(start), to_pos(end))
                     }
-                    _ => return Err("Invalid seed interval: mixed sign".into()),
+                    _ => return Err(Error::Config("Invalid seed interval: mixed sign".into())),
                 };
 
                 if s_pos == 0 || e_pos == 0 {
-                    return Err("Invalid seed interval".into());
+                    return Err(Error::Config("Invalid seed interval".into()));
                 }
 
                 let interval_len = e_pos.saturating_sub(s_pos) + 1;
                 if interval_len == 0 {
-                    return Err("Invalid seed interval: empty".into());
+                    return Err(Error::Config("Invalid seed interval: empty".into()));
                 }
 
                 let final_len = match self.seed_length {
@@ -221,14 +232,18 @@ impl SeedConfig {
                     // 0 or negative length explicitly requested -> use full interval
                     Some(l) if l <= 0 => interval_len,
                     Some(l) if (l as usize) > interval_len => {
-                        return Err("Invalid seed length (exceeds interval)".into())
+                        return Err(Error::Config(
+                            "Invalid seed length (exceeds interval)".into(),
+                        ))
                     }
                     Some(l) => l as usize,
                 };
 
                 Ok((s_pos, e_pos, final_len))
             }
-            _ => Err("use seed_start + seed_end together, or neither".into()),
+            _ => Err(Error::Config(
+                "use seed_start + seed_end together, or neither".into(),
+            )),
         }
     }
 }
@@ -252,20 +267,20 @@ impl Default for ScoreConfig {
 }
 
 impl ScoreConfig {
-    pub fn validate(&self) -> Result<(), String> {
-        DsmRegistry::parse_id(self.dsm_id.0.as_str()).map_err(|err| err.to_string())?;
+    pub fn validate(&self) -> Result<()> {
+        DsmRegistry::parse_id(self.dsm_id.0.as_str())?;
 
         let penalty = self.penalty.to_kcal();
         if !(MIN_PENALTY_KCAL..=MAX_PENALTY_KCAL).contains(&penalty) {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "penalty must be between {MIN_PENALTY_KCAL} and {MAX_PENALTY_KCAL}, got {penalty}"
-            ));
+            )));
         }
         if !(MIN_TEMPERATURE_C..=MAX_TEMPERATURE_C).contains(&self.temperature) {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "temperature must be between {MIN_TEMPERATURE_C} and {MAX_TEMPERATURE_C}, got {}",
                 self.temperature
-            ));
+            )));
         }
 
         Ok(())
@@ -299,12 +314,12 @@ impl Default for ExtendConfig {
 }
 
 impl ExtendConfig {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         if !(UNLIMITED_EXTENSION..=MAX_EXTENSION).contains(&self.max_extension) {
-            return Err(format!(
+            return Err(Error::Config(format!(
                 "max extension must be {UNLIMITED_EXTENSION} (unlimited) or between 0 and {MAX_EXTENSION}, got {}",
                 self.max_extension
-            ));
+            )));
         }
         Ok(())
     }
@@ -345,7 +360,7 @@ pub struct SearchConfig {
 }
 
 impl SearchConfig {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         self.seed.validate()?;
         self.score.validate()?;
         self.extend.validate()?;

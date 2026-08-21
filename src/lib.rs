@@ -7,6 +7,7 @@ pub mod cli {
 pub mod config;
 pub mod dp;
 pub mod dsm;
+pub mod error;
 pub mod fastx;
 pub mod index;
 pub mod output;
@@ -18,6 +19,7 @@ pub mod types; // Core domain types
 
 // Re-exports for convenience
 pub use alignment::{AlignColumn, PairClass};
+pub use error::{Error, Result};
 pub use index::store::TargetRegistry;
 pub use registry::QueryRegistry;
 pub use seq::Sequence;

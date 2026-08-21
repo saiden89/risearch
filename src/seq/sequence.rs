@@ -4,8 +4,8 @@
 //! ensuring sequences are normalized once at the input boundary and then
 //! work with Base enums throughout the codebase.
 
+use crate::error::Result;
 use crate::types::Base;
-use anyhow::Result;
 use std::ops::{Deref, Index, Range, RangeFrom, RangeFull, RangeTo};
 
 use super::normalize::{normalize_rna_sequence, NormalizationStats};

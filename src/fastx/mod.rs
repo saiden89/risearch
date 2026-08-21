@@ -1,7 +1,8 @@
-use anyhow::{bail, Context, Result};
 use needletail::parse_fastx_file;
 use std::collections::HashSet;
 use std::path::Path;
+
+use crate::error::{Error, Result};
 
 /// Type alias for FASTA records to reduce type complexity
 pub type FastaRecords = Vec<(String, Vec<u8>)>;
@@ -11,50 +12,48 @@ pub type FastaRecords = Vec<(String, Vec<u8>)>;
 pub fn read_and_validate_fasta(filename: impl AsRef<Path>) -> Result<FastaRecords> {
     let filename_ref = filename.as_ref();
 
-    let md = fs_err::metadata(filename_ref).with_context(|| {
-        format!(
-            "Failed to access FASTA/FASTQ file: {}",
-            filename_ref.display()
-        )
-    })?;
+    let md = fs_err::metadata(filename_ref)?;
     if !md.is_file() {
-        bail!("Input path is not a file: {}", filename_ref.display());
+        return Err(Error::Input(format!(
+            "Input path is not a file: {}",
+            filename_ref.display()
+        )));
     }
     if md.len() == 0 {
         return Ok(Vec::new());
     }
 
-    let mut reader = parse_fastx_file(filename_ref).with_context(|| {
-        format!(
-            "Failed to open FASTA/FASTQ file: {}",
+    let mut reader = parse_fastx_file(filename_ref).map_err(|err| {
+        Error::Input(format!(
+            "Failed to open FASTA/FASTQ file {}: {err}",
             filename_ref.display()
-        )
+        ))
     })?;
 
     let mut records = Vec::new();
     let mut seen = HashSet::new();
 
     while let Some(record) = reader.next() {
-        let rec = record.with_context(|| {
-            format!(
-                "Failed to parse FASTA/FASTQ record from {}",
+        let rec = record.map_err(|err| {
+            Error::Input(format!(
+                "Failed to parse FASTA/FASTQ record from {}: {err}",
                 filename_ref.display()
-            )
+            ))
         })?;
 
         let id = String::from_utf8_lossy(rec.id()).into_owned();
         if id.trim().is_empty() {
-            bail!(
+            return Err(Error::Input(format!(
                 "Encountered empty FASTA record id in {}",
                 filename_ref.display()
-            );
+            )));
         }
         if !seen.insert(id.clone()) {
-            bail!(
+            return Err(Error::Input(format!(
                 "Duplicate FASTA record id '{}' in {}",
                 id,
                 filename_ref.display()
-            );
+            )));
         }
 
         let seq = rec.seq().to_vec();
@@ -80,10 +79,10 @@ pub fn read_sequences(filename: impl AsRef<Path>) -> Result<Vec<(String, crate::
     }
 
     if sequences.is_empty() {
-        bail!(
+        return Err(Error::Input(format!(
             "All sequences were empty after normalization in {}",
             filename.display()
-        );
+        )));
     }
 
     Ok(sequences)
@@ -92,8 +91,7 @@ pub fn read_sequences(filename: impl AsRef<Path>) -> Result<Vec<(String, crate::
 /// Normalizes a raw sequence and handles logging for gaps/N-conversions.
 /// Returns `Ok(None)` if the sequence is entirely empty after normalization.
 pub fn normalize_record(id: &str, raw_seq: &[u8]) -> Result<Option<crate::seq::Sequence>> {
-    let (sequence, stats) = crate::seq::Sequence::normalize(id, raw_seq)
-        .with_context(|| format!("Failed to normalize sequence '{}'", id))?;
+    let (sequence, stats) = crate::seq::Sequence::normalize(id, raw_seq)?;
 
     if sequence.is_empty() {
         log::warn!(

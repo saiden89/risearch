@@ -6,7 +6,7 @@ use arrow_array::builder::{Float64Builder, LargeStringBuilder, StringBuilder, UI
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use risearch::alignment::fingerprint_symbols;
-use risearch::{HitSink, QueryRegistry, SearchHit, TargetRegistry};
+use risearch::{HitSink, QueryRegistry, Result, SearchHit, TargetRegistry};
 
 pub(crate) fn search_result_schema() -> &'static SchemaRef {
     static SCHEMA: OnceLock<SchemaRef> = OnceLock::new();
@@ -79,7 +79,7 @@ impl<'a> ArrowSink<'a> {
 }
 
 impl HitSink for ArrowSink<'_> {
-    fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> anyhow::Result<()> {
+    fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()> {
         let mut strand_buf = [0u8; 4];
         // Rendered before locking, per HitSink's contract.
         let rendered: Vec<Option<String>> = hits
@@ -94,15 +94,16 @@ impl HitSink for ArrowSink<'_> {
 
         let mut c = self.columns.lock().unwrap();
         for (h, alignment) in hits.iter().zip(&rendered) {
-            let target_idx = usize::try_from(h.target_idx)?;
+            let target_idx = h.target_index();
             c.query_idx.append_value(u64::from(h.query_idx));
             c.query_name.append_value(query_name);
             c.target_idx.append_value(u64::from(h.target_idx));
             c.target_name.append_value(self.store.get_name(target_idx));
-            c.q_start.append_value(u64::try_from(h.q_start)?);
-            c.q_end.append_value(u64::try_from(h.q_end)?);
-            c.t_start.append_value(u64::try_from(h.t_start)?);
-            c.t_end.append_value(u64::try_from(h.t_end)?);
+            // The index format is 64-bit only, so usize never exceeds u64.
+            c.q_start.append_value(h.q_start as u64);
+            c.q_end.append_value(h.q_end as u64);
+            c.t_start.append_value(h.t_start as u64);
+            c.t_end.append_value(h.t_end as u64);
             c.strand
                 .append_value(char::from(h.strand).encode_utf8(&mut strand_buf));
             c.energy.append_value(f64::from(h.energy));

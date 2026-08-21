@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use crate::error::Result;
 
 use crate::config::{OutputConfig, OutputFormat};
 use crate::index::store::TargetRegistry;
@@ -75,7 +75,7 @@ impl HitSink for TextSink<'_> {
         // `format_hit_into` reserves per hit, so the buffer sizes itself.
         let mut block = Vec::new();
         for hit in &hits {
-            let target_idx = usize::try_from(hit.target_idx)?;
+            let target_idx = hit.target_index();
             let target = tview.target(target_idx, hit.strand);
             let target_range = hit.duplex_target_range(tview);
             let t_name = self.store.get_name(target_idx);

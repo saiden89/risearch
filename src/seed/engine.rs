@@ -1,6 +1,5 @@
-use anyhow::{Context, Result};
-
 use crate::config::SeedConfig;
+use crate::error::{Error, Result};
 use crate::index::sa::{SuffixIndex, SuffixIndexView};
 use crate::index::store::TargetRegistry;
 use crate::index::TargetView;
@@ -70,8 +69,13 @@ impl<'a> SeedingEngine<'a> {
         let tview = self.tview;
 
         let seed = query.seed_sequence();
-        let prepared_query = SuffixIndex::build_for_seed(seed, query.min_seed_len)
-            .with_context(|| format!("building suffix array for query '{}'", query.name()))?;
+        let prepared_query =
+            SuffixIndex::build_for_seed(seed, query.min_seed_len).map_err(|err| {
+                Error::Index(format!(
+                    "building suffix array for query '{}': {err}",
+                    query.name()
+                ))
+            })?;
         let query_suffixes = prepared_query.view();
 
         traverse::<WOBBLE, _>(

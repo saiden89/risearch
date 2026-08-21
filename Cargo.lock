@@ -1460,6 +1460,7 @@ dependencies = [
  "smallvec",
  "tabled",
  "tempfile",
+ "thiserror",
  "tikv-jemallocator",
  "toml",
  "toml_edit",

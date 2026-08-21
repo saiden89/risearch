@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use crate::error::{Error, Result};
 use std::sync::OnceLock;
 
 use crate::types::Base;
@@ -100,12 +100,10 @@ pub fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<Base>, Normal
                 stats.removed_gaps += 1;
             }
             NormalizeKind::Error => {
-                bail!(
+                return Err(Error::Input(format!(
                     "Invalid character in sequence '{}': byte=0x{:02X} ('{}')",
-                    id,
-                    b,
-                    b as char
-                );
+                    id, b, b as char
+                )));
             }
         }
     }

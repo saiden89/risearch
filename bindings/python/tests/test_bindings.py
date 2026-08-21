@@ -253,7 +253,7 @@ def test_strict_seed_returns_fewer_or_equal_hits(store):
 
 
 def test_invalid_matrix_raises(store):
-    with pytest.raises(ValueError, match="DSM id"):
+    with pytest.raises(risearch.ModelError, match="DSM id"):
         risearch.search(QUERY_FA, store, matrix="t05")
 
 
@@ -321,3 +321,40 @@ def test_native_search_is_callable_with_every_kwarg(store):
         threads=None,
     )
     assert pl.DataFrame(result).height > 0
+
+
+# ---------------------------------------------------------------------------
+# Error mapping
+# ---------------------------------------------------------------------------
+
+
+def test_risearch_exceptions_share_a_base():
+    """One `except risearch.RisearchError` catches every risearch-specific error."""
+    for exc in (
+        risearch.IndexFormatError,
+        risearch.InputError,
+        risearch.ModelError,
+        risearch.SearchError,
+    ):
+        assert issubclass(exc, risearch.RisearchError)
+        assert issubclass(exc, Exception)
+
+
+def test_missing_index_raises_file_not_found(tmp_path):
+    """An absent index is an OS-level miss, not a risearch-specific failure."""
+    with pytest.raises(FileNotFoundError):
+        risearch.TargetRegistry.open(tmp_path / "absent.idx")
+
+
+def test_corrupt_index_raises_index_format_error(tmp_path):
+    """A file that is not an index is rejected by the header, before the archive."""
+    bogus = tmp_path / "bogus.idx"
+    bogus.write_bytes(b"definitely not a risearch index")
+    with pytest.raises(risearch.IndexFormatError):
+        risearch.TargetRegistry.open(bogus)
+
+
+def test_missing_query_file_raises_file_not_found(store):
+    """A query path that does not exist surfaces as FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        risearch.search("no-such-query.fa", store)

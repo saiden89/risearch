@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use anyhow::{Context, Result};
+use crate::error::{Error, Result};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use zstd::stream;
@@ -63,9 +63,7 @@ impl OutputWriter {
                 compress,
             } => {
                 let mut slot = stream.lock().unwrap();
-                open_stream(path, *compress, &mut slot)?
-                    .write_all(block)
-                    .context("Failed to write output")
+                Ok(open_stream(path, *compress, &mut slot)?.write_all(block)?)
             }
             Self::PerKey {
                 dir,
@@ -74,8 +72,8 @@ impl OutputWriter {
             } => {
                 ensure_dir(dir)?;
                 let mut stream = open_path(&paths[key], *compress)?;
-                stream.write_all(block).context("Failed to write output")?;
-                stream.flush().context("Failed to flush output")
+                stream.write_all(block)?;
+                Ok(stream.flush()?)
             }
         }
     }
@@ -91,9 +89,7 @@ impl OutputWriter {
                 compress,
             } => {
                 let mut slot = stream.lock().unwrap();
-                open_stream(path, *compress, &mut slot)?
-                    .flush()
-                    .context("Failed to flush output")
+                Ok(open_stream(path, *compress, &mut slot)?.flush()?)
             }
             Self::PerKey { dir, .. } => ensure_dir(dir),
         }
@@ -117,10 +113,7 @@ fn open_path(path: &Path, compress: OutputCompression) -> Result<Box<dyn Write +
     let inner: Box<dyn Write + Send> = if path == Path::new("-") {
         Box::new(std::io::stdout())
     } else {
-        Box::new(
-            fs_err::File::create(path)
-                .with_context(|| format!("Failed to create output file {:?}", path))?,
-        )
+        Box::new(fs_err::File::create(path)?)
     };
 
     Ok(match compress {
@@ -131,7 +124,7 @@ fn open_path(path: &Path, compress: OutputCompression) -> Result<Box<dyn Write +
         )),
         OutputCompression::Zstd(level) => {
             let encoder = stream::write::Encoder::new(inner, level)
-                .context("zstd encoder init failed")?
+                .map_err(|err| Error::Output(format!("zstd encoder init failed: {err}")))?
                 .auto_finish();
             Box::new(BufWriter::with_capacity(256 * 1024, encoder))
         }
@@ -185,7 +178,7 @@ fn unique_filename_stem(stem: &str, used: &mut HashSet<String>) -> String {
 /// Idempotent, and races benignly between workers.
 fn ensure_dir(dir: &Path) -> Result<()> {
     fs_err::create_dir_all(dir)
-        .with_context(|| format!("Failed to create output directory {dir:?} for --multifile"))
+        .map_err(|err| Error::Output(format!("{err} (needed for --multifile)")))
 }
 
 pub(crate) fn build_multifile_paths<'a>(

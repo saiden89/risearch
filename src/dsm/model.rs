@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::Result;
 
 use crate::dp::MAX_TRANSITION_SCORE;
 use crate::types::{Base, DsmId, Energy, BASE_COUNT};
