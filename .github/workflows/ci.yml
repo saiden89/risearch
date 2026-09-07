@@ -110,8 +110,9 @@ jobs:
           tool: cargo-hack,cargo-minimal-versions
 
       # No --locked: the tool regenerates the lock down to the declared minimums.
+      # --ignore-private: pyo3-log's floor in the unpublished binding crate would otherwise override this crate's own.
       - name: Check direct-minimal-versions
-        run: cargo minimal-versions check --direct --no-dev-deps -p risearch
+        run: cargo minimal-versions check --direct --no-dev-deps --ignore-private -p risearch
 
   test:
     name: Test ${{ matrix.label }}

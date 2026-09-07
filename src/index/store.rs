@@ -12,7 +12,7 @@ use crate::types::{Base, Strand};
 
 /// Runtime handle for a target index.
 ///
-/// The mapped file holds the format described by [`crate::index::archive`]; this
+/// The mapped file holds the format described by `index::archive`; this
 /// type owns the mmap lifetime and carries the native offset directory needed by
 /// `TargetView`.
 pub struct TargetRegistry {

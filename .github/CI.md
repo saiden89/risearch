@@ -27,8 +27,9 @@ The `msrv` job pins the declared minimum supported Rust version (`rust-version =
 The floor is 1.88 because `libsais 0.2` uses `let`-chains (stabilised in Rust 1.88) and declares no `rust-version` of its own, so `cargo msrv find` is the source of truth.
 Bump both the `rust-version` field and this job's pinned toolchain together when the floor moves.
 
-The `minimal-versions` job proves the declared dependency floors of the published `risearch` crate are real: it resolves every direct dependency down to its declared minimum and builds against that (`cargo minimal-versions check --direct --no-dev-deps -p risearch`, via `taiki-e/install-action`).
+The `minimal-versions` job proves the declared dependency floors of the published `risearch` crate are real: it resolves every direct dependency down to its declared minimum and builds against that.
 `--locked` is intentionally absent because the tool rewrites the lock down to those minimums.
+`--ignore-private` drops `risearch-python` (`publish = false`) from the graph: its `pyo3-log` dependency requires `log ~0.4.21`, which cannot unify with the `log = "0.4.8"` floor this job exists to verify, so without it the resolution fails outright and the published crate's floors are never tested.
 Where `msrv` fixes the compiler (1.88) and uses the latest deps, this fixes the deps to their floors and uses the current compiler; together they bound the support envelope.
 
 The `test-python` job builds the extension with `maturin develop` into the
