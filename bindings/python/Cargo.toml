@@ -2,7 +2,7 @@
 name = "risearch-python"
 version.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 edition.workspace = true
 publish = false
 description = "Python extension module for RIsearch"

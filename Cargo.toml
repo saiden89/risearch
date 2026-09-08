@@ -6,7 +6,7 @@ resolver = "3"
 version = "3.0.0-alpha.1"
 rust-version = "1.88"
 edition = "2021"
-license-file = "LICENSE"
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 anyhow = "1.0.46"
@@ -20,7 +20,7 @@ edition.workspace = true
 description = "Fast RNA-RNA interaction search using suffix arrays and thermodynamic scoring"
 repository = "https://github.com/saiden89/risearch"
 readme = "README.md"
-license = "GPL-3.0-only"
+license.workspace = true
 include = [
     "/src/**",
     "/benches/**",

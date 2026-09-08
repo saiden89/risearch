@@ -3,3 +3,6 @@ pre-commit:
     fmt:
       glob: "*.rs"
       run: mise exec -- cargo fmt --all --check
+    actionlint:
+      glob: ".github/workflows/*.yml"
+      run: mise exec -- actionlint {staged_files}
