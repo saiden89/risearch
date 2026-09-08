@@ -4,8 +4,7 @@
 //! differences between Rust and C implementations.
 
 use crate::support::search_hit::SearchHitExt;
-use risearch::index::store::TargetRegistry;
-use risearch::{QueryRegistry, SearchHit};
+use risearch::{QueryRegistry, SearchHit, TargetRegistry};
 use tabled::{builder::Builder, settings::Style, Table, Tabled};
 
 // =============================================================================

@@ -6,10 +6,9 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use risearch::alignment::{fingerprint_symbols, AlignColumn};
-use risearch::index::store::TargetRegistry;
 use risearch::registry::QueryRegistry;
 use risearch::types::{Energy, Strand};
-use risearch::{PairClass, SearchHit};
+use risearch::{PairClass, SearchHit, TargetRegistry};
 
 // =============================================================================
 // EXTENSION TRAIT: Parity-testing helpers

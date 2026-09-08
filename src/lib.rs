@@ -55,7 +55,7 @@ pub mod dp;
 pub mod dsm;
 pub mod error;
 pub mod fastx;
-pub mod index;
+pub(crate) mod index;
 pub mod output;
 pub mod registry;
 pub mod search;
@@ -68,6 +68,7 @@ pub mod types; // Core domain types
 pub use alignment::{AlignColumn, PairClass};
 pub use error::{Error, Result};
 pub use index::store::TargetRegistry;
+pub use index::TargetView;
 pub use registry::QueryRegistry;
 pub use seq::Sequence;
 pub use types::{Base, Energy, Strand};

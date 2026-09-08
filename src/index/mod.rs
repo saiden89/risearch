@@ -3,7 +3,7 @@
 
 mod archive;
 pub(crate) mod sa;
-pub mod store;
-pub mod view;
+pub(crate) mod store;
+pub(crate) mod view;
 
 pub use view::TargetView;
