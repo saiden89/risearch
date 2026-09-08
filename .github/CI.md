@@ -32,6 +32,23 @@ The `minimal-versions` job proves the declared dependency floors of the publishe
 `--ignore-private` drops `risearch-python` (`publish = false`) from the graph: its `pyo3-log` dependency requires `log ~0.4.21`, which cannot unify with the `log = "0.4.8"` floor this job exists to verify, so without it the resolution fails outright and the published crate's floors are never tested.
 Where `msrv` fixes the compiler (1.88) and uses the latest deps, this fixes the deps to their floors and uses the current compiler; together they bound the support envelope.
 
+The `semver` job gates the public API of `risearch` against the pull request's base commit with `cargo-semver-checks`, so a breaking change cannot land without being noticed.
+It runs on pull requests only, because `github.event.pull_request.base.sha` is what supplies the baseline; the checkout uses `fetch-depth: 0` since `--baseline-rev` resolves that commit out of the local `.git`.
+
+`--release-type minor` is load-bearing and must not be dropped.
+With no explicit release type the tool derives one from the version numbers, and when the baseline version carries a prerelease suffix it classifies the change as major; a major bump satisfies every lint's requirement, so every lint is filtered out and the job passes having checked nothing.
+Both sides of a pull request read `3.0.0-alpha.1`, so that is the case here, and it will recur at every future prerelease.
+Pinning the level to minor runs the breaking-change lints and skips the additive ones, which is what a stability gate wants.
+`--default-features` is also deliberate: the default heuristic enables every feature that is not obviously unstable, which would pull in `openmp` and require an OpenMP toolchain on the runner for no gain, as no public item is feature-gated.
+There is no `--locked`; the tool has no such flag and builds both sides through manifests it generates itself.
+
+The gate covers only the documented tier.
+`cargo-semver-checks` excludes `#[doc(hidden)]` items from the public API, which matches the three tiers the crate already maintains: plain `pub` is supported and documented, `#[doc(hidden)] pub` is reachable only because bench targets compile as separate crates and carries no stability guarantee, and everything else is `pub(crate)`.
+Engine internals under `dp`, `dsm`, `seed` and `adapter` are therefore free to change without tripping this job.
+To land an intentional breaking change, apply the `semver-breaking` label to the pull request, which skips the job and leaves the decision recorded on the PR.
+Breaking changes are expected while the crate is in alpha, so the job exists to force that decision to be explicit rather than to forbid it.
+Do not reach for `continue-on-error`: a job that reports green is a job nobody reads.
+
 The `test-python` job builds the extension with `maturin develop` into the
 locked `uv` environment and runs the Python suite from `bindings/python/`.
 `uv sync` prunes packages it does not track, so it must run before

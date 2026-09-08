@@ -114,6 +114,44 @@ jobs:
       - name: Check direct-minimal-versions
         run: cargo minimal-versions check --direct --no-dev-deps --ignore-private -p risearch
 
+  semver:
+    name: API stability
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: >-
+      github.event_name == 'pull_request'
+      && !contains(github.event.pull_request.labels.*.name, 'semver-breaking')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # --baseline-rev resolves the base commit out of the local .git.
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-semver-checks
+
+
+      - name: Check for breaking API changes
+        env:
+          BASELINE_REV: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cargo semver-checks \
+            --package risearch \
+            --baseline-rev "$BASELINE_REV" \
+            --release-type minor \
+            --default-features \
+            --verbose
+
   test:
     name: Test ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
