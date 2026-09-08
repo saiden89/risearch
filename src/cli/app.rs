@@ -3,12 +3,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 
-use risearch::cli::args::validate_output_parent;
-use risearch::{output, search, QueryRegistry, TargetRegistry};
+use crate::cli::args::validate_output_parent;
+use crate::fastx::read_sequences;
+use crate::{output, search, QueryRegistry, TargetRegistry};
 
-use crate::cli::legacy::emit_legacy_warnings;
 use crate::cli::{Cli, Commands, SearchArgs};
 
 pub(crate) fn run(cli: Cli) -> Result<()> {
@@ -31,7 +31,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 fn cmd_index(input: &Path, output: &Path, threads: Option<usize>) -> Result<()> {
     info!("Creating index: {:?} -> {:?}", input, output);
     validate_output_parent(output)?;
-    let targets = risearch::fastx::read_sequences(input).context("Failed to read targets")?;
+    let targets = read_sequences(input).context("Failed to read targets")?;
     let index = TargetRegistry::build(targets, threads).context("Failed to build index")?;
     index.save(output).context("Failed to write index file")?;
     info!("Index saved to {:?}", output);
@@ -43,9 +43,11 @@ fn cmd_search(cmd: &SearchArgs) -> Result<()> {
     let target_path = cmd.input.target_path();
     let output_path = &cmd.output.path;
 
-    // Convert CLI args to config (handles deprecated flag translation)
+    // Deprecation warnings for the other legacy flags are emitted during conversion.
     let (opts, output) = cmd.clone().try_into_configs()?;
-    emit_legacy_warnings(cmd, cmd.input.uses_legacy_target());
+    if cmd.input.uses_legacy_target() {
+        warn!("'-i' is deprecated; use -t/--target instead.");
+    }
 
     debug!("Loading queries from {:?}", query_path);
     let queries =

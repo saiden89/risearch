@@ -1,10 +1,9 @@
 //! Output formatting and destinations.
 
+#[doc(hidden)]
 pub mod format;
-pub use format::format_hit_into;
 
 pub mod sink;
 pub use sink::TextSink;
 
-pub mod writer;
-pub use writer::OutputWriter;
+pub(crate) mod writer;

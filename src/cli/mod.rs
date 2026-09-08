@@ -1,9 +1,14 @@
-pub(crate) mod legacy;
+pub(crate) mod app;
+pub(crate) mod args;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-pub(crate) use risearch::cli::args::SearchArgs;
+pub(crate) use args::SearchArgs;
+
+pub(crate) fn main() -> anyhow::Result<()> {
+    app::run(Cli::parse())
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "risearch")]

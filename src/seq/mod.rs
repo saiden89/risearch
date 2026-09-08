@@ -4,7 +4,8 @@
 //! This module centralizes normalization so the rest of the repository relies
 //! on a single canonical representation.
 
-pub mod normalize;
+pub(crate) mod normalize;
 pub mod sequence;
 
+pub use normalize::NormalizationStats;
 pub use sequence::Sequence;

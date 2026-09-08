@@ -45,31 +45,32 @@ impl SeedHit {
 
     /// Index of the query in its registry.
     #[inline]
-    pub fn query_idx(&self) -> usize {
+    pub(crate) fn query_idx(&self) -> usize {
         self.query_idx
     }
 
     /// Half-open range in the full query sequence.
     #[inline]
-    pub fn query_range(&self) -> Range<usize> {
+    pub(crate) fn query_range(&self) -> Range<usize> {
         self.query_start..self.query_start + self.len
     }
 
     /// Index of the target in its registry.
     #[inline]
-    pub fn target_idx(&self) -> usize {
+    pub(crate) fn target_idx(&self) -> usize {
         self.target_idx
     }
 
     /// Half-open range in the strand-selected physical target view.
     #[inline]
-    pub fn target_range(&self) -> Range<usize> {
+    pub(crate) fn target_range(&self) -> Range<usize> {
         self.target_start..self.target_start + self.len
     }
 
     /// Shared length of the query and target ranges.
+    #[cfg(test)]
     #[inline]
-    pub fn seed_len(&self) -> usize {
+    pub(crate) fn seed_len(&self) -> usize {
         self.len
     }
 

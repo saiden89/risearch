@@ -30,7 +30,7 @@ fn parse_temperature(s: &str) -> Result<i32, String> {
 
 /// Arguments for global scoring model
 #[derive(clap::Args, Debug, Clone)]
-pub struct ScoreArgs {
+pub(crate) struct ScoreArgs {
     /// Dinucleotide stacking model for energy calculations
     #[arg(
         short = 'z',
@@ -40,7 +40,7 @@ pub struct ScoreArgs {
         value_parser = PossibleValuesParser::new(DsmRegistry::all_names())
             .map(|name| DsmId(name))
     )]
-    pub dsm_id: DsmId,
+    pub(crate) dsm_id: DsmId,
 
     /// Per-nucleotide penalty used by the scoring model (in kcal/mol, 0–50)
     #[arg(
@@ -50,7 +50,7 @@ pub struct ScoreArgs {
         default_value_t = ScoreConfig::default().penalty,
         value_parser = parse_penalty
     )]
-    pub penalty: Energy,
+    pub(crate) penalty: Energy,
 
     /// Temperature for energy calculations (degrees Celsius, 0–100)
     #[arg(
@@ -60,7 +60,7 @@ pub struct ScoreArgs {
         default_value_t = ScoreConfig::default().temperature,
         value_parser = parse_temperature
     )]
-    pub temperature: i32,
+    pub(crate) temperature: i32,
 }
 
 impl From<ScoreArgs> for ScoreConfig {

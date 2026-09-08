@@ -7,6 +7,8 @@ use crate::alignment::AlignColumn;
 #[cfg(test)]
 use crate::alignment::PairClass;
 use crate::dp::gotoh::Gotoh;
+#[cfg(test)]
+use crate::dp::GotohScoring;
 use crate::dp::{BestScore, DpGrid, TraceOp, MAX_EXT};
 use crate::dsm::ScoringModel;
 use crate::seed::SeedHit;
@@ -391,12 +393,16 @@ mod tests {
         assert!(engine.right_columns.is_empty());
         assert_eq!(
             left.score,
-            engine.gotoh_left.boundary(Base::C.as_u8(), Base::G.as_u8())
+            engine
+                .gotoh_left
+                .scoring
+                .boundary(Base::C.as_u8(), Base::G.as_u8())
         );
         assert_eq!(
             right.score,
             engine
                 .gotoh_right
+                .scoring
                 .boundary(Base::A.as_u8(), Base::U.as_u8())
         );
     }

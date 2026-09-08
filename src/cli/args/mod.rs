@@ -6,10 +6,11 @@ mod score;
 mod search;
 mod seed;
 
-pub use extend::ExtendArgs;
-pub use filter::FilterArgs;
-pub use input::InputArgs;
-pub use output::{validate_output_parent, OutputArgs};
-pub use score::ScoreArgs;
 pub use search::SearchArgs;
-pub use seed::{LegacyMismatchSpec, LegacySeedSpec, SeedArgs};
+
+pub(crate) use extend::ExtendArgs;
+pub(crate) use filter::FilterArgs;
+pub(crate) use input::InputArgs;
+pub(crate) use output::{validate_output_parent, OutputArgs};
+pub(crate) use score::ScoreArgs;
+pub(crate) use seed::SeedArgs;

@@ -1,13 +1,40 @@
-use crate::config::{OutputCodec, OutputCompression, OutputConfig, OutputFormat};
+use crate::config::{OutputCompression, OutputConfig, OutputFormat};
 
 use anyhow::{bail, Context, Error, Result};
+use clap::ValueEnum;
+use log::warn;
 use std::path::{Path, PathBuf};
+
+/// CLI-facing codec selector — what the `--compress` flag parses into.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[clap(rename_all = "lowercase")]
+pub(crate) enum OutputCodec {
+    None,
+    #[value(alias = "gz")]
+    Gzip,
+    #[value(alias = "zst")]
+    Zstd,
+}
+
+impl From<&std::path::Path> for OutputCodec {
+    /// Infer codec from file extension. Unrecognised or absent → `None`.
+    fn from(path: &std::path::Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(ext) => match ext.to_ascii_lowercase().as_str() {
+                "gz" | "gzip" => Self::Gzip,
+                "zst" | "zstd" => Self::Zstd,
+                _ => Self::None,
+            },
+            None => Self::None,
+        }
+    }
+}
 
 /// Reject an output path whose parent directory is missing or is not a directory.
 ///
 /// A CLI-boundary check: it exists so a bad `-o` fails before the work that
 /// would fill it, not to guard the write itself.
-pub fn validate_output_parent(path: &Path) -> Result<()> {
+pub(crate) fn validate_output_parent(path: &Path) -> Result<()> {
     let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
         return Ok(());
     };
@@ -22,10 +49,10 @@ pub fn validate_output_parent(path: &Path) -> Result<()> {
 
 /// Boundary CLI arguments for output destination, formatting, and compression.
 #[derive(clap::Args, Debug, Clone)]
-pub struct OutputArgs {
+pub(crate) struct OutputArgs {
     /// Output file for search results (use '-' for stdout)
     #[arg(short = 'o', long = "output", value_name = "FILE", default_value = "-")]
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
 
     /// Output format
     #[arg(
@@ -35,7 +62,7 @@ pub struct OutputArgs {
         default_missing_value = "minimal",
         value_enum
     )]
-    pub report_format: Option<OutputFormat>,
+    pub(crate) report_format: Option<OutputFormat>,
 
     /// DEPRECATED: Legacy argument for output format (1=detailed, 2=cigar, 3=binding_site, 4=minimal)
     #[arg(
@@ -47,19 +74,19 @@ pub struct OutputArgs {
         value_parser = parse_legacy_format,
         help_heading = "Deprecated"
     )]
-    pub report_legacy: Option<OutputFormat>,
+    pub(crate) report_legacy: Option<OutputFormat>,
 
     /// Output compression codec (overrides file extension inference; gzip/gz, zstd/zst accepted)
     #[arg(long = "compress", value_enum)]
-    pub output_compress: Option<OutputCodec>,
+    pub(crate) output_compress: Option<OutputCodec>,
 
     /// Output compression level (codec-specific: gzip 0–9, zstd -7..22)
     #[arg(long = "compress-level", value_name = "LEVEL")]
-    pub output_level: Option<i32>,
+    pub(crate) output_level: Option<i32>,
 
     /// Write one output file per query into the directory given by -o
     #[arg(long = "multifile", action = clap::ArgAction::SetTrue)]
-    pub output_multifile: bool,
+    pub(crate) output_multifile: bool,
 }
 
 fn parse_legacy_format(s: &str) -> Result<OutputFormat, String> {
@@ -107,11 +134,29 @@ impl TryFrom<OutputArgs> for OutputConfig {
             (OutputCodec::Zstd, lvl) => OutputCompression::Zstd(lvl.unwrap_or(3)),
         };
 
+        let format = match (value.report_format, value.report_legacy) {
+            (Some(fmt), Some(_)) => {
+                warn!("Both legacy -p/--report-alignment and --format were provided; --format takes precedence.");
+                fmt
+            }
+            (Some(fmt), None) => fmt,
+            (None, Some(fmt)) => {
+                warn!(
+                    "Legacy -p/--report-alignment is deprecated; use --format {}.",
+                    match fmt {
+                        OutputFormat::Cigar => "cigar",
+                        OutputFormat::BindingSite => "bindingsite",
+                        OutputFormat::Minimal => "minimal",
+                        OutputFormat::Detailed => "detailed",
+                    }
+                );
+                fmt
+            }
+            (None, None) => OutputFormat::default(),
+        };
+
         Ok(OutputConfig {
-            format: value
-                .report_format
-                .or(value.report_legacy)
-                .unwrap_or_default(),
+            format,
             compress,
             multifile: value.output_multifile,
         })

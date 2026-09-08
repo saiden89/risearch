@@ -1,3 +1,5 @@
+//! Search output written to stdout matches the same search written to a file.
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::io::Write;
 use std::path::Path;

@@ -47,12 +47,6 @@ impl<S: GotohScoring> Gotoh<S> {
         }
     }
 
-    /// Boundary score for the given terminal symbols.
-    #[inline(always)]
-    pub fn boundary(&self, qc: u8, tc: u8) -> i32 {
-        self.scoring.boundary(qc, tc)
-    }
-
     #[cfg_attr(feature = "prof", inline(never))]
     /// DP forward pass over one extension window, reusing the caller's grid.
     ///
@@ -106,7 +100,7 @@ impl<S: GotohScoring> Gotoh<S> {
 
     /// Walk the filled grid backward from `(end_i, end_j)` to recover the
     /// state-transition path.
-    pub fn traceback(
+    pub(crate) fn traceback(
         &self,
         q: &[u8],
         t: &[u8],

@@ -1,3 +1,5 @@
+//! Code-generates the built-in DSM tables from `data/dsm/manifest.toml`.
+
 use serde::Deserialize;
 use std::{
     env, fs,

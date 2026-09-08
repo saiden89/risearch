@@ -1,3 +1,5 @@
+//! Unit tests for the parity harness: overlap, classification, comparator verdicts.
+
 mod support;
 
 use risearch::types::{Base, Energy, Strand};

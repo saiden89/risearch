@@ -7,12 +7,18 @@
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Base {
+    /// Gap column. Rank 0 doubles as the DSM lookup and SA-partitioning sentinel.
     #[default]
     Gap = 0,
+    /// Adenine.
     A = 1,
+    /// Cytosine.
     C = 2,
+    /// Guanine.
     G = 3,
+    /// Ambiguous or unknown base.
     N = 4,
+    /// Uracil. `T` parses to this variant as well.
     U = 5,
 }
 
@@ -93,7 +99,7 @@ impl Base {
 
     /// True for the four matchable bases (A, C, G, U); false for N and Gap.
     #[inline(always)]
-    pub const fn is_matchable(self) -> bool {
+    pub(crate) const fn is_matchable(self) -> bool {
         matches!(self, Base::A | Base::C | Base::G | Base::U)
     }
 
@@ -101,7 +107,7 @@ impl Base {
     ///
     /// Watson-Crick: A↔U, C↔G.  Wobble: G↔U.  Everything else: mismatch.
     #[inline(always)]
-    pub const fn pair_type(self, other: Base) -> PairType {
+    pub(crate) const fn pair_type(self, other: Base) -> PairType {
         match (self, other) {
             (Base::A, Base::U) | (Base::U, Base::A) | (Base::C, Base::G) | (Base::G, Base::C) => {
                 PairType::Canonical
@@ -114,7 +120,7 @@ impl Base {
 
 /// Chemistry of a base pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PairType {
+pub(crate) enum PairType {
     /// Watson-Crick: A↔U, C↔G
     Canonical,
     /// G↔U wobble
@@ -126,7 +132,7 @@ pub enum PairType {
 impl PairType {
     /// Whether this pair type counts as a match under the given wobble mode.
     #[inline(always)]
-    pub const fn is_match(self, wobble: bool) -> bool {
+    pub(crate) const fn is_match(self, wobble: bool) -> bool {
         match self {
             PairType::Canonical => true,
             PairType::Wobble => wobble,
@@ -136,16 +142,18 @@ impl PairType {
 }
 
 /// Number of nucleotide types (Gap, A, C, G, N, U)
-pub const BASE_COUNT: usize = 6;
+pub(crate) const BASE_COUNT: usize = 6;
 
 /// Constant for Gap index used in array indexing and DSM lookups.
-pub const GAP: u8 = Base::Gap.as_u8();
+pub(crate) const GAP: u8 = Base::Gap.as_u8();
 
 /// Strand direction for search
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Strand {
+    /// Reported as `+`. Selects `R(T)` in duplex-column order.
     Forward,
+    /// Reported as `-`. Selects `C(T)` in duplex-column order.
     Reverse,
 }
 
@@ -181,7 +189,7 @@ impl From<Strand> for char {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Energy(pub(crate) i32);
 impl Energy {
-    pub const SCALE: f64 = 10000.0;
+    pub(crate) const SCALE: f64 = 10000.0;
 
     /// Most-negative threshold. `energy <= Energy::MIN` is ~never true, so used
     /// as a filter bound it records nothing — the integer-domain stand-in for
@@ -307,7 +315,7 @@ impl std::fmt::Display for Energy {
 
 /// Nucleic acid type for query/target strand identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SequenceType {
+pub(crate) enum SequenceType {
     Rna,
     Dna,
 }

@@ -1,3 +1,5 @@
+//! Deprecation warnings for the legacy `-p` and `-i` flags.
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::io::Write;

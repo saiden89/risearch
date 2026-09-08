@@ -100,6 +100,7 @@ codegen-units = 1
 
 [lints.rust]
 unreachable_pub = "warn"
+missing_docs = "warn"
 
 [build-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }

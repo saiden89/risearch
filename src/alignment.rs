@@ -1,11 +1,22 @@
+//! Duplex alignment columns and how each column is classified.
+//!
+//! A traceback yields a run of [`AlignColumn`]s in physical duplex order, each
+//! carrying its [`PairClass`].
+
 use crate::types::{Base, PairType};
 
+/// How one duplex column pairs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairClass {
+    /// Watson-Crick pair: A↔U or C↔G.
     Canonical,
+    /// G↔U wobble pair.
     Wobble,
+    /// Both sides consumed, neither canonical nor wobble.
     Mismatch,
+    /// Target-side insertion: the query side is a gap.
     TargetBulge,
+    /// Query-side insertion: the target side is a gap.
     QueryBulge,
 }
 
@@ -24,6 +35,7 @@ impl PairClass {
         }
     }
 
+    /// Single-character class code used by the detailed output format.
     pub const fn symbol(self) -> char {
         match self {
             Self::Canonical => 'P',
@@ -34,6 +46,8 @@ impl PairClass {
         }
     }
 
+    /// Connector drawn between the two strands: `|` for canonical, `:` for
+    /// wobble, blank otherwise.
     pub const fn alignment_symbol(self) -> char {
         match self {
             Self::Canonical => '|',
@@ -56,16 +70,19 @@ pub struct AlignColumn {
 }
 
 impl AlignColumn {
+    /// How this column pairs.
     #[inline]
     pub const fn class(&self) -> PairClass {
         self.class
     }
 
+    /// Query-side base, or [`Base::Gap`] on a target bulge.
     #[inline]
     pub const fn query(&self) -> Base {
         self.query
     }
 
+    /// Target-side base, or [`Base::Gap`] on a query bulge.
     #[inline]
     pub const fn target(&self) -> Base {
         self.target

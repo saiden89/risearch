@@ -1,3 +1,5 @@
+//! FASTA/FASTQ reading and normalization into [`Sequence`](crate::Sequence).
+
 use needletail::parse_fastx_file;
 use std::collections::HashSet;
 use std::path::Path;
@@ -5,11 +7,11 @@ use std::path::Path;
 use crate::error::{Error, Result};
 
 /// Type alias for FASTA records to reduce type complexity
-pub type FastaRecords = Vec<(String, Vec<u8>)>;
+pub(crate) type FastaRecords = Vec<(String, Vec<u8>)>;
 
 /// Read FASTA/FASTQ and return Vec of (id, sequence) tuples.
 /// Validates that records have non-empty IDs and that there are no duplicates.
-pub fn read_and_validate_fasta(filename: impl AsRef<Path>) -> Result<FastaRecords> {
+pub(crate) fn read_and_validate_fasta(filename: impl AsRef<Path>) -> Result<FastaRecords> {
     let filename_ref = filename.as_ref();
 
     let md = fs_err::metadata(filename_ref)?;
@@ -90,7 +92,7 @@ pub fn read_sequences(filename: impl AsRef<Path>) -> Result<Vec<(String, crate::
 
 /// Normalizes a raw sequence and handles logging for gaps/N-conversions.
 /// Returns `Ok(None)` if the sequence is entirely empty after normalization.
-pub fn normalize_record(id: &str, raw_seq: &[u8]) -> Result<Option<crate::seq::Sequence>> {
+pub(crate) fn normalize_record(id: &str, raw_seq: &[u8]) -> Result<Option<crate::seq::Sequence>> {
     let (sequence, stats) = crate::seq::Sequence::normalize(id, raw_seq)?;
 
     if sequence.is_empty() {

@@ -1,4 +1,4 @@
-//! Renders search hits as text and hands the bytes to an [`OutputWriter`].
+//! Renders search hits as text and hands the bytes to the output writer.
 
 use std::path::Path;
 
@@ -15,7 +15,7 @@ use crate::search::{HitSink, SearchHit};
 ///
 /// Knows nothing about files: it renders a query's whole block and hands it to the
 /// writer keyed by query index, leaving destinations, paths and open/flush timing
-/// to [`OutputWriter`]. Because the writer opens lazily, constructing a `TextSink`
+/// to `OutputWriter`. Because the writer opens lazily, constructing a `TextSink`
 /// touches nothing a rejected config would need left intact.
 ///
 /// gzip and zstd write their trailer when the writer drops, so drop the sink only

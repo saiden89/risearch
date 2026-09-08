@@ -46,16 +46,24 @@ use crate::types::{Base, Energy, Strand};
 pub struct SearchHit {
     /// Compact registry positions, checked when the hit is constructed.
     pub query_idx: u32,
+    /// Index into the target registry; see [`target_index`](Self::target_index).
     pub target_idx: u32,
+    /// First paired query position.
     pub q_start: usize,
+    /// Last paired query position.
     pub q_end: usize,
+    /// First paired target position.
     pub t_start: usize,
+    /// Last paired target position.
     pub t_end: usize,
+    /// Target strand the duplex lies on.
     pub strand: Strand,
+    /// Free energy of the duplex.
     pub energy: Energy,
     // Keep the variable-length traceback out of the densely stored hit. Compact
     // registry indices offset the boxed slice's metadata, preserving a 64-byte
     // SearchHit on 64-bit targets even when alignment building is disabled.
+    /// Resolved duplex columns; `None` unless traceback ran.
     pub alignment: Option<Box<[AlignColumn]>>,
 }
 
@@ -72,6 +80,7 @@ const _: () = assert!(std::mem::size_of::<SearchHit>() == 64);
 /// arbitrary order — hence `&self` plus interior mutability. Lock once per call,
 /// never per hit, and do any expensive conversion before taking the lock.
 pub trait HitSink: Sync {
+    /// Take one query's surviving hits.
     fn consume(&self, query_idx: usize, hits: Vec<SearchHit>) -> Result<()>;
 
     /// Finalize the destination. The driver calls this once every query has been
@@ -90,6 +99,7 @@ pub trait HitSink: Sync {
 pub struct VecSink(Mutex<Vec<SearchHit>>);
 
 impl VecSink {
+    /// Unwrap the collected hits.
     pub fn into_hits(self) -> Vec<SearchHit> {
         self.0.into_inner().unwrap()
     }
@@ -334,10 +344,12 @@ impl SearchHit {
         })
     }
 
+    /// Slice the paired span out of a query sequence.
     pub fn query<'a>(&self, q_seq: &'a [Base]) -> &'a [Base] {
         &q_seq[self.q_start..=self.q_end]
     }
 
+    /// Resolve the paired span against the strand-selected target, in duplex-column order.
     pub fn target<'a>(&self, targets: TargetView<'a>) -> &'a [Base] {
         let target = targets.target(self.target_index(), self.strand);
         &target[self.duplex_target_range(targets)]

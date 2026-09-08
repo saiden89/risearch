@@ -4,10 +4,9 @@
 //! parity tests between Rust and C implementations.
 
 use log::info;
-use risearch::cli::args::SearchArgs;
 use risearch::{
-    run_search, OutputConfig, OutputFormat, QueryRegistry, SearchConfig, SearchHit, TargetRegistry,
-    TextSink,
+    run_search, OutputConfig, OutputFormat, QueryRegistry, SearchArgs, SearchConfig, SearchHit,
+    TargetRegistry, TextSink,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -446,7 +445,7 @@ fn translate_args_for_c(args: &[&str], seed_wobble: bool) -> Vec<String> {
     c_args
 }
 
-/// Parse CLI-style args into SearchArgs using clap.
+/// Translate C-style flags into the Rust CLI vocabulary, then into configs.
 fn parse_search_args(args: &[&str]) -> (SearchConfig, OutputConfig) {
     use clap::Parser;
 

@@ -1,3 +1,9 @@
+//! Loaded queries and the name/index bookkeeping shared with the target store.
+//!
+//! [`QueryRegistry`] is built once from FASTA against a [`SeedConfig`], so each
+//! [`Query`] arrives with its seed interval, length bounds, and N-prefix already
+//! resolved.
+
 use crate::error::{Error, Result};
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -9,6 +15,7 @@ use crate::fastx::{normalize_record, read_and_validate_fasta};
 use crate::seq::Sequence;
 use crate::types::Base;
 
+#[doc(hidden)]
 pub trait RegistryEntry {
     fn name(&self) -> &str;
 }
@@ -19,6 +26,7 @@ impl RegistryEntry for String {
     }
 }
 
+#[doc(hidden)]
 pub struct Registry<T> {
     entries: Vec<T>,
 }
@@ -28,20 +36,16 @@ impl<T> Registry<T> {
         Self { entries }
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    pub fn entries(&self) -> &[T] {
+    pub(crate) fn entries(&self) -> &[T] {
         &self.entries
-    }
-
-    pub fn into_entries(self) -> Vec<T> {
-        self.entries
     }
 }
 
@@ -72,11 +76,11 @@ impl<T: RegistryEntry> Registry<T> {
         unsafe { self.entries.get_unchecked(idx).name() }
     }
 
-    pub fn index_of(&self, name: &str) -> Option<usize> {
+    pub(crate) fn index_of(&self, name: &str) -> Option<usize> {
         self.entries.iter().position(|e| e.name() == name)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
         self.entries.iter().enumerate()
     }
 }
@@ -139,31 +143,37 @@ impl Query {
     }
 
     #[inline]
+    /// Sequence identifier from the FASTA header.
     pub fn name(&self) -> &str {
         &self.name
     }
 
     #[inline(always)]
+    /// Full forward sequence, as used for extension and output.
     pub fn sequence(&self) -> &[Base] {
         &self.sequence
     }
 
     #[inline]
+    /// Prefix sums of `N` counts, for O(1) N-free span checks.
     pub fn n_prefix(&self) -> &[u32] {
         &self.n_prefix
     }
 
     #[inline]
+    /// Whether the sequence contains any `N`.
     pub fn has_n_any(&self) -> bool {
         self.has_n_any
     }
 
     #[inline]
+    /// Normalized seed-interval bounds on the full sequence.
     pub fn seed_interval(&self) -> Range<usize> {
         self.seed_interval.clone()
     }
 
     #[inline(always)]
+    /// The seed interval as its own slice; the per-query seeding SA is built from this.
     pub fn seed_sequence(&self) -> &[Base] {
         &self.seed_sequence
     }
@@ -207,26 +217,32 @@ pub struct QueryRegistry {
 }
 
 impl QueryRegistry {
+    /// Number of loaded queries.
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    /// Whether no queries were loaded.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
+    /// All queries, in load order.
     pub fn entries(&self) -> &[Query] {
         self.inner.entries()
     }
 
+    /// Name of the query at `idx`.
     pub fn get_name(&self, idx: usize) -> &str {
         self.inner.get_name(idx)
     }
 
+    /// Position of the query with this name, if it was loaded.
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.inner.index_of(name)
     }
 
+    /// Iterate `(index, query)` pairs in load order.
     pub fn iter(&self) -> impl Iterator<Item = (usize, &Query)> {
         self.inner.iter()
     }

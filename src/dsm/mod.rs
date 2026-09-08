@@ -56,9 +56,6 @@ include!(concat!(env!("OUT_DIR"), "/generated_canonical_tables.rs"));
 /// Service for managing and loading dinucleotide stacking models (DSM).
 pub struct DsmRegistry;
 
-/// Gap index used for DSM transition queries (linked to Base::Gap).
-pub use crate::types::GAP;
-
 impl DsmRegistry {
     /// List all available DSM string identifiers (for CLI/UI).
     pub const fn all_names() -> &'static [&'static str] {
@@ -66,7 +63,7 @@ impl DsmRegistry {
     }
 
     /// Map a string identifier to a DsmId.
-    pub fn parse_id(s: &str) -> Result<DsmId> {
+    pub(crate) fn parse_id(s: &str) -> Result<DsmId> {
         if BUILTIN_TABLES.iter().any(|e| e.id == s) {
             Ok(DsmId(s.to_string()))
         } else {

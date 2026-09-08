@@ -2,7 +2,7 @@ use crate::config::{ExtendConfig, MAX_EXTENSION, UNLIMITED_EXTENSION};
 
 /// Arguments for seed extension strategy
 #[derive(clap::Args, Debug, Clone)]
-pub struct ExtendArgs {
+pub(crate) struct ExtendArgs {
     /// Max DP extension length up- and downstream of the seed.
     /// -1 extends across the whole query, up to a 256 nt cap per side;
     /// a query longer than that is rejected (pass an explicit -l <=256).
@@ -15,7 +15,7 @@ pub struct ExtendArgs {
         value_parser = clap::value_parser!(i32)
             .range(UNLIMITED_EXTENSION as i64..=MAX_EXTENSION as i64)
     )]
-    pub max_extension: i32,
+    pub(crate) max_extension: i32,
 }
 
 impl From<ExtendArgs> for ExtendConfig {

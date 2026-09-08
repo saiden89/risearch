@@ -1,3 +1,7 @@
+//! Benchmark seed detection: target and query scaling, mismatch seeding
+//!
+//! Run with: cargo bench --bench seed
+
 use std::fs;
 use std::path::Path;
 

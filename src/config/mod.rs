@@ -1,3 +1,12 @@
+//! Frontend-independent search and output configuration.
+//!
+//! [`SearchConfig`] is what [`run_search`](crate::run_search) consumes;
+//! [`OutputConfig`] covers only what the output writer needs. A caller can
+//! build either by hand without going through the CLI:
+//! [`SearchConfig::validate`] checks the parts that have invalid states
+//! ([`SeedConfig`], [`ScoreConfig`], [`ExtendConfig`]), and the bounds it
+//! enforces are the constants below.
+
 use clap::ValueEnum;
 
 use crate::dp::MAX_EXT;
@@ -7,20 +16,29 @@ use crate::types::{DsmId, Energy};
 
 // `Default` implementations below own frontend default policy. Keep constants
 // here only for effective fallbacks and shared validity bounds or sentinels.
+/// Seed length applied when [`SeedConfig::seed_length`] is `None` and no
+/// interval was given.
 pub const DEFAULT_SEED_LEN: i64 = 6;
 
+/// Lower bound on [`ScoreConfig::penalty`], in kcal/mol.
 pub const MIN_PENALTY_KCAL: f64 = 0.0;
+/// Upper bound on [`ScoreConfig::penalty`], in kcal/mol.
 pub const MAX_PENALTY_KCAL: f64 = 50.0;
+/// Lower bound on [`ScoreConfig::temperature`], in °C.
 pub const MIN_TEMPERATURE_C: i32 = 0;
+/// Upper bound on [`ScoreConfig::temperature`], in °C.
 pub const MAX_TEMPERATURE_C: i32 = 100;
 
+/// [`ExtendConfig::max_extension`] sentinel: extend across the whole query.
 pub const UNLIMITED_EXTENSION: i32 = -1;
+/// Largest [`ExtendConfig::max_extension`] the DP grid accepts per side.
 pub const MAX_EXTENSION: i32 = MAX_EXT as i32;
 
 // =============================================================================
 // ENUMS (shared by config and CLI via clap derives)
 // =============================================================================
 
+/// Layout of each reported hit.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[clap(rename_all = "lowercase")]
 pub enum OutputFormat {
@@ -44,39 +62,17 @@ impl OutputFormat {
     }
 }
 
-/// CLI-facing codec selector — what the `--compress` flag parses into.
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-#[clap(rename_all = "lowercase")]
-pub enum OutputCodec {
-    None,
-    #[value(alias = "gz")]
-    Gzip,
-    #[value(alias = "zst")]
-    Zstd,
-}
-
-impl From<&std::path::Path> for OutputCodec {
-    /// Infer codec from file extension. Unrecognised or absent → `None`.
-    fn from(path: &std::path::Path) -> Self {
-        match path.extension().and_then(|e| e.to_str()) {
-            Some(ext) => match ext.to_ascii_lowercase().as_str() {
-                "gz" | "gzip" => Self::Gzip,
-                "zst" | "zstd" => Self::Zstd,
-                _ => Self::None,
-            },
-            None => Self::None,
-        }
-    }
-}
-
 /// Config-facing compression value — codec and level bound together.
 /// Illegal states (level without codec) are unrepresentable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum OutputCompression {
+    /// Uncompressed.
     #[default]
     None,
-    Gzip(u8),  // level 0–9
-    Zstd(i32), // level -7..22
+    /// gzip at the given level, 0–9.
+    Gzip(u8),
+    /// zstd at the given level, -7..22.
+    Zstd(i32),
 }
 
 impl OutputCompression {
@@ -251,8 +247,11 @@ impl SeedConfig {
 /// Global scoring model shared by seed scoring and DP extension.
 #[derive(Debug, Clone)]
 pub struct ScoreConfig {
+    /// Which bundled dinucleotide stacking model to score with.
     pub dsm_id: DsmId,
+    /// Per-mismatch penalty added during extension.
     pub penalty: Energy,
+    /// Temperature in °C the model is evaluated at.
     pub temperature: i32,
 }
 
@@ -267,6 +266,7 @@ impl Default for ScoreConfig {
 }
 
 impl ScoreConfig {
+    /// Check the model id resolves and the penalty and temperature are in range.
     pub fn validate(&self) -> Result<()> {
         DsmRegistry::parse_id(self.dsm_id.0.as_str())?;
 
@@ -314,6 +314,7 @@ impl Default for ExtendConfig {
 }
 
 impl ExtendConfig {
+    /// Check `max_extension` is the unlimited sentinel or within the DP cap.
     pub fn validate(&self) -> Result<()> {
         if !(UNLIMITED_EXTENSION..=MAX_EXTENSION).contains(&self.max_extension) {
             return Err(Error::Config(format!(
@@ -353,13 +354,18 @@ impl Default for FilterConfig {
 /// Options that apply to the `search` subcommand
 #[derive(Debug, Clone, Default)]
 pub struct SearchConfig {
+    /// Where seeds are taken from and how they may mismatch.
     pub seed: SeedConfig,
+    /// Scoring model, penalty, and temperature.
     pub score: ScoreConfig,
+    /// How far a seed may extend, and whether traceback runs.
     pub extend: ExtendConfig,
+    /// Which finished hits are reported.
     pub filter: FilterConfig,
 }
 
 impl SearchConfig {
+    /// Validate every part. `filter` has no invalid states of its own.
     pub fn validate(&self) -> Result<()> {
         self.seed.validate()?;
         self.score.validate()?;
@@ -368,6 +374,8 @@ impl SearchConfig {
     }
 }
 
+/// Where and how hits are written. Separate from [`SearchConfig`] because none
+/// of it changes which hits are found.
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
     /// Output format

@@ -26,7 +26,7 @@ pub const MAX_EXT: usize = 256;
 /// - `GapQ`: one symbol from `q`
 /// - `GapT`: one symbol from `t`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TraceOp {
+pub(crate) enum TraceOp {
     Match,
     GapQ,
     GapT,
@@ -72,7 +72,9 @@ const _: () = {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BestScore {
     pub score: i32,
+    /// Query-side offset of the best cell, in DP order from the anchor column.
     pub q_idx: usize,
+    /// Target-side offset of the best cell, in DP order from the anchor column.
     pub t_idx: usize,
 }
 

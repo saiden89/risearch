@@ -37,7 +37,7 @@ impl ScoringModel {
     }
 
     /// Load the bundled table for `id` at `temperature` and apply `penalty`.
-    pub fn load(id: &DsmId, temperature: i32, penalty: Energy) -> Result<Self> {
+    pub(crate) fn load(id: &DsmId, temperature: i32, penalty: Energy) -> Result<Self> {
         let (initiation, source_table) = DsmRegistry::load(id, temperature)?;
         Ok(Self::new(&source_table, initiation, penalty))
     }
@@ -78,12 +78,12 @@ impl ScoringModel {
     }
 
     /// Convert a total stacking score and physical length to binding free energy.
-    pub fn binding_energy(&self, stacking_score: Energy, length: usize) -> Energy {
+    pub(crate) fn binding_energy(&self, stacking_score: Energy, length: usize) -> Energy {
         self.initiation - stacking_score - (self.penalty * length)
     }
 
     #[inline(always)]
-    pub fn table_ptr(&self) -> *const i32 {
+    pub(crate) fn table_ptr(&self) -> *const i32 {
         self.table.as_ptr()
     }
 
@@ -110,7 +110,7 @@ impl ScoringModel {
 
     /// Point query for one stacking score in the canonical 4-base tensor.
     #[inline(always)]
-    pub fn score(&self, q1: u8, q2: u8, t1: u8, t2: u8) -> i32 {
+    pub(crate) fn score(&self, q1: u8, q2: u8, t1: u8, t2: u8) -> i32 {
         debug_assert!(q1 < 6 && q2 < 6 && t1 < 6 && t2 < 6);
         let idx = flat_idx(q1, q2, t1, t2);
         // SAFETY: All args are in 0..6. Max idx = 1295 < 1296.
@@ -119,7 +119,7 @@ impl ScoringModel {
 
     /// Point query for one stacking score using semantic bases.
     #[inline(always)]
-    pub fn score_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
+    pub(crate) fn score_bases(&self, q1: Base, q2: Base, t1: Base, t2: Base) -> i32 {
         self.score(q1.as_u8(), q2.as_u8(), t1.as_u8(), t2.as_u8())
     }
 
@@ -127,7 +127,7 @@ impl ScoringModel {
     ///
     /// Query and target are both in duplex-column order: query 5'→3' and the
     /// physical target 3'→5', so paired positions advance together.
-    pub fn ungapped_duplex_score(&self, query: &[Base], target: &[Base]) -> Energy {
+    pub(crate) fn ungapped_duplex_score(&self, query: &[Base], target: &[Base]) -> Energy {
         assert_eq!(query.len(), target.len());
         Energy(
             query

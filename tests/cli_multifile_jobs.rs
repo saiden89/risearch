@@ -1,3 +1,5 @@
+//! Multi-file output stays consistent across `-j/--jobs` values.
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::collections::BTreeMap;
 use std::io::Write;

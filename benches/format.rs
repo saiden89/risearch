@@ -1,3 +1,7 @@
+//! Benchmark hit formatting across the output formats
+//!
+//! Run with: cargo bench --bench format
+
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};

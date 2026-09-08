@@ -1,3 +1,7 @@
+//! Benchmark the production-shaped end-to-end search pipeline
+//!
+//! Run with: cargo bench --bench search
+
 use std::fs;
 use std::path::Path;
 

@@ -1,3 +1,5 @@
+//! Runtime handle over a mapped target index file.
+
 use std::path::Path;
 
 use fs_err::File;
@@ -69,6 +71,8 @@ impl TargetRegistry {
         archive::write(output, self.mmap.as_ref())
     }
 
+    /// Map an index file written by [`save`](Self::save), validating its header
+    /// and offset directory.
     pub fn open(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
         // memmap2 drops the path that fs-err would have carried.
@@ -87,16 +91,19 @@ impl TargetRegistry {
         Ok(Self { mmap, offsets })
     }
 
+    /// Number of indexed targets.
     #[inline]
     pub fn len(&self) -> usize {
         self.root().targets.len()
     }
 
+    /// Whether the index holds no targets.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.root().targets.is_empty()
     }
 
+    /// Name of the target at `idx`.
     #[inline]
     pub fn get_name(&self, idx: usize) -> &str {
         self.root().targets[idx].name.as_str()

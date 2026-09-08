@@ -1,3 +1,5 @@
+//! Seed pairing defaults: `--seed-wobble` opt-in and the `--noGUseed` no-op warning.
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::io::Write;

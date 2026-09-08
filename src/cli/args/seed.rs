@@ -1,5 +1,6 @@
 use crate::config::SeedConfig;
 use anyhow::Error;
+use log::warn;
 use std::str::FromStr;
 
 /// Resolved (seed_start, seed_end, seed_length) bounds from CLI parsing.
@@ -7,10 +8,10 @@ type SeedBounds = (Option<i64>, Option<i64>, Option<i64>);
 
 /// Legacy CLI parser boundary for `-m/--mismatch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LegacyMismatchSpec {
-    pub max_mismatches: usize,
-    pub min_prefix_matches: usize,
-    pub min_suffix_matches: usize,
+pub(crate) struct LegacyMismatchSpec {
+    pub(crate) max_mismatches: usize,
+    pub(crate) min_prefix_matches: usize,
+    pub(crate) min_suffix_matches: usize,
 }
 
 impl FromStr for LegacyMismatchSpec {
@@ -73,10 +74,10 @@ impl FromStr for LegacyMismatchSpec {
 
 /// Legacy CLI parser boundary for `-s/--seed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacySeedSpec {
-    pub seed_start: Option<i64>,
-    pub seed_end: Option<i64>,
-    pub seed_length: Option<i64>,
+pub(crate) struct LegacySeedSpec {
+    pub(crate) seed_start: Option<i64>,
+    pub(crate) seed_end: Option<i64>,
+    pub(crate) seed_length: Option<i64>,
 }
 
 impl FromStr for LegacySeedSpec {
@@ -148,7 +149,7 @@ impl FromStr for LegacySeedSpec {
 
 /// Arguments for seed generation
 #[derive(clap::Args, Debug, Clone)]
-pub struct SeedArgs {
+pub(crate) struct SeedArgs {
     /// DEPRECATED (will be removed in a future release): legacy seed spec
     /// Formats: "l", "m:n", "m:n/l"
     #[arg(
@@ -158,7 +159,7 @@ pub struct SeedArgs {
         conflicts_with_all = ["seed_start", "seed_end", "seed_length"],
         help_heading = "Deprecated"
     )]
-    pub seed_legacy: Option<LegacySeedSpec>,
+    pub(crate) seed_legacy: Option<LegacySeedSpec>,
 
     /// Seed interval start (1-based, can be negative)
     /// TODO: Consider explicit one-sided bounds (e.g. --seed-to-end/--seed-from-start)
@@ -169,7 +170,7 @@ pub struct SeedArgs {
         allow_hyphen_values = true,
         requires = "seed_end"
     )]
-    pub seed_start: Option<i64>,
+    pub(crate) seed_start: Option<i64>,
 
     /// Seed interval end (1-based, can be negative)
     #[arg(
@@ -178,25 +179,25 @@ pub struct SeedArgs {
         allow_hyphen_values = true,
         requires = "seed_start"
     )]
-    pub seed_end: Option<i64>,
+    pub(crate) seed_end: Option<i64>,
 
     /// Seed length (use alone, or with seed-start/seed-end to constrain interval).
     /// If 0 or omitted when using an interval, the full interval width is used.
     /// If omitted completely (no interval provided), defaults to 6.
     #[arg(long = "seed-length", value_name = "LENGTH")]
-    pub seed_length: Option<i64>,
+    pub(crate) seed_length: Option<i64>,
 
     /// Allow G-U wobble pairs when locating and maximizing seeds
     #[arg(long = "seed-wobble", action = clap::ArgAction::SetTrue)]
-    pub seed_wobble: bool,
+    pub(crate) seed_wobble: bool,
 
     /// Disable maximality check (allows redundant seeds)
     #[arg(long = "no-max-prune", action = clap::ArgAction::SetTrue)]
-    pub no_max_prune: bool,
+    pub(crate) no_max_prune: bool,
 
     /// DEPRECATED: no-op; wobble is off unless --seed-wobble is given
     #[arg(long = "noGUseed", hide = true, action = clap::ArgAction::SetTrue)]
-    pub no_guseed_legacy: bool,
+    pub(crate) no_guseed_legacy: bool,
 
     /// DEPRECATED (will be removed in a future release): legacy mismatch shorthand
     /// Set max mismatches (c) and min consecutive matches at seed start/end (p)
@@ -209,15 +210,15 @@ pub struct SeedArgs {
         conflicts_with_all = ["mismatch_max", "mismatch_prefix", "mismatch_suffix"],
         help_heading = "Deprecated"
     )]
-    pub mismatch_legacy: Option<LegacyMismatchSpec>,
+    pub(crate) mismatch_legacy: Option<LegacyMismatchSpec>,
 
     /// Max number of mismatches allowed in the seed (preferred)
     #[arg(long = "mismatch-max", value_name = "C")]
-    pub mismatch_max: Option<usize>,
+    pub(crate) mismatch_max: Option<usize>,
 
     /// Min consecutive matches at seed start (prefix / 5')
     #[arg(long = "mismatch-prefix", value_name = "PS", requires = "mismatch_max")]
-    pub mismatch_prefix: Option<usize>,
+    pub(crate) mismatch_prefix: Option<usize>,
 
     /// Min consecutive matches at seed end (suffix / 3')
     #[arg(
@@ -225,7 +226,7 @@ pub struct SeedArgs {
         value_name = "PE",
         requires_all = ["mismatch_max", "mismatch_prefix"]
     )]
-    pub mismatch_suffix: Option<usize>,
+    pub(crate) mismatch_suffix: Option<usize>,
 }
 
 impl SeedArgs {
@@ -265,27 +266,46 @@ impl TryFrom<SeedArgs> for SeedConfig {
     type Error = Error;
 
     fn try_from(value: SeedArgs) -> Result<Self, Self::Error> {
+        if value.no_guseed_legacy {
+            warn!("'--noGUseed' is deprecated and now a no-op; G-U wobble is off by default, enable it with --seed-wobble.");
+        }
+
+        // clap makes -s exclusive with the named bounds, so the legacy branch is
+        // reached only when it is the sole source.
         let (seed_start, seed_end, seed_length) = if value.seed_start.is_some()
             || value.seed_end.is_some()
             || value.seed_length.is_some()
         {
             value.resolve_seed_bounds().map_err(Error::msg)?
+        } else if let Some(spec) = value.seed_legacy.as_ref() {
+            let suggestion = match (spec.seed_start, spec.seed_end, spec.seed_length) {
+                (None, None, Some(len)) => format!("--seed-length {}", len),
+                (Some(start), Some(end), None) => {
+                    format!("--seed-start {} --seed-end {}", start, end)
+                }
+                (Some(start), Some(end), Some(length)) => format!(
+                    "--seed-start {} --seed-end {} --seed-length {}",
+                    start, end, length
+                ),
+                _ => "equivalent named flags".into(),
+            };
+            warn!("Legacy -s/--seed is deprecated; use {}.", suggestion);
+            (spec.seed_start, spec.seed_end, spec.seed_length)
         } else {
-            value
-                .seed_legacy
-                .as_ref()
-                .map(|s| (s.seed_start, s.seed_end, s.seed_length))
-                .unwrap_or((None, None, None))
+            (None, None, None)
         };
 
-        let (max_mismatches, min_prefix_matches, min_suffix_matches) = value
-            .mismatch_legacy
-            .as_ref()
-            .map_or_else(
-                || value.resolve_mismatches(),
-                |m| Ok((m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches)),
-            )
-            .map_err(Error::msg)?;
+        let (max_mismatches, min_prefix_matches, min_suffix_matches) = if let Some(m) =
+            value.mismatch_legacy.as_ref()
+        {
+            warn!(
+                    "Legacy -m/--mismatch is deprecated; use --mismatch-max {} --mismatch-prefix {} --mismatch-suffix {}.",
+                    m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches
+                );
+            (m.max_mismatches, m.min_prefix_matches, m.min_suffix_matches)
+        } else {
+            value.resolve_mismatches().map_err(Error::msg)?
+        };
 
         let config = SeedConfig {
             seed_start,

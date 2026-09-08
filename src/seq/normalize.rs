@@ -3,9 +3,13 @@ use std::sync::OnceLock;
 
 use crate::types::Base;
 
+/// What [`Sequence::normalize`](crate::Sequence::normalize) changed while
+/// reading a raw record.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct NormalizationStats {
+    /// Gap characters dropped from the input.
     pub removed_gaps: usize,
+    /// Unrecognised characters rewritten as `N`.
     pub converted_to_n: usize,
 }
 
@@ -83,7 +87,10 @@ fn lookup_table() -> &'static [NormalizeEntry; 256] {
     })
 }
 
-pub fn normalize_rna_sequence(id: &str, seq: &[u8]) -> Result<(Vec<Base>, NormalizationStats)> {
+pub(crate) fn normalize_rna_sequence(
+    id: &str,
+    seq: &[u8],
+) -> Result<(Vec<Base>, NormalizationStats)> {
     let mut out = Vec::with_capacity(seq.len());
     let mut stats = NormalizationStats::default();
     let table = lookup_table();

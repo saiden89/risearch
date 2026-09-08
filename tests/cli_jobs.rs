@@ -1,3 +1,5 @@
+//! `-j/--jobs` yields the same hits regardless of thread count.
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::io::Write;
 use std::path::Path;

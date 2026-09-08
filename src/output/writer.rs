@@ -19,7 +19,7 @@ use crate::config::OutputCompression;
 ///
 /// gzip and zstd write their trailer when the underlying stream drops rather than
 /// on flush, so drop this only after the last write.
-pub enum OutputWriter {
+pub(crate) enum OutputWriter {
     /// Every key writes to the same stream, serialized. `-` means stdout.
     Single {
         path: PathBuf,
@@ -37,7 +37,7 @@ pub enum OutputWriter {
 
 impl OutputWriter {
     /// One stream for every key, at `path` (`-` for stdout).
-    pub fn single(path: &Path, compress: OutputCompression) -> Self {
+    pub(crate) fn single(path: &Path, compress: OutputCompression) -> Self {
         Self::Single {
             path: path.to_path_buf(),
             stream: Mutex::new(None),
@@ -47,7 +47,7 @@ impl OutputWriter {
 
     /// One file per key. `paths` is indexed by key, so it must cover every key
     /// the caller will write.
-    pub fn per_key(dir: &Path, paths: Vec<PathBuf>, compress: OutputCompression) -> Self {
+    pub(crate) fn per_key(dir: &Path, paths: Vec<PathBuf>, compress: OutputCompression) -> Self {
         Self::PerKey {
             dir: dir.to_path_buf(),
             paths,
@@ -55,7 +55,7 @@ impl OutputWriter {
         }
     }
 
-    pub fn write_block(&self, key: usize, block: &[u8]) -> Result<()> {
+    pub(crate) fn write_block(&self, key: usize, block: &[u8]) -> Result<()> {
         match self {
             Self::Single {
                 path,
@@ -81,7 +81,7 @@ impl OutputWriter {
     /// Finalize. `Single` opens its stream even if nothing was ever written, which
     /// is what truncates a stale output file after a run with no hits; `PerKey`
     /// flushed each file as it closed it, but still owes the caller the directory.
-    pub fn finish(&self) -> Result<()> {
+    pub(crate) fn finish(&self) -> Result<()> {
         match self {
             Self::Single {
                 path,

@@ -1,3 +1,5 @@
+//! Compressed output selected by `--compress` or inferred from the file extension.
+
 use assert_cmd::cargo::cargo_bin_cmd;
 use flate2::read::MultiGzDecoder;
 use std::io::{Read, Write};

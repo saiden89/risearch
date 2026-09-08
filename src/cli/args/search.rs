@@ -7,22 +7,22 @@ use super::{ExtendArgs, FilterArgs, InputArgs, OutputArgs, ScoreArgs, SeedArgs};
 #[derive(clap::Args, Debug, Clone)]
 pub struct SearchArgs {
     #[command(flatten)]
-    pub input: InputArgs,
+    pub(crate) input: InputArgs,
 
     #[command(flatten)]
-    pub seed: SeedArgs,
+    pub(crate) seed: SeedArgs,
 
     #[command(flatten)]
-    pub score: ScoreArgs,
+    pub(crate) score: ScoreArgs,
 
     #[command(flatten)]
-    pub extend: ExtendArgs,
+    pub(crate) extend: ExtendArgs,
 
     #[command(flatten)]
-    pub filter: FilterArgs,
+    pub(crate) filter: FilterArgs,
 
     #[command(flatten)]
-    pub output: OutputArgs,
+    pub(crate) output: OutputArgs,
 }
 
 impl SearchArgs {

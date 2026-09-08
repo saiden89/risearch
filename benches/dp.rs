@@ -1,3 +1,7 @@
+//! Benchmark Gotoh extension over the DP grid: left, right, throughput, repeated extensions
+//!
+//! Run with: cargo bench --bench dp
+
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
