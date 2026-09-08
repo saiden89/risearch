@@ -21,6 +21,8 @@ description = "Fast RNA-RNA interaction search using suffix arrays and thermodyn
 repository = "https://github.com/saiden89/risearch"
 readme = "README.md"
 license.workspace = true
+keywords = ["rna", "bioinformatics", "suffix-array", "alignment", "genomics"]
+categories = ["science::bioinformatics", "command-line-utilities", "algorithms"]
 include = [
     "/src/**",
     "/benches/**",
