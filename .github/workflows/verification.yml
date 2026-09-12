@@ -1,16 +1,18 @@
 name: Verification
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
   pull_request:
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - "data/dsm/**"
-      - ".github/workflows/verification.yml"
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
   workflow_dispatch:
-  schedule:
-    - cron: "17 3 * * *"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
