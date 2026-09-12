@@ -1094,7 +1094,7 @@ mod tests {
     }
 
     fn plant_site(bg: char, total_len: usize, offset: usize, site: &str) -> String {
-        let mut target: Vec<char> = std::iter::repeat(bg).take(total_len).collect();
+        let mut target: Vec<char> = std::iter::repeat_n(bg, total_len).collect();
         for (i, c) in site.chars().enumerate() {
             target[offset + i] = c;
         }

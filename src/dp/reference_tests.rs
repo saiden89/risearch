@@ -98,15 +98,14 @@ fn add_transition_score(predecessor: Option<i64>, transition: i32) -> Option<i64
 /// each reachable paired cell the terminal `table[q][0][t][0]` is added, and
 /// the maximum over all such cells is kept. Empty inputs have no anchor and
 /// yield `(i64::MIN, 0, 0)` with an empty trace.
+type NaiveGrid = Vec<Vec<[Option<i64>; 3]>>;
+
+#[allow(clippy::type_complexity)]
 fn naive_gotoh(
     query: &[u8],
     target: &[u8],
     table: &DsmTable,
-) -> (
-    Vec<Vec<[Option<i64>; 3]>>,
-    (i64, usize, usize),
-    Vec<TraceOp>,
-) {
+) -> (NaiveGrid, (i64, usize, usize), Vec<TraceOp>) {
     let mut scores = vec![vec![[None; 3]; target.len()]; query.len()];
     let mut preds = vec![vec![[None::<usize>; 3]; target.len()]; query.len()];
 
