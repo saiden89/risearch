@@ -7,7 +7,6 @@ edition.workspace = true
 publish = false
 description = "Python extension module for RIsearch"
 repository = "https://github.com/saiden89/risearch"
-readme = "README.md"
 include = [
     "/src/**",
     "/risearch/*.py",

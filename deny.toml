@@ -30,6 +30,9 @@ allow = ["GPL-3.0-only"]
 [bans]
 multiple-versions = "warn"
 
+[[bans.skip]]
+name = "syn"
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
