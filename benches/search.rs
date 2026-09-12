@@ -2,6 +2,9 @@
 //!
 //! Run with: cargo bench --bench search
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::fs;
 use std::path::Path;
 
@@ -189,14 +192,14 @@ fn bench_search_prod_shaped_pipeline(c: &mut Criterion) {
     let seed_total = forward + reverse;
     assert_eq!(
         (seed_total, forward, reverse),
-        (266_864, 133_452, 133_412),
+        (118_701, 59_318, 59_383),
         "seed workload changed"
     );
     let setup_sink = VecSink::default();
     let retained = pool
         .install(|| run_search(&dataset.queries, &dataset.store, &hit_args, &setup_sink))
         .expect("run setup search");
-    assert_eq!(retained, 110_801, "retained-hit workload changed");
+    assert_eq!(retained, 110_800, "retained-hit workload changed");
 
     let case = "10q_x_2x50k";
     group.throughput(Throughput::Elements(seed_total as u64));

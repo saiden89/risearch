@@ -51,12 +51,12 @@ itoa = "1"
 libsais = { version = "0.2", default-features = false }
 log = { version = "0.4.8", features = ["release_max_level_info"] }
 memmap2 = "0.9"
+mimalloc = "0.1"
 needletail = "0.7"
 rayon = "1.5"
 rkyv = { version = "0.8", features = ["bytecheck", "std", "pointer_width_64"] }
 smallvec = "1"
 thiserror = "2.0.12"
-tikv-jemallocator = "0.7"
 toml_edit = "0.25"
 zstd = "0.13.2"
 
