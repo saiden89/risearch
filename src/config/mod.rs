@@ -105,7 +105,10 @@ pub struct SeedConfig {
     /// pairing column, and so are shorter copies of a longer match.
     pub no_max_prune: bool,
 
-    /// Maximum number of mismatches allowed in seed.
+    /// Maximum number of mismatches allowed in seed. Mismatch-bearing seeds
+    /// containing an uninterrupted pairing run of the minimum seed length are
+    /// omitted: that region is represented by perfect seeds. This selection
+    /// applies even with [`Self::no_max_prune`].
     pub max_mismatches: usize,
     /// Minimum consecutive matches at seed start (prefix, 5').
     pub min_prefix_matches: usize,
@@ -211,7 +214,11 @@ impl SeedConfig {
                         };
                         (to_pos(start), to_pos(end))
                     }
-                    _ => return Err(Error::Config("Invalid seed interval: mixed sign".into())),
+                    _ => {
+                        return Err(Error::Config(
+                            "Invalid seed interval: outside query bounds".into(),
+                        ))
+                    }
                 };
 
                 if s_pos == 0 || e_pos == 0 {

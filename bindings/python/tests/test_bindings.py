@@ -4,7 +4,10 @@ Requires the extension to be built first:
     cd bindings/python && uv run --locked maturin develop
 """
 
+import gzip
 import inspect
+import os
+import subprocess
 from pathlib import Path
 
 import polars as pl
@@ -70,25 +73,11 @@ EXPECTED_COLUMNS = {
 }
 
 
-def test_search_returns_dataframe(store):
-    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
-    assert isinstance(df, pl.DataFrame)
-
-
 def test_search_schema(store):
     df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
     for col, dtype in EXPECTED_COLUMNS.items():
         assert col in df.columns, f"missing column: {col}"
         assert df[col].dtype == dtype, f"{col}: expected {dtype}, got {df[col].dtype}"
-
-
-def test_search_returns_hits(store):
-    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
-    assert len(df) > 0
-
-
-def test_search_resolves_registry_names(store):
-    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
     assert df["query_name"].is_not_null().all()
     assert df["target_name"].is_not_null().all()
     assert (df["query_name"].str.len_chars() > 0).all()
@@ -115,19 +104,9 @@ def test_all_energies_below_threshold(store):
     assert (df["energy"] <= threshold).all()
 
 
-def test_strand_values(store):
+def test_search_value_invariants(store):
     df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
     assert df["strand"].is_in(["+", "-"]).all()
-
-
-def test_coordinates_non_negative(store):
-    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
-    for col in ("q_start", "q_end", "t_start", "t_end"):
-        assert (df[col] >= 0).all()
-
-
-def test_start_lte_end(store):
-    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
     assert (df["q_start"] <= df["q_end"]).all()
     assert (df["t_start"] <= df["t_end"]).all()
 
@@ -137,16 +116,53 @@ def test_start_lte_end(store):
 # ---------------------------------------------------------------------------
 
 
-def test_stricter_threshold_returns_fewer_hits(store):
-    loose = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-5.0)
-    strict = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-20.0)
-    assert len(strict) <= len(loose)
+def test_stricter_cutoff_returns_exactly_the_eligible_rows(store):
+    options = dict(seed_length=8, alignment=False)
+    loose = risearch.search(QUERY_FA, store, energy_threshold=-5.0, **options)
+    energies = sorted(set(loose["energy"]))
+    assert len(energies) >= 2, "fixture must exercise both acceptance and rejection"
+    cutoff = energies[len(energies) // 2]
+    expected = loose.filter(pl.col("energy") <= cutoff)
+    assert 0 < len(expected) < len(loose)
+    actual = risearch.search(QUERY_FA, store, energy_threshold=cutoff, **options)
+    assert_frame_equal(expected.sort(SORT_COLS), actual.sort(SORT_COLS))
 
 
-def test_longer_seed_returns_fewer_hits(store):
-    short = risearch.search(QUERY_FA, store, seed_length=6, energy_threshold=-10.0)
-    long_ = risearch.search(QUERY_FA, store, seed_length=12, energy_threshold=-10.0)
-    assert len(long_) <= len(short)
+def test_seed_length_and_wobble_select_the_specified_spans(tmp_path):
+    """AGG/UUU has no two-base WC seed; wobble permits all five spans of length >= 2."""
+    query, target, index = (tmp_path / name for name in ("q.fa", "t.fa", "t.idx"))
+    query.write_text(">q\nAGG\n")
+    target.write_text(">t\nUUU\n")
+    risearch.index(target, index)
+    store = risearch.TargetRegistry.open(index)
+    all_spans = [
+        (0, 1, 0, 1, "+"),
+        (0, 1, 1, 2, "+"),
+        (0, 2, 0, 2, "+"),
+        (1, 2, 0, 1, "+"),
+        (1, 2, 1, 2, "+"),
+    ]
+    for length, wobble, expected in [
+        (2, False, []),
+        (2, True, all_spans),
+        (3, True, [(0, 2, 0, 2, "+")]),
+    ]:
+        actual = risearch.search(
+            query,
+            store,
+            seed_length=length,
+            seed_wobble=wobble,
+            max_extension=0,
+            no_max_prune=True,
+            no_dedup=True,
+            energy_threshold=100.0,
+        )
+        assert (
+            sorted(
+                actual.select("q_start", "q_end", "t_start", "t_end", "strand").rows()
+            )
+            == expected
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +175,8 @@ def test_single_path_and_list_equivalent(store):
         str(QUERY_FA), store, seed_length=8, energy_threshold=-10.0
     )
     df_list = risearch.search([QUERY_FA], store, seed_length=8, energy_threshold=-10.0)
-    assert len(df_str) == len(df_list)
+    assert len(df_str) > 0
+    assert_frame_equal(df_str.sort(SORT_COLS), df_list.sort(SORT_COLS))
 
 
 def test_split_files_match_full_file(store, tmp_path):
@@ -180,7 +197,48 @@ def test_split_files_match_full_file(store, tmp_path):
 
     df_split = risearch.search([f1, f2], store, seed_length=8, energy_threshold=-10.0)
     df_full = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
-    assert len(df_split) == len(df_full)
+    assert len(df_full) > 0
+    assert_frame_equal(df_split.sort(SORT_COLS), df_full.sort(SORT_COLS))
+
+
+@pytest.mark.parametrize(
+    "fastq,compressed", [(False, True), (True, False), (True, True)]
+)
+def test_fastq_and_gzip_preserve_fasta_search_results(tmp_path, fastq, compressed):
+    """Exercise both input boundaries; FASTQ quality values do not change bases."""
+
+    def write_records(name, records, *, fastq=False, compressed=False):
+        text = "".join(
+            f"@{name}\n{seq}\n+\n{'!' * len(seq)}\n" if fastq else f">{name}\n{seq}\n"
+            for name, seq in records
+        )
+        path = tmp_path / name
+        path.write_bytes(gzip.compress(text.encode()) if compressed else text.encode())
+        return path
+
+    queries = [("q-a", "AAAA"), ("q-c", "CCCC")]
+    targets = [("t-u", "UUUUUU"), ("t-g", "GGGGGG")]
+    plain_query = write_records("query.fa", queries)
+    plain_target = write_records("target.fa", targets)
+    suffix = (".fq" if fastq else ".fa") + (".gz" if compressed else "")
+    variant_query = write_records(
+        "query-variant" + suffix, queries, fastq=fastq, compressed=compressed
+    )
+    variant_target = write_records(
+        "target-variant" + suffix, targets, fastq=fastq, compressed=compressed
+    )
+    plain_index, variant_index = tmp_path / "plain.idx", tmp_path / "variant.idx"
+    risearch.index(plain_target, plain_index)
+    risearch.index(variant_target, variant_index)
+    options = dict(seed_length=2, max_extension=2, energy_threshold=100.0)
+    expected = risearch.search(
+        plain_query, risearch.TargetRegistry.open(plain_index), **options
+    )
+    actual = risearch.search(
+        variant_query, risearch.TargetRegistry.open(variant_index), **options
+    )
+    assert set(expected["query_name"]) == {"q-a", "q-c"}
+    assert_frame_equal(expected.sort(SORT_COLS), actual.sort(SORT_COLS))
 
 
 # ---------------------------------------------------------------------------
@@ -190,26 +248,40 @@ def test_split_files_match_full_file(store, tmp_path):
 SORT_COLS = [c for c in EXPECTED_COLUMNS if c != "alignment"]
 
 
-def test_alignment_populated_by_default(store):
-    df = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
-    assert df["alignment"].is_not_null().any()
-
-
-def test_alignment_false_nulls_column_but_keeps_schema(store):
-    df = risearch.search(
-        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, alignment=False
+def canonical_rows(df: pl.DataFrame) -> list[tuple]:
+    """Return a stable named multiset, retaining coordinates and alignment."""
+    return sorted(
+        tuple(
+            row[col] if col != "energy" else round(float(row[col]), 4)
+            for col in EXPECTED_COLUMNS
+        )
+        for row in df.to_dicts()
     )
-    assert df["alignment"].is_null().all()
-    for col, dtype in EXPECTED_COLUMNS.items():
-        assert col in df.columns
-        assert df[col].dtype == dtype
 
 
-def test_alignment_false_preserves_hits(store):
+def cli_path() -> Path:
+    """Locate the Cargo-built CLI used by the cross-frontend fixture."""
+    configured = os.environ.get("CARGO_BIN_EXE_risearch")
+    candidates = [Path(configured)] if configured else []
+    candidates.append(DATA.parents[1] / "target" / "debug" / "risearch")
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return candidate
+    pytest.fail(
+        "Python/CLI parity test needs a built risearch binary; set "
+        "CARGO_BIN_EXE_risearch or run `cargo build --bin risearch` first"
+    )
+
+
+def test_alignment_toggle(store):
     with_aln = risearch.search(QUERY_FA, store, seed_length=8, energy_threshold=-10.0)
     without = risearch.search(
         QUERY_FA, store, seed_length=8, energy_threshold=-10.0, alignment=False
     )
+    assert without["alignment"].is_null().all()
+    for col, dtype in EXPECTED_COLUMNS.items():
+        assert col in without.columns
+        assert without[col].dtype == dtype
     assert_frame_equal(
         with_aln.drop("alignment").sort(SORT_COLS),
         without.drop("alignment").sort(SORT_COLS),
@@ -232,6 +304,38 @@ def test_index_accepts_threads(tmp_path):
     assert idx.exists() and idx.stat().st_size > 0
 
 
+def test_fasta_case_wrapping_and_tu_spelling_preserve_hits(tmp_path):
+    query_plain = tmp_path / "query-plain.fa"
+    query_variant = tmp_path / "query-variant.fa"
+    target_plain = tmp_path / "target-plain.fa"
+    target_variant = tmp_path / "target-variant.fa"
+    query_plain.write_text(">q\nAAAA\n")
+    query_variant.write_text(">q\naA\naA\n")
+    target_plain.write_text(">t\nUUUUUU\n")
+    target_variant.write_text(">t\nttTT\ntt\n")
+
+    plain_index = tmp_path / "plain.idx"
+    variant_index = tmp_path / "variant.idx"
+    risearch.index(target_plain, plain_index, threads=1)
+    risearch.index(target_variant, variant_index, threads=1)
+    plain = risearch.search(
+        query_plain,
+        risearch.TargetRegistry.open(plain_index),
+        seed_length=2,
+        max_extension=2,
+        energy_threshold=100.0,
+    )
+    variant = risearch.search(
+        query_variant,
+        risearch.TargetRegistry.open(variant_index),
+        seed_length=2,
+        max_extension=2,
+        energy_threshold=100.0,
+    )
+    assert len(plain) > 0, "normalization fixture must produce hits"
+    assert canonical_rows(plain) == canonical_rows(variant)
+
+
 # ---------------------------------------------------------------------------
 # search — invalid arguments
 # ---------------------------------------------------------------------------
@@ -242,14 +346,85 @@ def test_seed_start_without_end_raises(store):
         risearch.search(QUERY_FA, store, seed_start=2)
 
 
-def test_strict_seed_returns_fewer_or_equal_hits(store):
-    wobble = risearch.search(
-        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=True
+def test_python_search_matches_cli_minimal_fixture(tmp_path):
+    """Cross-check the Python Arrow surface against CLI TSV at 2dp energy."""
+    target = tmp_path / "targets.fa"
+    query = tmp_path / "queries.fa"
+    index = tmp_path / "targets.idx"
+    target.write_text(">t-a\nUUUUUU\n>t-c\nGGGGGG\n")
+    query.write_text(">q-a\nAAAA\n>q-c\nCCCC\n")
+
+    cli = cli_path()
+    subprocess.run(
+        [str(cli), "index", str(target), str(index)],
+        check=True,
+        capture_output=True,
+        text=True,
     )
-    strict = risearch.search(
-        QUERY_FA, store, seed_length=8, energy_threshold=-10.0, seed_wobble=False
+    completed = subprocess.run(
+        [
+            str(cli),
+            "search",
+            "-q",
+            str(query),
+            "-t",
+            str(index),
+            "-o",
+            "-",
+            "--seed-length",
+            "2",
+            "-l",
+            "2",
+            "-e",
+            "100.0",
+            "--format",
+            "minimal",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     )
-    assert len(strict) <= len(wobble)
+
+    cli_rows = []
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        assert len(fields) == 8
+        cli_rows.append((
+            fields[0],
+            fields[3],
+            int(fields[1]) - 1,
+            int(fields[2]) - 1,
+            int(fields[4]) - 1,
+            int(fields[5]) - 1,
+            fields[6],
+            round(float(fields[7]), 2),
+        ))
+
+    python = risearch.search(
+        query,
+        risearch.TargetRegistry.open(index),
+        seed_length=2,
+        max_extension=2,
+        energy_threshold=100.0,
+        alignment=False,
+    )
+    python_rows = [
+        (
+            row["query_name"],
+            row["target_name"],
+            row["q_start"],
+            row["q_end"],
+            row["t_start"],
+            row["t_end"],
+            row["strand"],
+            round(float(row["energy"]), 2),
+        )
+        for row in python.to_dicts()
+    ]
+    assert cli_rows
+    assert sorted(cli_rows) == sorted(python_rows)
 
 
 def test_invalid_matrix_raises(store):
@@ -358,3 +533,25 @@ def test_missing_query_file_raises_file_not_found(store):
     """A query path that does not exist surfaces as FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
         risearch.search("no-such-query.fa", store)
+
+
+@pytest.mark.parametrize(
+    "contents,reason",
+    [
+        (">duplicate\nAAAA\n>duplicate\nCCCC\n", "Duplicate"),
+        (">empty\n----\n", "empty"),
+        ("@query\nAAAA\n+\n!!\n", "parse"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["index", "search"])
+def test_invalid_sequence_input_raises_input_error(
+    store, tmp_path, contents, reason, operation
+):
+    """Bad biological input has a specific exception at both public entry points."""
+    source = tmp_path / "invalid.fastx"
+    source.write_text(contents)
+    with pytest.raises(risearch.InputError, match=reason):
+        if operation == "index":
+            risearch.index(source, tmp_path / "invalid.idx")
+        else:
+            risearch.search(source, store, seed_length=2)

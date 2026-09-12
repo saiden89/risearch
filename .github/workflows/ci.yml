@@ -67,9 +67,6 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --workspace --all-targets --features prof -- -D warnings
 
-      - name: Build openmp feature
-        run: cargo build --locked -p risearch --features openmp
-
       - name: docs
         env:
           RUSTDOCFLAGS: -D warnings
@@ -176,7 +173,7 @@ jobs:
   test:
     name: Test ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -189,22 +186,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # C-oracle build deps: cmake (libdivsufsort), libpcre3-dev (-lpcre),
-      # zlib1g-dev (-lz), build-essential (gcc/make).
-      - name: Install C-oracle system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libpcre3-dev zlib1g-dev
-
-      # Apple clang has no OpenMP, so the oracle needs a Homebrew GCC; pcre
-      # supplies -lpcre. cmake and make ship with the runner image, and -lz
-      # resolves against the SDK.
-      - name: Install C-oracle system dependencies
-        if: runner.os == 'macOS'
-        run: brew install gcc pcre
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
@@ -216,14 +197,20 @@ jobs:
         with:
           tool: nextest
 
-      - name: Build C oracle
-        run: bash .github/scripts/build-c-oracle.sh
-
       - name: Run tests
         run: cargo nextest run --locked --workspace --exclude risearch-python
 
       - name: Run doctests
         run: cargo test --locked --workspace --exclude risearch-python --doc
+
+      - name: Run release tests
+        run: cargo nextest run --locked --release --workspace --exclude risearch-python
+
+      - name: Run OpenMP tests
+        if: runner.os == 'Linux'
+        env:
+          OMP_NUM_THREADS: "2"
+        run: cargo nextest run --locked -p risearch --features openmp
 
   test-python:
     name: Python suite
@@ -245,6 +232,9 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build CLI for Python cross-checks
+        run: cargo build --locked --bin risearch
 
       # uv sync prunes packages it does not track, so it must precede maturin develop.
       - name: Build extension into the locked environment

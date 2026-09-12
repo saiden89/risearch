@@ -200,12 +200,22 @@ pub(crate) fn build_multifile_paths<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_filename, unique_filename_stem};
+    use super::{build_multifile_paths, sanitize_filename, unique_filename_stem};
     use std::collections::HashSet;
+    use std::path::Path;
 
     #[test]
     fn sanitize_replaces_unsafe_chars() {
         assert_eq!(sanitize_filename("a/b:c*?"), "a_b_c__");
+    }
+
+    #[test]
+    fn sanitize_suffixes_windows_reserved_names() {
+        for reserved in ["CON", "prn", "AuX", "NUL", "COM1", "com9", "LPT1", "lpt9"] {
+            assert_eq!(sanitize_filename(reserved), format!("{reserved}_"));
+        }
+        assert_eq!(sanitize_filename("COM0"), "COM0");
+        assert_eq!(sanitize_filename("CONS"), "CONS");
     }
 
     #[test]
@@ -214,5 +224,14 @@ mod tests {
         assert_eq!(unique_filename_stem("a_b", &mut used), "a_b");
         assert_eq!(unique_filename_stem("a_b", &mut used), "a_b_1");
         assert_eq!(unique_filename_stem("a_b", &mut used), "a_b_2");
+    }
+
+    #[test]
+    fn multifile_paths_keep_colliding_sanitized_names_distinct() {
+        let paths = build_multifile_paths(["a/b", "a:b"].into_iter(), Path::new("out"), ".tsv");
+        assert_eq!(
+            paths,
+            [Path::new("out/a_b.tsv"), Path::new("out/a_b_1.tsv")]
+        );
     }
 }

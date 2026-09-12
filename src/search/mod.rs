@@ -9,6 +9,8 @@
 //!    (unless `--no-dedup`), then hand the query's hits to a [`HitSink`]
 
 mod extension;
+#[cfg(test)]
+mod metamorphic_tests;
 
 use crate::error::{Error, Result};
 use log::info;
@@ -403,9 +405,21 @@ impl SearchHit {
     }
 }
 
+/// Run the production search and collect its hits without depending on text output.
+#[cfg(test)]
+pub(crate) fn collect_search_hits(
+    queries: &crate::QueryRegistry,
+    targets: &crate::TargetRegistry,
+    config: &crate::SearchConfig,
+) -> Vec<SearchHit> {
+    let sink = VecSink::default();
+    run_search(queries, targets, config, &sink).unwrap();
+    sink.into_hits()
+}
+
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     use super::*;
     use crate::config::{
@@ -416,11 +430,17 @@ mod tests {
     use crate::output::TextSink;
     use crate::registry::QueryRegistry;
     use crate::types::DsmId;
+    use crate::{Sequence, VecSink};
 
-    const QUERY_FA: &str = include_str!("../../tests/data/query.fa");
-    const TARGET_FA: &str = include_str!("../../tests/data/target.fa");
+    /// A `tests/data` file, resolved against the crate root the way
+    /// `tests/cli_library_agreement.rs` resolves it.
+    pub(super) fn data(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(name)
+    }
 
-    fn fixture(content: &str) -> tempfile::NamedTempFile {
+    pub(super) fn fixture(content: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::Builder::new().suffix(".fa").tempfile().unwrap();
         f.write_all(content.as_bytes()).unwrap();
         f.flush().unwrap();
@@ -480,16 +500,13 @@ mod tests {
 
     #[test]
     fn text_output_emits_one_line_per_hit() {
-        let query_f = fixture(QUERY_FA);
-        let target_f = fixture(TARGET_FA);
-
-        let (store, _tmp) = build_store(target_f.path());
+        let (store, _tmp) = build_store(&data("target.fa"));
         let mut config = test_config();
         let output = minimal_output();
         // Mirror what the CLI derives for Minimal, so this also covers dedup's
         // empty-fingerprint (first-wins) tie-break.
         config.extend.build_alignment = false;
-        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+        let queries = QueryRegistry::from_fasta(&data("query.fa"), &config.seed).unwrap();
 
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         let hits = run_to_path(&queries, &store, &config, &output, out.path());
@@ -507,8 +524,6 @@ mod tests {
 
     #[test]
     fn no_hits_against_non_matching_target() {
-        let query_f = fixture(QUERY_FA);
-
         let mut target_file = tempfile::NamedTempFile::new().unwrap();
         write!(target_file, ">dummy\nAAAAAAAAAAAAAAAA\n").unwrap();
         let (store, _tmp) = build_store(target_file.path());
@@ -520,7 +535,7 @@ mod tests {
             },
             ..test_config()
         };
-        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+        let queries = QueryRegistry::from_fasta(&data("query.fa"), &config.seed).unwrap();
         let hits = run_search(&queries, &store, &config, &VecSink::default()).unwrap();
 
         assert_eq!(hits, 0, "no hits expected against a non-matching target");
@@ -528,11 +543,9 @@ mod tests {
 
     #[test]
     fn run_search_validates_configs_constructed_without_clap() {
-        let query_f = fixture(QUERY_FA);
-        let target_f = fixture(TARGET_FA);
-        let (store, _tmp) = build_store(target_f.path());
+        let (store, _tmp) = build_store(&data("target.fa"));
         let mut config = test_config();
-        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+        let queries = QueryRegistry::from_fasta(&data("query.fa"), &config.seed).unwrap();
 
         config.score.penalty = Energy::from_kcal(-0.1);
         let err = run_search(&queries, &store, &config, &VecSink::default()).unwrap_err();
@@ -549,7 +562,6 @@ mod tests {
     /// output to nothing.
     #[test]
     fn zero_hit_run_writes_empty_file_but_no_multifile_entry() {
-        let query_f = fixture(QUERY_FA);
         let mut target_file = tempfile::NamedTempFile::new().unwrap();
         write!(target_file, ">dummy\nAAAAAAAAAAAAAAAA\n").unwrap();
         let (store, _tmp) = build_store(target_file.path());
@@ -557,7 +569,7 @@ mod tests {
         let mut config = test_config();
         config.filter.delta_g = Energy::from_kcal(-100.0);
         let mut output = test_output();
-        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+        let queries = QueryRegistry::from_fasta(&data("query.fa"), &config.seed).unwrap();
 
         let out = tempfile::NamedTempFile::with_suffix(".tsv").unwrap();
         fs_err::write(out.path(), b"stale").unwrap();
@@ -572,13 +584,55 @@ mod tests {
         assert_eq!(fs_err::read_dir(&dir).unwrap().count(), 0);
     }
 
+    #[test]
+    fn compressed_output_decodes_to_the_plain_rows_including_empty_results() {
+        let (store, _tmp, queries, mut config) = mm2_minimal_fixture();
+        for delta_g in [-5.0, -1000.0] {
+            config.filter.delta_g = Energy::from_kcal(delta_g);
+            let mut plain = run_to_lines(&config, &queries, &store);
+            plain.sort();
+            assert_eq!(!plain.is_empty(), delta_g > -1000.0);
+            for compress in [OutputCompression::Gzip(6), OutputCompression::Zstd(3)] {
+                let output = OutputConfig {
+                    compress,
+                    ..minimal_output()
+                };
+                let out = tempfile::NamedTempFile::new().unwrap();
+                run_to_path(&queries, &store, &config, &output, out.path());
+                let bytes = fs_err::read(out.path()).unwrap();
+                let decoded = match compress {
+                    OutputCompression::Gzip(_) => {
+                        assert!(bytes.starts_with(&[0x1f, 0x8b]));
+                        let mut text = String::new();
+                        flate2::read::MultiGzDecoder::new(bytes.as_slice())
+                            .read_to_string(&mut text)
+                            .unwrap();
+                        text
+                    }
+                    OutputCompression::Zstd(_) => {
+                        assert!(bytes.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]));
+                        String::from_utf8(zstd::stream::decode_all(bytes.as_slice()).unwrap())
+                            .unwrap()
+                    }
+                    OutputCompression::None => unreachable!(),
+                };
+                let mut rows: Vec<String> = decoded
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(str::to_string)
+                    .collect();
+                rows.sort();
+                assert_eq!(rows, plain, "{compress:?} delta_g={delta_g}");
+            }
+        }
+    }
+
     /// The sink is built before the search validates the config, so it must not
     /// touch its destination until the driver hands it something.
     #[test]
     fn rejected_config_leaves_no_multifile_directory() {
         let query_f = fixture(&format!(">longq\n{}\n", "A".repeat(MAX_EXT + 1)));
-        let target_f = fixture(TARGET_FA);
-        let (store, _tmp) = build_store(target_f.path());
+        let (store, _tmp) = build_store(&data("target.fa"));
 
         let mut config = test_config();
         config.extend.max_extension = -1;
@@ -615,18 +669,36 @@ mod tests {
         config.filter.delta_g = Energy::from_kcal(100.0);
         let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
 
-        let dir = tempfile::tempdir().unwrap();
-        run_to_path(&queries, &store, &config, &output, dir.path());
-
-        let mut files: Vec<(String, String)> = fs_err::read_dir(dir.path())
-            .unwrap()
-            .map(|entry| {
-                let path = entry.unwrap().path();
-                let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
-                (stem, fs_err::read_to_string(&path).unwrap())
-            })
-            .collect();
-        files.sort();
+        let run_with_workers = |workers: usize| {
+            let dir = tempfile::tempdir().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap();
+            pool.install(|| run_to_path(&queries, &store, &config, &output, dir.path()));
+            let mut files: Vec<(String, String)> = fs_err::read_dir(dir.path())
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+                    let mut lines: Vec<String> = fs_err::read_to_string(&path)
+                        .unwrap()
+                        .lines()
+                        .map(str::to_owned)
+                        .collect();
+                    lines.sort();
+                    (stem, lines.join("\n"))
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let files = run_with_workers(1);
+        assert_eq!(
+            files,
+            run_with_workers(4),
+            "multifile output changed across worker counts"
+        );
 
         let stems: Vec<&str> = files.iter().map(|(stem, _)| stem.as_str()).collect();
         assert_eq!(stems, ["q1", "q3"], "only queries with hits get a file");
@@ -712,8 +784,7 @@ mod tests {
         QueryRegistry,
         SearchConfig,
     ) {
-        let target_f = fixture(TARGET_FA);
-        let (store, tmp) = build_store(target_f.path());
+        let (store, tmp) = build_store(&data("target.fa"));
         let mut config = test_config();
         config.extend.build_alignment = false;
         // Parameters that produce overlapping-seed box collisions on this
@@ -723,8 +794,7 @@ mod tests {
         config.seed.max_mismatches = 2;
         config.extend.max_extension = 30;
         config.filter.delta_g = Energy::from_kcal(-5.0);
-        let query_f = fixture(QUERY_FA);
-        let queries = QueryRegistry::from_fasta(query_f.path(), &config.seed).unwrap();
+        let queries = QueryRegistry::from_fasta(&data("query.fa"), &config.seed).unwrap();
         (store, tmp, queries, config)
     }
 
@@ -782,8 +852,8 @@ mod tests {
 
     /// The deduped set must be stable across runs. `dedup_hits` drains a HashMap,
     /// so a tie-break that depended on hash/iteration order would surface here as
-    /// run-to-run drift (two HashMaps use different random seeds). Locks the
-    /// order-independence parity tests can't (parity is pinned to `--no-dedup`).
+    /// run-to-run drift (two HashMaps use different random seeds). This covers
+    /// behavior raw-hit comparisons cannot exercise because they bypass deduplication.
     #[test]
     fn dedup_result_is_deterministic() {
         let (store, _tmp, queries, config) = mm2_minimal_fixture();
@@ -793,5 +863,425 @@ mod tests {
         b.sort();
         assert!(!a.is_empty(), "fixture must yield hits");
         assert_eq!(a, b, "deduped set must not depend on hash/iteration order");
+    }
+
+    // Unlimited seed extension (`-l -1`).
+    //
+    // risearch2 (C) cannot serve as an oracle: it clamps `-l` with
+    // `MAX(0, atoi(optarg))`, so `-l -1` silently becomes `0` (seed-only). The
+    // unlimited window is a risearch3-only feature, so these tests use risearch3
+    // itself as the oracle via metamorphic relations.
+    //
+    // Note on what is *not* tested: `-l -1` is **not** equivalent to a large fixed
+    // window such as `-l 256`. Unlimited sizes each extension window to the query
+    // bases available on that side (capped at the `dp::MAX_EXT` = 256 buffer
+    // ceiling), whereas a fixed `-l k` permits up to `k` of extension including
+    // large target-side bulges. The two therefore diverge on real data, so there
+    // is no fixed-window oracle to compare against. Instead we assert the
+    // feature's actual guarantees: reach and rejection.
+    //
+    // Extension only does work when the optimal duplex extends past the exact
+    // seed, so the reach test breaks exact complementarity with a single mismatch
+    // near the 3' end: the seeder stops there, and only DP extension can bridge it.
+
+    /// A search config in which only `max_extension` varies. The extension penalty
+    /// is zero so that added base pairs are favorable and extension actually runs
+    /// (a high per-nucleotide penalty would suppress it entirely).
+    fn config(max_extension: i32) -> SearchConfig {
+        SearchConfig {
+            seed: SeedConfig {
+                seed_start: None,
+                seed_end: None,
+                seed_length: Some(7),
+                seed_wobble: true,
+                no_max_prune: false,
+                max_mismatches: 0,
+                min_prefix_matches: 1,
+                min_suffix_matches: 0,
+            },
+            score: ScoreConfig {
+                dsm_id: DsmId::from("t04"),
+                penalty: Energy::from_kcal(0.0),
+                temperature: 37,
+            },
+            extend: ExtendConfig {
+                max_extension,
+                build_alignment: true,
+            },
+            filter: FilterConfig {
+                delta_g: Energy::from_kcal(-8.0),
+                seed_energy: Energy::from_kcal(0.0),
+                no_dedup: false,
+            },
+        }
+    }
+
+    /// Search a single raw `query` against a single raw `target` at the given
+    /// window, returning hits (or the search error). Index build / query load are
+    /// setup and unwrap; only the search itself surfaces as `Err`.
+    fn search_or_err(
+        query: &str,
+        target: &str,
+        max_extension: i32,
+    ) -> std::result::Result<Vec<SearchHit>, String> {
+        let cfg = config(max_extension);
+        let query_fa = fixture(&format!(">query\n{query}\n"));
+        let (target_seq, _) = Sequence::normalize("target", target.as_bytes()).unwrap();
+        let store = TargetRegistry::build(vec![("target".to_string(), target_seq)], None).unwrap();
+        let queries = QueryRegistry::from_fasta(query_fa.path(), &cfg.seed).unwrap();
+
+        let sink = VecSink::default();
+        run_search(&queries, &store, &cfg, &sink).map_err(|e| e.to_string())?;
+
+        Ok(sink.into_hits())
+    }
+
+    fn search_seqs(query: &str, target: &str, max_extension: i32) -> Vec<SearchHit> {
+        search_or_err(query, target, max_extension).unwrap()
+    }
+
+    fn complement(base: char) -> char {
+        char::from(Base::try_from(base).unwrap().complement().to_u8_upper())
+    }
+
+    /// Reverse complement, so `revcomp(q)` forms a full antiparallel duplex with `q`.
+    fn revcomp(seq: &str) -> String {
+        seq.chars().rev().map(complement).collect()
+    }
+
+    /// Deterministic pseudo-random RNA (LCG), for inputs too long to write by hand.
+    fn pseudo_random_rna(len: usize, seed: u64) -> String {
+        let mut state = seed;
+        (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                match (state >> 33) % 4 {
+                    0 => 'A',
+                    1 => 'C',
+                    2 => 'G',
+                    _ => 'U',
+                }
+            })
+            .collect()
+    }
+
+    /// Reach: extension crosses a mismatch the exact-match seeder cannot, reaching
+    /// the query 3' end — something seed-only (`-l 0`) never does.
+    #[test]
+    fn unlimited_extends_past_the_exact_seed_to_the_query_end() {
+        // Perfect 30-nt duplex, then one base near the 3' end mutated to break exact
+        // matching there. The seeder stops before the mismatch; only DP extension
+        // can bridge it and pair the final bases.
+        const N: usize = 30;
+        const BREAK: usize = 27; // mismatch position; indices 28,29 stay complementary
+
+        let mut query: Vec<char> = pseudo_random_rna(N, 0x07).chars().collect();
+        let target = revcomp(&query.iter().collect::<String>());
+        // In an antiparallel duplex query index i pairs target index N-1-i. Setting
+        // the query base equal to its opposing target base guarantees a mismatch
+        // (identical bases never pair), without touching neighboring positions.
+        let opposing = target.as_bytes()[N - 1 - BREAK] as char;
+        query[BREAK] = opposing;
+        let query: String = query.into_iter().collect();
+
+        let seed_only = search_seqs(&query, &target, 0);
+        let unlimited = search_seqs(&query, &target, -1);
+
+        assert!(!seed_only.is_empty(), "seed-only search must produce a hit");
+        assert!(
+            seed_only.iter().all(|h| h.q_end < N - 1),
+            "seed-only (`-l 0`) must stop at the mismatch, not reach the 3' end; got {:#?}",
+            seed_only
+        );
+        assert!(
+            unlimited
+                .iter()
+                .any(|h| h.q_start == 0 && h.q_end == N - 1 && h.energy.to_kcal() < 0.0),
+            "unlimited extension must cross the mismatch and reach the query 3' end; got {:#?}",
+            unlimited
+        );
+    }
+
+    /// Rejection: a query longer than the 256-nt buffer ceiling (`dp::MAX_EXT`) is
+    /// refused up front rather than silently clamped — `-l -1` cannot honor
+    /// "span the whole query" past the cap.
+    #[test]
+    fn unlimited_rejects_a_query_longer_than_the_ceiling() {
+        const N: usize = MAX_EXT + 1;
+
+        let query = pseudo_random_rna(N, 0x5151_2323);
+        let target = revcomp(&query);
+
+        let err = search_or_err(&query, &target, -1)
+            .expect_err("`-l -1` must reject a query longer than the 256-nt cap");
+
+        assert!(
+            err.contains("cannot extend across it"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    /// The ceiling is inclusive: a query of exactly `MAX_EXT` is still servable,
+    /// so the rejection must not fire one nucleotide early.
+    #[test]
+    fn unlimited_accepts_a_query_of_exactly_the_ceiling() {
+        let query = pseudo_random_rna(MAX_EXT, 0x5151_2323);
+        let target = revcomp(&query);
+
+        search_or_err(&query, &target, -1).expect("a query of exactly MAX_EXT must be accepted");
+    }
+
+    // ── Coordinate conversion: oracle + planted duplexes ─────────────────
+
+    fn run_fixture_search(
+        query_text: &str,
+        target_text: &str,
+        config: &SearchConfig,
+    ) -> Vec<SearchHit> {
+        let (target, _) = Sequence::normalize("t", target_text.as_bytes()).unwrap();
+        let query_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(query_file.path(), format!(">q\n{query_text}\n")).unwrap();
+        let queries = QueryRegistry::from_fasta(query_file.path(), &config.seed).unwrap();
+        let targets = TargetRegistry::build(vec![("t".into(), target)], None).unwrap();
+        super::collect_search_hits(&queries, &targets, config)
+    }
+
+    /// Independent oracle for duplex-frame → FASTA coordinate conversion.
+    ///
+    /// Derived from [`crate::seed::reference_tests::target_in_duplex_order`]:
+    /// Forward = `reverse(FASTA)`, so duplex pos `d` = FASTA pos `len-1-d`.
+    /// Reverse = `complement(FASTA)`, same positions.
+    fn naive_duplex_to_fasta(
+        target_len: usize,
+        strand: Strand,
+        duplex_range: std::ops::Range<usize>,
+    ) -> std::ops::Range<usize> {
+        match strand {
+            Strand::Forward => (target_len - duplex_range.end)..(target_len - duplex_range.start),
+            Strand::Reverse => duplex_range,
+        }
+    }
+
+    #[test]
+    fn map_target_range_matches_independent_coordinate_oracle() {
+        let target_text = "ACGUACGUACGU";
+        let target_len = target_text.len();
+        let (target, _) = Sequence::normalize("t", target_text.as_bytes()).unwrap();
+        let targets = TargetRegistry::build(vec![("t".into(), target)], None).unwrap();
+        let tview = targets.view();
+
+        for &strand in &[Strand::Forward, Strand::Reverse] {
+            let ranges: &[std::ops::Range<usize>] = &[
+                0..1,
+                0..target_len,
+                0..target_len / 2,
+                target_len / 2..target_len,
+                3..7,
+                target_len - 1..target_len,
+                5..5,
+            ];
+            for range in ranges {
+                let production = tview.map_target_range(0, strand, range.clone());
+                let oracle = naive_duplex_to_fasta(target_len, strand, range.clone());
+                assert_eq!(
+                    production, oracle,
+                    "strand={strand} duplex_range={range:?} target_len={target_len}"
+                );
+            }
+        }
+    }
+
+    fn plant_site(bg: char, total_len: usize, offset: usize, site: &str) -> String {
+        let mut target: Vec<char> = std::iter::repeat(bg).take(total_len).collect();
+        for (i, c) in site.chars().enumerate() {
+            target[offset + i] = c;
+        }
+        target.into_iter().collect()
+    }
+
+    #[test]
+    fn planted_duplexes_land_at_known_fasta_positions() {
+        let query = "UGCAUGU";
+        let query_rc = revcomp(query);
+        assert_ne!(query, &query_rc, "test needs a non-palindromic query");
+
+        let seed_len = query.len() as i64;
+        let total_len = 50;
+
+        let base_config = || {
+            let mut config = SearchConfig::default();
+            config.seed.seed_length = Some(seed_len);
+            config.seed.seed_wobble = false;
+            config.seed.no_max_prune = true;
+            config.extend.max_extension = 0;
+            config.filter.delta_g = Energy::from_kcal(100_000.0);
+            config.score.dsm_id = DsmId::from("t04");
+            config
+        };
+
+        for (strand, site_bases, label) in [
+            (Strand::Forward, query_rc.as_str(), "forward"),
+            (Strand::Reverse, query, "reverse"),
+        ] {
+            let site_len = site_bases.len();
+            for &offset in &[0usize, 5, 20, total_len - site_len] {
+                let target = plant_site('A', total_len, offset, site_bases);
+                let config = base_config();
+                let hits = run_fixture_search(query, &target, &config);
+
+                let expected_start = offset;
+                let expected_end = offset + site_len - 1;
+
+                let found = hits.iter().any(|h| {
+                    h.strand == strand && h.t_start == expected_start && h.t_end == expected_end
+                });
+                assert!(
+                    found,
+                    "{label} offset={offset}: expected hit at t_start={expected_start} \
+                     t_end={expected_end} strand={strand}, got {hits:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn planted_duplexes_with_varying_target_lengths() {
+        let query = "UGCAUGU";
+        let query_rc = revcomp(query);
+        let seed_len = query.len() as i64;
+
+        let mut config = SearchConfig::default();
+        config.seed.seed_length = Some(seed_len);
+        config.seed.seed_wobble = false;
+        config.seed.no_max_prune = true;
+        config.extend.max_extension = 0;
+        config.filter.delta_g = Energy::from_kcal(100_000.0);
+        config.score.dsm_id = DsmId::from("t04");
+
+        for &(total_len, offset) in &[(30usize, 3usize), (80, 60), (15, 8)] {
+            let target = plant_site('A', total_len, offset, &query_rc);
+            let hits = run_fixture_search(query, &target, &config);
+
+            let expected_start = offset;
+            let expected_end = offset + query.len() - 1;
+
+            let found = hits.iter().any(|h| {
+                h.strand == Strand::Forward
+                    && h.t_start == expected_start
+                    && h.t_end == expected_end
+            });
+            assert!(
+                found,
+                "target_len={total_len} offset={offset}: expected forward hit at \
+                 {expected_start}..={expected_end}, got {hits:?}",
+            );
+        }
+    }
+
+    #[cfg(not(miri))]
+    mod generated {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn random_configs_do_not_panic(
+                query in prop::collection::vec(0usize..4, 4..17),
+                target in prop::collection::vec(0usize..5, 4..25),
+                offset in 0usize..32,
+                requested_length in 2usize..=12,
+                mismatch in 0usize..=2,
+                prefix in 0usize..=3,
+                suffix in 0usize..=3,
+                wobble in any::<bool>(),
+                prune in any::<bool>(),
+                interval in any::<bool>(),
+                reverse in any::<bool>(),
+                model in 0usize..5,
+                temp in 0usize..9,
+                penalty in prop_oneof![Just(0i32), Just(1), Just(500000), 0i32..50000],
+                window in prop_oneof![Just(-1i32), Just(0), Just(1), 2i32..20],
+                threshold in prop_oneof![Just(i32::MAX), Just(i32::MIN), -100000i32..100000],
+            ) {
+                let alphabet = b"ACGUN";
+                let q: Vec<_> = query.iter().map(|&b| alphabet[b]).collect();
+                let length = requested_length.min(q.len()).min(target.len());
+                let start = offset % (q.len() - length + 1);
+                let mut config = SearchConfig::default();
+                config.seed.seed_length = Some(length as i64);
+                config.seed.max_mismatches = mismatch;
+                config.seed.min_prefix_matches = prefix;
+                config.seed.min_suffix_matches = suffix;
+                config.seed.seed_wobble = wobble;
+                config.seed.no_max_prune = !prune;
+                if interval {
+                    config.seed.seed_start = Some(start as i64 + 1);
+                    config.seed.seed_end = Some((start + length) as i64);
+                }
+                let names = ["t04", "t99", "slh04", "s95-rna-dna", "s95-dna-rna"];
+                config.score.dsm_id = DsmId::from(names[model]);
+                config.score.temperature = if model == 1 { 37 } else { [0, 12, 25, 31, 37, 40, 42, 46, 50][temp] };
+                config.score.penalty = Energy(penalty);
+                config.extend.max_extension = window;
+                config.filter.delta_g = Energy(threshold);
+                let mut planted: Vec<_> = target.iter().map(|&b| alphabet[b]).collect();
+                let site = offset % (planted.len() - length + 1);
+                let complement = |b| Base::try_from(char::from(b)).unwrap().complement().to_u8_upper();
+                let mut duplex: Vec<_> = q[start..start + length].iter().copied().map(complement).collect();
+                // Forward FASTA is reverse(physical); reverse FASTA is complement(physical).
+                if reverse { duplex.iter_mut().for_each(|b| *b = complement(*b)); }
+                else { duplex.reverse(); }
+                planted[site..site+length].copy_from_slice(&duplex);
+
+                // No-panic: three non-planted variants must survive every config.
+                for (qcase, tcase) in [
+                    (q.clone(), target.iter().map(|&b| alphabet[b]).collect::<Vec<_>>()),
+                    (vec![b'G'; q.len()], vec![b'C'; target.len()]),
+                    (vec![b'N'; q.len()], vec![b'N'; target.len()]),
+                ] {
+                    run_fixture_search(
+                        std::str::from_utf8(&qcase).unwrap(),
+                        std::str::from_utf8(&tcase).unwrap(),
+                        &config,
+                    );
+                }
+
+                // Planted case: always runs (no-panic), and under permissive
+                // configs asserts the planted site produces a covering hit.
+                let planted_hits = run_fixture_search(
+                    std::str::from_utf8(&q).unwrap(),
+                    std::str::from_utf8(&planted).unwrap(),
+                    &config,
+                );
+
+                let permissive = threshold == i32::MAX
+                    && mismatch == 0
+                    && prefix <= 1
+                    && suffix == 0
+                    && !interval
+                    && !prune;
+
+                if permissive {
+                    let expected_strand = if reverse { Strand::Reverse } else { Strand::Forward };
+                    let t_end_inclusive = site + length - 1;
+                    let covers_site = planted_hits.iter().any(|h| {
+                        h.strand == expected_strand
+                            && h.t_start <= site
+                            && h.t_end >= t_end_inclusive
+                    });
+                    prop_assert!(
+                        covers_site,
+                        "planted site at FASTA {}..={} ({:?}) not covered by {} hits: {:?}",
+                        site, t_end_inclusive, expected_strand,
+                        planted_hits.len(),
+                        planted_hits.iter()
+                            .map(|h| (h.t_start, h.t_end, char::from(h.strand)))
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
     }
 }

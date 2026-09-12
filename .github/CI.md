@@ -15,6 +15,12 @@ lockfile. A manifest change that is not accompanied by its lockfile update
 therefore fails the build instead of silently resolving. `Cargo.lock` and
 `bindings/python/uv.lock` are both committed for this reason.
 
+The `supply-chain` job runs `cargo deny --locked --workspace check`, which covers all four of cargo-deny's lanes (advisories, licenses, bans, sources) against `deny.toml` at the repository root.
+`[graph]` sets `all-features = true` and both release targets, so an advisory reachable only through `openmp` or only on one platform is still seen.
+Licence checking sets `include-dev` and `include-build`, so a copyleft build-dependency cannot slip in unexamined; the allowlist is permissive-only, with explicit `[[licenses.exceptions]]` entries admitting GPL-3.0-only for `risearch` and `risearch-python` themselves.
+`[sources]` denies unknown registries and git sources outright, while `[bans] multiple-versions` is `warn` rather than `deny`, because duplicate transitive versions are common and not by themselves a defect.
+Prune `[advisories] ignore` entries when the dependency that justified them leaves the tree: a stale entry emits `warning[advisory-not-detected]` but exits zero, so it silently widens the allowlist instead of failing.
+
 The `lint` job runs rustfmt and clippy (`-D warnings`), then two extra guards.
 It builds the `openmp` feature (`cargo build --locked -p risearch --features openmp`): it is a documented, user-facing feature that the default-feature test jobs never exercise, so without this it could rot unnoticed.
 `build`, not `check`, is deliberate; only a full build links `libgomp`, which is where the native OpenMP failures this lane targets actually surface.
@@ -71,23 +77,14 @@ The `test` job is a matrix over both runners, reported as `Test ubuntu` and `Tes
 - `ubuntu-latest` (x86_64)
 - `macos-latest` (arm64)
 
-Every step is shared except installing the C-oracle system dependencies, which branches on `runner.os`.
-`fail-fast: false` keeps one OS from cancelling the other, since an arch-specific parity break is precisely what the second runner is there to catch.
+Both runners execute the complete suite with identical steps and no test filter.
+`fail-fast: false` keeps one OS from cancelling the other, so architecture-specific
+indexing, scoring, and output failures are visible on both platforms.
 
-### The C oracle on both runners
-
-Nine integration test binaries depend on the legacy C oracle: they `Command::new` it (directly or via the shared parity runner) and panic if it is absent.
-Both test jobs therefore build it from the committed source under `legacy_c/RIsearch2/` via `.github/scripts/build-c-oracle.sh`, then run the FULL suite with no nextest filter.
-The script emits `risearch2.x` and the debug `risearch2.dbg.x` into `legacy_c/RIsearch2/bin/`, where the tests auto-detect them; no env var is needed (`PARITY_C_BIN` overrides the choice for local work).
-Those binaries are gitignored and built fresh in every run, and the script's own final check exits non-zero unless both are present and executable, so an oracle that silently failed to build cannot masquerade as a passing run.
-
-The oracle needs GCC with OpenMP plus pcre and zlib.
-On Ubuntu that is stock: `build-essential`, `cmake`, `libpcre3-dev`, `zlib1g-dev`.
-On macOS it is `brew install gcc pcre`, because Apple clang has no OpenMP; the script detects the newest Homebrew `gcc-<N>` and injects the Homebrew pcre include/lib paths, while `-lz` resolves against the SDK.
-Running parity on both arches is the point: the Rust and C sides are compared on the same machine, so arm64 and x86_64 exercise independent floating-point paths through the energy model.
-
-The cmake call passes `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` because libdivsufsort's `CMakeLists.txt` declares a pre-3.5 minimum that cmake 4 rejects outright.
-Older cmake ignores the variable, so the flag is safe on both runners.
+Correctness tests use direct seed enumeration, exhaustive short alignment paths,
+independent scalar path scoring, and explicit output expectations.
+The native dependencies of the Rust crate remain; the separate Ubuntu OpenMP
+build still verifies the optional indexing feature.
 
 ## Action pinning and Dependabot
 
@@ -98,3 +95,17 @@ SHA/digest pins are immutable (a moved tag cannot inject code); Dependabot bumps
 Dependabot tracks three ecosystems: `cargo` (root workspace), `github-actions`
 (workflows), and `uv` (`bindings/python`, so `uv.lock` and the PEP 735
 `[dependency-groups]` stay current).
+
+
+## Extended verification
+
+The test matrix also executes the complete Rust suite with `--release` on both
+platforms; doctests run once per platform in debug. A separate Ubuntu job runs tests with `openmp`
+enabled and a bounded OpenMP worker count. The Python lane builds the CLI before
+comparing its rows against Arrow binding results.
+
+`verification.yml` compiles Kani harnesses on relevant PRs, runs generated
+correctness, Miri, native AddressSanitizer and bounded proofs on
+scheduled/manual runs, and produces coverage only on manual dispatch. Miri
+selections fail if a named test does not exist. These jobs add no mutation
+campaign.

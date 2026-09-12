@@ -150,3 +150,104 @@ impl GotohScoring for ScoringModel {
         self.score(qc, GAP, tc, GAP)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Base, Energy};
+
+    // Decimal positions make every tensor coordinate distinguishable. The
+    // expected index order never goes through flat_idx or ScoringModel::score.
+    fn source(a: usize, b: usize, c: usize, d: usize) -> i32 {
+        (1000 * a + 100 * b + 10 * c + d) as i32
+    }
+
+    fn expected(a: usize, b: usize, c: usize, d: usize) -> i32 {
+        let consumed = match (b, d) {
+            (0, 0) => 0,
+            (0, _) | (_, 0) => 1,
+            _ if a == 0
+                && c == 0
+                && !Base::from_u8(b as u8)
+                    .pair_type(Base::from_u8(d as u8))
+                    .is_match(true) =>
+            {
+                0
+            }
+            _ => 2,
+        };
+        source(a, b, c, d) - 17 * consumed
+    }
+
+    #[test]
+    fn scoring_tensor_and_every_adapter_lane_have_independent_expectations() {
+        let mut table = [[[[0; 6]; 6]; 6]; 6];
+        for (a, slab) in table.iter_mut().enumerate() {
+            for (b, plane) in slab.iter_mut().enumerate() {
+                for (c, row) in plane.iter_mut().enumerate() {
+                    for (d, value) in row.iter_mut().enumerate() {
+                        *value = source(a, b, c, d);
+                    }
+                }
+            }
+        }
+        let model = ScoringModel::new(&table, Energy(12345), Energy(17));
+        let left = model.transpose();
+        for a in 0..6 {
+            for b in 0..6 {
+                let row = model.row_profile(a as u8, b as u8);
+                assert_eq!(
+                    model.extend_query_gap(a as u8, b as u8),
+                    expected(a, b, 0, 0)
+                );
+                assert_eq!(row.ext_qgap(), expected(a, b, 0, 0));
+                for d in 0..6 {
+                    assert_eq!(
+                        model.close_query_gap(a as u8, b as u8, d as u8),
+                        expected(a, b, 0, d)
+                    );
+                    assert_eq!(
+                        model.open_query_gap(a as u8, b as u8, d as u8),
+                        expected(a, b, d, 0)
+                    );
+                    assert_eq!(model.boundary(b as u8, d as u8), expected(b, 0, d, 0));
+                    // SAFETY: row borrows model and all offsets are within six-symbol lanes.
+                    unsafe {
+                        assert_eq!(*row.close_query_gap_ptr().add(d), expected(a, b, 0, d));
+                        assert_eq!(*row.open_query_gap_ptr().add(d * 6), expected(a, b, d, 0));
+                        assert_eq!(*row.boundary_ptr().add(d * 6), expected(b, 0, d, 0));
+                    }
+                }
+                for c in 0..6 {
+                    for d in 0..6 {
+                        let (a8, b8, c8, d8) = (a as u8, b as u8, c as u8, d as u8);
+                        assert_eq!(model.score(a8, b8, c8, d8), expected(a, b, c, d));
+                        assert_eq!(left.score(a8, b8, c8, d8), expected(b, a, d, c));
+                        assert_eq!(model.r#match(a8, b8, c8, d8), expected(a, b, c, d));
+                        assert_eq!(model.close_target_gap(b8, c8, d8), expected(0, b, c, d));
+                        assert_eq!(model.open_target_gap(b8, c8, d8), expected(b, 0, c, d));
+                        assert_eq!(model.extend_target_gap(c8, d8), expected(0, 0, c, d));
+                        // SAFETY: the model outlives row; each lane is indexed only
+                        // within its documented six-symbol tensor dimensions.
+                        unsafe {
+                            assert_eq!(*row.match_ptr().add(c * 6 + d), expected(a, b, c, d));
+                            assert_eq!(
+                                *row.close_target_gap_ptr().add(c * 6 + d),
+                                expected(0, b, c, d)
+                            );
+                            assert_eq!(
+                                *row.open_target_gap_ptr().add(c * 6 + d),
+                                expected(b, 0, c, d)
+                            );
+                            assert_eq!(
+                                *row.extend_target_gap_ptr().add(c * 6 + d),
+                                expected(0, 0, c, d)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(model.binding_energy(Energy(13579), 12), Energy(-1438));
+    }
+}

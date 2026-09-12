@@ -3,7 +3,7 @@ use std::cmp::max;
 use crate::dp::gotoh::Gotoh;
 use crate::dp::scoring::{GotohRowProfile, GotohScoring};
 
-use super::{max3, BestScore, DpCell, DpGrid};
+use super::{is_valid_score, max3, BestScore, DpCell, DpGrid};
 
 impl<S: GotohScoring> Gotoh<S> {
     #[inline(never)]
@@ -40,6 +40,22 @@ impl<S: GotohScoring> Gotoh<S> {
                 let extend_tgap = row.extend_target_gap_ptr();
                 let boundary = row.boundary_ptr();
                 let ext_qgap = row.ext_qgap();
+
+                // Frontier columns (j < 3) for this row, visited before the
+                // inner loop to maintain row-major best-score order.
+                let row_base = ptr.add(curr_row_offset);
+                for j in 0..3 {
+                    let m = (*row_base.add(j)).m;
+                    if is_valid_score(m) {
+                        let tc = *t_ptr.add(j) as usize;
+                        best.update_if_better(
+                            m,
+                            *boundary.add(tc * S::RowProfile::SYMBOL_COUNT),
+                            i,
+                            j,
+                        );
+                    }
+                }
 
                 // 1. T-symbol context
                 let mut tp = *t_ptr.add(2) as usize; // Previous t symbol

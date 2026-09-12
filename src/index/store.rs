@@ -163,11 +163,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let index_path = dir.path().join("targets.idx");
 
-        TargetRegistry::build(targets(&[("chrA", "ACGUGA"), ("chrB", "UUUGCA")]), None)
-            .unwrap()
-            .save(&index_path)
+        let built = TargetRegistry::build(targets(&[("chrA", "ACGUGA"), ("chrB", "UUUGCA")]), None)
             .unwrap();
+        built.save(&index_path).unwrap();
         let store = TargetRegistry::open(&index_path).unwrap();
+        assert_eq!(store.mmap.as_ref(), built.mmap.as_ref());
         let expected = [("chrA", 6usize), ("chrB", 6usize)];
         assert_eq!(store.len(), expected.len());
 

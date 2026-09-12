@@ -158,7 +158,7 @@ impl AlignColumn {
 
 /// The canonical fingerprint spelling and traversal order for an alignment.
 ///
-/// Formatting, parity comparison, and deduplication all consume this iterator,
+/// Formatting and deduplication both consume this iterator,
 /// so the visible fingerprint and its lexicographic order cannot drift apart.
 #[inline]
 pub fn fingerprint_symbols(columns: &[AlignColumn]) -> impl Iterator<Item = char> + '_ {
@@ -180,6 +180,41 @@ mod tests {
                 query: Base::Gap,
                 target: Base::U,
             }
+        );
+    }
+
+    #[test]
+    fn every_column_classifies_gaps_first_then_by_pair_type() {
+        const BASES: [Base; 6] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
+        for q in BASES {
+            for t in BASES {
+                let expected = match (q, t) {
+                    (Base::Gap, _) => PairClass::TargetBulge,
+                    (_, Base::Gap) => PairClass::QueryBulge,
+                    _ => match q.pair_type(t) {
+                        PairType::Canonical => PairClass::Canonical,
+                        PairType::Wobble => PairClass::Wobble,
+                        PairType::Mismatch => PairClass::Mismatch,
+                    },
+                };
+                assert_eq!(PairClass::from_bases(q, t), expected, "{q:?}-{t:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn class_codes_and_connectors_are_literal() {
+        let classes = [
+            PairClass::Canonical,
+            PairClass::Wobble,
+            PairClass::Mismatch,
+            PairClass::TargetBulge,
+            PairClass::QueryBulge,
+        ];
+        assert_eq!(classes.map(PairClass::symbol), ['P', 'W', 'U', 'T', 'Q']);
+        assert_eq!(
+            classes.map(PairClass::alignment_symbol),
+            ['|', ':', ' ', ' ', ' ']
         );
     }
 }

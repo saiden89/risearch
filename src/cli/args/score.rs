@@ -72,3 +72,29 @@ impl From<ScoreArgs> for ScoreConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn penalty_parses_inside_the_range_and_is_rejected_outside() {
+        assert_eq!(parse_penalty("5").unwrap(), Energy::try_from(5.0).unwrap());
+        for bad in ["-1", "51", "abc"] {
+            assert!(parse_penalty(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn score_args_carry_every_field_into_the_config() {
+        let config = ScoreConfig::from(ScoreArgs {
+            dsm_id: DsmId::from("t99"),
+            penalty: Energy::try_from(7.0).unwrap(),
+            temperature: 42,
+        });
+
+        assert_eq!(config.dsm_id, DsmId::from("t99"));
+        assert_eq!(config.penalty, Energy::try_from(7.0).unwrap());
+        assert_eq!(config.temperature, 42);
+    }
+}

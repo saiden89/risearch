@@ -1,0 +1,167 @@
+name: Verification
+
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "data/dsm/**"
+      - ".github/workflows/verification.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generated-correctness:
+    if: github.event_name != 'pull_request'
+    name: Generated correctness
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PROPTEST_CASES: "2000"
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Run generated and reference tests
+        run: cargo test --locked --workspace --exclude risearch-python --all-features -- --test-threads=2
+
+      - name: Upload property-test regressions
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: proptest-regressions
+          path: proptest-regressions/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  sanitizers:
+    if: github.event_name != 'pull_request'
+    name: Miri and AddressSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # nightly
+        with:
+          toolchain: nightly
+          components: miri
+
+      - name: Install Clang and OpenMP runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libomp-dev
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Check selected tests under Miri
+        shell: bash
+        run: |
+          for test in \
+            dp::gotoh::tests::frontier_and_grid_reuse_safety \
+            adapter::gotoh::tests::scoring_tensor_and_every_adapter_lane_have_independent_expectations
+          do
+            listed=$(cargo +nightly miri test --locked -p risearch --lib "$test" -- --exact --list)
+            grep -Fx -- "$test: test" <<< "$listed"
+            cargo +nightly miri test --locked -p risearch --lib "$test" -- --exact
+          done
+
+      - name: Run native tests under AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address --cfg risearch_sanitize
+          CFLAGS: -fsanitize=address
+          CXXFLAGS: -fsanitize=address
+          CC: clang
+          CXX: clang++
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          OMP_NUM_THREADS: "2"
+        run: cargo +nightly test --target x86_64-unknown-linux-gnu --locked -p risearch --features openmp -- --test-threads=2
+
+  coverage:
+    if: github.event_name == 'workflow_dispatch'
+    name: Coverage report
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-llvm-cov@0.8.7
+
+      - name: Generate LCOV report
+        run: |
+          cargo llvm-cov --locked --workspace --exclude risearch-python \
+            --all-features --lcov --output-path coverage.lcov
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage.lcov
+          if-no-files-found: error
+          retention-days: 14
+
+  bounded-proofs:
+    name: Bounded arithmetic and geometry proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.67.0
+          cargo kani setup
+
+      - name: Compile harnesses on pull requests
+        if: github.event_name == 'pull_request'
+        run: cargo kani -p risearch --lib --only-codegen
+
+      - name: Verify harnesses
+        if: github.event_name != 'pull_request'
+        run: cargo kani -p risearch --lib

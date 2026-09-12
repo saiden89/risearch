@@ -147,6 +147,8 @@ impl ExtensionEngine {
             ExtendDir::Right,
         );
 
+        debug_assert!(left.q_idx <= query_range.start);
+        debug_assert!(left.t_idx <= target_range.start);
         let q_range = query_range.start - left.q_idx..query_range.end + right.q_idx;
         let t_range = target_range.start - left.t_idx..target_range.end + right.t_idx;
         let model = self.model();
@@ -317,6 +319,136 @@ mod tests {
     /// Same constructor the search path uses, so these pin the shipped model.
     fn test_model() -> ScoringModel {
         ScoringModel::load(&DsmId::from("t04"), 37, Energy::from_kcal(0.0)).unwrap()
+    }
+
+    #[test]
+    fn penalty_changes_the_selected_endpoint_on_both_flanks() {
+        // A two-base seed has stack score 1000; extending by one paired
+        // column adds 100. Its adjusted gain is 100 - 2p, so p=49 extends,
+        // p=50 ties, and p=51 stops. Raw reported energies are -100 and 0.
+        for left in [false, true] {
+            let (q, t, start) = if left {
+                (
+                    vec![Base::A, Base::G, Base::C],
+                    vec![Base::U, Base::C, Base::G],
+                    1,
+                )
+            } else {
+                (
+                    vec![Base::G, Base::C, Base::A],
+                    vec![Base::C, Base::G, Base::U],
+                    0,
+                )
+            };
+            let mut table = [[[[-10000; 6]; 6]; 6]; 6];
+            for (&qb, &tb) in q.iter().zip(&t) {
+                table[0][qb.as_usize()][0][tb.as_usize()] = 0;
+                table[qb.as_usize()][0][tb.as_usize()][0] = 0;
+            }
+            for i in 0..2 {
+                table[q[i].as_usize()][q[i + 1].as_usize()][t[i].as_usize()][t[i + 1].as_usize()] =
+                    if i == start { 1000 } else { 100 };
+            }
+            let seed = SeedHit::new(0, start, 0, start, 2, crate::Strand::Forward);
+            for penalty in [49, 50, 51] {
+                let model = ScoringModel::new(&table, Energy(1000), Energy(penalty));
+                let mut engine = ExtensionEngine::new(Some(3), true, &model);
+                let hit = engine.extend_seed(&q, &t, &seed);
+                let extended = hit.q_range.len() == 3;
+                if penalty != 50 {
+                    assert_eq!(extended, penalty == 49);
+                }
+                assert_eq!(hit.energy, Energy(if extended { -100 } else { 0 }));
+                assert_eq!(hit.q_range, hit.t_range);
+                assert_eq!(
+                    engine.materialize_alignment(&q, &t, &seed).unwrap().len(),
+                    hit.q_range.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn anchored_duplexes_have_explicit_columns_and_energy() {
+        // Each allowed neighboring column has a distinct positive score.
+        // Everything else is strongly unfavorable, making the entire listed
+        // duplex the unique optimum. These are constructed answers, not dumps.
+        for (q_row, t_row, seed_column) in [
+            ("ACGUAC", "UGCAUG", 0),   // right only
+            ("ACGUAC", "UGCAUG", 4),   // left only
+            ("ACGUAC", "UGCAUG", 2),   // both sides
+            ("ACGUAC", "UGAAUG", 0),   // internal mismatch
+            ("ACAGUAC", "UG-CAUG", 0), // query bulge, right extension
+            ("ACAGUAC", "UG-CAUG", 5), // query bulge, left extension
+            ("AC-GUAC", "UGACAUG", 0), // target bulge, right extension
+            ("AC-GUAC", "UGACAUG", 5), // target bulge, left extension
+        ] {
+            let qcols: Vec<_> = q_row.chars().map(|b| Base::try_from(b).unwrap()).collect();
+            let tcols: Vec<_> = t_row.chars().map(|b| Base::try_from(b).unwrap()).collect();
+            let query: Vec<_> = qcols.iter().copied().filter(|b| *b != Base::Gap).collect();
+            let target: Vec<_> = tcols.iter().copied().filter(|b| *b != Base::Gap).collect();
+            let mut table = [[[[-100000; 6]; 6]; 6]; 6];
+            for (&q, &t) in qcols.iter().zip(&tcols) {
+                if q != Base::Gap && t != Base::Gap {
+                    table[0][q.as_usize()][0][t.as_usize()] = 11;
+                    table[q.as_usize()][0][t.as_usize()][0] = 17;
+                }
+            }
+            for (q, t) in qcols.windows(2).zip(tcols.windows(2)) {
+                table[q[0].as_usize()][q[1].as_usize()][t[0].as_usize()][t[1].as_usize()] =
+                    100 + q[0].as_usize() as i32 * 10 + t[1].as_usize() as i32;
+            }
+            let score: i32 = qcols
+                .windows(2)
+                .zip(tcols.windows(2))
+                .map(|(q, t)| 100 + q[0].as_usize() as i32 * 10 + t[1].as_usize() as i32)
+                .sum();
+            let qs = qcols[..seed_column]
+                .iter()
+                .filter(|b| **b != Base::Gap)
+                .count();
+            let ts = tcols[..seed_column]
+                .iter()
+                .filter(|b| **b != Base::Gap)
+                .count();
+            assert!(qcols[seed_column..seed_column + 2]
+                .iter()
+                .all(|b| *b != Base::Gap));
+            assert!(tcols[seed_column..seed_column + 2]
+                .iter()
+                .all(|b| *b != Base::Gap));
+            let seed = SeedHit::new(0, qs, 0, ts, 2, crate::Strand::Forward);
+            for penalty in [0, 7] {
+                let model = ScoringModel::new(&table, Energy(1000), Energy(penalty));
+                let mut engine = ExtensionEngine::new(Some(20), true, &model);
+                let hit = engine.extend_seed(&query, &target, &seed);
+                assert_eq!(
+                    hit.q_range,
+                    0..query.len(),
+                    "{q_row}/{t_row} seed={seed_column}"
+                );
+                assert_eq!(hit.t_range, 0..target.len());
+                // Adjustment charges once per consumed base; final conversion
+                // cancels it. Initiation and each terminal contribute once.
+                assert_eq!(hit.energy, Energy(1000 - score - 11 - 17));
+                let columns = engine
+                    .materialize_alignment(&query, &target, &seed)
+                    .unwrap();
+                assert_eq!(columns.iter().map(|c| c.query()).collect::<Vec<_>>(), qcols);
+                assert_eq!(
+                    columns.iter().map(|c| c.target()).collect::<Vec<_>>(),
+                    tcols
+                );
+
+                let mut seed_only = ExtensionEngine::new(Some(0), true, &model);
+                let hit = seed_only.extend_seed(&query, &target, &seed);
+                assert_eq!(hit.q_range, qs..qs + 2);
+                assert_eq!(hit.t_range, ts..ts + 2);
+                let seed_score =
+                    100 + query[qs].as_usize() as i32 * 10 + target[ts + 1].as_usize() as i32;
+                assert_eq!(hit.energy, Energy(1000 - seed_score - 11 - 17));
+            }
+        }
     }
 
     #[test]

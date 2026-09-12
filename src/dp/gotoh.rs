@@ -82,11 +82,9 @@ impl<S: GotohScoring> Gotoh<S> {
         grid.resize(t_len + 1, q_len + 1);
 
         let has_main_region = self.init_frontier(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
-        if !has_main_region {
-            return best;
+        if has_main_region {
+            self.main_loop(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
         }
-
-        self.main_loop(q_ptr, t_ptr, grid, q_len, t_len, &mut best);
 
         trace!(
             "dp result: score={} q_idx={} t_idx={}",
@@ -252,5 +250,52 @@ mod tests {
     fn is_transition_rejects_invalid_pred_with_mismatched_arithmetic() {
         // Both conditions fail → false. Baseline correctness check.
         assert!(!is_transition(0, NEG_INF, 100));
+    }
+
+    /// Small safety-focused domain for the interpreter: early returns, both tiny
+    /// frontiers, the 3x3 corner, the pointer-based interior, and shrink/reuse.
+    /// Execution alone is the check; these shapes are compared against the
+    /// reference by the exhaustive and generated tests.
+    #[cfg(miri)]
+    #[test]
+    fn frontier_and_grid_reuse_safety() {
+        use crate::dp::{gotoh::Gotoh, DpGrid};
+        use crate::dsm::{DsmTable, ScoringModel};
+        use crate::types::Energy;
+
+        let table: DsmTable = std::array::from_fn(|a| {
+            std::array::from_fn(|b| {
+                std::array::from_fn(|c| {
+                    std::array::from_fn(|d| {
+                        ((a * 71 + b * 47 + c * 19 + d * 11 + 7) % 29) as i32 - 18
+                    })
+                })
+            })
+        });
+        let engine = Gotoh::new(&ScoringModel::new(&table, Energy(0), Energy(0)));
+        let query = [1, 3, 2, 5, 4, 1];
+        let target = [5, 2, 3, 1, 4, 3];
+        let mut grid = DpGrid::new(1);
+        for (qlen, tlen) in [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (2, 6),
+            (6, 2),
+            (3, 3),
+            (3, 6),
+            (6, 3),
+            (6, 6),
+            (2, 2),
+            (4, 5),
+            (1, 6),
+        ] {
+            let (q, t) = (&query[..qlen], &target[..tlen]);
+            let best = engine.extend(q, t, &mut grid);
+            if !q.is_empty() && !t.is_empty() {
+                let _ = engine.traceback(q, t, &grid, best.q_idx, best.t_idx);
+            }
+        }
     }
 }

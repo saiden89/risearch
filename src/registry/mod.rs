@@ -348,6 +348,50 @@ mod tests {
     }
 
     #[test]
+    fn string_entries_report_their_own_name() {
+        let registry = Registry::new(vec![String::from("query-1"), String::from("query-2")]);
+
+        assert_eq!(registry[0].name(), "query-1");
+        assert_eq!(registry[1].name(), "query-2");
+        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.entries().len(), 2);
+        assert!(!registry.is_empty());
+        assert!(Registry::<String>::new(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn query_registry_exposes_the_loaded_queries() {
+        let empty = QueryRegistry {
+            inner: Registry::new(Vec::new()),
+        };
+        assert!(empty.is_empty());
+
+        let query = make_query_data(
+            Sequence::from(vec![Base::A, Base::C, Base::G]),
+            None,
+            None,
+            None,
+        );
+        let loaded = QueryRegistry {
+            inner: Registry::new(vec![query]),
+        };
+        assert!(!loaded.is_empty());
+        assert_eq!(loaded.entries().len(), 1);
+        assert_eq!(loaded.get_name(0), "q");
+    }
+
+    #[test]
+    fn has_n_any_is_false_without_an_n() {
+        let clean = make_query_data(
+            Sequence::from(vec![Base::A, Base::C, Base::G]),
+            None,
+            None,
+            None,
+        );
+        assert!(!clean.has_n_any());
+    }
+
+    #[test]
     fn seed_sequence_matches_interval_slice() {
         let sequence = Sequence::from(vec![Base::A, Base::U, Base::G, Base::C, Base::A, Base::U]);
         let query = make_query_data(sequence, Some(2), Some(5), Some(2));
@@ -450,5 +494,27 @@ mod tests {
     fn from_fastas_empty_paths_returns_error() {
         let cfg = seed_config();
         assert!(QueryRegistry::from_fastas(&[], &cfg).is_err());
+    }
+
+    #[test]
+    fn query_registry_index_of_matches_only_the_named_query() {
+        let f = temp_fasta(">seq1\nACGUACGU\n>seq2\nUUUUAAAA\n");
+        let registry = QueryRegistry::from_fasta(f.path(), &seed_config()).unwrap();
+
+        assert_eq!(registry.index_of("seq1"), Some(0));
+        assert_eq!(registry.index_of("seq2"), Some(1));
+        assert_eq!(registry.index_of("seq3"), None);
+    }
+
+    #[test]
+    fn seeds_spanning_an_n_are_rejected() {
+        let sequence = Sequence::from(vec![Base::A, Base::N, Base::G, Base::C]);
+        let query = make_query_data(sequence, None, None, Some(2));
+
+        assert!(query.has_n_any());
+        assert_eq!(query.n_prefix(), &[0, 0, 1, 1, 1]);
+        assert_eq!(query.map_seed_pos(0, 2), None);
+        assert_eq!(query.map_seed_pos(2, 2), Some(2));
+        assert_eq!(query.map_seed_pos(0, 1), None);
     }
 }

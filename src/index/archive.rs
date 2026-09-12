@@ -303,6 +303,18 @@ mod tests {
         assert!(open_err(&path).contains("too small to hold a header"));
     }
 
+    /// `HEADER_LEN` bytes is a complete header, so the size check must not
+    /// reject it. The empty payload still fails, but later and for its own reason.
+    #[test]
+    fn a_header_sized_file_clears_the_size_check() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("t.idx");
+        write_image(&path, FORMAT_VERSION, &[]);
+
+        let err = open_err(&path);
+        assert!(!err.contains("too small to hold a header"), "{err}");
+    }
+
     #[test]
     fn open_rejects_a_foreign_magic() {
         let dir = tempdir().unwrap();

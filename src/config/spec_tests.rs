@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::config::{
-        ExtendConfig, ScoreConfig, SearchConfig, SeedConfig, DEFAULT_SEED_LEN, MAX_EXTENSION,
+        ExtendConfig, OutputFormat, ScoreConfig, SearchConfig, SeedConfig, DEFAULT_SEED_LEN,
+        MAX_EXTENSION,
     };
     use crate::types::{DsmId, Energy};
 
@@ -216,6 +217,58 @@ mod tests {
             }
             .validate()
             .is_err());
+        }
+    }
+
+    #[test]
+    fn only_minimal_skips_alignment() {
+        assert!(!OutputFormat::Minimal.needs_alignment());
+        for format in [
+            OutputFormat::Detailed,
+            OutputFormat::Cigar,
+            OutputFormat::BindingSite,
+        ] {
+            assert!(format.needs_alignment());
+        }
+    }
+
+    #[test]
+    fn single_position_interval_is_valid() {
+        SeedConfig {
+            seed_start: Some(5),
+            seed_end: Some(5),
+            ..Default::default()
+        }
+        .validate()
+        .expect("start == end is a one-base interval");
+    }
+
+    #[test]
+    fn length_exceeding_interval_is_rejected_before_any_query() {
+        let err = SeedConfig {
+            seed_start: Some(10),
+            seed_end: Some(12),
+            seed_length: Some(5),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("exceeds interval"));
+    }
+
+    #[test]
+    fn interval_outside_the_query_is_rejected() {
+        for (start, end) in [(1, 200), (-200, -1)] {
+            let err = SeedConfig {
+                seed_start: Some(start),
+                seed_end: Some(end),
+                ..Default::default()
+            }
+            .resolve(100)
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("outside query bounds"), "{err}");
         }
     }
 }

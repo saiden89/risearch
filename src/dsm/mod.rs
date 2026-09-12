@@ -33,7 +33,10 @@ pub(crate) const DSM_HEADER: [&str; 5] = ["q1", "q2", "t1", "t2", "delta_g_kcal_
 
 #[inline(always)]
 pub(crate) const fn flat_idx(q1: u8, q2: u8, t1: u8, t2: u8) -> usize {
-    (q1 as usize) * 216 + (q2 as usize) * 36 + (t1 as usize) * 6 + t2 as usize
+    (q1 as usize) * BASE_COUNT.pow(3)
+        + (q2 as usize) * BASE_COUNT.pow(2)
+        + (t1 as usize) * BASE_COUNT
+        + t2 as usize
 }
 
 #[derive(Clone, Copy)]
@@ -313,6 +316,52 @@ mod tests {
     use super::*;
     use crate::types::Base;
 
+    type ManifestEntry = (String, Orientation, f64, Vec<(i32, String, f64)>);
+
+    fn canonical_manifest() -> Vec<ManifestEntry> {
+        let doc = include_str!("../../data/dsm/manifest.toml")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("canonical DSM manifest parses");
+        doc["dsm"]
+            .as_array_of_tables()
+            .expect("canonical DSM manifest has dsm entries")
+            .iter()
+            .map(|entry| {
+                let id = entry["id"].as_str().expect("DSM id").to_owned();
+                let orientation = match entry["orientation"].as_str().expect("orientation") {
+                    "identity" => Orientation::Identity,
+                    "reverse-swap" => Orientation::ReverseSwap,
+                    other => panic!("unknown canonical orientation {other}"),
+                };
+                let invalid = entry["invalid_transition_kcal"]
+                    .as_float()
+                    .or_else(|| {
+                        entry["invalid_transition_kcal"]
+                            .as_integer()
+                            .map(|v| v as f64)
+                    })
+                    .expect("invalid transition");
+                let temperatures = entry["temperatures"]
+                    .as_array()
+                    .expect("DSM temperatures")
+                    .iter()
+                    .map(|value| {
+                        let table = value.as_inline_table().expect("inline temperature table");
+                        let temperature =
+                            table["temperature"].as_integer().expect("temperature") as i32;
+                        let file = table["file"].as_str().expect("TSV file").to_owned();
+                        let initiation = table["initiation_kcal"]
+                            .as_float()
+                            .or_else(|| table["initiation_kcal"].as_integer().map(|v| v as f64))
+                            .expect("initiation");
+                        (temperature, file, initiation)
+                    })
+                    .collect();
+                (id, orientation, invalid, temperatures)
+            })
+            .collect()
+    }
+
     #[test]
     fn pairing_policy_uses_physical_duplex_bases() {
         assert!(Base::A.pair_type(Base::U).is_match(false));
@@ -339,6 +388,49 @@ mod tests {
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
         let actual = model.score_bases(Base::G, Base::G, Base::C, Base::C);
         assert_eq!(actual, 33016);
+    }
+
+    #[test]
+    fn bundled_models_have_explicit_stack_and_initiation_energies() {
+        // Values read from the canonical TSV/manifest, in integer score units.
+        // An AC/UG stack is asymmetric in the mixed-strand model.
+        for (name, init, ac_ug, gg_cc) in [
+            ("t04", 61280, 21805, 33016),
+            ("t99", 55900, 22000, 33000),
+            ("slh04", 20438, 13852, 18007),
+            ("s95-rna-dna", 40350, 10714, 21010),
+        ] {
+            let (actual_init, table) = DsmRegistry::load(&DsmId::from(name), 37).unwrap();
+            assert_eq!(actual_init, Energy(init), "{name}");
+            assert_eq!(table[1][2][5][3], ac_ug, "{name}");
+            assert_eq!(table[3][3][2][2], gg_cc, "{name}");
+            assert_eq!(table[0][0][0][0], -200000, "omitted transition in {name}");
+        }
+        let (init, reversed) = DsmRegistry::load(&DsmId::from("s95-dna-rna"), 37).unwrap();
+        assert_eq!(init, Energy(40350));
+        // AC/UG (RNA/DNA) becomes GU/CA (DNA/RNA), not a plain transpose.
+        assert_eq!(reversed[3][5][2][1], 10714);
+    }
+
+    #[test]
+    fn temperature_interpolation_uses_bracketing_integer_scores() {
+        let (init, table) = DsmRegistry::load(&DsmId::from("t04"), 31).unwrap();
+        // Midpoint of 25C and 37C: initiation (63786 + 61280)/2;
+        // AC/UG stack (25373 + 21805)/2; GG/CC (36920 + 33016)/2.
+        assert_eq!(init, Energy(62533));
+        assert_eq!(table[1][2][5][3], 23589);
+        assert_eq!(table[3][3][2][2], 34968);
+        assert_eq!(table[1][0][5][0], 5000);
+        assert!(DsmRegistry::load(&DsmId::from("t99"), 31).is_err());
+        assert!(DsmRegistry::load(&DsmId::from("t04"), 51).is_err());
+    }
+
+    #[test]
+    fn interpolation_rounds_exact_half_away_from_zero() {
+        // temps: [target, v1's knot, v2's knot]; 31C sits exactly midway in 25..37.
+        assert_eq!(lerp(1, 2, [31.0, 25.0, 37.0]), 2);
+        assert_eq!(lerp(-1, -2, [31.0, 25.0, 37.0]), -2);
+        assert_eq!(lerp(1_200_000, 1_200_001, [31.0, 25.0, 37.0]), 1_200_001);
     }
 
     #[test]
@@ -384,6 +476,37 @@ mod tests {
     }
 
     #[test]
+    fn every_bundled_model_loads_at_its_source_temperatures() {
+        let entries = canonical_manifest();
+        let mut file_paths = HashSet::new();
+        let mut ids = HashSet::new();
+        let mut source_count = 0;
+
+        for (id, _, _, temperatures) in &entries {
+            ids.insert(id.clone());
+            for (temperature, file, initiation) in temperatures {
+                source_count += 1;
+                file_paths.insert(file.clone());
+                let (actual_init, _) = DsmRegistry::load(&DsmId::from(id.as_str()), *temperature)
+                    .unwrap_or_else(|err| panic!("loading {id} at {temperature}C: {err}"));
+                assert_eq!(
+                    actual_init,
+                    Energy::from_kcal(*initiation),
+                    "initiation {id} at {temperature}C"
+                );
+            }
+        }
+
+        assert_eq!(file_paths.len(), 16, "all canonical TSV files are covered");
+        assert_eq!(
+            source_count, 21,
+            "all model-temperature source entries are covered"
+        );
+        assert_eq!(ids.len(), 5, "all bundled DSM identifiers are covered");
+        assert_eq!(DsmRegistry::all_names().len(), ids.len());
+    }
+
+    #[test]
     fn canonical_dsm_parser_rejects_bad_header() {
         let tsv = "q1\tq2\tt1\tt2\tenergy\n";
         assert!(load_dsm_tsv_text(tsv, 1.0, 20.0, Orientation::Identity).is_err());
@@ -397,5 +520,85 @@ mod tests {
             "A\tA\tA\tA\t2.0\n",
         );
         assert!(load_dsm_tsv_text(tsv, 1.0, 20.0, Orientation::Identity).is_err());
+    }
+
+    #[test]
+    fn manifest_numeric_fields_must_parse() {
+        let data_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/dsm");
+        let manifest = |transition: &str, initiation: &str| {
+            format!(
+                r#"[[dsm]]
+id = "t04"
+family = "turner-2004"
+query = "rna"
+target = "rna"
+publication = "p"
+doi = "d"
+invalid_transition_kcal = {transition}
+orientation = "identity"
+default_temperature = 37
+temperatures = [{{ temperature = 37, file = "t04/37.tsv", initiation_kcal = {initiation} }}]
+"#
+            )
+        };
+
+        validate_canonical_manifest_text(&manifest("20", "6.128"), data_root.as_path()).unwrap();
+        assert!(validate_canonical_manifest_text(
+            &manifest("\"twenty\"", "6.128"),
+            data_root.as_path()
+        )
+        .is_err());
+        assert!(
+            validate_canonical_manifest_text(&manifest("20", "\"six\""), data_root.as_path())
+                .is_err()
+        );
+    }
+
+    fn table_hash(table: &DsmTable) -> u64 {
+        table
+            .iter()
+            .flatten()
+            .flatten()
+            .flatten()
+            .fold(0u64, |h, &v| {
+                h.wrapping_mul(31).wrapping_add(v as u32 as u64)
+            })
+    }
+
+    /// Pin every cell of every bundled model's 6^4 tensor at its default temperature.
+    ///
+    /// A single flipped cell changes the hash. Regenerate after an intentional
+    /// table update with `cargo test bundled_model_tables -- --ignored --nocapture`.
+    #[test]
+    fn bundled_model_tables_are_bitwise_stable() {
+        for (name, expected) in [
+            ("t04", 0x3F7C_035F_D32B_A9BC_u64),
+            ("t99", 0x405F_24E9_8C52_81C8),
+            ("slh04", 0x1D57_D0DA_DC39_6F2E),
+            ("s95-rna-dna", 0xA32E_410C_EEC0_4931),
+            ("s95-dna-rna", 0xC15F_83D7_9D7C_AB3F),
+        ] {
+            let (_, table) = DsmRegistry::load(&DsmId::from(name), 37).unwrap();
+            assert_eq!(
+                table_hash(&table),
+                expected,
+                "{name} table changed — if intentional, update the hash",
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_model_temperatures_are_rejected() {
+        for (id, _, _, temperatures) in canonical_manifest() {
+            let first = temperatures.first().unwrap().0;
+            let last = temperatures.last().unwrap().0;
+            for temperature in [first - 1, last + 1, -1, 101] {
+                assert!(
+                    DsmRegistry::load(&DsmId::from(id.as_str()), temperature).is_err(),
+                    "expected {id} at {temperature}C to be rejected"
+                );
+            }
+        }
+        assert!(DsmRegistry::load(&DsmId::from("missing"), 37).is_err());
     }
 }

@@ -27,6 +27,8 @@ struct TemperatureEntry {
 }
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(risearch_sanitize)");
+    println!("cargo::rustc-check-cfg=cfg(kani)");
     println!("cargo:rerun-if-changed=data/dsm/");
     let manifest_path = Path::new("data/dsm/manifest.toml");
     let manifest_content = fs::read_to_string(manifest_path).expect("Failed to read manifest");

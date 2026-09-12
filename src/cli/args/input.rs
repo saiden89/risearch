@@ -39,3 +39,19 @@ impl InputArgs {
         self.legacy_target.is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_i_flag_is_an_alias_for_target() {
+        let args = InputArgs {
+            query: "q.fa".into(),
+            target: None,
+            legacy_target: Some("t.idx".into()),
+        };
+        assert_eq!(args.target_path(), Path::new("t.idx"));
+        assert!(args.uses_legacy_target());
+    }
+}

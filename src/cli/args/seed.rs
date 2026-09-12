@@ -484,4 +484,23 @@ mod tests {
 
         assert!(SeedConfig::try_from(args).is_err());
     }
+
+    #[test]
+    fn legacy_no_guseed_is_a_noop() {
+        let args = SeedArgs {
+            seed_legacy: None,
+            seed_start: None,
+            seed_end: None,
+            seed_length: None,
+            seed_wobble: false,
+            no_guseed_legacy: true,
+            no_max_prune: false,
+            mismatch_legacy: None,
+            mismatch_max: None,
+            mismatch_prefix: None,
+            mismatch_suffix: None,
+        };
+        let config = SeedConfig::try_from(args).unwrap();
+        assert!(!config.seed_wobble);
+    }
 }

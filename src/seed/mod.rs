@@ -1,6 +1,9 @@
 mod engine;
 mod parallel_sa;
 
+#[cfg(test)]
+pub(crate) mod reference_tests;
+
 pub use engine::SeedingEngine;
 
 use std::ops::Range;

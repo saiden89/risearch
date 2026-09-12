@@ -162,3 +162,106 @@ impl TryFrom<OutputArgs> for OutputConfig {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(
+        path: &str,
+        output_compress: Option<OutputCodec>,
+        output_multifile: bool,
+    ) -> OutputArgs {
+        OutputArgs {
+            path: path.into(),
+            report_format: None,
+            report_legacy: None,
+            output_compress,
+            output_level: None,
+            output_multifile,
+        }
+    }
+
+    #[test]
+    fn codec_is_inferred_from_extension_unless_given_explicitly() {
+        for (path, codec, expected) in [
+            ("out.gz", None, OutputCompression::Gzip(6)),
+            ("out.zst", None, OutputCompression::Zstd(3)),
+            ("out.tsv", None, OutputCompression::None),
+            (
+                "out.tsv",
+                Some(OutputCodec::Gzip),
+                OutputCompression::Gzip(6),
+            ),
+            (
+                "out.tsv",
+                Some(OutputCodec::Zstd),
+                OutputCompression::Zstd(3),
+            ),
+        ] {
+            let config = OutputConfig::try_from(args(path, codec, false)).unwrap();
+            assert_eq!(config.compress, expected, "{path} {codec:?}");
+        }
+    }
+
+    #[test]
+    fn legacy_report_modes_map_to_formats_and_yield_to_format_flag() {
+        assert_eq!(parse_legacy_format("1").unwrap(), OutputFormat::Detailed);
+        assert_eq!(parse_legacy_format("2").unwrap(), OutputFormat::Cigar);
+        assert_eq!(parse_legacy_format("3").unwrap(), OutputFormat::BindingSite);
+        assert_eq!(parse_legacy_format("4").unwrap(), OutputFormat::Minimal);
+        assert!(parse_legacy_format("5").is_err());
+
+        let mut legacy = args("out.tsv", None, false);
+        legacy.report_legacy = Some(OutputFormat::Cigar);
+        assert_eq!(
+            OutputConfig::try_from(legacy.clone()).unwrap().format,
+            OutputFormat::Cigar
+        );
+        legacy.report_format = Some(OutputFormat::Minimal);
+        assert_eq!(
+            OutputConfig::try_from(legacy).unwrap().format,
+            OutputFormat::Minimal
+        );
+    }
+
+    #[test]
+    fn multifile_rejects_stdout_output() {
+        let err = OutputConfig::try_from(args("-", None, true)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--multifile requires -o/--output to be a directory path"));
+    }
+
+    #[test]
+    fn compress_level_is_range_checked_per_codec() {
+        for (codec, level, expected) in [
+            (OutputCodec::Gzip, 0, Some(OutputCompression::Gzip(0))),
+            (OutputCodec::Gzip, 9, Some(OutputCompression::Gzip(9))),
+            (OutputCodec::Gzip, 10, None),
+            (OutputCodec::Gzip, -1, None),
+            (OutputCodec::Zstd, -7, Some(OutputCompression::Zstd(-7))),
+            (OutputCodec::Zstd, 22, Some(OutputCompression::Zstd(22))),
+            (OutputCodec::Zstd, -8, None),
+            (OutputCodec::Zstd, 23, None),
+            (OutputCodec::None, 1, None),
+        ] {
+            let mut cfg = args("out.tsv", Some(codec), false);
+            cfg.output_level = Some(level);
+            match expected {
+                Some(compress) => assert_eq!(
+                    OutputConfig::try_from(cfg).unwrap().compress,
+                    compress,
+                    "{codec:?} {level}"
+                ),
+                None => assert!(OutputConfig::try_from(cfg).is_err(), "{codec:?} {level}"),
+            }
+        }
+    }
+
+    #[test]
+    fn output_parent_directory_must_exist() {
+        let err = OutputConfig::try_from(args("no_such_dir/out.tsv", None, false)).unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+}

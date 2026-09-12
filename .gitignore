@@ -10,11 +10,10 @@ __pycache__/
 *.txt
 *.idx
 *.sh
-!.github/scripts/*.sh
 *.json
-legacy_c/RIsearch2/bin/
-legacy_c/risearch3_src/
 docs/
+mutants.out/
+mutants.out.old/
 
 # Python environments, build output, and caches
 .venv/
@@ -23,3 +22,6 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Generated property failures are regression inputs, not disposable output.
+!proptest-regressions/**/*.txt

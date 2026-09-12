@@ -7,6 +7,8 @@
 mod core;
 pub mod gotoh;
 mod init;
+#[cfg(test)]
+pub(crate) mod reference_tests;
 pub mod scoring;
 
 pub use scoring::{GotohRowProfile, GotohScoring};
@@ -180,5 +182,23 @@ impl DpGrid {
     #[inline(always)]
     pub(super) fn width(&self) -> usize {
         self.width
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BestScore;
+
+    /// Only a strict improvement may move the endpoint. Equal-scoring cells are
+    /// visited in DP order, so accepting ties would silently hand the endpoint to
+    /// whichever cell happens to be scanned last.
+    #[test]
+    fn best_score_keeps_the_first_endpoint_of_an_equal_score() {
+        let mut best = BestScore::new(0);
+        best.update_if_better(5, 5, 1, 1);
+        best.update_if_better(4, 6, 2, 2);
+
+        assert_eq!(best.score, 10);
+        assert_eq!((best.q_idx, best.t_idx), (1, 1));
     }
 }

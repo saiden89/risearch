@@ -8,11 +8,8 @@
 RIsearch predicts RNA-RNA interactions using a suffix-array seed search and
 energy-based extension model.
 
-This repository is the Rust port of the legacy RIsearch2 C implementation.
-The vendored C code lives in
-[`legacy_c/RIsearch2`](legacy_c/RIsearch2/README) (also on GitHub:
-<https://github.com/saiden89/risearch/tree/main/legacy_c/RIsearch2>), and this
-Rust CLI/library tracks compatibility while modernizing performance and tooling.
+This repository is the Rust port of RIsearch2. The CLI/library retains migration
+support for legacy workflows.
 
 ## Quick Nav
 
@@ -212,10 +209,7 @@ Tuning and filtering:
 Legacy short-hands are still accepted but deprecated. Prefer the replacements
 below in new usage.
 
-Legacy C reference implementation:
 
-- Local copy in this repo: [RIsearch2 README](legacy_c/RIsearch2/README)
-- GitHub path: [legacy_c/RIsearch2](https://github.com/saiden89/risearch/tree/main/legacy_c/RIsearch2)
 
 | Legacy usage | Modern usage | Notes |
 | --- | --- | --- |
@@ -302,7 +296,7 @@ Run selected integration suites:
 ```bash
 cargo test --test cli_output_compress
 cargo test --test cli_multifile_and_seed_validation
-cargo test --test parity_mismatch_regression
+cargo test --lib reference_tests
 ```
 
 Validate the Python bindings:
@@ -314,19 +308,7 @@ uv run --locked maturin develop
 uv run --locked pytest -q
 ```
 
-## Further Documentation
-
-- [Implementation strategies](docs/strategies.md)
-- [Legacy C implementation reference](docs/c_implementation.md)
-- [SIMD design discussion](docs/SIMD_ARCHITECTURE.md)
-- [Exhaustive testing strategy](docs/testing_strategy_exhaustive.md)
-- [DP profile precomputation notes](docs/dp_profile_precomputation.md)
-
 ## License
 
 - Rust port in this repository: GNU GPL v3 (see [LICENSE](LICENSE)).
-- Vendored RIsearch2 C implementation: GPL v3 or later (see
-  [legacy_c/RIsearch2/README](legacy_c/RIsearch2/README)).
-- Vendored `libdivsufsort` under `legacy_c/RIsearch2/libdivsufsort-2.0.1` has
-  its own license text (see
-  [legacy_c/RIsearch2/libdivsufsort-2.0.1/COPYING](legacy_c/RIsearch2/libdivsufsort-2.0.1/COPYING)).
+- RIsearch2-derived scoring data retains its original attribution.

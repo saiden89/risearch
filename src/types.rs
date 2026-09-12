@@ -149,7 +149,7 @@ pub(crate) const GAP: u8 = Base::Gap.as_u8();
 
 /// Strand direction for search
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Strand {
     /// Reported as `+`. Selects `R(T)` in duplex-column order.
     Forward,
@@ -252,21 +252,6 @@ impl std::str::FromStr for Energy {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Base;
-
-    #[test]
-    fn base_discriminants_are_canonical_internal_rank() {
-        assert_eq!(Base::Gap.as_u8(), 0);
-        assert_eq!(Base::A.as_u8(), 1);
-        assert_eq!(Base::C.as_u8(), 2);
-        assert_eq!(Base::G.as_u8(), 3);
-        assert_eq!(Base::N.as_u8(), 4);
-        assert_eq!(Base::U.as_u8(), 5);
-    }
-}
-
 impl std::ops::Add for Energy {
     type Output = Self;
 
@@ -347,5 +332,214 @@ impl std::fmt::Display for DsmId {
 impl From<&str> for DsmId {
     fn from(s: &str) -> Self {
         Self(s.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Base, DsmId, Energy, PairType, SequenceType, Strand};
+
+    const BASES: [Base; 6] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
+    const CANONICAL: [(Base, Base); 4] = [
+        (Base::A, Base::U),
+        (Base::U, Base::A),
+        (Base::C, Base::G),
+        (Base::G, Base::C),
+    ];
+    const WOBBLE: [(Base, Base); 2] = [(Base::G, Base::U), (Base::U, Base::G)];
+
+    #[test]
+    fn base_discriminants_are_canonical_internal_rank() {
+        assert_eq!(Base::Gap.as_u8(), 0);
+        assert_eq!(Base::A.as_u8(), 1);
+        assert_eq!(Base::C.as_u8(), 2);
+        assert_eq!(Base::G.as_u8(), 3);
+        assert_eq!(Base::N.as_u8(), 4);
+        assert_eq!(Base::U.as_u8(), 5);
+    }
+
+    #[test]
+    fn from_u8_round_trips_every_rank() {
+        for base in BASES {
+            assert_eq!(Base::from_u8(base.as_u8()), base);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid base rank 6")]
+    fn from_u8_rejects_ranks_beyond_the_alphabet() {
+        Base::from_u8(6);
+    }
+
+    #[test]
+    fn upper_bytes_are_the_display_alphabet() {
+        assert_eq!(Base::Gap.to_u8_upper(), b'-');
+        assert_eq!(Base::A.to_u8_upper(), b'A');
+        assert_eq!(Base::C.to_u8_upper(), b'C');
+        assert_eq!(Base::G.to_u8_upper(), b'G');
+        assert_eq!(Base::N.to_u8_upper(), b'N');
+        assert_eq!(Base::U.to_u8_upper(), b'U');
+    }
+
+    #[test]
+    fn lower_bytes_are_the_output_alphabet() {
+        assert_eq!(BASES.map(Base::to_byte), *b"-acgnu");
+    }
+
+    #[test]
+    fn chars_parse_case_insensitively_with_t_as_u() {
+        for (c, base) in [
+            ('A', Base::A),
+            ('C', Base::C),
+            ('G', Base::G),
+            ('U', Base::U),
+            ('T', Base::U),
+            ('N', Base::N),
+            ('-', Base::Gap),
+        ] {
+            assert_eq!(Base::try_from(c), Ok(base));
+            assert_eq!(Base::try_from(c.to_ascii_lowercase()), Ok(base));
+        }
+        assert_eq!(Base::try_from('x'), Err("invalid base 'x'".to_string()));
+    }
+
+    #[test]
+    fn complement_swaps_watson_crick_partners_and_fixes_the_rest() {
+        assert_eq!(
+            BASES.map(Base::complement),
+            [Base::Gap, Base::U, Base::G, Base::C, Base::N, Base::A]
+        );
+    }
+
+    #[test]
+    fn only_the_four_nucleotides_are_matchable() {
+        for base in [Base::A, Base::C, Base::G, Base::U] {
+            assert!(base.is_matchable());
+        }
+        assert!(!Base::N.is_matchable());
+        assert!(!Base::Gap.is_matchable());
+    }
+
+    #[test]
+    fn every_pair_classifies_by_the_literal_pairing_table() {
+        for q in BASES {
+            for t in BASES {
+                let expected = if CANONICAL.contains(&(q, t)) {
+                    PairType::Canonical
+                } else if WOBBLE.contains(&(q, t)) {
+                    PairType::Wobble
+                } else {
+                    PairType::Mismatch
+                };
+                assert_eq!(q.pair_type(t), expected, "{q:?}-{t:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn wobble_counts_as_a_match_only_when_enabled() {
+        assert!(PairType::Canonical.is_match(false));
+        assert!(PairType::Canonical.is_match(true));
+        assert!(!PairType::Wobble.is_match(false));
+        assert!(PairType::Wobble.is_match(true));
+        assert!(!PairType::Mismatch.is_match(false));
+        assert!(!PairType::Mismatch.is_match(true));
+    }
+
+    #[test]
+    fn strand_round_trips_through_its_symbol() {
+        assert_eq!(Strand::try_from('+'), Ok(Strand::Forward));
+        assert_eq!(Strand::try_from('-'), Ok(Strand::Reverse));
+        assert_eq!(Strand::Forward.to_string(), "+");
+        assert_eq!(Strand::Reverse.to_string(), "-");
+    }
+
+    #[test]
+    fn strand_rejects_other_symbols_and_orders_forward_first() {
+        assert_eq!(Strand::try_from('x'), Err("invalid strand 'x'".to_string()));
+        assert!(Strand::Forward < Strand::Reverse);
+    }
+
+    #[test]
+    fn energy_accepts_the_exact_i32_bounds_and_rejects_beyond() {
+        assert!(Energy::try_from(f64::from(i32::MIN) / Energy::SCALE).is_ok());
+        assert!(Energy::try_from(f64::from(i32::MAX) / Energy::SCALE).is_ok());
+        assert!(Energy::try_from(-1e6).is_err());
+        assert!(Energy::try_from(1e6).is_err());
+    }
+
+    #[test]
+    fn energy_scales_kcal_by_ten_thousand_and_rounds_away_from_zero() {
+        assert_eq!(Energy::try_from(-1.2345), Ok(Energy(-12345)));
+        assert_eq!(Energy::try_from(0.00006), Ok(Energy(1)));
+        assert_eq!(Energy::try_from(-0.00006), Ok(Energy(-1)));
+        assert_eq!(Energy::try_from(0.00004), Ok(Energy(0)));
+        assert_eq!(Energy::from_kcal(-1.2345).to_kcal(), -1.2345);
+        assert_eq!(f64::from(Energy(-12345)), -1.2345);
+    }
+
+    #[test]
+    fn energy_rejects_non_finite_input() {
+        assert_eq!(
+            Energy::try_from(f64::NAN),
+            Err("non-finite energy: NaN".to_string())
+        );
+        assert_eq!(
+            Energy::try_from(f64::INFINITY),
+            Err("non-finite energy: inf".to_string())
+        );
+        assert_eq!(
+            "inf".parse::<Energy>(),
+            Err("non-finite energy: inf".to_string())
+        );
+    }
+
+    #[test]
+    fn energy_parses_kcal_text() {
+        assert_eq!("-1.5".parse::<Energy>(), Ok(Energy(-15000)));
+        assert_eq!(
+            "abc".parse::<Energy>(),
+            Err("invalid float literal".to_string())
+        );
+    }
+
+    #[test]
+    fn energy_arithmetic_is_checked_integer_arithmetic() {
+        assert_eq!(Energy(3) + Energy(4), Energy(7));
+        assert_eq!(Energy(3) - Energy(4), Energy(-1));
+        assert_eq!(Energy(-3) * 4, Energy(-12));
+        assert!(Energy(-1) < Energy(0));
+        assert!(Energy::MIN < Energy(i32::MIN + 1));
+        for overflow in [
+            (|| Energy(i32::MAX) + Energy(1)) as fn() -> Energy,
+            || Energy(i32::MIN) - Energy(1),
+            || Energy(i32::MAX) * 2,
+            || Energy(1) * usize::MAX,
+        ] {
+            assert!(std::panic::catch_unwind(overflow).is_err());
+        }
+    }
+
+    #[test]
+    fn energy_displays_two_decimals_of_kcal() {
+        assert_eq!(Energy(-12300).to_string(), "-1.23");
+        assert_eq!(Energy(123456).to_string(), "12.35");
+        assert_eq!(Energy(0).to_string(), "0.00");
+    }
+
+    #[test]
+    fn sequence_type_parses_lowercase_names_only() {
+        assert_eq!(SequenceType::try_from("rna"), Ok(SequenceType::Rna));
+        assert_eq!(SequenceType::try_from("dna"), Ok(SequenceType::Dna));
+        assert_eq!(
+            SequenceType::try_from("RNA"),
+            Err("invalid sequence type 'RNA', expected 'rna' or 'dna'".to_string())
+        );
+    }
+
+    #[test]
+    fn dsm_id_displays_its_name() {
+        assert_eq!(DsmId::from("t04").to_string(), "t04");
+        assert_eq!(DsmId::default(), DsmId(String::new()));
     }
 }

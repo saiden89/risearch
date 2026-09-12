@@ -91,3 +91,6 @@ pub use cli::args::SearchArgs;
 pub fn cli_main() -> anyhow::Result<()> {
     cli::main()
 }
+
+#[cfg(kani)]
+mod proofs;

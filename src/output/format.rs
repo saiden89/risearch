@@ -181,6 +181,37 @@ mod tests {
     use crate::types::{Energy, Strand};
 
     #[test]
+    fn detailed_rows_preserve_asymmetry_gaps_wobble_and_trailing_space() {
+        let alignment = [
+            AlignColumn::paired(Base::A, Base::U),
+            AlignColumn::paired(Base::C, Base::G),
+            AlignColumn::paired(Base::G, Base::U),
+            AlignColumn::paired(Base::U, Base::U),
+            AlignColumn::query_only(Base::G),
+            AlignColumn::target_only(Base::A),
+            AlignColumn::paired(Base::C, Base::G),
+            AlignColumn::paired(Base::A, Base::A),
+        ];
+        let hit = SearchHit {
+            query_idx: 0,
+            target_idx: 0,
+            q_start: 2,
+            q_end: 8,
+            t_start: 10,
+            t_end: 16,
+            strand: Strand::Reverse,
+            energy: Energy::from_kcal(-12.34),
+            alignment: Some(Box::new(alignment)),
+        };
+        let mut out = Vec::new();
+        format_hit_into(&mut out, &hit, "q", "t", &[], 0..0, OutputFormat::Detailed);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "acgug-ca\n||:   | \nuguu-aga\nq\t3\t9\tt\t11\t17\t-\t-12.34\n"
+        );
+    }
+
+    #[test]
     fn binding_site_writes_physical_five_prime_then_three_prime_flank() {
         let hit = SearchHit {
             query_idx: 0,
@@ -208,7 +239,46 @@ mod tests {
 
         let text = String::from_utf8(out).unwrap();
         let fields = text.trim_end().split('\t').collect::<Vec<_>>();
+        // A zero energy is unsigned; the sign branch must test strictly below zero.
+        assert_eq!(fields[7], "0.00", "zero energy must not be signed");
         assert_eq!(fields[10], "ac", "5' flank must be reported first");
         assert_eq!(fields[11], "ca", "3' flank must be reported second");
+    }
+
+    #[test]
+    fn cigar_rows_carry_the_pairing_symbol_string() {
+        let alignment = [
+            AlignColumn::paired(Base::A, Base::U),
+            AlignColumn::paired(Base::C, Base::G),
+            AlignColumn::paired(Base::G, Base::U),
+            AlignColumn::paired(Base::U, Base::U),
+            AlignColumn::query_only(Base::G),
+            AlignColumn::target_only(Base::A),
+            AlignColumn::paired(Base::C, Base::G),
+            AlignColumn::paired(Base::A, Base::A),
+        ];
+        let hit = SearchHit {
+            query_idx: 0,
+            target_idx: 0,
+            q_start: 2,
+            q_end: 8,
+            t_start: 10,
+            t_end: 16,
+            strand: Strand::Reverse,
+            energy: Energy::from_kcal(-12.34),
+            alignment: Some(Box::new(alignment)),
+        };
+        let mut out = Vec::new();
+
+        format_hit_into(&mut out, &hit, "q", "t", &[], 0..0, OutputFormat::Cigar);
+
+        let text = String::from_utf8(out).unwrap();
+        let fields = text.trim_end_matches('\n').split('\t').collect::<Vec<_>>();
+        // Class codes, not the detailed block's glyphs: canonical, canonical,
+        // wobble, mismatch, query bulge, target bulge, canonical, mismatch.
+        assert_eq!(
+            fields[8], "PPWUQTPU",
+            "pairing column must carry one class code per alignment column"
+        );
     }
 }

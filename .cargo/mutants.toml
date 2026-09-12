@@ -1,0 +1,7 @@
+test_tool = "nextest"
+profile = "mutants"
+timeout_multiplier = 10.0
+minimum_test_timeout = 60
+exclude_globs = ["src/proofs.rs"]
+exclude_re = ["kani_proofs::"]
+skip_calls = ["reserve"]

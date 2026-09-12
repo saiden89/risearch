@@ -168,17 +168,19 @@ mod tests {
         let unit = Energy::from_kcal(0.005);
         let charged = ScoringModel::new(&source, Energy::from_kcal(0.0), unit);
 
-        for (query, target, expected_mult) in [
-            (Base::A, Base::U, 2), // Watson-Crick
-            (Base::G, Base::U, 2), // G-U wobble
-            (Base::A, Base::A, 0), // mismatch
-        ] {
-            let charged_score = charged.score_bases(Base::Gap, query, Base::Gap, target);
-            assert_eq!(
-                charged_score,
-                -unit.0 * expected_mult,
-                "anchor penalty for physical pair {query:?}-{target:?}"
-            );
+        for query in BASES {
+            for target in BASES {
+                let expected_mult = match (query == Base::Gap, target == Base::Gap) {
+                    (true, true) => 0,
+                    (true, false) | (false, true) => 1,
+                    (false, false) => 2 * i32::from(query.pair_type(target).is_match(true)),
+                };
+                assert_eq!(
+                    charged.score_bases(Base::Gap, query, Base::Gap, target),
+                    -unit.0 * expected_mult,
+                    "anchor penalty for physical pair {query:?}-{target:?}"
+                );
+            }
         }
     }
 }
