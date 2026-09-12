@@ -71,10 +71,10 @@ jobs:
           toolchain: nightly
           components: miri
 
-      - name: Install Clang and OpenMP runtime
+      - name: Install Clang
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libomp-dev
+          sudo apt-get install -y --no-install-recommends clang
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -94,13 +94,12 @@ jobs:
       - name: Run native tests under AddressSanitizer
         env:
           RUSTFLAGS: -Zsanitizer=address --cfg risearch_sanitize
-          CFLAGS: -fsanitize=address -fopenmp
-          CXXFLAGS: -fsanitize=address -fopenmp
+          CFLAGS: -fsanitize=address
+          CXXFLAGS: -fsanitize=address
           CC: clang
           CXX: clang++
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
-          OMP_NUM_THREADS: "2"
-        run: cargo +nightly test --target x86_64-unknown-linux-gnu --locked -p risearch --features openmp -- --test-threads=2
+        run: cargo +nightly test --target x86_64-unknown-linux-gnu --locked -p risearch -- --test-threads=2
 
   coverage:
     if: github.event_name == 'workflow_dispatch'
