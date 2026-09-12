@@ -94,8 +94,8 @@ jobs:
       - name: Run native tests under AddressSanitizer
         env:
           RUSTFLAGS: -Zsanitizer=address --cfg risearch_sanitize
-          CFLAGS: -fsanitize=address
-          CXXFLAGS: -fsanitize=address
+          CFLAGS: -fsanitize=address -fopenmp
+          CXXFLAGS: -fsanitize=address -fopenmp
           CC: clang
           CXX: clang++
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
