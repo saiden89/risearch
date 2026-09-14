@@ -80,6 +80,7 @@ logger, so the application decides where they go:
 
 ```python
 import logging
+
 logging.basicConfig(level=logging.INFO)
 ```
 
