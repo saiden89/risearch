@@ -19,6 +19,7 @@ include = [
 [lib]
 name = "_native"
 crate-type = ["cdylib"]
+test = false
 
 [dependencies]
 risearch = { path = "../.." }

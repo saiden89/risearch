@@ -198,13 +198,13 @@ jobs:
           tool: nextest
 
       - name: Run tests
-        run: cargo nextest run --locked --workspace --exclude risearch-python
+        run: cargo nextest run --locked --workspace
 
       - name: Run doctests
-        run: cargo test --locked --workspace --exclude risearch-python --doc
+        run: cargo test --locked --workspace --doc
 
       - name: Run release tests
-        run: cargo nextest run --locked --release --workspace --exclude risearch-python
+        run: cargo nextest run --locked --release --workspace
 
       - name: Run OpenMP tests
         if: runner.os == 'Linux'
