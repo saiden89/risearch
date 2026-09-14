@@ -93,13 +93,13 @@ jobs:
 
       - name: Run native tests under AddressSanitizer
         env:
-          RUSTFLAGS: -Zsanitizer=address --cfg risearch_sanitize
+          RUSTFLAGS: -Zsanitizer=address
           CFLAGS: -fsanitize=address
           CXXFLAGS: -fsanitize=address
           CC: clang
           CXX: clang++
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
-        run: cargo +nightly test --target x86_64-unknown-linux-gnu --locked -p risearch -- --test-threads=2
+        run: cargo +nightly test --target x86_64-unknown-linux-gnu --locked --no-default-features -p risearch -- --test-threads=2
 
   coverage:
     if: github.event_name == 'workflow_dispatch'

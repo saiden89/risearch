@@ -1,6 +1,6 @@
 //! Command-line entry point for `risearch`.
 
-#[cfg(not(risearch_sanitize))]
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

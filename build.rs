@@ -27,7 +27,6 @@ struct TemperatureEntry {
 }
 
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(risearch_sanitize)");
     println!("cargo::rustc-check-cfg=cfg(kani)");
     println!("cargo:rerun-if-changed=data/dsm/");
     let manifest_path = Path::new("data/dsm/manifest.toml");
