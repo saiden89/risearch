@@ -51,7 +51,7 @@ pub(super) fn traverse<const WOBBLE: bool, F: FnMut(SeedMatch)>(
     let q_range = 0..traverser.query.len();
     let t_range = 0..traverser.target.len();
 
-    traverser.recurse::<WOBBLE>(q_range, t_range, 0, 0, 0);
+    traverser.recurse::<WOBBLE>(&q_range, &t_range, 0, 0, 0);
 }
 
 struct ParallelSaTraverser<'a, F: FnMut(SeedMatch)> {
@@ -73,7 +73,7 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
     #[inline(always)]
     fn partition(
         suffixes: SuffixIndexView<'_>,
-        range: Range<usize>,
+        range: &Range<usize>,
         depth: usize,
     ) -> [usize; BASE_COUNT] {
         let (start, end) = (range.start, range.end);
@@ -153,19 +153,16 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
     #[inline(always)]
     fn recurse<const WOBBLE: bool>(
         &mut self,
-        query_sa: Range<usize>,
-        target_sa: Range<usize>,
+        query_sa: &Range<usize>,
+        target_sa: &Range<usize>,
         depth: usize,
         match_streak: usize,
         mm_count: usize,
     ) {
-        let (query_start, query_end) = (query_sa.start, query_sa.end);
-        let (target_start, target_end) = (target_sa.start, target_sa.end);
-
         if self.should_emit(depth, match_streak, mm_count) {
             (self.on_match)(SeedMatch {
-                query_interval: query_start..query_end,
-                target_interval: target_start..target_end,
+                query_interval: query_sa.start..query_sa.end,
+                target_interval: target_sa.start..target_sa.end,
                 seed_len: depth,
             });
         }
@@ -178,30 +175,30 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
             return;
         }
 
-        if query_end - query_start == 1 && target_end - target_start == 1 {
+        if query_sa.len() == 1 && target_sa.len() == 1 {
             self.recurse_singleton::<WOBBLE>(
-                query_start,
-                target_start,
+                query_sa.start,
+                target_sa.start,
                 depth,
                 match_streak,
                 mm_count,
             );
             return;
         }
-        if query_end - query_start == 1 {
+        if query_sa.len() == 1 {
             self.recurse_half_singleton::<WOBBLE, true>(
-                query_start,
-                target_start..target_end,
+                query_sa.start,
+                target_sa,
                 depth,
                 match_streak,
                 mm_count,
             );
             return;
         }
-        if target_end - target_start == 1 {
+        if target_sa.len() == 1 {
             self.recurse_half_singleton::<WOBBLE, false>(
-                target_start,
-                query_start..query_end,
+                target_sa.start,
+                query_sa,
                 depth,
                 match_streak,
                 mm_count,
@@ -209,10 +206,10 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
             return;
         }
 
-        let query_partitions = Self::partition(self.query, query_start..query_end, depth);
-        let target_partitions = Self::partition(self.target, target_start..target_end, depth);
+        let query_partitions = Self::partition(self.query, query_sa, depth);
+        let target_partitions = Self::partition(self.target, target_sa, depth);
 
-        if query_partitions[0] == query_end || target_partitions[0] == target_end {
+        if query_partitions[0] == query_sa.end || target_partitions[0] == target_sa.end {
             return;
         }
 
@@ -230,22 +227,12 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
                     continue;
                 }
 
+                let q = query_partitions[query_slot]..query_partitions[query_slot + 1];
+                let t = target_partitions[target_slot]..target_partitions[target_slot + 1];
                 if query_base.pair_type(target_base).is_match(WOBBLE) {
-                    self.recurse::<WOBBLE>(
-                        query_partitions[query_slot]..query_partitions[query_slot + 1],
-                        target_partitions[target_slot]..target_partitions[target_slot + 1],
-                        next_depth,
-                        ms,
-                        mm_count,
-                    );
+                    self.recurse::<WOBBLE>(&q, &t, next_depth, ms, mm_count);
                 } else if can_mm {
-                    self.recurse::<WOBBLE>(
-                        query_partitions[query_slot]..query_partitions[query_slot + 1],
-                        target_partitions[target_slot]..target_partitions[target_slot + 1],
-                        next_depth,
-                        0,
-                        mm_count + 1,
-                    );
+                    self.recurse::<WOBBLE>(&q, &t, next_depth, 0, mm_count + 1);
                 }
             }
         }
@@ -258,7 +245,7 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
     fn recurse_half_singleton<const WOBBLE: bool, const Q_SINGLETON: bool>(
         &mut self,
         singleton_sa_idx: usize,
-        multi_sa: Range<usize>,
+        multi_sa: &Range<usize>,
         depth: usize,
         match_streak: usize,
         mm_count: usize,
@@ -276,7 +263,6 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
         }
 
         let multi_partitions = Self::partition(multi, multi_sa, depth);
-
         let d1 = depth + 1;
         let can_mm = self.can_mismatch_next(depth, match_streak, mm_count);
         let singleton_range = singleton_sa_idx..singleton_sa_idx + 1;
@@ -289,9 +275,9 @@ impl<F: FnMut(SeedMatch)> ParallelSaTraverser<'_, F> {
             }
             let multi_range = multi_partitions[multi_slot]..multi_partitions[multi_slot + 1];
             let (query_sa, target_sa) = if Q_SINGLETON {
-                (singleton_range.clone(), multi_range)
+                (&singleton_range, &multi_range)
             } else {
-                (multi_range, singleton_range.clone())
+                (&multi_range, &singleton_range)
             };
             if singleton_base.pair_type(multi_base).is_match(WOBBLE) {
                 self.recurse::<WOBBLE>(query_sa, target_sa, d1, ms, mm_count);
@@ -396,7 +382,8 @@ mod tests {
         let seq = Sequence::from(seq_bases);
         let prepared = SuffixIndex::build_for_seed(&seq, 1).unwrap();
         let suffixes = prepared.view();
-        let parts = ParallelSaTraverser::<fn(SeedMatch)>::partition(suffixes, 0..suffixes.len(), 0);
+        let parts =
+            ParallelSaTraverser::<fn(SeedMatch)>::partition(suffixes, &(0..suffixes.len()), 0);
 
         assert_eq!(parts[1] - parts[0], 1); // A
         assert_eq!(parts[2] - parts[1], 1); // C
@@ -510,7 +497,7 @@ mod tests {
 
         let q_range = 0..ctx.query.len();
         let t_range = 0..ctx.target.len();
-        ctx.recurse::<false>(q_range, t_range, 0, 0, 0);
+        ctx.recurse::<false>(&q_range, &t_range, 0, 0, 0);
     }
 
     #[test]
