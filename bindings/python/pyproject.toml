@@ -44,3 +44,14 @@ package = false
 python-source = "."
 module-name = "risearch._native"
 locked = true
+
+[tool.cibuildwheel]
+build-frontend = "build[uv]"
+build = ["cp*-manylinux_*", "cp*-macosx_arm64"]
+skip = "cp*t-*"
+test-requires = ["pytest"]
+test-command = "pytest {package}/tests/test_bindings.py -k 'not cli' -q --import-mode=importlib"
+
+[tool.cibuildwheel.linux]
+before-all = "sh {project}/.github/scripts/install-rustup.sh"
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }

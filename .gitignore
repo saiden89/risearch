@@ -25,3 +25,4 @@ dist/
 
 # Generated property failures are regression inputs, not disposable output.
 !proptest-regressions/**/*.txt
+!.github/scripts/*.sh

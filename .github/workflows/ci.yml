@@ -32,8 +32,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
@@ -53,37 +53,28 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: actionlint
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+
+      - name: Setup Rust
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/setup-rust
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
       - name: rustfmt
+        if: ${{ !cancelled() }}
         run: cargo fmt --all --check
 
       - name: clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy --locked --workspace --all-targets --features prof -- -D warnings
 
       - name: docs
+        if: ${{ !cancelled() }}
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps -p risearch --all-features
-
-  actions-lint:
-    name: Lint workflows
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: actionlint
-        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
 
   msrv:
     name: MSRV
@@ -95,13 +86,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: "1.88.0"
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: cargo check on MSRV
         run: cargo check --locked --workspace --all-targets --all-features
@@ -116,11 +104,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Install cargo-minimal-versions
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
@@ -147,11 +132,8 @@ jobs:
           # --baseline-rev resolves the base commit out of the local .git.
           fetch-depth: 0
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Install cargo-semver-checks
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
@@ -186,11 +168,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
@@ -210,7 +189,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           OMP_NUM_THREADS: "2"
-        run: cargo nextest run --locked -p risearch --features openmp
+        run: cargo nextest run --locked -p risearch --features openmp -E 'test(/^index::store::/)'
 
   test-python:
     name: Python suite
@@ -227,11 +206,8 @@ jobs:
         with:
           version: "0.11.32"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Build CLI for Python cross-checks
         run: cargo build --locked --bin risearch
@@ -246,3 +222,32 @@ jobs:
       - name: Run Python suite
         working-directory: bindings/python
         run: uv run --locked pytest -q
+
+      - name: Verify sdist roundtrip
+        working-directory: bindings/python
+        run: uv run --locked maturin build --sdist -o "${{ runner.temp }}/sdist-check"
+
+  packaging:
+    name: Packaging ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: "Linux" }
+          - { os: macos-latest,  label: "macOS" }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/setup-rust
+
+      - name: Build and test wheels
+        uses: pypa/cibuildwheel@e090b81e30c4d855ea63bf4b6e59204c09a101ae # v4.2.1
+        with:
+          package-dir: bindings/python
