@@ -54,6 +54,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 [tool.ty.src]
 include = ["risearch"]
 
+[tool.cibuildwheel.macos]
+environment = { LZMA_API_STATIC = "1" }
+
 [tool.cibuildwheel]
 build-frontend = "build[uv]"
 build = ["cp*-manylinux_*", "cp*-macosx_arm64"]
