@@ -1,25 +1,20 @@
 from os import PathLike
 
-
 class RisearchError(Exception): ...
 class IndexFormatError(RisearchError): ...
 class ModelError(RisearchError): ...
 class InputError(RisearchError): ...
 class SearchError(RisearchError): ...
 
-
 class TargetRegistry:
     """Mmap-backed target index for RNA-RNA interaction search."""
 
     @staticmethod
     def open(path: str | PathLike[str]) -> TargetRegistry: ...
-
     def __repr__(self) -> str: ...
-
 
 class SearchResult:
     def __arrow_c_stream__(self, requested_schema: object | None = None) -> object: ...
-
 
 def build_index(
     fasta: str | PathLike[str],
@@ -27,8 +22,6 @@ def build_index(
     *,
     threads: int | None = None,
 ) -> None: ...
-
-
 def search(
     query: list[str | PathLike[str]],
     target: TargetRegistry,
@@ -51,6 +44,4 @@ def search(
     alignment: bool,
     threads: int | None,
 ) -> SearchResult: ...
-
-
 def _default_options() -> dict[str, object]: ...

@@ -12,9 +12,10 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
+
 import risearch
 import risearch._native as native
-from polars.testing import assert_frame_equal
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -261,7 +262,7 @@ def canonical_rows(df: pl.DataFrame) -> list[tuple]:
 
 def cli_path() -> Path:
     """Locate the Cargo-built CLI used by the cross-frontend fixture."""
-    configured = os.environ.get("CARGO_BIN_EXE_risearch")
+    configured = os.environ.get("CARGO_BIN_EXE_risearch")  # noqa: SIM112
     candidates = [Path(configured)] if configured else []
     candidates.append(DATA.parents[1] / "target" / "debug" / "risearch")
     for candidate in candidates:
@@ -391,16 +392,18 @@ def test_python_search_matches_cli_minimal_fixture(tmp_path):
             continue
         fields = line.split("\t")
         assert len(fields) == 8
-        cli_rows.append((
-            fields[0],
-            fields[3],
-            int(fields[1]) - 1,
-            int(fields[2]) - 1,
-            int(fields[4]) - 1,
-            int(fields[5]) - 1,
-            fields[6],
-            round(float(fields[7]), 2),
-        ))
+        cli_rows.append(
+            (
+                fields[0],
+                fields[3],
+                int(fields[1]) - 1,
+                int(fields[2]) - 1,
+                int(fields[4]) - 1,
+                int(fields[5]) - 1,
+                fields[6],
+                round(float(fields[7]), 2),
+            )
+        )
 
     python = risearch.search(
         query,
