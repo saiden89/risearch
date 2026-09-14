@@ -206,6 +206,10 @@ jobs:
         with:
           version: "0.11.32"
 
+      - name: Sync Python environment
+        working-directory: bindings/python
+        run: uv sync --locked --python 3.10
+
       - name: ruff check
         working-directory: bindings/python
         run: uvx ruff check .
@@ -216,11 +220,11 @@ jobs:
 
       - name: ty
         working-directory: bindings/python
-        run: uvx ty check .
+        run: uv run --locked ty check .
 
       - name: pyrefly
         working-directory: bindings/python
-        run: uvx pyrefly check .
+        run: uv run --locked pyrefly check .
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -228,12 +232,10 @@ jobs:
       - name: Build CLI for Python cross-checks
         run: cargo build --locked --bin risearch
 
-      # uv sync prunes packages it does not track, so it must precede maturin develop.
+      # uv sync already ran above; maturin develop adds the native extension.
       - name: Build extension into the locked environment
         working-directory: bindings/python
-        run: |
-          uv sync --locked --python 3.10
-          uv run --locked maturin develop
+        run: uv run --locked maturin develop
 
       - name: Run Python suite
         working-directory: bindings/python
