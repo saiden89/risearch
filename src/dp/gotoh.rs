@@ -17,8 +17,6 @@
 //! `Gotoh::extend()` the window already materialized as dense symbol indices.
 
 use crate::dp::scoring::GotohScoring;
-use smallvec::SmallVec;
-
 use log::trace;
 
 use super::{is_valid_score, BestScore, DpGrid, TraceOp, MAX_EXT, NEG_INF};
@@ -96,25 +94,22 @@ impl<S: GotohScoring> Gotoh<S> {
         best
     }
 
-    /// Walk the filled grid backward from `(end_i, end_j)` to recover the
-    /// state-transition path.
+    /// Walk the filled grid backward from `best` to recover the state-transition
+    /// path, emitting each step's op and the consumed symbols to the closure.
     pub(crate) fn traceback(
         &self,
         q: &[u8],
         t: &[u8],
         grid: &DpGrid,
-        end_i: usize,
-        end_j: usize,
-    ) -> SmallVec<[TraceOp; 64]> {
-        let (mut i, mut j) = (end_i, end_j);
+        best: BestScore,
+        mut emit: impl FnMut(TraceOp, u8, u8),
+    ) {
+        let (mut i, mut j) = (best.q_idx, best.t_idx);
         let mut state = TraceOp::Match;
-        let mut out = SmallVec::new();
 
         while i > 0 || j > 0 {
             let next = match state {
                 TraceOp::Match if i > 0 && j > 0 => {
-                    out.push(TraceOp::Match);
-
                     let c = grid.get(i, j);
                     let diag = grid.get(i - 1, j - 1);
 
@@ -122,6 +117,8 @@ impl<S: GotohScoring> Gotoh<S> {
                     let qi = q[i];
                     let tj_prev = t[j - 1];
                     let tj = t[j];
+
+                    emit(TraceOp::Match, qi, tj);
 
                     let r#match = self.scoring.r#match(qi_prev, qi, tj_prev, tj);
                     let close_query_gap = self.scoring.close_query_gap(qi_prev, qi, tj);
@@ -145,14 +142,14 @@ impl<S: GotohScoring> Gotoh<S> {
                     }
                 }
                 TraceOp::GapQ if i > 0 => {
-                    out.push(TraceOp::GapQ);
-
                     let c = grid.get(i, j);
                     let up = grid.get(i - 1, j);
 
                     let qi_prev = q[i - 1];
                     let qi = q[i];
                     let tj = t[j];
+
+                    emit(TraceOp::GapQ, qi, tj);
 
                     let open_query_gap = self.scoring.open_query_gap(qi_prev, qi, tj);
                     let extend_query_gap = self.scoring.extend_query_gap(qi_prev, qi);
@@ -172,14 +169,14 @@ impl<S: GotohScoring> Gotoh<S> {
                     }
                 }
                 TraceOp::GapT if j > 0 => {
-                    out.push(TraceOp::GapT);
-
                     let c = grid.get(i, j);
                     let left = grid.get(i, j - 1);
 
                     let qi = q[i];
                     let tj_prev = t[j - 1];
                     let tj = t[j];
+
+                    emit(TraceOp::GapT, qi, tj);
 
                     let open_target_gap = self.scoring.open_target_gap(qi, tj_prev, tj);
                     let extend_target_gap = self.scoring.extend_target_gap(tj_prev, tj);
@@ -202,8 +199,6 @@ impl<S: GotohScoring> Gotoh<S> {
             };
             state = next;
         }
-
-        out
     }
 }
 
@@ -294,7 +289,7 @@ mod tests {
             let (q, t) = (&query[..qlen], &target[..tlen]);
             let best = engine.extend(q, t, &mut grid);
             if !q.is_empty() && !t.is_empty() {
-                let _ = engine.traceback(q, t, &grid, best.q_idx, best.t_idx);
+                engine.traceback(q, t, &grid, best, |_, _, _| {});
             }
         }
     }

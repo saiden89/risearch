@@ -411,7 +411,8 @@ fn assert_trace_matches_reference(
     best: &super::BestScore,
     expected_trace: &[TraceOp],
 ) {
-    let prod_trace = engine.traceback(query, target, grid, best.q_idx, best.t_idx);
+    let mut prod_trace = Vec::new();
+    engine.traceback(query, target, grid, *best, |op, _, _| prod_trace.push(op));
     assert_eq!(
         prod_trace.as_slice(),
         expected_trace,

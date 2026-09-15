@@ -6,7 +6,7 @@ resolver = "3"
 version = "3.0.0-alpha.2"
 rust-version = "1.88"
 edition = "2021"
-license = "GPL-3.0-only"
+license = "BUSL-1.1"
 
 [workspace.dependencies]
 anyhow = "1.0.46"
@@ -20,6 +20,7 @@ clap = { version = "4", default-features = false, features = [
 name = "risearch"
 version.workspace = true
 rust-version.workspace = true
+
 edition.workspace = true
 description = "Fast RNA-RNA interaction search using suffix arrays and thermodynamic scoring"
 repository = "https://github.com/saiden89/risearch"
@@ -33,6 +34,7 @@ include = [
   "/data/dsm/**",
   "/README.md",
   "/LICENSE",
+  "/CITATION.cff",
 ]
 
 [features]
@@ -55,7 +57,6 @@ mimalloc = { version = "0.1.18", optional = true }
 needletail = "0.7"
 rayon = "1.5"
 rkyv = { version = "0.8", features = ["bytecheck", "std", "pointer_width_64"] }
-smallvec = "1"
 thiserror = "2.0.12"
 toml_edit = "0.25"
 zstd = "0.13.2"
@@ -89,6 +90,9 @@ harness = false
 [[bench]]
 name = "output"
 harness = false
+
+[profile.test]
+opt-level = 3
 
 [profile.profiling]
 inherits = "release"
