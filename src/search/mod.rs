@@ -22,7 +22,7 @@ use std::sync::Mutex;
 
 use self::extension::{ExtensionEngine, SeedExtension};
 use crate::alignment::{fingerprint_symbols, AlignColumn};
-use crate::config::{SearchConfig, UNLIMITED_EXTENSION};
+use crate::config::SearchConfig;
 use crate::dp::MAX_EXT;
 use crate::dsm::ScoringModel;
 use crate::index::store::TargetRegistry;
@@ -232,18 +232,12 @@ struct SearchContext<'a> {
     model: ScoringModel,
 }
 
-/// A negative `-l` is the unlimited sentinel: extend across the whole query
-/// rather than a fixed length.
-fn is_unlimited(max_extension: i32) -> bool {
-    max_extension == UNLIMITED_EXTENSION
-}
-
 /// Unlimited extension (`-l -1`) promises to span the whole query, but the DP
 /// buffers cap each side at MAX_EXT. Refuse rather than silently clamp: a query
 /// longer than the cap cannot be served as requested. (Mirrors clap rejecting an
 /// explicit `-l > MAX_EXT`.)
 fn check_unlimited_fits(queries: &QueryRegistry, opts: &SearchConfig) -> Result<()> {
-    if !is_unlimited(opts.extend.max_extension) {
+    if !opts.extend.is_unlimited() {
         return Ok(());
     }
     for (_, q) in queries.iter() {
@@ -260,7 +254,7 @@ fn check_unlimited_fits(queries: &QueryRegistry, opts: &SearchConfig) -> Result<
 }
 
 fn log_search_banner(queries: &QueryRegistry, store: &TargetRegistry, opts: &SearchConfig) {
-    let max_ext = if is_unlimited(opts.extend.max_extension) {
+    let max_ext = if opts.extend.is_unlimited() {
         format!("unlimited(<={MAX_EXT})")
     } else {
         opts.extend.max_extension.to_string()
@@ -281,10 +275,12 @@ struct SearchWorker {
 
 impl SearchWorker {
     fn new(opts: &SearchConfig, model: &ScoringModel) -> Self {
-        let max_window = (!is_unlimited(opts.extend.max_extension))
-            .then_some(opts.extend.max_extension as usize);
         Self {
-            extension: ExtensionEngine::new(max_window, opts.extend.build_alignment, model),
+            extension: ExtensionEngine::new(
+                opts.extend.max_window(),
+                opts.extend.build_alignment,
+                model,
+            ),
         }
     }
 

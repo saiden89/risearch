@@ -321,6 +321,16 @@ impl Default for ExtendConfig {
 }
 
 impl ExtendConfig {
+    /// Whether the extension window is unlimited (extends across the whole query).
+    pub fn is_unlimited(&self) -> bool {
+        self.max_extension == UNLIMITED_EXTENSION
+    }
+
+    /// The fixed window size, or `None` for unlimited (follow the query).
+    pub fn max_window(&self) -> Option<usize> {
+        (!self.is_unlimited()).then_some(self.max_extension as usize)
+    }
+
     /// Check `max_extension` is the unlimited sentinel or within the DP cap.
     pub fn validate(&self) -> Result<()> {
         if !(UNLIMITED_EXTENSION..=MAX_EXTENSION).contains(&self.max_extension) {
