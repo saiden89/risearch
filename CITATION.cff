@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use RIsearch, please cite the following references."
+title: RIsearch
+license: BUSL-1.1
+repository-code: "https://github.com/saiden89/risearch"
+authors:
+  - family-names: Roncelli
+    given-names: Stefano
+    orcid: "https://orcid.org/0009-0001-4830-202X"
+  - family-names: Favaro
+    given-names: Lorenzo
+    orcid: "https://orcid.org/0009-0002-8879-0555"
+  - family-names: Anthon
+    given-names: Christian
+    orcid: "https://orcid.org/0000-0002-4336-1688"
+  - family-names: Gorodkin
+    given-names: Jan
+    orcid: "https://orcid.org/0000-0001-5823-4000"
+preferred-citation:
+  type: article
+  title: "RIsearch and RIOT: An integrated, high-performance framework for RNA-RNA interaction and siRNA off-target prediction"
+  journal: Bioinformatics
+  authors:
+    - family-names: Roncelli
+      given-names: Stefano
+      orcid: "https://orcid.org/0009-0001-4830-202X"
+    - family-names: Favaro
+      given-names: Lorenzo
+      orcid: "https://orcid.org/0009-0002-8879-0555"
+    - family-names: Anthon
+      given-names: Christian
+      orcid: "https://orcid.org/0000-0002-4336-1688"
+    - family-names: Gorodkin
+      given-names: Jan
+      orcid: "https://orcid.org/0000-0001-5823-4000"

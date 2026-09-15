@@ -9,6 +9,7 @@ unmaintained = "all"
 [licenses]
 include-dev = true
 include-build = true
+private = { ignore = true }
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -22,11 +23,7 @@ allow = [
 # Keep the project's license scoped to its own crates.
 [[licenses.exceptions]]
 name = "risearch"
-allow = ["GPL-3.0-only"]
-
-[[licenses.exceptions]]
-name = "risearch-python"
-allow = ["GPL-3.0-only"]
+allow = ["BUSL-1.1"]
 
 [bans]
 multiple-versions = "warn"
