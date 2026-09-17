@@ -1,0 +1,50 @@
+[project]
+name = "risearch-dsm"
+version = "0.0.0"
+requires-python = ">=3.14"
+description = "DSM table generation pipeline for risearch"
+dependencies = [
+    "scikit-learn",
+    "numpy",
+    "typer",
+    "loguru",
+    "ViennaRNA",
+]
+
+[dependency-groups]
+dev = ["ruff", "basedpyright", "ty", "pyrefly"]
+
+[tool.uv]
+package = false
+
+[tool.ty.src]
+exclude = ["old/"]
+
+[tool.ty.rules]
+all = "error"
+
+[tool.pyrefly]
+project_excludes = ["old/"]
+preset = "all"
+min_severity = "advice"
+
+[tool.pyright]
+exclude = ["old"]
+pythonVersion = "3.14"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
+
+[tool.basedpyright]
+exclude = ["old"]
+pythonVersion = "3.14"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
+
+[tool.ruff]
+exclude = ["old"]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
