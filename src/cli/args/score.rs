@@ -42,7 +42,7 @@ pub(crate) struct ScoreArgs {
     )]
     pub(crate) dsm_id: DsmId,
 
-    /// Per-nucleotide penalty used by the scoring model (in kcal/mol, 0–50)
+    /// Per-nucleotide extension penalty, included in the reported binding energy (in kcal/mol, 0–50)
     #[arg(
         short = 'd',
         long = "penalty",

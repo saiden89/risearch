@@ -248,6 +248,6 @@ mod tests {
                 }
             }
         }
-        assert_eq!(model.binding_energy(Energy(13579), 12), Energy(-1438));
+        assert_eq!(model.binding_energy(Energy(13579)), Energy(-1234));
     }
 }
