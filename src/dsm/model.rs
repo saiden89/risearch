@@ -77,9 +77,9 @@ impl ScoringModel {
         }
     }
 
-    /// Convert a total stacking score and physical length to binding free energy.
-    pub(crate) fn binding_energy(&self, stacking_score: Energy, length: usize) -> Energy {
-        self.initiation - stacking_score - (self.penalty * length)
+    /// Convert a total stacking score to binding free energy.
+    pub(crate) fn binding_energy(&self, stacking_score: Energy) -> Energy {
+        self.initiation - stacking_score
     }
 
     #[inline(always)]

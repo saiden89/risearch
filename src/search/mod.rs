@@ -789,6 +789,7 @@ mod tests {
         config.seed.seed_length = Some(6);
         config.seed.max_mismatches = 2;
         config.extend.max_extension = 30;
+        config.score.penalty = Energy::from_kcal(0.0);
         config.filter.delta_g = Energy::from_kcal(-5.0);
         let queries = QueryRegistry::from_fasta(&data("query.fa"), &config.seed).unwrap();
         (store, tmp, queries, config)
