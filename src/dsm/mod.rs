@@ -220,7 +220,7 @@ mod tests {
     fn energy_conversion_roundtrips() {
         let (init, source) = DsmRegistry::load(&DsmId::from("t04"), 37).unwrap();
         let model = ScoringModel::new(&source, init, Energy::from_kcal(0.0));
-        let energy = model.binding_energy(Energy(33016), 0);
+        let energy = model.binding_energy(Energy(33016));
         assert!((energy.to_kcal() - 2.8336).abs() < 0.001);
     }
 

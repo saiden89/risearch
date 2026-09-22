@@ -258,7 +258,7 @@ impl SeedConfig {
 pub struct ScoreConfig {
     /// Which bundled dinucleotide stacking model to score with.
     pub dsm_id: DsmId,
-    /// Per-mismatch penalty added during extension.
+    /// Per-nucleotide extension penalty, included in the reported binding energy.
     pub penalty: Energy,
     /// Temperature in °C the model is evaluated at.
     pub temperature: i32,

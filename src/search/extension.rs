@@ -114,7 +114,7 @@ impl ExtensionEngine {
         let score = model.ungapped_duplex_score(seed_query, seed_target)
             + Energy(left.score)
             + Energy(right.score);
-        let energy = model.binding_energy(score, q_range.len() + t_range.len());
+        let energy = model.binding_energy(score);
 
         SeedExtension {
             q_range,
@@ -235,7 +235,14 @@ mod tests {
                 if penalty != 50 {
                     assert_eq!(extended, penalty == 49);
                 }
-                assert_eq!(hit.energy, Energy(if extended { -100 } else { 0 }));
+                assert_eq!(
+                    hit.energy,
+                    Energy(if extended {
+                        6 * penalty - 100
+                    } else {
+                        4 * penalty
+                    })
+                );
                 assert_eq!(hit.q_range, hit.t_range);
                 assert_eq!(
                     engine.materialize_alignment(&q, &t, &seed).unwrap().len(),
@@ -302,7 +309,11 @@ mod tests {
                     "{q_row}/{t_row} seed={seed_column}"
                 );
                 assert_eq!(hit.t_range, 0..target.len());
-                assert_eq!(hit.energy, Energy(1000 - score - 11 - 17));
+                let extension_penalty = penalty * (query.len() + target.len()) as i32;
+                assert_eq!(
+                    hit.energy,
+                    Energy(1000 - score - 11 - 17 + extension_penalty)
+                );
                 let columns = engine
                     .materialize_alignment(&query, &target, &seed)
                     .unwrap();
@@ -318,7 +329,10 @@ mod tests {
                 assert_eq!(hit.t_range, ts..ts + 2);
                 let seed_score =
                     100 + query[qs].as_usize() as i32 * 10 + target[ts + 1].as_usize() as i32;
-                assert_eq!(hit.energy, Energy(1000 - seed_score - 11 - 17));
+                assert_eq!(
+                    hit.energy,
+                    Energy(1000 - seed_score - 11 - 17 + 4 * penalty)
+                );
             }
         }
     }
