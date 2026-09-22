@@ -6,9 +6,11 @@ Requires the extension to be built first:
 
 import gzip
 import inspect
+import logging
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
@@ -430,9 +432,14 @@ def test_python_search_matches_cli_minimal_fixture(tmp_path):
     assert sorted(cli_rows) == sorted(python_rows)
 
 
-def test_invalid_matrix_raises(store):
-    with pytest.raises(risearch.ModelError, match="DSM id"):
-        risearch.search(QUERY_FA, store, matrix="t05")
+def test_invalid_matrix_raises(store, caplog):
+    """An unknown id fails validation without first being warned about as a table."""
+    with (
+        caplog.at_level(logging.WARNING, logger="risearch"),
+        pytest.raises(risearch.ModelError, match="DSM id"),
+    ):
+        risearch.search(QUERY_FA, store, matrix="t05", temperature=50)
+    assert not [r for r in caplog.records if "temperature" in r.getMessage()]
 
 
 def test_excessive_max_extension_raises(store):
@@ -486,19 +493,36 @@ def test_documented_defaults_are_pinned():
     assert public["penalty"].default == 0.0
     assert public["seed_wobble"].default is False
     assert public["max_extension"].default == 20
-    assert public["temperature"].default == 37
+    assert public["temperature"].default is None
     assert public["matrix"].default == "t04"
 
 
 def test_native_search_is_callable_with_every_kwarg(store):
     """Keeps a runtime call on the native entry point the stub documents."""
-    result = native.search(
-        [QUERY_FA],
-        store,
-        **{**native._default_options(), "seed_length": 8, "alignment": True},
-        threads=None,
-    )
+    options: dict[str, Any] = {
+        **native._default_options(),
+        "seed_length": 8,
+        "alignment": True,
+    }
+    result = native.search([QUERY_FA], store, **options, threads=None)
     assert pl.DataFrame(result).height > 0
+
+
+def test_explicit_temperature_with_custom_table_warns(store, tmp_path, caplog):
+    """`temperature` cannot apply to a user TSV; saying it anyway is flagged once."""
+    tsv = tmp_path / "custom.tsv"
+    tsv.write_text(
+        "q1\tq2\tt1\tt2\tdelta_g_kcal_per_mol\n"
+        "A\t-\tU\t-\t3.0\n"
+        "-\tA\t-\tU\t3.0\n"
+        "G\tG\tC\tC\t-3.3\n"
+    )
+    # pyo3-log caches the "risearch" level at first use; no test may raise it.
+    with caplog.at_level(logging.WARNING, logger="risearch"):
+        risearch.search(QUERY_FA, store, matrix=tsv)
+        assert not [r for r in caplog.records if "temperature" in r.getMessage()]
+        risearch.search(QUERY_FA, store, matrix=tsv, temperature=50)
+        assert len([r for r in caplog.records if "temperature" in r.getMessage()]) == 1
 
 
 # ---------------------------------------------------------------------------

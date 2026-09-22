@@ -31,7 +31,6 @@ include = [
   "/src/**",
   "/benches/**",
   "/build.rs",
-  "/data/dsm/**",
   "/README.md",
   "/LICENSE",
   "/CITATION.cff",
@@ -58,7 +57,6 @@ needletail = "0.7"
 rayon = "1.5"
 rkyv = { version = "0.8", features = ["bytecheck", "std", "pointer_width_64"] }
 thiserror = "2.0.12"
-toml_edit = "0.25"
 zstd = "0.13.2"
 
 [dev-dependencies]
@@ -113,7 +111,3 @@ debug = "none"
 [lints.rust]
 unreachable_pub = "warn"
 missing_docs = "warn"
-
-[build-dependencies]
-serde = { version = "1.0.229", features = ["derive"] }
-toml = "1"

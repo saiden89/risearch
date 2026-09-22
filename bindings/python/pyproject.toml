@@ -54,6 +54,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 [tool.ty.src]
 include = ["risearch"]
 
+[tool.pyrefly]
+search-path = ["."]
+
 [tool.cibuildwheel.macos]
 environment = { LZMA_API_STATIC = "1" }
 
@@ -61,6 +64,7 @@ environment = { LZMA_API_STATIC = "1" }
 build-frontend = "build[uv]"
 build = ["cp*-manylinux_*", "cp*-macosx_arm64"]
 skip = "cp*t-*"
+test-skip = "cp315-*"  # polars 1.44 Series methods return None on 3.15rc: pola-rs/polars#29419
 test-requires = ["pytest"]
 test-command = "pytest {package}/tests/test_bindings.py -k 'not cli' -q --import-mode=importlib"
 

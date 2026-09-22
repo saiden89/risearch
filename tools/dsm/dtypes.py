@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""DSM table generation pipeline types.
+
+All sequences are internally represented as RNA (ACGU). ViennaRNA treats
+T identically to U, so no DNA conversion is needed at any point.
+"""
+
+import random
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import override
+
+import numpy as np
+from numpy.typing import NDArray
+
+
+class Base(Enum):
+    """Nucleotide/gap representation mirroring Rust `src/types.rs::Base`.
+
+    Discriminants are canonical internal rank. T parses to U.
+    """
+
+    Gap = 0
+    A = 1
+    C = 2
+    G = 3
+    N = 4
+    U = 5
+
+    @property
+    def char(self) -> str:
+        """Single-character representation matching Rust Base::to_u8_upper."""
+        return "-ACGNU"[self.value]
+
+    def complement(self, *, wobble: bool = False) -> tuple[Base, ...]:
+        """Watson-Crick partners. wobble=True adds G-U. Raises on Gap/N."""
+        match self:
+            case Base.A:
+                return (Base.U,)
+            case Base.C:
+                return (Base.G,)
+            case Base.G:
+                return (Base.C, Base.U) if wobble else (Base.C,)
+            case Base.U:
+                return (Base.A, Base.G) if wobble else (Base.A,)
+            case _:
+                raise ValueError(f"{self} has no biological complement")
+
+    def pairs_with(self, other: Base) -> bool:
+        if self is Base.Gap or self is Base.N:
+            return False
+        return other in self.complement(wobble=True)
+
+    @classmethod
+    def from_char(cls, c: str) -> Base:
+        """Parse a single character. T maps to U."""
+        match c.upper():
+            case "A":
+                return cls.A
+            case "C":
+                return cls.C
+            case "G":
+                return cls.G
+            case "U" | "T":
+                return cls.U
+            case "N":
+                return cls.N
+            case "-":
+                return cls.Gap
+            case _:
+                raise ValueError(f"invalid base '{c}'")
+
+
+NUCLEOTIDES = (Base.A, Base.C, Base.G, Base.U)
+RNA_ALPHABET = "".join(base.char for base in NUCLEOTIDES)
+
+
+class StructureChar(Enum):
+    """Dot-bracket symbols from ViennaRNA structure output."""
+
+    OPEN = "("
+    CLOSE = ")"
+    UNPAIRED = "."
+
+
+class ComplementStrategy(Enum):
+    """Reverse-complement mode. Value is the wobble flag for Base.complement()."""
+
+    STRICT = False
+    WOBBLE = True
+
+
+COMPLEMENT_TABLES: dict[ComplementStrategy, dict[str, str]] = {
+    strategy: {
+        base.char: "".join(c.char for c in base.complement(wobble=strategy.value))
+        for base in NUCLEOTIDES
+    }
+    | {Base.Gap.char: Base.Gap.char}
+    for strategy in ComplementStrategy
+}
+
+
+class ParamSet(Enum):
+    """ViennaRNA energy parameter set. Determines folding model and strand symmetry."""
+
+    RNA = "rna"
+    DNA = "dna"
+    HYBRID = "hybrid"
+
+    @property
+    def strand_symmetric(self) -> bool:
+        """Homoduplex: viewing from the other side gives the same stacking energy."""
+        return self is not ParamSet.HYBRID
+
+
+@dataclass(frozen=True)
+class DsmId:
+    """Generation config for one DSM family (e.g. Turner RNA at 5 temperatures)."""
+
+    id: str
+    params: ParamSet
+    temperatures: tuple[float, ...]
+
+
+TEMPERATURES = (0, 25, 37, 42, 50)
+
+DSM_T04 = DsmId("t04", ParamSet.RNA, TEMPERATURES)
+DSM_SLH04 = DsmId("slh04", ParamSet.DNA, TEMPERATURES)
+DSM_S95 = DsmId("s95", ParamSet.HYBRID, TEMPERATURES)
+
+ALL_DSM_IDS = (DSM_T04, DSM_SLH04, DSM_S95)
+
+ENERGY_SCALE = 10_000
+"""kcal/mol -> integer score units, mirroring Rust `Energy::SCALE`."""
+
+
+@dataclass
+class DsmTable:
+    """A fully described DSM: identity + temperature (°C) + data."""
+
+    id: str
+    params: ParamSet
+    temperature: float
+    matrix: DsmData
+
+    def save(self, output: Path) -> None:
+        """Write long-form TSV matching the Rust parser's expected format."""
+        path = output / self.id / Path(str(int(self.temperature))).with_suffix(".tsv")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        arr = np.asarray(self.matrix.reoffset(0.0))
+        with open(path, "w") as f:
+            _ = f.write("q1\tq2\tt1\tt2\tdelta_g_kcal_per_mol\n")
+            for i, (q1, q2) in enumerate(DSM_PAIRS):
+                for j, (t1, t2) in enumerate(DSM_PAIRS):
+                    val = arr[i, j]
+                    if val >= DsmData.UNOBSERVED:
+                        continue
+                    _ = f.write(
+                        f"{q1.char}\t{q2.char}\t{t1.char}\t{t2.char}\t{val:.4f}\n"
+                    )
+
+    def emit_rust(self, path: Path) -> None:
+        """Write a .rs file with const arrays matching Rust's DsmTable type."""
+        invalid = round(-DsmData.UNOBSERVED * ENERGY_SCALE)
+
+        def energy(idx: StackIndex) -> int:
+            val = self.matrix.at(idx)
+            return invalid if val >= DsmData.UNOBSERVED else round(-val * ENERGY_SCALE)
+
+        dim = f"; {_N_BASES}]" * 4
+        lines = [
+            f"//! DSM table: {self.id} at {int(self.temperature)}°C",
+            "//! Generated by tools/dsm/pipeline.py",
+            "",
+            "use crate::types::Energy;",
+            "",
+            f"pub(crate) const INITIATION: Energy = Energy({round(self.matrix.offset * ENERGY_SCALE)});",
+            f"pub(crate) const TABLE: [[[[i32{dim} = [",
+        ]
+        for q1 in Base:
+            lines += [f"    // {q1.char}", "    ["]
+            for q2 in Base:
+                lines += [f"        // {q1.char}, {q2.char}", "        ["]
+                for t1 in Base:
+                    row = ", ".join(str(energy((q1, q2, t1, t2))) for t2 in Base)
+                    lines.append(f"            [{row}],")
+                lines.append("        ],")
+            lines.append("    ],")
+        lines.append("];")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = path.write_text("\n".join(lines) + "\n")
+
+
+SEED = 19328471
+
+
+type StackIndex = tuple[Base, Base, Base, Base]
+"""Canonical (q1, q2, t1, t2) stack, mirroring the Rust 4D DSM index."""
+
+
+@dataclass(frozen=True)
+class SizeRange:
+    """Inclusive integer range for random sampling. 0 <= min <= max."""
+
+    min: int
+    max: int
+
+    def sample(self) -> int:
+        return random.randint(self.min, self.max)
+
+
+S = ComplementStrategy.STRICT
+W = ComplementStrategy.WOBBLE
+
+
+@dataclass(frozen=True)
+class TrainingStrategy:
+    """One row of the sampling strategy matrix."""
+
+    name: str
+    n_samples: int
+    complement: ComplementStrategy | None
+    core_size: SizeRange
+
+    @property
+    def flank(self) -> ComplementStrategy:
+        """Flank complement mode: same as core, or STRICT if core is random."""
+        return ComplementStrategy.STRICT if self.complement is None else self.complement
+
+
+STRATEGIES: tuple[TrainingStrategy, ...] = (
+    TrainingStrategy("revcomp", 100_000, S, SizeRange(4, 4)),
+    TrainingStrategy("wobble", 100_000, W, SizeRange(4, 4)),
+    TrainingStrategy("internal loops", 50_000, None, SizeRange(4, 4)),
+    TrainingStrategy("bulge loops", 50_000, None, SizeRange(0, 4)),
+)
+
+
+@dataclass(frozen=True)
+class Duplex:
+    """A query/target duplex pair, optionally scored by duplexfold."""
+
+    query: str
+    target: str
+    temperature: float
+    sample_id: int
+    energy: float | None = None
+    stacks: dict[StackIndex, int] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# DSM matrix types
+# ---------------------------------------------------------------------------
+
+DSM_PAIRS: list[tuple[Base, Base]] = [(a, b) for a in Base for b in Base]
+DSM_N = len(DSM_PAIRS)
+
+
+_N_BASES = len(Base)
+
+
+class DsmData(np.ndarray):
+    """36x36 dinucleotide substitution matrix (ndarray subclass).
+
+    Indexed by StackIndex (q1, q2, t1, t2) via .at()/.set().
+    Row/col = q1.value * 6 + q2.value, same as Rust flat_idx.
+    Cells >= UNOBSERVED (20.0) are sentinel for missing data.
+    """
+
+    UNOBSERVED: float = 20.0
+    offset: float = 0.0
+
+    @staticmethod
+    def _idx(idx: StackIndex) -> tuple[int, int]:
+        q1, q2, t1, t2 = idx
+        return q1.value * _N_BASES + q2.value, t1.value * _N_BASES + t2.value
+
+    def at(self, idx: StackIndex) -> float:
+        """Read energy at a 4D stack index."""
+        r, c = self._idx(idx)
+        return float(self[r, c])
+
+    def set(self, idx: StackIndex, val: float) -> None:
+        """Write energy at a 4D stack index."""
+        r, c = self._idx(idx)
+        self[r, c] = val
+
+    def __new__(  # pyrefly: ignore[missing-super-call]
+        cls, data: NDArray[np.float64], offset: float = 0.0
+    ) -> DsmData:
+        obj = np.asarray(data, dtype=np.float64).view(cls)
+        obj.offset = offset
+        return obj
+
+    @override
+    def __array_finalize__(self, obj: object) -> None:
+        if obj is None:
+            return
+        self.offset = float(getattr(obj, "offset", 0.0))
+
+    @staticmethod
+    def _init_mask() -> NDArray[np.bool_]:
+        """Boolean mask for helix initiation pair cells (X- and -X patterns)."""
+        lead = np.array([p[0] is not Base.Gap and p[1] is Base.Gap for p in DSM_PAIRS])
+        trail = np.array([p[0] is Base.Gap and p[1] is not Base.Gap for p in DSM_PAIRS])
+        mask: NDArray[np.bool_] = np.outer(lead, lead) | np.outer(trail, trail)
+        return mask
+
+    @staticmethod
+    def _rev_perm() -> NDArray[np.intp]:
+        """Permutation for cross-strand swap: maps pair (a,b) → (b,a)."""
+        return np.array([DSM_PAIRS.index((p[1], p[0])) for p in DSM_PAIRS])
+
+    def auto_offset(self) -> float:
+        """Smallest offset that makes all init pair values negative relative to it."""
+        init = np.asarray(self)[self._init_mask()]
+        active = init[init < self.UNOBSERVED]
+        peak = float(active.max()) if active.size > 0 else self.UNOBSERVED
+        return peak * 2 + 1
+
+    def reoffset(self, new_offset: float) -> DsmData:
+        """Return a copy with init pairs shifted to a new offset."""
+        result = DsmData(self.copy(), self.offset)
+        mask = self._init_mask() & (np.asarray(result) < self.UNOBSERVED)
+        result[mask] += (self.offset - new_offset) / 2
+        result.offset = new_offset
+        return result
+
+    def symmetrize(self) -> DsmData:
+        """Average M[ij,kl] with M[lk,ji]. Only valid for homoduplex."""
+        arr: NDArray[np.float64] = np.asarray(self)
+        rev = self._rev_perm()
+        partner: NDArray[np.float64] = arr[rev][:, rev].T
+        return DsmData((arr + partner) / 2, self.offset)

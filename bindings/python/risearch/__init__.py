@@ -41,9 +41,9 @@ def search(
     mismatch_prefix: int = 1,
     mismatch_suffix: int = 0,
     seed_wobble: bool = False,
-    matrix: str = "t04",
+    matrix: str | PathLike[str] = "t04",
     penalty: float = 0.0,
-    temperature: int = 37,
+    temperature: int | None = None,
     max_extension: int = 20,
     seed_energy: float = 0.0,
     no_max_prune: bool = False,
@@ -55,7 +55,9 @@ def search(
 
     ``query`` accepts one path or a list of paths. Result order is not
     stable across runs; sort the returned DataFrame when deterministic ordering
-    matters.
+    matters. ``matrix`` is a bundled model id or a path to a custom TSV table;
+    ``temperature`` defaults to 37 °C and has no effect on a custom table, where
+    passing it logs a warning.
     """
     if isinstance(query, (str, os.PathLike)):
         query = [query]

@@ -215,9 +215,9 @@ fn search(
     mismatch_prefix: usize,
     mismatch_suffix: usize,
     seed_wobble: bool,
-    matrix: &str,
+    matrix: PathBuf,
     penalty: f64,
-    temperature: i32,
+    temperature: Option<i32>,
     max_extension: i32,
     seed_energy: f64,
     no_max_prune: bool,
@@ -236,11 +236,11 @@ fn search(
             min_prefix_matches: mismatch_prefix,
             min_suffix_matches: mismatch_suffix,
         },
-        score: ScoreConfig {
-            dsm_id: DsmId::from(matrix),
-            penalty: Energy::try_from(penalty).map_err(pyo3::exceptions::PyValueError::new_err)?,
+        score: ScoreConfig::new(
+            DsmId::from(matrix.to_string_lossy().as_ref()),
+            Energy::try_from(penalty).map_err(pyo3::exceptions::PyValueError::new_err)?,
             temperature,
-        },
+        ),
         extend: ExtendConfig {
             max_extension,
             build_alignment: alignment,
@@ -293,6 +293,8 @@ fn search(
 ///
 /// `alignment` is absent on purpose: `OutputFormat::needs_alignment` owns
 /// `build_alignment`, so `ExtendConfig::default()` is not its canonical value.
+/// `temperature` is `None`: the wrapper passes it through unresolved so an
+/// explicit value can be detected, and `ScoreConfig::new` applies the default.
 #[pyfunction]
 fn _default_options(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let seed = SeedConfig::default();
@@ -311,7 +313,7 @@ fn _default_options(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     d.set_item("seed_wobble", seed.seed_wobble)?;
     d.set_item("matrix", score.dsm_id.0)?;
     d.set_item("penalty", f64::from(score.penalty))?;
-    d.set_item("temperature", score.temperature)?;
+    d.set_item("temperature", None::<i32>)?;
     d.set_item("max_extension", extend.max_extension)?;
     d.set_item("seed_energy", f64::from(filter.seed_energy))?;
     d.set_item("no_max_prune", seed.no_max_prune)?;

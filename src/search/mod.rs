@@ -1196,7 +1196,7 @@ mod tests {
                 prune in any::<bool>(),
                 interval in any::<bool>(),
                 reverse in any::<bool>(),
-                model in 0usize..5,
+                model in 0usize..4,
                 temp in 0usize..9,
                 penalty in prop_oneof![Just(0i32), Just(1), Just(500000), 0i32..50000],
                 window in prop_oneof![Just(-1i32), Just(0), Just(1), 2i32..20],
@@ -1217,9 +1217,9 @@ mod tests {
                     config.seed.seed_start = Some(start as i64 + 1);
                     config.seed.seed_end = Some((start + length) as i64);
                 }
-                let names = ["t04", "t99", "slh04", "s95-rna-dna", "s95-dna-rna"];
+                let names = ["t04", "slh04", "s95-rna-dna", "s95-dna-rna"];
                 config.score.dsm_id = DsmId::from(names[model]);
-                config.score.temperature = if model == 1 { 37 } else { [0, 12, 25, 31, 37, 40, 42, 46, 50][temp] };
+                config.score.temperature = [0, 12, 25, 31, 37, 40, 42, 46, 50][temp];
                 config.score.penalty = Energy(penalty);
                 config.extend.max_extension = window;
                 config.filter.delta_g = Energy(threshold);

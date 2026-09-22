@@ -197,12 +197,24 @@ risearch search \
 
 Tuning and filtering:
 
-- `-z, --matrix <t04|t99>` energy model (`t04` default).
+- `-z, --matrix <MATRIX>` energy model: bundled id (`t04` default, `slh04`, `s95-rna-dna`, `s95-dna-rna`) or path to a custom TSV table (see [Custom energy tables](#custom-energy-tables)).
 - `-d, --penalty <kcal/mol>` per-nucleotide penalty.
 - `-l, --extension <L>` max extension around seed.
 - `-e, --energy <dG>` filter by deltaG threshold.
 - `--seed-energy <threshold>` seed-level energy filter.
 - `--no-max-prune` disable maximality pruning.
+
+### Custom energy tables
+
+`--matrix` also accepts a path to a tab-separated table. The header is
+`q1	q2	t1	t2	delta_g_kcal_per_mol`; each further row is one dinucleotide
+stack: `q1 q2` is the query dinucleotide 5'→3', `t1 t2` the target dinucleotide
+3'→5' paired under it (`t1` opposite `q1`), bases from `A C G U N -` (`-` is a
+gap), and ΔG in kcal/mol at zero initiation offset (negative is favorable).
+Missing rows and rows with ΔG ≥ 20 are unobserved and scored as +20 kcal/mol.
+Rows of the form `X - X -` or `- X - X` are the helix-initiation terms; at least
+one must be present, and the initiation offset is derived from them.
+`--temperature` has no effect on a custom table; passing both prints a warning.
 
 ## Compatibility and Migration
 

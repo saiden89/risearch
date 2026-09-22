@@ -298,28 +298,8 @@ impl std::fmt::Display for Energy {
     }
 }
 
-/// Nucleic acid type for query/target strand identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SequenceType {
-    Rna,
-    Dna,
-}
-
-impl TryFrom<&str> for SequenceType {
-    type Error = String;
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        match s {
-            "rna" => Ok(SequenceType::Rna),
-            "dna" => Ok(SequenceType::Dna),
-            _ => Err(format!(
-                "invalid sequence type '{s}', expected 'rna' or 'dna'"
-            )),
-        }
-    }
-}
-
-/// Identifier for a bundled dinucleotide stacking model (DSM).
-/// The set of valid IDs is determined by data/dsm/manifest.toml.
+/// Dinucleotide stacking model (DSM) selector: a bundled identifier from
+/// `DsmRegistry::all_names()` or a path to a TSV table.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct DsmId(pub String);
 
@@ -337,7 +317,7 @@ impl From<&str> for DsmId {
 
 #[cfg(test)]
 mod tests {
-    use super::{Base, DsmId, Energy, PairType, SequenceType, Strand};
+    use super::{Base, DsmId, Energy, PairType, Strand};
 
     const BASES: [Base; 6] = [Base::Gap, Base::A, Base::C, Base::G, Base::N, Base::U];
     const CANONICAL: [(Base, Base); 4] = [
@@ -525,16 +505,6 @@ mod tests {
         assert_eq!(Energy(-12300).to_string(), "-1.23");
         assert_eq!(Energy(123456).to_string(), "12.35");
         assert_eq!(Energy(0).to_string(), "0.00");
-    }
-
-    #[test]
-    fn sequence_type_parses_lowercase_names_only() {
-        assert_eq!(SequenceType::try_from("rna"), Ok(SequenceType::Rna));
-        assert_eq!(SequenceType::try_from("dna"), Ok(SequenceType::Dna));
-        assert_eq!(
-            SequenceType::try_from("RNA"),
-            Err("invalid sequence type 'RNA', expected 'rna' or 'dna'".to_string())
-        );
     }
 
     #[test]

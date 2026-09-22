@@ -1,4 +1,5 @@
 from os import PathLike
+from typing import Any
 
 class RisearchError(Exception): ...
 class IndexFormatError(RisearchError): ...
@@ -34,9 +35,9 @@ def search(
     mismatch_prefix: int,
     mismatch_suffix: int,
     seed_wobble: bool,
-    matrix: str,
+    matrix: str | PathLike[str],
     penalty: float,
-    temperature: int,
+    temperature: int | None,
     max_extension: int,
     seed_energy: float,
     no_max_prune: bool,
@@ -44,4 +45,4 @@ def search(
     alignment: bool,
     threads: int | None,
 ) -> SearchResult: ...
-def _default_options() -> dict[str, object]: ...
+def _default_options() -> dict[str, Any]: ...

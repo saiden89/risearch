@@ -1,81 +1,152 @@
+//! Parse a user-provided long-form DSM TSV into an initiation offset and table.
+
+use super::{DsmTable, DSM_HEADER};
 use crate::error::{Error, Result};
-use crate::types::{Base, Energy};
+use crate::types::{Base, Energy, BASE_COUNT};
 
-use super::{flat_idx, DsmTable, Orientation, BASE_COUNT, DSM_FLAT_SIZE, DSM_HEADER};
+const UNOBSERVED_KCAL: f64 = 20.0;
 
-pub(crate) fn load_dsm_tsv_text(
-    text: &str,
-    initiation: f64,
-    invalid_transition: f64,
-    orientation: Orientation,
-) -> Result<(Energy, DsmTable)> {
-    if !invalid_transition.is_finite() {
-        return Err(Error::Dsm("Non-finite invalid transition energy".into()));
-    }
-
-    let mut lines = text.lines();
-    let header = lines
+/// Parse a `q1 q2 t1 t2 delta_g_kcal_per_mol` TSV into `(initiation, table)`.
+///
+/// Absent cells and cells with ΔG >= 20 kcal/mol are unobserved. Input ΔG is
+/// taken at offset 0; the initiation offset is derived from the initiation
+/// cells and folded into them; a table without initiation cells is rejected.
+pub(crate) fn parse_tsv(input: &str) -> Result<(Energy, DsmTable)> {
+    let input = input.strip_prefix('\u{feff}').unwrap_or(input);
+    let mut lines = input.lines().enumerate();
+    let (_, header) = lines
         .next()
-        .ok_or_else(|| Error::Dsm("DSM TSV is empty".into()))?;
-    let header_cols = header.split_whitespace().collect::<Vec<_>>();
-    if header_cols != DSM_HEADER {
+        .ok_or_else(|| Error::Dsm("empty DSM table".into()))?;
+    if header.split('\t').ne(DSM_HEADER) {
         return Err(Error::Dsm(format!(
-            "Invalid DSM TSV header {header_cols:?}, expected {DSM_HEADER:?}"
+            "bad DSM header '{header}', expected '{}'",
+            DSM_HEADER.join("\t")
         )));
     }
 
-    let reverse_swap = matches!(orientation, Orientation::ReverseSwap);
-
-    let invalid_score = Energy::try_from(-invalid_transition)
-        .map_err(|e| Error::Dsm(format!("Invalid transition energy: {e}")))?
-        .0;
-    let mut table = [[[[invalid_score; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
-    let mut seen = [false; DSM_FLAT_SIZE];
-    let mut row_count = 0usize;
-    for (line_no, line) in lines.enumerate() {
-        let row = line_no + 2;
-        let cols = line.split_whitespace().collect::<Vec<_>>();
-        if cols.len() != 5 {
+    let mut cells = [[[[None::<f64>; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
+    for (n, line) in lines {
+        let row = n + 1;
+        let fields: Vec<&str> = line.split('\t').collect();
+        let &[q1, q2, t1, t2, dg] = fields.as_slice() else {
             return Err(Error::Dsm(format!(
-                "Invalid DSM TSV row {row}: expected 5 columns, got {}",
-                cols.len()
+                "line {row}: expected 5 tab-separated fields, found {}",
+                fields.len()
+            )));
+        };
+        let [q1, q2, t1, t2] = [q1, q2, t1, t2].map(|f| base(f, row));
+        let (q1, q2, t1, t2) = (q1?, q2?, t1?, t2?);
+        let dg: f64 = dg
+            .parse()
+            .map_err(|e| Error::Dsm(format!("line {row}: invalid energy '{dg}': {e}")))?;
+        let cell = &mut cells[q1.as_usize()][q2.as_usize()][t1.as_usize()][t2.as_usize()];
+        if cell.is_some() {
+            return Err(Error::Dsm(format!(
+                "line {row}: duplicate cell {q1:?}{q2:?}/{t1:?}{t2:?}"
             )));
         }
+        *cell = Some(dg);
+    }
 
-        let base = |col: usize, field: &str| -> Result<usize> {
-            Base::try_from(cols[col].chars().next().unwrap_or('?'))
-                .map(Base::as_usize)
-                .map_err(|e| Error::Dsm(format!("Invalid {field} at DSM TSV row {row}: {e}")))
+    let mut peak = f64::NEG_INFINITY;
+    for_each_cell(|q1, q2, t1, t2| {
+        if let Some(v) = cells[q1][q2][t1][t2] {
+            if is_init(q1, q2, t1, t2) && v < UNOBSERVED_KCAL {
+                peak = peak.max(v);
+            }
+        }
+    });
+    if !peak.is_finite() {
+        return Err(Error::Dsm(
+            "DSM table has no initiation rows (X - X - or - X - X)".into(),
+        ));
+    }
+    let offset = peak * 2.0 + 1.0;
+
+    let mut table = [[[[0i32; BASE_COUNT]; BASE_COUNT]; BASE_COUNT]; BASE_COUNT];
+    let mut err = None;
+    for_each_cell(|q1, q2, t1, t2| {
+        let val = match cells[q1][q2][t1][t2] {
+            Some(v) if v < UNOBSERVED_KCAL && is_init(q1, q2, t1, t2) => v - offset / 2.0,
+            Some(v) if v < UNOBSERVED_KCAL => v,
+            _ => UNOBSERVED_KCAL,
         };
-        let mut q1 = base(0, "q1")?;
-        let mut q2 = base(1, "q2")?;
-        let mut t1 = base(2, "t1")?;
-        let mut t2 = base(3, "t2")?;
-        if reverse_swap {
-            (q1, q2, t1, t2) = (t2, t1, q2, q1);
+        match Energy::try_from(-val) {
+            Ok(e) => table[q1][q2][t1][t2] = e.0,
+            Err(e) => {
+                err.get_or_insert(e);
+            }
         }
+    });
+    if let Some(e) = err {
+        return Err(Error::Dsm(e));
+    }
+    Ok((Energy::try_from(offset).map_err(Error::Dsm)?, table))
+}
 
-        let idx = flat_idx(q1 as u8, q2 as u8, t1 as u8, t2 as u8);
-        if std::mem::replace(&mut seen[idx], true) {
-            return Err(Error::Dsm(format!("Duplicate DSM coordinate at row {row}")));
+fn base(field: &str, row: usize) -> Result<Base> {
+    let mut chars = field.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Base::try_from(c).map_err(|e| Error::Dsm(format!("line {row}: {e}"))),
+        _ => Err(Error::Dsm(format!("line {row}: invalid base '{field}'"))),
+    }
+}
+
+/// Helix initiation: both dinucleotides are `X-` or both are `-X`.
+fn is_init(q1: usize, q2: usize, t1: usize, t2: usize) -> bool {
+    let gap = Base::Gap.as_usize();
+    let lead = q1 != gap && q2 == gap && t1 != gap && t2 == gap;
+    let trail = q1 == gap && q2 != gap && t1 == gap && t2 != gap;
+    lead || trail
+}
+
+fn for_each_cell(mut f: impl FnMut(usize, usize, usize, usize)) {
+    for q1 in 0..BASE_COUNT {
+        for q2 in 0..BASE_COUNT {
+            for t1 in 0..BASE_COUNT {
+                for t2 in 0..BASE_COUNT {
+                    f(q1, q2, t1, t2);
+                }
+            }
         }
+    }
+}
 
-        let delta_g = cols[4]
-            .parse::<f64>()
-            .map_err(|e| Error::Dsm(format!("Invalid delta_g '{}' at row {row}: {e}", cols[4])))?;
-        table[q1][q2][t1][t2] = Energy::try_from(-delta_g)
-            .map_err(|e| Error::Dsm(format!("Invalid energy at row {row}: {e}")))?
-            .0;
-        row_count += 1;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADER: &str = "q1\tq2\tt1\tt2\tdelta_g_kcal_per_mol\n";
+
+    #[test]
+    fn parses_cells_and_derives_initiation_offset() {
+        let tsv = format!(
+            "{HEADER}A\tC\tU\tG\t-2.1805\nA\t-\tU\t-\t3.0\n-\tA\t-\tU\t2.0\nG\tG\tC\tC\t25.0\n"
+        );
+        let (init, table) = parse_tsv(&tsv).unwrap();
+        assert_eq!(init, Energy(70000));
+        assert_eq!(table[1][2][5][3], 21805);
+        assert_eq!(table[1][0][5][0], 5000);
+        assert_eq!(table[0][1][0][5], 15000);
+        assert_eq!(table[3][3][2][2], -200000);
+        assert_eq!(table[0][0][0][0], -200000);
+        assert_eq!(parse_tsv(&format!("\u{feff}{tsv}")).unwrap(), (init, table));
     }
 
-    if row_count == 0 {
-        return Err(Error::Dsm("DSM TSV has no transition rows".into()));
+    #[test]
+    fn rejects_malformed_input() {
+        let bad = [
+            "",
+            "q1\tq2\tt1\tt2\tdG\nA\tC\tU\tG\t-1.0\n",
+            &format!("{HEADER}A\tC\tU\tG\t-1.0\n"),
+            &format!("{HEADER}A\tC\tU\t-1.0\n"),
+            &format!("{HEADER}A\tC\tU\tX\t-1.0\n"),
+            &format!("{HEADER}AC\tC\tU\tG\t-1.0\n"),
+            &format!("{HEADER}A\tC\tU\tG\tabc\n"),
+            &format!("{HEADER}A\tC\tU\tG\t-1.0\nA\tC\tU\tG\t-2.0\n"),
+        ];
+        for tsv in bad {
+            assert!(matches!(parse_tsv(tsv), Err(Error::Dsm(_))), "{tsv:?}");
+        }
     }
-
-    Ok((
-        Energy::try_from(initiation)
-            .map_err(|e| Error::Dsm(format!("Invalid initiation energy: {e}")))?,
-        table,
-    ))
 }
