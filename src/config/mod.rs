@@ -7,6 +7,8 @@
 //! ([`SeedConfig`], [`ScoreConfig`], [`ExtendConfig`]), and the bounds it
 //! enforces are the constants below.
 
+use std::path::Path;
+
 use clap::ValueEnum;
 
 use crate::dp::MAX_EXT;
@@ -273,6 +275,24 @@ impl Default for ScoreConfig {
 }
 
 impl ScoreConfig {
+    /// Build a scoring config. `None` takes the default temperature; an explicit
+    /// one is kept, with a warning when `dsm_id` is a user TSV table, which is
+    /// used as-is.
+    pub fn new(dsm_id: DsmId, penalty: Energy, temperature: Option<i32>) -> Self {
+        let custom = !DsmRegistry::all_names().contains(&dsm_id.0.as_str())
+            && Path::new(&dsm_id.0).is_file();
+        if temperature.is_some() && custom {
+            log::warn!(
+                "temperature has no effect on the custom DSM table '{dsm_id}'; it is used as-is."
+            );
+        }
+        ScoreConfig {
+            dsm_id,
+            penalty,
+            temperature: temperature.unwrap_or(Self::default().temperature),
+        }
+    }
+
     /// Check the model id resolves and the penalty and temperature are in range.
     pub fn validate(&self) -> Result<()> {
         DsmRegistry::parse_id(self.dsm_id.0.as_str())?;

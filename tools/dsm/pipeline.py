@@ -30,7 +30,6 @@ from dtypes import (
     ParamSet,
     StackIndex,
     StructureChar,
-    Temperature,
     TrainingStrategy,
 )
 
@@ -52,7 +51,7 @@ _FLANK_OVERLAP = 4
 _FLANK_MIN = 10
 _FLANK_MAX = 20
 _G = Base.Gap
-_VAL = lambda s: tuple(b.value for b in s)
+_VAL = lambda s: tuple(6 if b is _G else b.value for b in s)
 
 
 def _regression_group(s: StackIndex, *, strand_symmetric: bool) -> object:
@@ -92,6 +91,7 @@ def _regression_group(s: StackIndex, *, strand_symmetric: bool) -> object:
 
 
 def _build_table(strand_symmetric: bool) -> dict[StackIndex, StackIndex]:
+    """Precompute StackIndex → canonical representative for all 1296 stacks."""
     table: dict[StackIndex, StackIndex] = {}
     groups: dict[object, StackIndex] = {}
     for stack in product(Base, Base, Base, Base):
@@ -116,7 +116,7 @@ def symmetry_class(key: StackIndex, *, strand_symmetric: bool = True) -> StackIn
 
 
 def generate_duplex_pairs(
-    strategy: TrainingStrategy, temp: Temperature
+    strategy: TrainingStrategy, temperature: float
 ) -> list[Duplex]:
     OV = _FLANK_OVERLAP
     flank = strategy.flank
@@ -140,16 +140,17 @@ def generate_duplex_pairs(
             + reverse_complement(left[:OV], flank)
         )
 
-        result.append(Duplex(query, target, temp, x))
-        result.append(Duplex(target, query, temp, x))
+        result.append(Duplex(query, target, temperature, x))
+        result.append(Duplex(target, query, temperature, x))
     return result
 
 
 _HYBRID_PARAMS = Path(__file__).with_name("rna_dna_sugimoto1995.par")
 
 
-def _init_worker(dsm_id: DsmId, celsius: float) -> None:
-    RNA.cvar.temperature = celsius
+def _init_worker(dsm_id: DsmId, temperature: float) -> None:
+    """Per-process ViennaRNA setup: load the right energy parameter set."""
+    RNA.cvar.temperature = temperature
     match dsm_id.params:
         case ParamSet.HYBRID:
             RNA.params_load_from_string(_HYBRID_PARAMS.read_text())
@@ -217,14 +218,13 @@ def generate_corpus(
 ) -> list[Duplex]:
     """Generate and score a corpus at `temperature` in degrees Celsius."""
     random.seed(SEED)
-    temp = Temperature(temperature)
     logger.info("generating corpus for {} at {}°C", dsm_id.id, temperature)
     scored: list[Duplex] = []
     with Pool(
         workers, initializer=_init_worker, initargs=(dsm_id, temperature)
     ) as pool:
         for strategy in STRATEGIES:
-            pairs = generate_duplex_pairs(strategy, temp)
+            pairs = generate_duplex_pairs(strategy, temperature)
             scored.extend(pool.map(score_duplex, pairs))
             logger.debug("{}: {} pairs scored", strategy.name, len(pairs))
     logger.info("corpus: {} duplexes", len(scored))
@@ -244,6 +244,7 @@ def _class_stacks(
 def _regress(
     energies: list[float], stacks_list: list[dict[StackIndex, int]]
 ) -> dict[StackIndex, float]:
+    """Fit energy ~ stack counts via OLS, drop weak features, return coefficients."""
     keys = sorted({k for s in stacks_list for k in s}, key=repr)
     key_idx = {k: i for i, k in enumerate(keys)}
 
@@ -273,10 +274,11 @@ def fit(scored: list[Duplex], *, strand_symmetric: bool) -> dict[StackIndex, flo
         (d.energy, d.stacks) for d in scored if d.energy is not None and d.energy < 0
     ]
     energies = [e for e, _ in active]
-    stacks_list = [
+
+    class_stacks = [
         _class_stacks(s, strand_symmetric=strand_symmetric) for _, s in active
     ]
-    return _regress(energies, stacks_list)
+    return _regress(energies, class_stacks)
 
 
 _N_SUBS = (Base.A, Base.C, Base.G, Base.U)
@@ -284,6 +286,7 @@ _N_SUBS = (Base.A, Base.C, Base.G, Base.U)
 
 @cache
 def _expand_n(stack: StackIndex) -> tuple[StackIndex, ...]:
+    """Expand N bases to all ACGU combinations. No-N stacks return (self,)."""
     if Base.N not in stack:
         return (stack,)
     result: list[StackIndex] = []
@@ -295,12 +298,12 @@ def _expand_n(stack: StackIndex) -> tuple[StackIndex, ...]:
 def build_matrix(coefs: dict[StackIndex, float], *, strand_symmetric: bool) -> DsmData:
     """Fill the 36x36 matrix from regression coefficients. N entries get max over ACGU."""
     table = _CLASS_TABLE[strand_symmetric]
-    dsm = DsmData(np.full((DSM_N, DSM_N), DsmData.PENALTY))
+    dsm = DsmData(np.full((DSM_N, DSM_N), DsmData.UNOBSERVED))
     observed = 0
     for stack in product(Base, Base, Base, Base):
-        val = max(coefs.get(table[k], DsmData.PENALTY) for k in _expand_n(stack))
+        val = max(coefs.get(table[k], DsmData.UNOBSERVED) for k in _expand_n(stack))
         dsm.set(stack, val)
-        if val < DsmData.PENALTY:
+        if val < DsmData.UNOBSERVED:
             observed += 1
     logger.info("matrix: {}/{} cells observed", observed, DSM_N * DSM_N)
     return dsm
@@ -312,31 +315,56 @@ def postprocess(raw: DsmData, dsm_id: DsmId) -> DsmData:
     return mat.reoffset(mat.auto_offset())
 
 
-def build_table(dsm_id: DsmId, celsius: float, workers: int | None = None) -> DsmTable:
+def build_table(
+    dsm_id: DsmId, temperature: float, workers: int | None = None
+) -> DsmTable:
     """Full pipeline: generate corpus → fit → build matrix → postprocess → DsmTable."""
     strand_sym = dsm_id.params.strand_symmetric
-    corpus = generate_corpus(dsm_id, celsius, workers)
+    corpus = generate_corpus(dsm_id, temperature, workers)
     coefs = fit(corpus, strand_symmetric=strand_sym)
     raw = build_matrix(coefs, strand_symmetric=strand_sym)
     dsm = postprocess(raw, dsm_id)
-    return DsmTable(dsm_id.id, dsm_id.params, celsius, dsm)
+    return DsmTable(dsm_id.id, dsm_id.params, temperature, dsm)
 
 
 def run_pipeline(
-    dsm_id: DsmId, celsius: float, output: Path, workers: int | None = None
+    dsm_id: DsmId, temperature: float, output: Path, workers: int | None = None
 ) -> DsmTable:
-    table = build_table(dsm_id, celsius, workers)
+    table = build_table(dsm_id, temperature, workers)
     table.save(output)
-    logger.success("{}/{}/{}.tsv", output, dsm_id.id, int(celsius))
+    logger.success("{}/{}/{}.tsv", output, dsm_id.id, int(temperature))
     return table
 
 
 def generate_all(output: Path, workers: int | None = None) -> list[DsmTable]:
     return [
-        run_pipeline(dsm_id, celsius, output, workers)
+        run_pipeline(dsm_id, temperature, output, workers)
         for dsm_id in ALL_DSM_IDS
-        for celsius in dsm_id.temperatures
+        for temperature in dsm_id.temperatures
     ]
+
+
+_RUST_TABLES = Path(__file__).parents[2] / "src" / "dsm" / "tables"
+
+
+def emit_rust_mod(path: Path) -> None:
+    """Write `mod.rs`: one `mod` line per table file plus the `TABLES` registry."""
+    mods = [(d.id, int(t)) for d in ALL_DSM_IDS for t in d.temperatures]
+    lines = [
+        "//! Bundled DSM tables.",
+        "//! Generated by tools/dsm/pipeline.py",
+        "",
+        "use super::DsmTable;",
+        "use crate::types::Energy;",
+        "",
+        *(f"mod {n};" for n in sorted(f"{i}_{t}" for i, t in mods)),
+        "",
+        "pub(crate) static TABLES: &[(&str, i32, Energy, &DsmTable)] = &[",
+        *(f'    ("{i}", {t}, {i}_{t}::INITIATION, &{i}_{t}::TABLE),' for i, t in mods),
+        "];",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -373,17 +401,17 @@ def cmd_one(
 
 @app.command("rust")
 def cmd_rust(
-    output: Annotated[Path, typer.Option(help="Rust output directory")] = Path(
-        "src/dsm/tables"
-    ),
+    output: Annotated[Path, typer.Option(help="Rust output directory")] = _RUST_TABLES,
     workers: Annotated[int | None, typer.Option(help="Pool size")] = None,
 ) -> None:
-    """Generate all DSMs as Rust source files, `{id}_{celsius}.rs`."""
+    """Generate every `{id}_{temperature}.rs` table for the runtime, then `mod.rs`."""
     for dsm_id in ALL_DSM_IDS:
-        for celsius in dsm_id.temperatures:
-            path = output / f"{dsm_id.id}_{int(celsius)}.rs"
-            build_table(dsm_id, celsius, workers).emit_rust(path)
+        for temperature in dsm_id.temperatures:
+            path = output / f"{dsm_id.id}_{int(temperature)}.rs"
+            build_table(dsm_id, temperature, workers).emit_rust(path)
             logger.success("{}", path)
+    emit_rust_mod(output / "mod.rs")
+    logger.success("{}", output / "mod.rs")
 
 
 if __name__ == "__main__":

@@ -66,7 +66,8 @@ The `search()` kwargs map to the canonical Rust-facing options:
 - `seed_length`, `seed_start`, `seed_end`
 - `mismatches`, `mismatch_prefix`, `mismatch_suffix`
 - `seed_wobble` (off by default; set `True` to allow G-U pairs in seeds)
-- `matrix`, `penalty`, `temperature`
+- `matrix` (bundled model id or path to a custom TSV table), `penalty`, `temperature`
+  (defaults to 37 °C; has no effect on a custom table, and a warning is logged if both are given)
 - `max_extension`
 - `energy_threshold`, `seed_energy`, `no_max_prune`, `no_dedup`
 - `alignment` — set `False` to skip DP traceback; the `alignment` column becomes all-null
