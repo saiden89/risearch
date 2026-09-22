@@ -9,6 +9,7 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import override
 
 import numpy as np
 from numpy.typing import NDArray
@@ -149,13 +150,15 @@ class DsmTable:
         path.parent.mkdir(parents=True, exist_ok=True)
         arr = np.asarray(self.matrix.reoffset(0.0))
         with open(path, "w") as f:
-            f.write("q1\tq2\tt1\tt2\tdelta_g_kcal_per_mol\n")
+            _ = f.write("q1\tq2\tt1\tt2\tdelta_g_kcal_per_mol\n")
             for i, (q1, q2) in enumerate(DSM_PAIRS):
                 for j, (t1, t2) in enumerate(DSM_PAIRS):
                     val = arr[i, j]
                     if val >= DsmData.UNOBSERVED:
                         continue
-                    f.write(f"{q1.char}\t{q2.char}\t{t1.char}\t{t2.char}\t{val:.4f}\n")
+                    _ = f.write(
+                        f"{q1.char}\t{q2.char}\t{t1.char}\t{t2.char}\t{val:.4f}\n"
+                    )
 
     def emit_rust(self, path: Path) -> None:
         """Write a .rs file with const arrays matching Rust's DsmTable type."""
@@ -186,7 +189,7 @@ class DsmTable:
             lines.append("    ],")
         lines.append("];")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(lines) + "\n")
+        _ = path.write_text("\n".join(lines) + "\n")
 
 
 SEED = 19328471
@@ -223,7 +226,7 @@ class TrainingStrategy:
     @property
     def flank(self) -> ComplementStrategy:
         """Flank complement mode: same as core, or STRICT if core is random."""
-        return self.complement or ComplementStrategy.STRICT
+        return ComplementStrategy.STRICT if self.complement is None else self.complement
 
 
 STRATEGIES: tuple[TrainingStrategy, ...] = (
@@ -283,22 +286,26 @@ class DsmData(np.ndarray):
         r, c = self._idx(idx)
         self[r, c] = val
 
-    def __new__(cls, data: NDArray[np.float64], offset: float = 0.0) -> DsmData:
+    def __new__(  # pyrefly: ignore[missing-super-call]
+        cls, data: NDArray[np.float64], offset: float = 0.0
+    ) -> DsmData:
         obj = np.asarray(data, dtype=np.float64).view(cls)
         obj.offset = offset
         return obj
 
+    @override
     def __array_finalize__(self, obj: object) -> None:
         if obj is None:
             return
-        self.offset = getattr(obj, "offset", 0.0)
+        self.offset = float(getattr(obj, "offset", 0.0))
 
     @staticmethod
     def _init_mask() -> NDArray[np.bool_]:
         """Boolean mask for helix initiation pair cells (X- and -X patterns)."""
         lead = np.array([p[0] is not Base.Gap and p[1] is Base.Gap for p in DSM_PAIRS])
         trail = np.array([p[0] is Base.Gap and p[1] is not Base.Gap for p in DSM_PAIRS])
-        return np.outer(lead, lead) | np.outer(trail, trail)
+        mask: NDArray[np.bool_] = np.outer(lead, lead) | np.outer(trail, trail)
+        return mask
 
     @staticmethod
     def _rev_perm() -> NDArray[np.intp]:
@@ -309,7 +316,7 @@ class DsmData(np.ndarray):
         """Smallest offset that makes all init pair values negative relative to it."""
         init = np.asarray(self)[self._init_mask()]
         active = init[init < self.UNOBSERVED]
-        peak = float(active.max()) if active.size else self.UNOBSERVED
+        peak = float(active.max()) if active.size > 0 else self.UNOBSERVED
         return peak * 2 + 1
 
     def reoffset(self, new_offset: float) -> DsmData:
@@ -322,7 +329,7 @@ class DsmData(np.ndarray):
 
     def symmetrize(self) -> DsmData:
         """Average M[ij,kl] with M[lk,ji]. Only valid for homoduplex."""
-        arr = np.asarray(self)
+        arr: NDArray[np.float64] = np.asarray(self)
         rev = self._rev_perm()
-        partner = arr[np.ix_(rev, rev)].T
+        partner: NDArray[np.float64] = arr[rev][:, rev].T
         return DsmData((arr + partner) / 2, self.offset)

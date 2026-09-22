@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
@@ -498,12 +499,12 @@ def test_documented_defaults_are_pinned():
 
 def test_native_search_is_callable_with_every_kwarg(store):
     """Keeps a runtime call on the native entry point the stub documents."""
-    result = native.search(
-        [QUERY_FA],
-        store,
-        **{**native._default_options(), "seed_length": 8, "alignment": True},
-        threads=None,
-    )
+    options: dict[str, Any] = {
+        **native._default_options(),
+        "seed_length": 8,
+        "alignment": True,
+    }
+    result = native.search([QUERY_FA], store, **options, threads=None)
     assert pl.DataFrame(result).height > 0
 
 

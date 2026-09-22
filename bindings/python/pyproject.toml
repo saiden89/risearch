@@ -54,6 +54,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 [tool.ty.src]
 include = ["risearch"]
 
+[tool.pyrefly]
+search-path = ["."]
+
 [tool.cibuildwheel.macos]
 environment = { LZMA_API_STATIC = "1" }
 

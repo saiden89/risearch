@@ -12,6 +12,7 @@ import numpy as np
 import RNA
 import typer
 from loguru import logger
+from numpy.typing import NDArray
 from sklearn.linear_model import LinearRegression
 
 from dtypes import (
@@ -51,7 +52,10 @@ _FLANK_OVERLAP = 4
 _FLANK_MIN = 10
 _FLANK_MAX = 20
 _G = Base.Gap
-_VAL = lambda s: tuple(6 if b is _G else b.value for b in s)
+
+
+def _val(s: StackIndex) -> tuple[int, ...]:
+    return tuple(6 if b is _G else b.value for b in s)
 
 
 def _regression_group(s: StackIndex, *, strand_symmetric: bool) -> object:
@@ -60,7 +64,7 @@ def _regression_group(s: StackIndex, *, strand_symmetric: bool) -> object:
     Priority: strand canon → init pairs → WC-anchored → gap-diagonal → gap-normalized → raw.
     """
     if strand_symmetric:
-        s = min(s, (s[3], s[2], s[1], s[0]), key=_VAL)
+        s = min(s, (s[3], s[2], s[1], s[0]), key=_val)
 
     i, j, k, l = s
     cross = ((i, k), (j, l))
@@ -127,7 +131,7 @@ def generate_duplex_pairs(
         core = random_seq(strategy.core_size.sample())
         core_rc = (
             reverse_complement(core, strategy.complement)
-            if strategy.complement
+            if strategy.complement is not None
             else random_seq(strategy.core_size.sample())
         )
 
@@ -257,9 +261,9 @@ def _regress(
     col_sums = X.sum(axis=0)
     strong = [j for j in range(len(keys)) if col_sums[j] >= _MIN_STACK_COUNT]
     weak_mask = col_sums < _MIN_STACK_COUNT
-    row_mask = (X[:, weak_mask] == 0).all(axis=1)
-    X_fit = X[row_mask][:, strong]
-    y_fit = y[row_mask]
+    row_mask: NDArray[np.bool_] = (X[:, weak_mask] == 0).all(axis=1)
+    X_fit: NDArray[np.float64] = X[row_mask][:, strong]
+    y_fit: NDArray[np.float64] = y[row_mask]
 
     regr = LinearRegression(fit_intercept=False).fit(X_fit, y_fit)
     logger.info(
@@ -364,7 +368,7 @@ def emit_rust_mod(path: Path) -> None:
         "];",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n")
+    _ = path.write_text("\n".join(lines) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +385,7 @@ def cmd_all(
     output: Annotated[Path, typer.Option(help="Output directory")] = Path("."),
     workers: Annotated[int | None, typer.Option(help="Pool size")] = None,
 ) -> None:
-    generate_all(output, workers)
+    _ = generate_all(output, workers)
 
 
 @app.command("one")
@@ -396,7 +400,7 @@ def cmd_one(
     if did is None:
         logger.error("unknown DSM ID '{}', valid: {}", dsm_id, ", ".join(_DSM_BY_ID))
         raise SystemExit(1)
-    run_pipeline(did, temperature, output / did.id, workers)
+    _ = run_pipeline(did, temperature, output / did.id, workers)
 
 
 @app.command("rust")
