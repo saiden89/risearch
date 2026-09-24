@@ -9,8 +9,8 @@ edition = "2021"
 license = "BUSL-1.1"
 
 [workspace.dependencies]
-anyhow = "1.0.46"
-clap = { version = "4", default-features = false, features = [
+anyhow = "1.0.47"
+clap = { version = "4.0.0", default-features = false, features = [
   "std",
   "help",
   "usage",
@@ -43,20 +43,19 @@ openmp = ["libsais/openmp"]
 
 [dependencies]
 anyhow.workspace = true
-bytecheck = "0.8"
 clap = { workspace = true, features = ["derive"] }
-env_logger = { version = "0.11", features = ["color"] }
+env_logger = { version = "0.11.0", features = ["color"] }
 flate2 = { version = "1.0.30", default-features = false, features = ["zlib"] }
-fs-err = "3"
-itoa = "1"
-libsais = { version = "0.2", default-features = false }
+fs-err = "3.0.0"
+itoa = "1.0.0"
+libsais = { version = "0.2.0", default-features = false }
 log = { version = "0.4.8", features = ["release_max_level_info"] }
-memmap2 = "0.9"
+memmap2 = "0.9.0"
 mimalloc = { version = "0.1.18", optional = true }
-needletail = "0.7"
-rayon = "1.5"
-rkyv = { version = "0.8", features = ["bytecheck", "std", "pointer_width_64"] }
-thiserror = "2.0.12"
+needletail = "0.7.0"
+rayon = "1.0.3"
+rkyv = { version = "0.8.0", features = ["bytecheck", "std", "pointer_width_64"] }
+thiserror = "2.0.0"
 zstd = "0.13.2"
 
 [dev-dependencies]

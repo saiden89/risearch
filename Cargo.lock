@@ -1485,7 +1485,6 @@ dependencies = [
  "anyhow",
  "approx",
  "assert_cmd",
- "bytecheck",
  "clap",
  "criterion",
  "env_logger",
