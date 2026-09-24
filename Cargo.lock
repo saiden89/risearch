@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "risearch"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "anyhow",
  "approx",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "risearch-python"
-version = "3.0.0-alpha.2"
+version = "3.0.0-alpha.3"
 dependencies = [
  "anyhow",
  "arrow-array",
