@@ -3,17 +3,9 @@ name: Release
 on:
   push:
     tags: ["v[0-9]*"]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing tag to (re)build the release for
-        required: true
 
 permissions:
   contents: write
-
-env:
-  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   changelog:
@@ -24,7 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -38,9 +29,8 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ env.TAG }}
           body: ${{ steps.cliff.outputs.content }}
-          prerelease: ${{ contains(env.TAG, '-') }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   binaries:
     name: Binary ${{ matrix.target }}
@@ -59,7 +49,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
 
       - name: Setup Rust
@@ -73,7 +62,6 @@ jobs:
           bin: risearch
           target: ${{ matrix.target }}
           build-tool: ${{ matrix.build-tool }}
-          ref: refs/tags/${{ env.TAG }}
           locked: true
           checksum: sha256
           include: LICENSE,README.md
