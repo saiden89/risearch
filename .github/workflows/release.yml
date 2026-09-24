@@ -3,9 +3,17 @@ name: Release
 on:
   push:
     tags: ["v[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build the release for
+        required: true
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   changelog:
@@ -16,6 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -27,6 +36,44 @@ jobs:
           args: v3.0.0-alpha.1.. --latest
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.TAG }}
           body: ${{ steps.cliff.outputs.content }}
+          prerelease: ${{ contains(env.TAG, '-') }}
+
+  binaries:
+    name: Binary ${{ matrix.target }}
+    needs: changelog
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, build-tool: cargo-zigbuild }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, build-tool: cargo-zigbuild }
+          - { target: aarch64-apple-darwin, os: macos-latest, build-tool: cargo }
+          - { target: x86_64-apple-darwin, os: macos-latest, build-tool: cargo }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: Build and upload
+        uses: taiki-e/upload-rust-binary-action@v1
+        env:
+          LZMA_API_STATIC: "1"
+        with:
+          bin: risearch
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
+          ref: refs/tags/${{ env.TAG }}
+          locked: true
+          checksum: sha256
+          include: LICENSE,README.md
