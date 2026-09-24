@@ -1,0 +1,59 @@
+amends "package://github.com/jdx/hk/releases/download/v2.1.0/hk@2.1.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.1.0/hk@2.1.0#/Builtins.pkl"
+
+steps {
+  ["cargo_fmt"] = Builtins.cargo_fmt
+  ["actionlint"] = Builtins.actionlint
+  ["ruff"] {
+    glob = List("**/*.py", "**/*.pyi")
+    dir = "bindings/python"
+    check = "uv run --locked ruff check ."
+    fix = "uv run --locked ruff check --fix ."
+  }
+  ["ruff_format"] {
+    glob = List("**/*.py", "**/*.pyi")
+    dir = "bindings/python"
+    check = "uv run --locked ruff format --check ."
+    fix = "uv run --locked ruff format ."
+    depends = "ruff"
+  }
+  // one run from the root: per-manifest jobs race on the shared advisory-db checkout
+  ["cargo_deny"] = (Builtins.cargo_deny) {
+    workspace_indicator = null
+    dir = null
+  }
+  ["clippy"] {
+    glob = List("**/*.rs", "**/Cargo.toml", "Cargo.lock")
+    check = "cargo clippy --locked --workspace --all-targets --features prof -- -D warnings"
+    depends = "cargo_fmt"
+  }
+  ["ty"] {
+    glob = List("**/*.py", "**/*.pyi")
+    dir = "bindings/python"
+    check = "uv run --locked ty check ."
+    depends = "ruff_format"
+  }
+  ["pyrefly"] {
+    glob = List("**/*.py", "**/*.pyi")
+    dir = "bindings/python"
+    check = "uv run --locked pyrefly check ."
+    depends = "ruff_format"
+  }
+}
+
+hooks {
+  ["pre-push"] {
+    steps {
+      ["nextest"] {
+        check = "cargo nextest run --locked --workspace"
+      }
+      ["doctest"] {
+        check = "cargo test --locked --workspace --doc"
+      }
+      // CI uses --all-features; openmp needs omp.h, which macOS clang lacks
+      ["rustdoc"] {
+        check = "RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps -p risearch --features prof"
+      }
+    }
+  }
+}

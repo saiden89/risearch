@@ -212,11 +212,11 @@ jobs:
 
       - name: ruff check
         working-directory: bindings/python
-        run: uvx ruff check .
+        run: uv run --locked ruff check .
 
       - name: ruff format
         working-directory: bindings/python
-        run: uvx ruff format --check .
+        run: uv run --locked ruff format --check .
 
       - name: ty
         working-directory: bindings/python
